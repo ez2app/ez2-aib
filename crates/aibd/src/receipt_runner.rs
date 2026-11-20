@@ -413,6 +413,18 @@ struct Known {
     missed: u32,
     /// Withdrawn while it was being prepared or sent.
     withdrawn: bool,
+    /// A seat's own request whose bundle is made and judged and whose card is on a page:
+    /// nothing asks the owner for a fingerprint until [`Runner::open_card`].
+    held: Option<std::sync::Arc<Held>>,
+}
+
+/// A run that waits for the owner to open its card on a page.
+#[derive(Debug)]
+struct Held {
+    ask: crate::receipt_run::Ask,
+    copy_host: TrustedHost,
+    bundle: std::path::PathBuf,
+    made: crate::receipt_bundle::Made,
 }
 
 /// The runner behind [`crate::receipt_run::ReceiptRunner`] ([`Started`]).
@@ -477,6 +489,7 @@ impl Runner {
                 sent: false,
                 missed: 0,
                 withdrawn: false,
+                held: None,
             },
         );
         Ok((host, copy))
@@ -485,6 +498,8 @@ impl Runner {
     /// One run from the bundle to the machine (on a thread of its own in aibd): the bundle
     /// is made and judged, the owner is asked for exactly that bundle on exactly that
     /// machine, and only a yes sends it. Every way it stops is told through [`Facts`].
+    /// A seat's own request (`by_seat`) stops once its bundle is made: no window comes up
+    /// for something the owner did not ask for; [`Runner::open_card`] goes on from there.
     pub fn carry(&self, ask: &crate::receipt_run::Ask, host: &TrustedHost, copy: &SeatCopy) {
         let run_id = ask.run_id.as_str();
         let dir = self.facts.work_dir();
@@ -506,6 +521,81 @@ impl Runner {
                 return;
             }
         };
+        if ask.by_seat {
+            let held = std::sync::Arc::new(Held {
+                ask: ask.clone(),
+                copy_host: host.clone(),
+                bundle: bundle.clone(),
+                made,
+            });
+            let kept = {
+                let mut runs = self.runs();
+                match runs.get_mut(run_id) {
+                    Some(k) if !k.withdrawn => {
+                        k.held = Some(held);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if !kept {
+                // withdrawn while the bundle was made
+                self.runs().remove(run_id);
+                let _ = std::fs::remove_file(&bundle);
+            }
+            return;
+        }
+        self.ask_and_send(ask, host, &bundle, &made);
+    }
+
+    /// The card of a seat's own run that waits on a page ([`page_card`]), while it waits.
+    pub fn held_card(&self, run_id: &str) -> Option<serde_json::Value> {
+        let held = self.runs().get(run_id).and_then(|k| k.held.clone())?;
+        Some(page_card(&held.copy_host.name, &held.made.brings))
+    }
+
+    /// The owner opened the card of a seat's own run on a page: the fingerprint window comes
+    /// up now (on a thread of its own) and a yes sends the bundle that was made. `false`
+    /// when no such run waits (it is opened once).
+    pub fn open_card(self: &std::sync::Arc<Self>, run_id: &str) -> bool {
+        let Some(held) = self.take_card(run_id) else {
+            return false;
+        };
+        let (runner, again) = (self.clone(), held.clone());
+        let spawned = std::thread::Builder::new()
+            .name("aibd-receipt-card".into())
+            .spawn(move || runner.send_held(&again));
+        if spawned.is_err() {
+            // still waiting: the card can be opened again
+            if let Some(k) = self.runs().get_mut(run_id) {
+                k.held = Some(held);
+            }
+            return false;
+        }
+        true
+    }
+
+    /// The waiting run's bundle, taken once (a second opening finds none).
+    fn take_card(&self, run_id: &str) -> Option<std::sync::Arc<Held>> {
+        let mut runs = self.runs();
+        runs.get_mut(run_id)
+            .filter(|k| !k.withdrawn)
+            .and_then(|k| k.held.take())
+    }
+
+    fn send_held(&self, held: &Held) {
+        self.ask_and_send(&held.ask, &held.copy_host, &held.bundle, &held.made);
+    }
+
+    /// Asks the owner for exactly this bundle on exactly this machine and sends it on a yes.
+    fn ask_and_send(
+        &self,
+        ask: &crate::receipt_run::Ask,
+        host: &TrustedHost,
+        bundle: &std::path::Path,
+        made: &crate::receipt_bundle::Made,
+    ) {
+        let run_id = ask.run_id.as_str();
         let sent = Sent {
             host: &host.name,
             run_id,
@@ -520,14 +610,14 @@ impl Runner {
         let still = self.facts.owner_answered(run_id, yes);
         if !yes || !still || self.withdrawn(run_id) {
             self.runs().remove(run_id);
-            let _ = std::fs::remove_file(&bundle);
+            let _ = std::fs::remove_file(bundle);
             return;
         }
         let said = run_words(run_id, &ask.head, made.len, &made.sha256)
             .map_err(|_| "refused")
-            .map(|line| self.link.say(host, &line, Some(&bundle), SEND_SECS))
+            .map(|line| self.link.say(host, &line, Some(bundle), SEND_SECS))
             .and_then(|out| answer(&out, "run"));
-        let _ = std::fs::remove_file(&bundle);
+        let _ = std::fs::remove_file(bundle);
         // withdrawn while the bundle was on its way: the machine may have started it
         let gone = self.withdrawn(run_id);
         if gone {
@@ -573,6 +663,7 @@ impl Runner {
                     sent: true,
                     missed: 0,
                     withdrawn: false,
+                    held: None,
                 });
                 k.missed += 1;
                 k.missed
@@ -614,7 +705,14 @@ impl Runner {
             })
         };
         let host = match &known {
-            Some(k) if !k.sent => return,
+            Some(k) if !k.sent => {
+                if let Some(held) = &k.held {
+                    // no thread carries it: its bundle and its entry go here
+                    let _ = std::fs::remove_file(&held.bundle);
+                    self.runs().remove(run_id);
+                }
+                return;
+            }
             Some(k) => Some(k.host.clone()),
             None => pick(&self.facts.hosts()).cloned(),
         };
@@ -657,6 +755,32 @@ impl crate::receipt_run::ReceiptRunner for Started {
     fn cancel(&self, run_id: &str) {
         self.0.cancel(run_id);
     }
+
+    /// The tests the gate's sandbox always skips and the digest the gate prints for them:
+    /// the gate's own list, aibd holds no second copy.
+    fn skips(&self) -> Option<(Vec<String>, String)> {
+        Some((
+            aib_receipt_gate::sandbox::SKIPPED
+                .iter()
+                .map(|(name, _)| (*name).to_owned())
+                .collect(),
+            aib_receipt_gate::sandbox::skipped_sha256(),
+        ))
+    }
+}
+
+/// The runner [`set_at_start`] set, for the two entries a page's act reaches.
+static AT_START: std::sync::OnceLock<std::sync::Arc<Runner>> = std::sync::OnceLock::new();
+
+/// The owner opened the card of a seat's own run (`run_id`) on a page: see
+/// [`Runner::open_card`]. `false` with the switch off.
+pub fn open_card(run_id: &str) -> bool {
+    AT_START.get().is_some_and(|r| r.open_card(run_id))
+}
+
+/// What a page shows on that card: see [`Runner::held_card`].
+pub fn held_card(run_id: &str) -> Option<serde_json::Value> {
+    AT_START.get().and_then(|r| r.held_card(run_id))
 }
 
 /// [`Facts`] read from aibd itself.
@@ -759,6 +883,7 @@ pub fn set_at_start(st: &crate::api::AppState, switch: Option<String>) -> bool {
         )),
         std::sync::Arc::new(TouchOwner),
     );
+    let _ = AT_START.set(runner.clone());
     crate::receipt_run::set_runner(std::sync::Arc::new(Started(runner)));
     true
 }
@@ -1192,6 +1317,7 @@ mod tests {
                 head: self.head.clone(),
                 narrow: false,
                 tests: Vec::new(),
+                by_seat: false,
             }
         }
         fn told(&self) -> Vec<String> {
@@ -1362,6 +1488,75 @@ mod tests {
         assert_eq!(w.told().len(), 1, "reason: under_way_ended");
         assert_eq!(w.runner.read(&ask.run_id), Some(b"RC fmt=0\n".to_vec()));
         assert_eq!(w.said()[2].1, format!("fetch {}", ask.run_id));
+    }
+
+    #[test]
+    fn a_seats_own_request_waits_for_its_card_to_be_opened() {
+        let w = world("src/new.rs", true, &[b"OK run\nSTARTED x\n"]);
+        let ask = crate::receipt_run::Ask {
+            by_seat: true,
+            ..w.ask()
+        };
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        assert_eq!(w.runner.held_card(&ask.run_id), None);
+        w.runner.carry(&ask, &h, &copy);
+        // the bundle is made and judged, and nobody was asked for a fingerprint
+        assert_eq!(w.asked(), 0, "reason: window_for_a_seats_request");
+        assert!(w.said().is_empty() && w.told().is_empty());
+        assert!(!w.nothing_left(), "reason: held_bundle_gone");
+        let card = w.runner.held_card(&ask.run_id).unwrap();
+        assert_eq!(card["host"], crate::receipt_run::nickname("lin"));
+        assert_eq!(w.runner.read(&ask.run_id), None);
+        assert!(w.said().is_empty(), "reason: asked_before_sent");
+        // opened once: the owner is asked for that bundle, a yes sends it
+        assert!(!w.runner.open_card("web-b4297-000000000"));
+        let held = w.runner.take_card(&ask.run_id).unwrap();
+        assert!(
+            !w.runner.open_card(&ask.run_id),
+            "reason: card_opened_twice"
+        );
+        w.runner.send_held(&held);
+        assert_eq!(w.asked(), 1);
+        assert_eq!(w.told(), [format!("owner {} true", ask.run_id)]);
+        let said = w.said();
+        assert_eq!(said.len(), 1, "reason: held_bundle_not_sent");
+        let shown = w.owner.asked.lock().unwrap()[0].clone();
+        let params: serde_json::Value = serde_json::from_slice(&shown.params).unwrap();
+        let words: Vec<&str> = said[0].1.split(' ').collect();
+        assert_eq!(said[0].2.as_deref(), Some(words[5]));
+        assert_eq!(params["bundle_sha256"], words[5]);
+        assert!(w.nothing_left(), "reason: bundle_left");
+        assert_eq!(w.runner.held_card(&ask.run_id), None);
+    }
+
+    #[test]
+    fn a_seats_own_request_withdrawn_on_its_card_asks_nobody() {
+        let w = world("src/new.rs", true, &[]);
+        let ask = crate::receipt_run::Ask {
+            by_seat: true,
+            ..w.ask()
+        };
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        assert!(!w.nothing_left());
+        w.runner.cancel(&ask.run_id);
+        assert!(w.nothing_left(), "reason: withdrawn_bundle_left");
+        assert!(
+            !w.runner.open_card(&ask.run_id),
+            "reason: withdrawn_card_opened"
+        );
+        assert_eq!(w.asked(), 0);
+        assert!(w.said().is_empty() && w.told().is_empty());
+    }
+
+    #[test]
+    fn the_runner_hands_over_the_gates_own_skips() {
+        use crate::receipt_run::ReceiptRunner;
+        let w = world("src/new.rs", true, &[]);
+        let (names, sha) = Started(w.runner.clone()).skips().unwrap();
+        assert_eq!(names.len(), aib_receipt_gate::sandbox::SKIPPED.len());
+        assert_eq!(names[0], aib_receipt_gate::sandbox::SKIPPED[0].0);
+        assert_eq!(sha, aib_receipt_gate::sandbox::skipped_sha256());
     }
 
     #[test]

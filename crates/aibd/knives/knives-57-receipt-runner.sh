@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR8, RL1–RL6 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR12, RL1–RL6 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -92,6 +92,18 @@ rn '        if known.as_ref().is_some_and(|k| !k.sent) {' '        if known.as_r
 # RR8 one read with no answer ends the run
 rn '            if missed >= MISSED_READS {' '            if missed >= 1 { // knife' \
    a_silent_machine_ends_a_run_late_and_one_that_never_heard_of_it_at_once
+# RR9 a seat's own request raises the fingerprint window at once (nobody opened its card)
+rn '        if ask.by_seat {' '        if ask.by_seat && ask.head.is_empty() { // knife' \
+   a_seats_own_request_waits_for_its_card_to_be_opened
+# RR10 a card can be opened twice (two windows, the bundle sent twice)
+rn '            .and_then(|k| k.held.take())' '            .and_then(|k| k.held.clone()) // knife' \
+   a_seats_own_request_waits_for_its_card_to_be_opened
+# RR11 a run withdrawn on its card leaves its bundle behind
+rn '                    let _ = std::fs::remove_file(&held.bundle);' '                    let _ = &held.bundle; // knife' \
+   a_seats_own_request_withdrawn_on_its_card_asks_nobody
+# RR12 the digest handed to receipt_check is not the gate's (a sandboxed pass reads red, or another list reads passed)
+rn '            aib_receipt_gate::sandbox::skipped_sha256(),' '            String::new(), // knife' \
+   the_runner_hands_over_the_gates_own_skips
 # slice R4a (receipt_bundle.rs): the bundle of one run
 rb() { python3 -I scripts/knife.py crates/aibd/src/receipt_bundle.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "receipt_bundle::tests::$3"; }
