@@ -20,10 +20,16 @@ struct Fake {
     out: Mutex<Option<Vec<u8>>>,
     asked: Mutex<Vec<Ask>>,
     cancelled: Mutex<Vec<String>>,
+    /// Whether aibd held its list while it called (5d33a L2: never).
+    held: Mutex<Vec<bool>>,
 }
 
 impl ReceiptRunner for Fake {
     fn start(&self, ask: &Ask) -> Start {
+        self.held
+            .lock()
+            .unwrap()
+            .push(aibd::receipt_run::file_held());
         self.asked.lock().unwrap().push(ask.clone());
         Start::Started {
             host: "t1".into(),
@@ -31,9 +37,17 @@ impl ReceiptRunner for Fake {
         }
     }
     fn read(&self, _run_id: &str) -> Option<Vec<u8>> {
+        self.held
+            .lock()
+            .unwrap()
+            .push(aibd::receipt_run::file_held());
         self.out.lock().unwrap().clone()
     }
     fn cancel(&self, run_id: &str) {
+        self.held
+            .lock()
+            .unwrap()
+            .push(aibd::receipt_run::file_held());
         self.cancelled.lock().unwrap().push(run_id.to_owned());
     }
 }
@@ -212,6 +226,13 @@ async fn a_page_asks_for_a_receipt_reads_it_and_withdraws_it() {
         r.json["state"], "withdrawn",
         "reason: withdrawn_run_read {}",
         r.body
+    );
+    // the runner was never called with aibd's list held (a machine that hangs holds up nothing)
+    let held = fake.held.lock().unwrap().clone();
+    assert!(held.len() >= 7, "reason: runner_not_called {held:?}");
+    assert!(
+        !held.contains(&true),
+        "reason: runner_called_in_lock {held:?}"
     );
     d.shutdown().await;
 }

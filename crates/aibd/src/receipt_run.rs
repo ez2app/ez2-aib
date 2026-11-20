@@ -13,8 +13,9 @@
 //!   fingerprint card bound to {machine, bundle sha256, run id, knife table sha256}, the
 //!   trusted-hosts connection and the gate on the machine. It also says whether the head is the
 //!   seat's own (`head_not_seat_head`): this module runs no git and opens no connection.
-//! - A run is one entry of `<data>/receipt_runs.json` (the newest [`MAX_RUNS`]):
-//!   `waiting_owner` → `running` → `done` (green) | `red`; `withdrawn` from either of the
+//! - A run is one entry of `<data>/receipt_runs.json` (the newest [`MAX_RUNS`]; written like
+//!   the other lists there, this user only, never through a link): `asking` for the moment the
+//!   runner is asked (no call to a runner is made with the file held), then `waiting_owner` → `running` → `done` (green) | `red`; `withdrawn` from either of the
 //!   first two; `lost` when the runner says the machine went away. At most [`MAX_IN_FLIGHT`] of a seat are under way.
 //! - Run ids are `web-<last 5 of the seat id>-<first 9 of the head>`, and `-2` … `-99` when
 //!   that head is asked again (design r3; the gate checks the same shape).
@@ -50,6 +51,9 @@ pub const MAX_TESTS: usize = 8;
 const MAX_FILE: u64 = 1024 * 1024;
 pub const MAX_OUT: usize = 1024 * 1024;
 
+/// Its run id is kept and the runner is being asked (a moment; a run left here by a crash is
+/// withdrawn like any other).
+pub const ASKING: &str = "asking";
 pub const WAITING_OWNER: &str = "waiting_owner";
 pub const RUNNING: &str = "running";
 pub const DONE: &str = "done";
@@ -225,7 +229,25 @@ pub fn run_id_ok(id: &str) -> bool {
 }
 
 pub fn in_flight(r: &Run) -> bool {
-    r.state == WAITING_OWNER || r.state == RUNNING
+    r.state == ASKING || r.state == WAITING_OWNER || r.state == RUNNING
+}
+
+/// The entry that keeps an [`Ask`]'s run id while the runner is asked.
+pub fn reserved(ask: &Ask, at: &str) -> Run {
+    Run {
+        run_id: ask.run_id.clone(),
+        seat_id: ask.seat_id.clone(),
+        head: ask.head.clone(),
+        scope: if ask.narrow { "narrow" } else { "full" }.to_owned(),
+        tests: ask.tests.clone(),
+        state: ASKING.to_owned(),
+        host: None,
+        knives_sent: 0,
+        asked_at: at.to_owned(),
+        ended_at: None,
+        verdict: None,
+        why: None,
+    }
 }
 
 /// A request's body, checked against the runs there are: the [`Ask`], or the refusal's code.
@@ -283,18 +305,10 @@ pub fn started(ask: &Ask, start: Start, at: &str) -> Result<Run, &'static str> {
         Start::Refused(why) => return Err(said(why)),
     };
     Ok(Run {
-        run_id: ask.run_id.clone(),
-        seat_id: ask.seat_id.clone(),
-        head: ask.head.clone(),
-        scope: if ask.narrow { "narrow" } else { "full" }.to_owned(),
-        tests: ask.tests.clone(),
         state: state.to_owned(),
         host: Some(nickname(&host)),
         knives_sent,
-        asked_at: at.to_owned(),
-        ended_at: None,
-        verdict: None,
-        why: None,
+        ..reserved(ask, at)
     })
 }
 
@@ -422,11 +436,22 @@ pub fn with(mut runs: Vec<Run>, run: Run) -> Vec<Run> {
     runs
 }
 
+fn lock() -> std::sync::MutexGuard<'static, ()> {
+    FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether a change to the file is under way now (a runner's double asks: no call to a runner
+/// is made with the file held, 5d33a L2).
+pub fn file_held() -> bool {
+    FILE_LOCK.try_lock().is_err()
+}
+
+/// The runs on disk: a plain file only (a link there is not followed, 5d33a L1).
 fn load() -> Vec<Run> {
     let Some(p) = crate::workspace::data_file(FILE) else {
         return Vec::new();
     };
-    match std::fs::metadata(&p) {
+    match std::fs::symlink_metadata(&p) {
         Ok(m) if m.is_file() && m.len() <= MAX_FILE => {
             std::fs::read(&p).map(|b| parse(&b)).unwrap_or_default()
         }
@@ -434,12 +459,35 @@ fn load() -> Vec<Run> {
     }
 }
 
+/// Written as the other lists of the data folder are: readable by this user only, a new file
+/// put in place of the old one (a link there is replaced, not written through).
 fn save(runs: &[Run]) -> Result<(), String> {
     let p = crate::workspace::data_file(FILE).ok_or("no data folder")?;
-    let tmp = p.with_extension("json.tmp");
+    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_file()) {
+        return Err("not a plain file".into());
+    }
     let body = serde_json::to_vec_pretty(&json!({ "runs": runs })).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    crate::platform::write_private_file(&p, &body).map_err(|e| e.to_string())
+}
+
+/// One change to one run, written; `None`: no such run, or `change` said no.
+fn change(run_id: &str, change: impl FnOnce(&mut Run, &str) -> bool) -> Result<Option<Run>, ()> {
+    let _one = lock();
+    let mut runs = load();
+    let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) else {
+        return Ok(None);
+    };
+    if !change(run, &crate::sessions::now_rfc3339()) {
+        return Ok(None);
+    }
+    let run = run.clone();
+    save(&runs).map_err(|_| ())?;
+    Ok(Some(run))
+}
+
+fn find(run_id: &str) -> Option<Run> {
+    let _one = lock();
+    load().into_iter().find(|r| r.run_id == run_id)
 }
 
 fn record(st: &AppState, kind: &str, payload: Value) {
@@ -482,63 +530,94 @@ pub fn status_of(code: &str) -> StatusCode {
     }
 }
 
-/// One act's whole change to the file, off the async threads (the runner may block).
+/// A request: its run id is kept in the file, then the runner is asked with the file free (it
+/// may go to another machine), then the answer is written. A refusal takes the entry out
+/// again; an answer that cannot be written is cancelled at the runner (no run without its
+/// entry).
 fn request(body: &Value) -> Result<Run, &'static str> {
-    let _one = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let runs = load();
-    let ask = ask_of(body, &runs)?;
-    let run = started(&ask, runner().start(&ask), &crate::sessions::now_rfc3339())?;
-    save(&with(runs, run.clone())).map_err(|_| "receipt_list_not_written")?;
-    Ok(run)
+    let ask = {
+        let _one = lock();
+        let runs = load();
+        let ask = ask_of(body, &runs)?;
+        let kept = reserved(&ask, &crate::sessions::now_rfc3339());
+        save(&with(runs, kept)).map_err(|_| "receipt_list_not_written")?;
+        ask
+    };
+    let answer = started(&ask, runner().start(&ask), &crate::sessions::now_rfc3339());
+    let one = lock();
+    let mut runs = load();
+    let at = runs.iter().position(|r| r.run_id == ask.run_id);
+    let kept = at
+        .and_then(|i| runs.get_mut(i))
+        .filter(|r| r.state == ASKING);
+    let written = match (&answer, kept) {
+        (Ok(run), Some(slot)) => {
+            *slot = run.clone();
+            save(&runs).is_ok()
+        }
+        // withdrawn (or gone) while the runner was asked: what it started is stopped
+        (Ok(_), None) => false,
+        (Err(_), _) => {
+            runs.retain(|r| !(r.run_id == ask.run_id && r.state == ASKING));
+            save(&runs).is_ok()
+        }
+    };
+    drop(one);
+    match answer {
+        Ok(run) if written => Ok(run),
+        Ok(_) => {
+            runner().cancel(&ask.run_id);
+            Err("receipt_list_not_written")
+        }
+        Err(why) => Err(why),
+    }
 }
 
-/// The run as it is now; `true` when this read ended it.
+/// The run as it is now; `true` when this read ended it. The runner is asked for the `.out`
+/// with the file free.
 fn read(run_id: &str) -> Result<(Run, bool), &'static str> {
-    let _one = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut runs = load();
-    let run = runs
-        .iter_mut()
-        .find(|r| r.run_id == run_id)
-        .ok_or("no_such_run")?;
-    let out = in_flight(run)
-        .then(|| runner().read(run_id))
-        .flatten()
-        .filter(|o| o.len() <= MAX_OUT);
-    let Some(out) = out else {
-        return Ok((run.clone(), false));
+    let run = find(run_id).ok_or("no_such_run")?;
+    if run.state != WAITING_OWNER && run.state != RUNNING {
+        return Ok((run, false));
+    }
+    let Some(out) = runner().read(run_id).filter(|o| o.len() <= MAX_OUT) else {
+        return Ok((run, false));
     };
-    finished(run, &out, &crate::sessions::now_rfc3339());
-    let run = run.clone();
-    save(&runs).map_err(|_| "receipt_list_not_written")?;
-    Ok((run, true))
+    match change(run_id, |r, at| {
+        let was = in_flight(r);
+        finished(r, &out, at);
+        was
+    }) {
+        Ok(Some(run)) => Ok((run, true)),
+        // it ended another way while the .out was fetched: as it is now
+        Ok(None) => find(run_id).map(|r| (r, false)).ok_or("no_such_run"),
+        Err(()) => Err("receipt_list_not_written"),
+    }
 }
 
 fn withdraw(run_id: &str) -> Result<Run, &'static str> {
-    let _one = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut runs = load();
-    let run = runs
-        .iter_mut()
-        .find(|r| r.run_id == run_id)
-        .ok_or("no_such_run")?;
-    withdrawn(run, &crate::sessions::now_rfc3339())?;
-    let run = run.clone();
-    save(&runs).map_err(|_| "receipt_list_not_written")?;
-    runner().cancel(run_id);
-    Ok(run)
+    let mut why = "no_such_run";
+    let done = change(run_id, |r, at| match withdrawn(r, at) {
+        Ok(()) => true,
+        Err(e) => {
+            why = e;
+            false
+        }
+    });
+    match done {
+        Ok(Some(run)) => {
+            runner().cancel(run_id);
+            Ok(run)
+        }
+        Ok(None) => Err(why),
+        Err(()) => Err("receipt_list_not_written"),
+    }
 }
 
 /// One change a runner reports, written to the file; `None` when there is no such run or it
 /// was not in the state the change is for.
-fn reported(run_id: &str, change: impl FnOnce(&mut Run, &str) -> bool) -> Option<Run> {
-    let _one = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut runs = load();
-    let run = runs.iter_mut().find(|r| r.run_id == run_id)?;
-    if !change(run, &crate::sessions::now_rfc3339()) {
-        return None;
-    }
-    let run = run.clone();
-    save(&runs).ok()?;
-    Some(run)
+fn reported(run_id: &str, by: impl FnOnce(&mut Run, &str) -> bool) -> Option<Run> {
+    change(run_id, by).ok().flatten()
 }
 
 fn tell(st: &AppState, kind: &str, run: &Run) {
@@ -874,7 +953,7 @@ mod tests {
         assert_eq!(view(&r)["reasons"], json!(["owner_refused"]));
         assert_eq!(view(&r)["green"], false);
         // an answer for a run that does not wait for one changes nothing
-        for state in [RUNNING, DONE, RED, WITHDRAWN, LOST] {
+        for state in [ASKING, RUNNING, DONE, RED, WITHDRAWN, LOST] {
             let mut r = run(state);
             assert!(!owner_said(&mut r, true, "t"), "reason: late_answer_taken");
             assert_eq!(r.state, state);
@@ -900,7 +979,15 @@ mod tests {
 
     #[test]
     fn only_a_run_under_way_is_withdrawn() {
-        for state in [RUNNING, WAITING_OWNER] {
+        // the entry that keeps a run id while the runner is asked counts as under way
+        let kept = reserved(&ask_of(&full(), &[]).unwrap(), "t0");
+        assert_eq!((kept.state.as_str(), kept.host.as_deref()), (ASKING, None));
+        assert!(in_flight(&kept), "reason: kept_id_not_counted");
+        assert_eq!(
+            run_id(SEAT, H, std::slice::from_ref(&kept)).as_deref(),
+            Some("web-fb381-6f547e599-2")
+        );
+        for state in [RUNNING, WAITING_OWNER, ASKING] {
             let mut r = run(state);
             assert_eq!(withdrawn(&mut r, "t"), Ok(()));
             assert_eq!(r.state, WITHDRAWN);

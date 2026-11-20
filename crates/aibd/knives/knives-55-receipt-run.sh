@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ17 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ18 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -79,3 +79,7 @@ rq '        run.state = RED.to_owned();' \
 rq '    if !in_flight(run) {' \
    '    if !in_flight(run) && run.head.is_empty() { // knife' \
    the_owners_answer_and_a_lost_machine_move_a_run
+# RQ18 a run id kept while the runner is asked does not count as under way
+rq '    r.state == ASKING || r.state == WAITING_OWNER || r.state == RUNNING' \
+   '    r.state == WAITING_OWNER || r.state == RUNNING // knife' \
+   only_a_run_under_way_is_withdrawn

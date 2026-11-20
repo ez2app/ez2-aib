@@ -11,7 +11,7 @@
 //!   no `RC <step>=` of those with another value anywhere;
 //! - one `TESTS-TOTAL` with `failed=0` and at least one test passed;
 //! - with knives: `KNIVES-EXPECTED` = the number aibd sent = `BITES-COUNT`, `MISSES-COUNT 0`,
-//!   `KNIVES-OK` (b4297 11-20: whether one knife bit is receipt-run's own judgement, written in
+//!   `KNIVES-RC 0`, `KNIVES-OK` (b4297 11-20: whether one knife bit is receipt-run's own judgement, written in
 //!   those three keys; it is not judged again here from the `RC knife_…` lines);
 //! - no line that makes a receipt red or not a full one ([`RED_LINES`]).
 //!
@@ -30,7 +30,8 @@ pub const STEPS: [&str; 5] = ["fmt", "anchors", "clippy", "winclippy", "test"];
 /// The steps a receipt with knives also runs.
 pub const KNIFE_STEPS: [&str; 2] = ["knifecompile", "restored"];
 /// A line starting with one of these (then a space or the line's end) makes the receipt red.
-pub const RED_LINES: [&str; 5] = [
+pub const RED_LINES: [&str; 6] = [
+    "KNIVES-SKIPPED",
     "RECEIPT-RED",
     "RECEIPT-NARROW",
     "RECEIPT-INVALID",
@@ -220,6 +221,10 @@ pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
         let expected = num("KNIVES-EXPECTED", "knives_expected");
         let bites = num("BITES-COUNT", "bites");
         let misses = num("MISSES-COUNT", "misses");
+        // receipt-run's own summary of the knife part (5d33a N2): 0 only when none missed
+        if num("KNIVES-RC", "knives_rc").is_some_and(|rc| rc != 0) {
+            no("knives_rc_nonzero");
+        }
         if let (Some(expected), Some(bites), Some(misses)) = (expected, bites, misses) {
             knives = Some(Knives {
                 expected,
@@ -451,6 +456,10 @@ mod tests {
         assert_eq!(reasons_of(&no_count, 2), ["misses_missing"]);
         let two = body().replace("BITES-COUNT 2\n", "BITES-COUNT 2\nBITES-COUNT 1\n");
         assert_eq!(reasons_of(&two, 2), ["bites_differs"]);
+        let rc = body().replace("KNIVES-RC 0", "KNIVES-RC 1");
+        assert_eq!(reasons_of(&rc, 2), ["knives_rc_nonzero"]);
+        let no_rc = body().replace("KNIVES-RC 0\n", "");
+        assert_eq!(reasons_of(&no_rc, 2), ["knives_rc_missing"]);
         let word = body().replace("KNIVES-EXPECTED 2", "KNIVES-EXPECTED two");
         assert_eq!(reasons_of(&word, 2), ["knives_expected_not_a_number"]);
     }

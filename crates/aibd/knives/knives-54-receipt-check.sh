@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RCK1–RCK12 (7ebca 11-20): aibd reads a receipt's .out key by key
+# N-webonly 第 4 件 knives RCK1–RCK13 (7ebca 11-20): aibd reads a receipt's .out key by key
 # (seal, head, every step's rc, tests total, knives sent = expected = bit, no red line).
 # Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail
@@ -56,3 +56,7 @@ rc '        if !lines.contains(&"KNIVES-OK") {' \
 rc '            no(&format!("red_line:{red}"));' \
    '            let _ = red; // knife' \
    a_red_or_narrow_line_is_never_green
+# RCK13 receipt-run's own knife summary not 0 passes (5d33a N2)
+rc '        if num("KNIVES-RC", "knives_rc").is_some_and(|rc| rc != 0) {' \
+   '        if num("KNIVES-RC", "knives_rc").is_some_and(|rc| rc > 1) { // knife' \
+   every_knife_sent_bit
