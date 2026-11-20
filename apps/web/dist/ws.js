@@ -1060,6 +1060,28 @@
   }
   // 519d0 ORDER-round2:三席以上時誰在寫哪一份一眼看得出。席 JSON folder_owner {seat, how: folder | tree}(a9136 654162420);
   // tree {branch, base, unmerged, dirty} 有就標分支 / 沒合數(a9136 第二輪);都沒有就不標
+  // 交接並清空(519d0 22:25 第 4 點):先只做「請這一席寫交接單、顯示寫好了沒」。寫好了沒:aibd 沒有 API ⇒ 看它這次之後的回話有沒有「交接單寫好了」;
+  // 清空要後端(缺:act seat_clear 或同等,開新一段且帶交接單)⇒ 鈕灰掉寫原因
+  const HO_ASK = '請照 aib handoff 寫交接單(交接、記憶整理都做完),寫好後回一句「交接單寫好了:<交接單路徑>」。寫完先不要繼續新工作。';
+  function hoState(id) {
+    const H = S.ho && S.ho[id]; if (!H) return null;
+    const se = lastSession(id), o = se && S.out[se.id || se.session_id];
+    let path = '';
+    if (o) for (const it of o.items) { if (String(it.occurred_at || '') < H.at) continue; const p = it.payload || {}; if (typeof p.line !== 'string') continue; const m = /交接單寫好了[::]\s*([^\s"\\]+)/.exec(p.line); if (m) path = m[1]; }
+    return { at: H.at, done: !!path, path };
+  }
+  function hoBox(s) {
+    const st = hoState(s.seat_id);
+    const clear = '<button type="button" class="k" disabled title="清空要後端:aibd 還沒有清空重開的動作(缺口已列給 519d0)">清空(要後端)</button>';
+    if (!st) return '';
+    return `<div class="trm" data-hostate>${st.done ? '交接單寫好了:<code>' + esc(st.path) + '</code>' : '已請它寫交接單(' + esc(hhmm(st.at)) + ');還沒看到「交接單寫好了」'} ${clear}</div>`;
+  }
+  async function hoAsk(id) {
+    S.sending = true; render();
+    try { await sendSeat(id, HO_ASK); (S.ho = S.ho || {})[id] = { at: new Date().toISOString() }; say('已請 @' + seatShort(seatById(id) || { seat_id: id }) + ' 寫交接單', 'ok'); }
+    catch (e) { say(errText(e), 'err'); }
+    S.sending = false; render();
+  }
   function seatNowLine(s) {
     const n = nowOf(s.seat_id), se = lastSession(s.seat_id), run = se && se.state === 'running';
     const bits = [];
@@ -1079,9 +1101,50 @@
     const tu = trustUntil(s); if (tu) bits.push('受信任到 ' + esc(hhmm(tu * 1000)));
     return `<div class="snl" data-seatnow="${esc(s.seat_id)}">${logo(s, 'sm')}<button type="button" class="snn" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗">@${esc(seatShort(s))}</button> ${bits.join(' · ')}</div>`;
   }
+  // 唯讀看 PR 與檢查格(519d0 22:25 第 3 點):act gh_view {what: pr | checks | run, number}(7b81e 1dae7efafe)。
+  // 那片只收受信任席自己的權杖(seat_input.rs:seat_token),頁面憑證還沒有路 ⇒ 頁面叫會被拒;收到就收起並寫缺口。aibd 每席 10 秒只准問一次 ⇒ 一次只問一樣
+  const GH_WHY = {
+    trusted_seats_off: '這台沒開受信任席,看 PR 的開關跟著關', gh_view_user_page: '使用者資料夾頁在服務時不能看',
+    gh_view_what: '只能看 PR、檢查格、run', gh_view_number: '號碼不對', gh_view_repo: '這台 aibd 的倉設定不是 owner/name',
+    gh_view_seat_gap: 'aibd 每 10 秒只准問一次,等一下再按', gh_view_machine_cap: '這台一分鐘內問太多次,等一下再按', gh_view_no_answer: 'gh 20 秒沒回',
+  };
+  const GH_PAGE_GAP = '頁面還不能看 PR:gh_view 只開給受信任席自己的權杖(缺:頁面也能叫的 gh_view)';
+  function ghBox() {
+    const G = S.gh || {};
+    if (G.off) return `<div class="ghb" data-ghbox><span class="trs">${esc(G.off)}</span></div>`;
+    const pr = G.pr, ck = Array.isArray(G.checks) ? G.checks : null, run = G.run;
+    let h = `<div class="ghb" data-ghbox><span>看 PR</span><input class="apq" data-ghnum inputmode="numeric" maxlength="7" placeholder="號碼" value="${esc(G.num || '')}"><button type="button" class="k" data-ghgo="pr" ${G.busy ? 'disabled' : ''}>看</button>${pr ? `<button type="button" class="k" data-ghgo="checks" ${G.busy ? 'disabled' : ''}>檢查格</button>` : ''}`;
+    if (G.msg) h += `<span class="trs ${G.bad ? 'bad' : ''}">${esc(G.msg)}</span>`;
+    if (pr) h += `<div class="ghp" data-ghpr>#${pr.number | 0} ${esc(String(pr.title || ''))} · ${esc(String(pr.state || ''))}${pr.isDraft ? ' · 草稿' : ''} · ${esc(String(pr.baseRefName || ''))} ← ${esc(String(pr.headRefName || ''))} · 頭 ${esc(String(pr.headRefOid || '').slice(0, 12))}${pr.mergeable ? ' · ' + esc(String(pr.mergeable)) : ''}${pr.reviewDecision ? ' · ' + esc(String(pr.reviewDecision)) : ''}</div>`;
+    if (ck) {
+      const B = { pass: '綠', fail: '紅', pending: '跑著', skipping: '略過', cancel: '取消' };
+      const cnt = {}; for (const c of ck) cnt[c.bucket] = (cnt[c.bucket] || 0) + 1;
+      h += `<div class="ghc" data-ghchecks>${Object.keys(cnt).map((k) => (B[k] || k) + ' ' + cnt[k]).join(' · ')}</div>` + ck.filter((c) => c.bucket !== 'pass' && c.bucket !== 'skipping').slice(0, 20).map((c) => { const m = /\/runs\/(\d+)/.exec(String(c.link || '')); return `<div class="ghk ${c.bucket === 'fail' ? 'bad' : ''}">${esc(B[c.bucket] || c.bucket)} · ${esc(String(c.name || ''))}${m ? ` <button type="button" class="k" data-ghrun="${m[1]}" ${G.busy ? 'disabled' : ''}>看這次 run</button>` : ''}</div>`; }).join('');
+    }
+    if (run) h += `<div class="ghr" data-ghrun-out>run ${esc(String(G.runId || ''))} · ${esc(String(run.status || ''))}${run.conclusion ? ' · ' + esc(String(run.conclusion)) : ''} · 頭 ${esc(String(run.headSha || '').slice(0, 12))}${Array.isArray(run.jobs) ? ' · ' + run.jobs.filter((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped').map((j) => esc(String(j.name || '')) + ' ' + esc(String(j.conclusion))).slice(0, 8).join('、') : ''}</div>`;
+    return h + '</div>';
+  }
+  async function ghAsk(what, number) {
+    const G = (S.gh = S.gh || {});
+    if (!/^\d{1,7}$/.test(String(number || ''))) { G.msg = '先填號碼'; G.bad = true; return render(); }
+    G.busy = true; G.msg = ''; G.bad = false; render();
+    try {
+      const r = await act('gh_view', { what, number: Number(number) });
+      const j = r && r.json;
+      if (what === 'pr') { G.pr = j && typeof j === 'object' ? j : null; G.checks = null; G.run = null; G.msg = G.pr ? '' : 'gh 回的不是完整 JSON' + (r && r.cut ? '(太長被切了)' : ''); }
+      else if (what === 'checks') G.checks = Array.isArray(j) ? j : [];
+      else { G.run = j && typeof j === 'object' ? j : null; G.runId = number; }
+      if (r && r.done === false) { G.msg = 'gh 結束碼 ' + r.rc; G.bad = true; }
+    } catch (e) {
+      const code = e && (e.code || e.reason);
+      if (code === 'unknown_act_type' || (e && e.status === 401)) G.off = GH_PAGE_GAP;
+      else { G.msg = GH_WHY[code] || errText(e); G.bad = true; }
+    }
+    G.busy = false; render();
+  }
   function seatNowBox(P) {
     if (!P.length) return '';
-    return `<div class="snb" data-seatnowbox><div class="snh">各席現在 <small>在做什麼 · 等誰 · 幾封信沒結</small></div>${P.map(seatNowLine).join('')}</div>`;
+    return `<div class="snb" data-seatnowbox><div class="snh">各席現在 <small>在做什麼 · 等誰 · 幾封信沒結</small></div>${P.map(seatNowLine).join('')}${ghBox()}</div>`;
   }
   function treeTag(s) {
     const L = (S.seats || []).filter((x) => !isArch(x));
@@ -1380,16 +1443,31 @@
     const done = G.filter((n) => stationIdx(n.status) === 6).length;
     return `<div class="dqp" data-dqprog="1"><span class="dqpl">七件 <b>${done}</b> / ${G.length} 驗過</span>${G.map((n) => { const si = stationIdx(n.status); return `<span class="dqpi s${si == null ? 0 : si + 1}" data-card="${esc(n.id)}" title="${esc((n.title || n.id) + ' · ' + (n.status || '?') + (n.owner ? ' · @' + n.owner : ''))}"><i>${esc(n.id.slice(-1))}</i>${esc(n.status || '?')}</span>`; }).join('')}</div>`;
   }
+  // 三行:離期望差多少(七件站別)/ 要你出手幾件(andy: 卡 決定 / 出手 / 知道)/ 現在在做什麼(各席狀態);資料都是頁面已讀的,不另叫 API
+  function top3(L) {
+    const G = S.kids ? (S.kids.get('N-webonly') || []).filter((n) => /^N-webonly-g[1-7]$/.test(n.id)) : [];
+    const by = {}; for (const n of G) { const k = n.status || '未開始'; by[k] = (by[k] || 0) + 1; }
+    const done = G.filter((n) => stationIdx(n.status) === 6).length;
+    const l1 = G.length ? `七件 ${done} / ${G.length} 驗過,差 <b>${G.length - done}</b> 件${Object.keys(by).filter((k) => stationIdx(k) !== 6).map((k) => '(' + esc(k) + ' ' + by[k] + ')').join('')}` : '進度樹還沒讀到';
+    const t = { 決定: 0, 出手: 0, 知道: 0 }; for (const x of L) t[x.tag] = (t[x.tag] || 0) + 1;
+    const act = (t['決定'] || 0) + (t['出手'] || 0);
+    const l2 = `<b>${act}</b> 件(決定 ${t['決定'] || 0} · 出手 ${t['出手'] || 0})· 知道 ${t['知道'] || 0}`;
+    const P = present(), c = { busy: 0, reply: 0, decide: 0, stall: 0, idle: 0 };
+    for (const s0 of P) { const n0 = nowOf(s0.seat_id), st = stallOf(s0.seat_id); if (st && st.none) c.stall++; else if (n0 && c[n0.state] != null) c[n0.state]++; else c.idle++; }
+    const busyItems = P.map((s0) => { const n0 = nowOf(s0.seat_id); return n0 && n0.state === 'busy' && n0.item ? '@' + seatShort(s0) + ' ' + String(n0.item).slice(0, 30) : ''; }).filter(Boolean).slice(0, 3);
+    const l3 = `${c.busy} 席在做${c.reply ? ' · ' + c.reply + ' 等回應' : ''}${c.decide ? ' · <b>' + c.decide + ' 等你決定</b>' : ''}${c.stall ? ' · <b class="bad">' + c.stall + ' 沒有回應</b>' : ''}${c.idle ? ' · ' + c.idle + ' 閒著' : ''}${busyItems.length ? '<small>(' + busyItems.map(esc).join(';') + ')</small>' : ''}`;
+    return `<div class="t3" data-top3><div><span>離期望</span>${l1}</div><div><span>要你出手</span>${l2}</div><div><span>現在在做</span>${l3}</div></div>`;
+  }
   function decideHtml() {
     if (!S.aslots && !S.kids) return '';
     const L = dqItems(), n = L.length, prog = dqProgress();
-    if (!n && !S.dqDone.length && !prog) return '';
+    if (!n && !S.dqDone.length && !prog && !present().length) return '';
     const open = S.dqOpen !== false;
     const shown = S.dqMore ? L : L.slice(0, DQ_SHOW);
     const more = n > DQ_SHOW ? `<button type="button" class="more" data-dqmore="1">${S.dqMore ? '收回 ▴' : '還有 ' + (n - DQ_SHOW) + ' 則 ▾'}</button>` : '';
     const done = S.dqDone.length ? `<button type="button" class="more past" data-dqdone="1">已答 ${S.dqDone.length} 則${S.dqDoneOpen ? ' ▴' : ' ▾'}</button>${S.dqDoneOpen ? `<div class="dqdl">${S.dqDone.map((y) => `<div class="dqd"><span class="et" title="${esc(y.text)}">${esc(y.text)}</span><span class="dqda">→ ${esc(y.answer)}</span><span class="ew">${esc(ago(y.at))}</span></div>`).join('')}</div>` : ''}` : '';
     const body = open ? (n ? shown.map(dqRow).join('') + more : '<div class="empty">現在沒有等你決定的</div>') + done : '';
-    return `<div class="dqbox ${n ? 'has' : ''}" data-dqbox="1"><button type="button" class="dqt" data-dqtoggle="1" aria-expanded="${open ? 'true' : 'false'}"><b>等你決定</b><span class="dqn">${n}</span>${open ? '▴' : '▾'}</button>${prog}${body}</div>`;
+    return `<div class="dqbox ${n ? 'has' : ''}" data-dqbox="1">${top3(L)}<button type="button" class="dqt" data-dqtoggle="1" aria-expanded="${open ? 'true' : 'false'}"><b>等你決定</b><span class="dqn">${n}</span>${open ? '▴' : '▾'}</button>${prog}${body}</div>`;
   }
 
   // ---------- 中:標題與七站 ----------
@@ -1586,7 +1664,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -2488,7 +2566,32 @@
   }
   // 0eed7 REVIEW-integ2-ui L1(N-webonly-c5):aibd 還沒有 card_note / card_set ⇒ 正式頁不畫這一區;預覽才畫(試按)。
   // 按過一次回「沒有這種動作」就收起來(結果那一句留到關視窗);寫成功過一次之後正式頁也畫
-  const cardWriteShown = () => (S.cardWriteOk || inPreview()) && (!S.cardWriteOff || !!(S.card && S.card.w && S.card.w.res));
+  const cardWriteShown = () => (S.cardWriteOk || inPreview()) && (!S.cardWriteOff || !!(S.card && ((S.card.w && S.card.w.res) || (S.card.add && S.card.add.res))));
+  // 開卡(519d0 22:25 第 1 點):act card_add {parent, title, kind, seat?, why?} 照 aib-plan add;aibd 還沒有(card_note / card_set / card_add 都沒有,列缺口)⇒ 同寫卡一樣只在預覽畫、回沒有就收起
+  function cardAddHtml(n) {
+    const A = S.card.add || {};
+    const res = A.res ? `<div class="cwr ${A.res.ok ? 'ok' : 'bad'}">${esc(A.res.text)}${A.res.demo ? '<span class="pvdemo" title="aibd 還沒有 card_add">示意</span>' : ''}</div>` : '';
+    if (!A.open) return `<div class="cwb"><button type="button" class="k" data-cardadd="1" title="在「${esc(n.title || S.card.id)}」底下開一張新卡">在這底下開卡</button></div>${res}`;
+    return `<div class="dsec"><span>開卡</span><span class="na">放在 ${esc(S.card.id)} 底下</span></div><div class="cw" data-cardaddform><input class="inp" data-caf="title" maxlength="120" placeholder="標題(必填)" value="${esc(A.title || '')}"><div class="cwb"><select class="cws" data-caf="kind" aria-label="種類">${[['item', '項目'], ['task', '工作'], ['group', '一組']].map(([v, t]) => `<option value="${v}" ${(A.kind || 'item') === v ? 'selected' : ''}>${t}</option>`).join('')}</select><input class="inp" data-caf="seat" maxlength="12" placeholder="負責席(可空)" value="${esc(A.seat || '')}"><input class="inp" data-caf="why" maxlength="400" placeholder="說明(可空)" value="${esc(A.why || '')}"><button type="button" class="k g" data-cardaddgo="1" ${A.busy ? 'disabled' : ''}>開</button><button type="button" class="k" data-cardaddno="1">不要</button></div>${res}</div>`;
+  }
+  async function cardAdd() {
+    const c = S.card; if (!c || !c.id) return; const A = (c.add = c.add || {});
+    for (const e of document.querySelectorAll('[data-caf]')) A[e.dataset.caf] = e.value.trim();
+    if (!A.title) { A.res = { ok: false, text: '先寫標題' }; return renderCard(); }
+    A.busy = true; renderCard();
+    try {
+      const r = await act('card_add', Object.assign({ parent: c.id, title: A.title, kind: A.kind || 'item', idempotency_key: idem() }, A.seat ? { seat: A.seat } : {}, A.why ? { why: A.why } : {}));
+      c.add = { open: false, res: { ok: true, text: '開了' + (r && r.id ? ' ' + r.id : '') } }; S.cardWriteOk = true; openCard(c.id, null, true);
+    } catch (er) {
+      const code = er && er.code;
+      if (er && (er.status === 404 || code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { A.res = { ok: false, text: 'aibd 還沒有開卡的動作,這張沒有開;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      else if (code === 'entry_refused') A.res = { ok: false, text: (er.body && er.body.why) || er.message };
+      else if (code === 'built_in_page_only') A.res = { ok: false, text: '只有內建頁能開卡' };
+      else if (code === 'tree_not_in_aibd') A.res = { ok: false, text: '進度樹還在檔案裡,頁面寫不進去(開關由 519d0 / f1fae 定)' };
+      else A.res = { ok: false, text: errText(er) };
+    }
+    A.busy = false; renderCard();
+  }
   async function cardWrite() {
     const c = S.card; if (!c || !c.id) return; const W = (c.w = c.w || {});
     const text = String(W.text || '').trim();
@@ -2525,6 +2628,9 @@
         const rf = e.target.closest('[data-crf]');
         if (rf && S.card) { const c = S.card; c.spinUntil = Date.now() + 700; setTimeout(() => { if (S.card === c) renderCard(); }, 720); return openCard(S.card.id, S.card.ev, true); }
         if (e.target.closest('[data-cwgo]') && S.card) { e.preventDefault(); return cardWrite(); }
+        if (e.target.closest('[data-cardadd]') && S.card) { e.preventDefault(); S.card.add = { open: true }; return renderCard(); }
+        if (e.target.closest('[data-cardaddno]') && S.card) { e.preventDefault(); S.card.add = null; return renderCard(); }
+        if (e.target.closest('[data-cardaddgo]') && S.card) { e.preventDefault(); return cardAdd(); }
         const co = e.target.closest('[data-chartown]'); if (co && S.card) { e.preventDefault(); S.card.chartOwn = !S.card.chartOwn; S.card.drawn = false; return renderCard(); }
         const kd = e.target.closest('[data-kidcost]'); if (kd && S.card) { e.preventDefault(); S.card.kidOpen = !S.card.kidOpen; if (S.card.kidOpen) loadKidCost(); return renderCard(); }
         const ow = e.target.closest('[data-owncost]'); if (ow && S.card) { e.preventDefault(); S.card.ownShut = !S.card.ownShut; return renderCard(); }
@@ -2591,7 +2697,7 @@
       <div class="dsec">基本資料</div><div class="fg">${fldH('負責席', seatLogos([n.owner].concat(n.with || [])))}${fldH('審查人', seatLogos(n.reviewer))}${fld('最後更新', n.updated)}${fld('預計', n.eta)}${fld('誰同意的', ap ? [ap.by, ap.at].filter(Boolean).join(' ') : '')}${fld('同意的依據', ap ? ap.pointer || ap.pt || '' : '')}${fld('要先等', Array.isArray(wait) ? wait.join('、') : wait)}${fld('兩平台', pfx)}</div>
       <div class="dsec">為什麼做</div>${n.why ? `<div class="why">${esc(txt(n.why))}</div>` : '<div class="none">沒有寫</div>'}
       <div class="dsec"><span>紀錄(新的在上)</span><span>${n.records_total > recs.length ? recs.length + ' / ' + n.records_total : recs.length} 筆</span></div>${Object.keys(cnt).some((k) => k) ? `<div class="tlt">${tabs}</div>` : ''}<div class="tlx"><div class="tlw">${tl}</div>${recMore}</div>
-      ${S.card.only || !cardWriteShown() ? '' : cardWriteHtml(n)}
+      ${S.card.only || !cardWriteShown() ? '' : cardWriteHtml(n) + cardAddHtml(n)}
       <div class="dsec"><span>底下的項目</span><span>${kids.length ? (n.children_total > kids.length ? kids.length + ' / ' + n.children_total : kids.length) + ' 項' : ''}</span></div>${chh}
       <div class="dsec">用了多久、花了多少</div>${S.card.loaded ? costHtml(S.card.use, kids) : '<div class="none">讀取中…</div>'}
       </div><div class="df"><span>資料時間:${esc(S.card.at ? TZL + ' ' + hhmm(S.card.at) : '—')}${S.tree && S.tree.has(n.id) ? ' · 跟流程表同一份資料' : ''} <button type="button" class="rf ${S.card.spinUntil && Date.now() < S.card.spinUntil ? 'spin' : ''}" data-crf="1" title="重讀最新的資料">↻</button></span><span>按 Esc 或點外面關閉</span></div></div>`;
@@ -3498,6 +3604,9 @@
   async function onMainClick(e) {
     const x = e.target;
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
+    const hob = x.closest('[data-handoff]'); if (hob && !S.sending) return hoAsk(hob.dataset.handoff);
+    const gg = x.closest('[data-ghgo]'); if (gg) { const G = (S.gh = S.gh || {}), ni = document.querySelector('[data-ghnum]'); if (ni) G.num = ni.value.trim(); return ghAsk(gg.dataset.ghgo, G.num); }
+    const gr = x.closest('[data-ghrun]'); if (gr) return ghAsk('run', gr.dataset.ghrun);
     const pu = x.closest('[data-push]'); if (pu) { pu.disabled = true; return pushGo(pu.dataset.push); }
     const pr = x.closest('[data-pr]'); if (pr && S.sbOk) { S.prAsk = { seat: pr.dataset.pr, title: 'web: ' + S.sbOk.branch }; S.pushMsg = null; render(); return; }
     if (x.closest('[data-prno]')) { S.prAsk = null; render(); return; }
