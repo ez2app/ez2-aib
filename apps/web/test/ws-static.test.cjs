@@ -46,6 +46,8 @@ for (const t of acts) {
   // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
   if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
   if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
+  // 1a93b feat/aibd-page-acts-1a93b-1120(62e1bdbeb8)才有 seat_clear;頁面看 version.acts 沒有就灰掉寫「要新版 aibd」。合進來後拿掉這行
+  if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 

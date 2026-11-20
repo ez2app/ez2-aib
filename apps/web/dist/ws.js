@@ -1072,7 +1072,8 @@
   const HO_ASK = '請照 aib handoff 寫交接單(交接、記憶整理都做完),寫好後叫 seat_handoff 工具報交接單的絕對路徑(沒有這個工具就回一句「交接單寫好了:<交接單路徑>」)。寫完先不要繼續新工作。';
   function hoState(id) {
     const H = S.ho && S.ho[id];
-    const ah = (S.handoffs || []).find((x) => x && x.seat_id === id && typeof x.path === 'string' && (!H || String(x.at || '') >= H.at));
+    const used = S.hoUsed && S.hoUsed[id];
+    const ah = (S.handoffs || []).find((x) => x && x.seat_id === id && typeof x.path === 'string' && x.at !== used && (!H || String(x.at || '') >= H.at));
     if (ah) return { at: H ? H.at : ah.at, done: true, path: ah.path, by: 'aibd', wrote: ah.at };
     if (!H) return null;
     const se = lastSession(id), o = se && S.out[se.id || se.session_id];
@@ -1080,11 +1081,57 @@
     if (o) for (const it of o.items) { if (String(it.occurred_at || '') < H.at) continue; const p = it.payload || {}; if (typeof p.line !== 'string') continue; const m = /交接單寫好了[::]\s*([^\s"\\]+)/.exec(p.line); if (m) path = m[1]; }
     return { at: H.at, done: !!path, path };
   }
+  // 1a93b 62e1bdbeb8(DESIGN-seat-clear r1):aibd 有 seat_clear ⇒ 交接單是 aibd 記的、30 分內才亮;按了先確認(席碼與路徑並排),再送
+  const HO_FRESH_MS = 30 * 60 * 1000;
+  function hoClearBtn(s, st) {
+    if (hasAct('seat_clear') !== true) return '<button type="button" class="k" disabled title="這一版 aibd 還沒有清空重開的動作">清空(要新版 aibd)</button>';
+    const why = !st.done ? '還沒有交接單' : st.by !== 'aibd' ? '交接單要由席用 seat_handoff 報給 aibd,清空才用得到' : Date.now() - new Date(st.wrote).getTime() > HO_FRESH_MS ? '交接單寫好超過 30 分鐘,請它再寫一次' : '';
+    if (why) return `<button type="button" class="k" disabled title="${esc(why)}">清空並開新的一段</button><small class="dim">${esc(why)}</small>`;
+    return `<button type="button" class="k" data-hoclear="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="停掉這一段,用新的對話開同一席,第一句叫它讀交接單;舊對話留著">清空並開新的一段</button>`;
+  }
   function hoBox(s) {
     const st = hoState(s.seat_id);
-    const clear = '<button type="button" class="k" disabled title="清空要後端:aibd 還沒有清空重開的動作(缺口已列給 519d0)">清空(要後端)</button>';
-    if (!st) return '';
-    return `<div class="trm" data-hostate>${st.done ? '交接單寫好了' + (st.by === 'aibd' ? '(' + esc(hhmm(st.wrote)) + ')' : '') + ':<code>' + esc(st.path) + '</code>' : '已請它寫交接單(' + esc(hhmm(st.at)) + ');還沒看到「交接單寫好了」'} ${clear}</div>`;
+    const M = S.hoMsg && S.hoMsg.seat === s.seat_id ? `<div class="trm${S.hoMsg.bad ? ' bad' : ''}" data-homsg>${esc(S.hoMsg.text)}</div>` : '';
+    if (!st) return M; // 清空後交接單已用掉,回應字照樣留著
+    const C = S.hoConfirm && S.hoConfirm.seat === s.seat_id && st.by === 'aibd' && st.wrote === S.hoConfirm.at ? S.hoConfirm : null;
+    const ask = C ? `<div class="rcpq" data-hoconfirm><span>清空 <b>@${esc(seatShort(s))}</b>(${esc(s.seat_id)})· 交接單 <code>${esc(st.path)}</code> · 寫於 ${esc(hhmm(st.wrote))}。舊對話留著,按「重開」不會回去;新的一段第一句會叫它讀這份交接單。</span><button type="button" class="k" data-hoclearyes="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''}>確定清空</button><button type="button" class="k" data-hoclearno="${esc(s.seat_id)}">取消</button></div>` : '';
+    return `<div class="trm" data-hostate>${st.done ? '交接單寫好了' + (st.by === 'aibd' ? '(' + esc(hhmm(st.wrote)) + ')' : '') + ':<code>' + esc(st.path) + '</code>' : '已請它寫交接單(' + esc(hhmm(st.at)) + ');還沒看到「交接單寫好了」'} ${C ? '' : hoClearBtn(s, st)}</div>${ask}${M}`;
+  }
+  const HO_ERR = {
+    no_handoff: '這一席沒有交接單(可能已經用掉了),請它再寫一次',
+    handoff_changed: '席剛改了交接單,頁面看的是舊的那份;重新看過再按',
+    handoff_path_outside: '交接單不在這一席自己的地方(pending/HANDOFF-<席碼>-*.md 或它的工作資料夾),不能用',
+    handoff_stale: '交接單之後它又做了事,或寫好超過 30 分鐘;請它再寫一次',
+    seat_busy: '這一席正在做事,等這一回合結束再清空',
+    stop_unconfirmed: '這一席停不確定,先看停止卡',
+    seat_running: '這一席正在重開或清空',
+    dgrs_needs_switch: '這台沒開放對 dgrs 席打字,不能清空',
+    seat_clear_built_in_page_only: '只有內建頁能清空',
+    carried_pair_read_and_safe_only: '換版前延續來的配對不能清空,請重新配對',
+    idempotency_conflict: '上一次清空還在進行',
+  };
+  async function hoClear(id) {
+    const st = hoState(id);
+    if (!st || st.by !== 'aibd') return;
+    const K = (S.hoKey = S.hoKey || {});
+    if (!K[id] || K[id].at !== st.wrote) K[id] = { at: st.wrote, key: idem() };
+    S.sending = true; S.hoConfirm = null; render();
+    try {
+      const r = await act('seat_clear', { seat_id: id, handoff_at: st.wrote, idem_key: K[id].key });
+      delete K[id];
+      // 這一份交接單用掉了(第一句沒送進去時 aibd 會放回板上、時間不變 ⇒ 不藏)
+      if (!(r && r.first_line === false)) (S.hoUsed = S.hoUsed || {})[id] = st.wrote;
+      const bits = ['清空了,新的一段開好了'];
+      if (r && r.first_line === false) bits.push('但第一句沒送進去:交接單還沒用掉,可以再按「叫他交接」旁的請它讀交接單,或直接對它打字');
+      if (r && r.kept === false) bits.push('這次清空沒記住新對話,之後「重開」會回到舊對話');
+      S.hoMsg = { seat: id, text: bits.join(';'), bad: !!(r && (r.first_line === false || r.kept === false)) };
+      if (S.ho) delete S.ho[id];
+    } catch (e) {
+      const c = e && (e.code || (e.body && e.body.code));
+      if (c) delete K[id]; // aibd 回答了 ⇒ 鑰匙不再用;連不上就留著,重按是同一次
+      S.hoMsg = { seat: id, text: HO_ERR[c] || (c === 'restart_refused' ? '停了但沒開起來:' + String((e && e.message) || '') + ';按「重開」會回到舊對話' : errText(e)), bad: true };
+    }
+    S.sending = false; render();
   }
   async function hoAsk(id) {
     S.sending = true; render();
@@ -3651,6 +3698,9 @@
     const x = e.target;
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
     const hob = x.closest('[data-handoff]'); if (hob && !S.sending) return hoAsk(hob.dataset.handoff);
+    const hcl = x.closest('[data-hoclear]'); if (hcl && !S.sending) { const st = hoState(hcl.dataset.hoclear); S.hoConfirm = st && st.wrote ? { seat: hcl.dataset.hoclear, at: st.wrote } : null; S.hoMsg = null; return render(); }
+    const hcy = x.closest('[data-hoclearyes]'); if (hcy && !S.sending) return hoClear(hcy.dataset.hoclearyes);
+    const hcn = x.closest('[data-hoclearno]'); if (hcn) { S.hoConfirm = null; return render(); }
     const gg = x.closest('[data-ghgo]'); if (gg) { const G = (S.gh = S.gh || {}), ni = document.querySelector('[data-ghnum]'); if (ni) G.num = ni.value.trim(); return ghAsk(gg.dataset.ghgo, G.num); }
     const gr = x.closest('[data-ghrun]'); if (gr) return ghAsk('run', gr.dataset.ghrun);
     const pu = x.closest('[data-push]'); if (pu) { pu.disabled = true; return pushGo(pu.dataset.push); }
