@@ -237,7 +237,8 @@ impl Presence for KeyPresence {
         limit: std::time::Duration,
     ) -> Result<(), &'static str> {
         let sig = self.dev.sign_until(&self.key.blob, reason, msg, limit)?;
-        if !self.dev.verify(&self.key.public, msg, &sig) {
+        let checked = self.dev.verify(&self.key.public, msg, &sig);
+        if !checked {
             return Err("pair_touch_bad_signature");
         }
         Ok(())
