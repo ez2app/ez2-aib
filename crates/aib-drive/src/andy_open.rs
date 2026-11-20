@@ -211,8 +211,71 @@ pub fn event(
     events::build(&c, KIND, outcome, at_ms, extra)
 }
 
-/// The rows of an old list file: `(line number, row)`. A row without a good `id` or a `kind`, a
-/// repeated `id`, or a line that is not JSON is an error naming the line.
+/// A non-empty, trimmed string field of an old row.
+fn field_of(o: &Map<String, Value>, k: &str) -> Option<String> {
+    o.get(k)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
+/// The words the old file's `status` (and, in some rows, `state`) uses for where an item is.
+const STATUS_WORDS: [&str; 3] = ["open", "half", "done"];
+
+/// The old file's second row shape (519d0 11-20, rows written after 11-17: `q` / `ts` / `status`
+/// / `answer` / `answered_at` / `file`, often no `kind`) put into the first one, so import and
+/// check read the same row: `q` → `text`, the date of `ts` (or `at`) → `since`, no `kind` ⇒ 「決定」, `answer` ⇒
+/// `state` 「已答:<answer>」, `file` → `src` when there is none; `status` or `state` `done` ⇒
+/// `done: true` (519d0: an answer was added on its own line, so done is read from these, not
+/// from the answer). A `state` that is only one of [`STATUS_WORDS`] is a status, not words for
+/// the person: it is replaced (「部分已答」 for `half`). A field the row already has is kept.
+pub fn normalize_row(mut v: Value) -> Value {
+    let Some(o) = v.as_object_mut() else {
+        return v;
+    };
+    let status = field_of(o, "status");
+    let state = field_of(o, "state");
+    let state_is_word = state.as_deref().is_some_and(|w| STATUS_WORDS.contains(&w));
+    let done = o.get("done").and_then(Value::as_bool) == Some(true)
+        || status.as_deref() == Some("done")
+        || state.as_deref() == Some("done");
+    if field_of(o, "kind").is_none() {
+        o.insert("kind".into(), json!("決定"));
+    }
+    if field_of(o, "text").is_none() {
+        if let Some(q) = field_of(o, "q") {
+            o.insert("text".into(), json!(q));
+        }
+    }
+    if field_of(o, "since").is_none() {
+        if let Some(ts) = field_of(o, "ts").or_else(|| field_of(o, "at")) {
+            let day = ts.split_whitespace().next().unwrap_or("").to_owned();
+            o.insert("since".into(), json!(day));
+        }
+    }
+    if state.is_none() || state_is_word {
+        let words = match (field_of(o, "answer"), state.as_deref()) {
+            (Some(a), _) => format!("已答:{a}"),
+            (None, Some("half")) => "部分已答".to_owned(),
+            _ => String::new(),
+        };
+        o.insert("state".into(), json!(words));
+    }
+    if field_of(o, "src").is_none() {
+        if let Some(f) = field_of(o, "file") {
+            o.insert("src".into(), json!(f));
+        }
+    }
+    if done {
+        o.insert("done".into(), json!(true));
+    }
+    v
+}
+
+/// The rows of an old list file: `(line number, row)`, each through [`normalize_row`]. A row
+/// without a good `id` or any text (`text` / `q`), a repeated `id`, or a line that is not JSON is
+/// an error naming the line.
 pub fn old_rows(text: &str) -> Result<Vec<(usize, Value)>, String> {
     let mut out: Vec<(usize, Value)> = Vec::new();
     for (i, l) in text.lines().enumerate() {
@@ -221,9 +284,10 @@ pub fn old_rows(text: &str) -> Result<Vec<(usize, Value)>, String> {
         }
         let v: Value =
             serde_json::from_str(l).map_err(|e| format!("第 {} 行不是 JSON:{e}", i + 1))?;
+        let v = normalize_row(v);
         let id = text_of(&v, "id");
-        if !item_ok(&id) || text_of(&v, "kind").is_empty() {
-            return Err(format!("第 {} 行缺 id 或 kind", i + 1));
+        if !item_ok(&id) || text_of(&v, "text").is_empty() {
+            return Err(format!("第 {} 行缺 id 或題目(text / q)", i + 1));
         }
         if out.iter().any(|(_, o)| text_of(o, "id") == id) {
             return Err(format!("第 {} 行 id {id} 重複", i + 1));
@@ -624,6 +688,77 @@ mod tests {
             .as_str()
             .unwrap()[5..10]
             .to_owned()
+    }
+
+    /// Rows in the second shape, cut from the real state/drive/andy-open-519d0.jsonl (a52 a74 a76;
+    /// texts shortened): `q` / `ts` or `at` / `status` / `answer` / `file`, no `kind`.
+    const NEW: &str = r#"{"id": "a52", "at": "11-19 11:33", "state": "half", "card": "N-webdev-8h", "q": "今晚示範:回到已配對的母體分頁", "by": "seat:519d0", "note": "還沒開席"}
+{"id": "a74", "ts": "11-20 10:35", "q": "足跡倉純文件的 PR 永遠合不了。選 A 可以嗎", "card": "FP-c1", "status": "done", "answer": "加一支真的驗只動 md 的 test 流程", "answered_at": "11-20 10:57", "src": "Andy 11-20 10:5x 親打"}
+{"id":"a76","ts":"11-20 12:33","q":"第 4 件用原帳號代跑收據:照 5d33a 底線九條做可不可以","card":"N-webonly-g4","file":"BASELINE-receipt-orig-account-5d33a-1120.md","status":"open"}
+"#;
+
+    #[test]
+    fn the_second_row_shape_reads_as_the_first() {
+        let rows = old_rows(NEW).unwrap();
+        assert_eq!(rows.len(), 3, "reason: second_shape_refused");
+        let (a52, a74, a76) = (&rows[0].1, &rows[1].1, &rows[2].1);
+        assert_eq!(a74["kind"], "決定", "reason: no_kind_not_decide");
+        assert_eq!(
+            a74["text"], "足跡倉純文件的 PR 永遠合不了。選 A 可以嗎",
+            "reason: q_not_text"
+        );
+        assert_eq!(a74["since"], "11-20", "reason: ts_not_since");
+        assert_eq!(
+            a74["state"], "已答:加一支真的驗只動 md 的 test 流程",
+            "reason: answer_not_state"
+        );
+        assert_eq!(
+            a74["src"], "Andy 11-20 10:5x 親打",
+            "reason: own_src_replaced"
+        );
+        assert_eq!(a74["done"], true, "reason: status_done_not_done");
+        assert_eq!(
+            a76["src"], "BASELINE-receipt-orig-account-5d33a-1120.md",
+            "reason: file_not_src"
+        );
+        assert_eq!(a76["state"], "", "reason: status_word_left_as_state");
+        assert!(a76.get("done").is_none(), "reason: open_row_closed");
+        assert_eq!(a52["since"], "11-19", "reason: at_not_since");
+        assert_eq!(a52["state"], "部分已答", "reason: half_left_as_word");
+        assert!(a52.get("done").is_none(), "reason: half_closed");
+        // the first shape is untouched (a1 done with its own state, a25 open)
+        let old = old_rows(OLD).unwrap();
+        assert_eq!(
+            old[0].1["state"], "已執行:定案並派 a9136;不用你做",
+            "reason: first_shape_changed"
+        );
+        assert_eq!(old[1].1["since"], "11-17");
+        assert!(old[1].1.get("done").is_none());
+        // `state: "done"` alone also closes the item (519d0: status / state = done)
+        let r = normalize_row(json!({"id": "a9", "q": "x", "state": "done"}));
+        assert_eq!(r["done"], true, "reason: state_done_not_done");
+        assert_eq!(r["state"], "");
+    }
+
+    #[test]
+    fn the_second_row_shape_imports_and_checks_clean() {
+        let root = tmp(line!());
+        let old = root.join("old.jsonl");
+        std::fs::write(&old, format!("{OLD}{NEW}")).unwrap();
+        let f = old.to_string_lossy().into_owned();
+        let (rc, out) = run(&s(&["import", "--file", &f]), &root, &ctx(), NOW);
+        assert_eq!(rc, 0, "reason: second_shape_import_failed {out}");
+        let (rc, out) = run(&s(&["check", "--file", &f]), &root, &ctx(), NOW);
+        assert_eq!(rc, 0, "reason: second_shape_check_differs {out}");
+        let (evs, _) = read_events(&root).unwrap();
+        let rep = replay(&evs);
+        let open: Vec<&str> = rep
+            .items
+            .iter()
+            .filter(|i| !i.done)
+            .map(|i| i.item.as_str())
+            .collect();
+        assert_eq!(open, ["a25", "a52", "a76"], "reason: open_items_wrong");
     }
 
     #[test]
