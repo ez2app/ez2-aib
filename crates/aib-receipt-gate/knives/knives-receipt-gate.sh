@@ -20,10 +20,10 @@ rg '    if line.len() > MAX_LINE {' '    if line.len() > MAX_LINE * 100 { // kni
 rg '            if head9_of(id) != head.get(..9) {' '            if id.is_empty() { // knife' \
    a_run_names_its_head_and_its_sizes
 # RG6 a bundle over the limit is taken
-rg '    s.parse::<u64>().ok().filter(|n| *n <= max)' '    s.parse::<u64>().ok() // knife' \
+rg '    s.parse::<u64>().ok().filter(|n| *n <= max)' '    s.parse::<u64>().ok().filter(|n| *n <= max.max(u64::MAX)) // knife' \
    a_run_names_its_head_and_its_sizes
 # RG7 a run id of another shape is taken
-rg '    if web != Some("web") || !seat_ok || !again_ok || end.is_some() {' '    if end.is_some() { // knife' \
+rg '    if web != Some("web") || !seat_ok || !again_ok || end.is_some() {' '    if (web != Some("web") && !seat_ok && !again_ok) || end.is_some() { // knife' \
    only_four_verbs_of_plain_words_are_read
 # RG8 knives with the whole workspace are taken
 rg '            if *krate == "ws" && knives_len > 0 {' '            if *krate == "ws" && knives_len > MAX_KNIVES { // knife' \
@@ -35,7 +35,7 @@ rg '                .filter(|n| *n > 0)' '                .filter(|_| true) // k
 rv() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/recv.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-receipt-gate --locked --lib "recv::tests::$3"; }
 # RV1 a file whose digest differs is kept
-rv '        if hex != sha256 {' '        if hex.is_empty() { // knife' \
+rv '        if hex != sha256 {' '        if hex != sha256 && hex.is_empty() { // knife' \
    a_file_is_kept_only_whole_and_with_its_digest
 # RV2 a refused file is left on disk
 rv '        let _ = std::fs::remove_file(out);' '        let _ = out; // knife' \
