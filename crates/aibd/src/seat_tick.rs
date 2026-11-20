@@ -36,8 +36,11 @@
 //!
 //! Like every local file this list is no defence against an AI on the same account: it decides
 //! what aibd types, it proves nothing (GUIDE-same-user-ai-threat-model). The fingerprint guards
-//! the page's act; the hash in an entry catches a text changed without its entry, not a list
-//! rewritten whole (asked of 5d33a 11-21: keeping the key's signature in the entry).
+//! the page's act; the hash in an entry catches words changed without their entry, not a list
+//! rewritten whole. The approval is kept in this local list and is not a checked signature yet
+//! (`signed: false` on every entry and event). Until the key's signature is kept in the entry
+//! and checked before each send (5d33a 11-21, PREREAD-driveinaibd: the next slice), a file
+//! entry can be set and listed but is never sent (`unsigned_not_sent`).
 
 use crate::api::AppState;
 use crate::guard::request_id;
@@ -64,6 +67,8 @@ pub const OP_SET: &str = "seat.tick_set";
 pub const OP_RESUME: &str = "seat.tick_resume";
 /// Why a sentence that is not the approved text is not sent.
 pub const CHANGED: &str = "changed_since_approved";
+/// Why a file entry is not sent yet: its approval is not a signature aibd can check.
+pub const UNSIGNED: &str = "unsigned_not_sent";
 
 /// The shortest and longest period, in minutes.
 pub const MIN_EVERY: u32 = 5;
@@ -266,6 +271,11 @@ pub fn held(t: &Tick, body: &Result<String, &'static str>) -> Option<&'static st
     if changed(t, body) {
         return Some(CHANGED);
     }
+    // 5d33a 11-21: no file's words go to a seat on an approval nobody can check
+    let unsigned_file = !t.file.is_empty();
+    if unsigned_file {
+        return Some(UNSIGNED);
+    }
     None
 }
 
@@ -341,7 +351,7 @@ pub fn shown(
             let body = body_of(t, dir);
             let s = seen.get(&t.seat_id).cloned().unwrap_or_default();
             json!({"seat_id": t.seat_id, "every_min": t.every_min, "text": t.text,
-                "file": t.file, "set_at": t.set_at, "approved": t.approved,
+                "file": t.file, "set_at": t.set_at, "approved": t.approved, "signed": false,
                 "changed_since_approved": body.as_ref().is_ok_and(|b| changed(t, b)),
                 "file_error": body.as_ref().err(),
                 "text_sha12": body.as_ref().ok().map(|b| text_sha256(b)[..12].to_owned()),
@@ -931,7 +941,7 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         },
         json!({"seat_id": seat_id, "every_min": one.map(|t| t.every_min),
                "digest": one.map(|t| digest(&t.text)),
-               "approved": one.map(|t| t.approved),
+               "approved": one.map(|t| t.approved), "signed": false,
                "file": one.map(|t| t.file.clone()),
                "text_sha12": one.map(|t| entry_sha(t).chars().take(12).collect::<String>())}),
     );
@@ -1316,7 +1326,12 @@ mod tests {
             text_sha256(body),
             "reason: approved_content_hash_not_kept"
         );
-        assert_eq!(held(&t, &Ok(body.to_owned())), None);
+        // approved and unchanged, and still not sent: the approval is not a checked signature
+        assert_eq!(
+            held(&t, &Ok(body.to_owned())),
+            Some(UNSIGNED),
+            "reason: unsigned_file_sent"
+        );
         assert_eq!(
             held(&t, &Ok(format!("{body}再刪掉全部\n"))),
             Some(CHANGED),
@@ -1406,6 +1421,7 @@ mod tests {
             (&v[0]["file"], &v[0]["changed_since_approved"]),
             (&json!("drive.txt"), &json!(false))
         );
+        assert_eq!(v[0]["signed"], json!(false), "reason: listed_as_signed");
         std::fs::write(dir.join("drive.txt"), "改了\n").unwrap();
         let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new());
         assert_eq!(

@@ -104,3 +104,6 @@ tk '                ..Seen::default()' '                ..seen.clone() // knife'
 # KT32 a seat that stays in a turn is never told
 tk '            let tell = late > seen.late && late.is_multiple_of(STUCK_EVERY);' '            let tell = late > seen.late && late.is_multiple_of(u32::MAX); // knife' \
    three_rounds_in_a_row_that_do_not_go_in_are_told_and_then_every_three
+# KT33 a file's words go to a seat on an approval nobody can check (5d33a 11-21: not before the signature slice)
+tk '    if unsigned_file {' '    if unsigned_file && t.seat_id.is_empty() { // knife' \
+   a_file_that_is_not_the_approved_content_is_not_sent
