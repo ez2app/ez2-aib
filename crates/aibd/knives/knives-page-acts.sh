@@ -33,7 +33,7 @@ ho '        g.handoffs.retain(|k, _| k != seat_id);' \
    a_handoff_is_shown_to_the_built_in_page_and_hashed_for_a_user_page_and_forgotten_on_stop
 # HO2 a relative path is taken
 ho "    let absolute = p.starts_with('/') || p.starts_with(\"\\\\\\\\\") || drive;" \
-   '    let absolute = true; // knife' \
+   '    let absolute = drive || true; // knife' \
    a_handoff_is_one_absolute_md_path_and_nothing_else
 # HO3 a path that is not a .md is taken
 ho '    if !absolute || !p.to_ascii_lowercase().ends_with(".md") {' \
@@ -60,7 +60,7 @@ ni '        request: crate::idem::request_digest(&rest),' \
    an_idempotency_key_is_bound_to_the_act_the_page_and_the_body_without_it
 # NI3 two pages share one key's answer
 ni '        scope: format!("act {kind} {by}"),' \
-   '        scope: format!("act {kind}"), // knife' \
+   '        scope: format!("act {kind}{}", &by[..0]), // knife' \
    an_idempotency_key_is_bound_to_the_act_the_page_and_the_body_without_it
 # NI4 a refused write keeps the key: the retry after the fix is refused as a conflict
 nt '                Err(_) => st.store.idem_release(k).is_ok(),' \

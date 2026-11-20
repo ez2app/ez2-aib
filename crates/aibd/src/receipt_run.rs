@@ -17,7 +17,8 @@
 //! - A run is one entry of `<data>/receipt_runs.json` (the newest [`MAX_RUNS`]; written like
 //!   the other lists there, this user only, never through a link): `asking` for the moment the
 //!   runner is asked (no call to a runner is made with the file held), then `waiting_owner` → `running` → `done` (green) | `red`; `withdrawn` from either of the
-//!   first two; `lost` when the runner says the machine went away. At most [`MAX_IN_FLIGHT`] of a seat are under way.
+//!   first two; `passed_in_sandbox` when every key is green and it ran in the gate's sandbox
+//!   with exactly the runner's fixed skips (its own result, never green); `lost` when the runner says the machine went away. At most [`MAX_IN_FLIGHT`] of a seat are under way.
 //! - Run ids are `web-<last 5 of the seat id>-<first 9 of the head>`, and `-2` … `-99` when
 //!   that head is asked again (design r3; the gate checks the same shape).
 //! - A seat's own token asks the same four for itself only ([`seat_act`]): its own head, its
@@ -72,6 +73,9 @@ pub const WAITING_OWNER: &str = "waiting_owner";
 pub const RUNNING: &str = "running";
 pub const DONE: &str = "done";
 pub const RED: &str = "red";
+/// Every key green, run in the receipt gate's sandbox with exactly its fixed skips: shown as its
+/// own result, never as green (receipt_check::Verdict::sandbox).
+pub const PASSED_IN_SANDBOX: &str = "passed_in_sandbox";
 pub const WITHDRAWN: &str = "withdrawn";
 /// The machine went away while it ran (the runner says so: [`runner_lost`]).
 pub const LOST: &str = "lost";
@@ -135,6 +139,9 @@ pub struct Ask {
     pub head: String,
     pub narrow: bool,
     pub tests: Vec<String>,
+    /// Asked with the seat's own token (b4297 11-21: such a run waits for the owner on a page
+    /// card before any fingerprint window comes up).
+    pub by_seat: bool,
 }
 
 /// What a runner did with a request.
@@ -155,6 +162,11 @@ pub trait ReceiptRunner: Send + Sync {
     fn read(&self, run_id: &str) -> Option<Vec<u8>>;
     /// The run is withdrawn: take it off the queue or stop it.
     fn cancel(&self, run_id: &str);
+    /// The tests its sandbox always skips, full names and the sha256 the gate prints for the
+    /// list (`None`: it runs nothing in a sandbox, a skip line in a receipt is red).
+    fn skips(&self) -> Option<(Vec<String>, String)> {
+        None
+    }
 }
 
 /// The runner aibd has until one is set: nothing is run.
@@ -311,6 +323,7 @@ pub fn ask_of(body: &Value, runs: &[Run]) -> Result<Ask, &'static str> {
         head: head.to_owned(),
         narrow,
         tests,
+        by_seat: false,
     })
 }
 
@@ -380,13 +393,18 @@ pub fn nickname(host: &str) -> String {
 
 /// A run under way and its finished `.out`: read by aibd itself, `done` only when green. A
 /// narrow receipt is never green ([`crate::receipt_check`]): it ends `red` with its reasons.
-pub fn finished(run: &mut Run, out: &[u8], at: &str) {
+pub fn finished(run: &mut Run, out: &[u8], at: &str, skips: Option<&crate::receipt_check::Skips>) {
     let under_way = in_flight(run);
     if !under_way {
         return;
     }
-    let v = crate::receipt_check::check(out, &run.head, run.knives_sent);
-    run.state = if v.green { DONE } else { RED }.to_owned();
+    let v = crate::receipt_check::check_with(out, &run.head, run.knives_sent, skips);
+    let ended = match (v.green, v.sandbox) {
+        (true, _) => DONE,
+        (false, true) => PASSED_IN_SANDBOX,
+        (false, false) => RED,
+    };
+    run.state = ended.to_owned();
     run.verdict = Some(v);
     run.ended_at = Some(at.to_owned());
 }
@@ -416,6 +434,7 @@ pub fn view(r: &Run) -> Value {
         "asked_at": r.asked_at,
         "ended_at": r.ended_at,
         "green": v.is_some_and(|v| v.green),
+        "sandbox": v.is_some_and(|v| v.sandbox),
         "narrow": r.scope == "narrow" || v.is_some_and(|v| v.narrow),
         "reasons": reasons_of(r),
         "tests_total": v.and_then(|v| v.tests),
@@ -601,7 +620,10 @@ fn request(body: &Value, by_seat: bool) -> Result<Run, &'static str> {
     let ask = {
         let _one = lock();
         let runs = load();
-        let ask = ask_of(body, &runs)?;
+        let ask = Ask {
+            by_seat,
+            ..ask_of(body, &runs)?
+        };
         if by_seat {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -661,9 +683,14 @@ fn read(run_id: &str) -> Result<(Run, bool), &'static str> {
     let Some(out) = runner().read(run_id).filter(|o| o.len() <= MAX_OUT) else {
         return Ok((run, false));
     };
+    // the runner's fixed list of tests its sandbox skips, if it has one
+    let fixed = runner().skips();
     match change(run_id, |r, at| {
         let was = in_flight(r);
-        finished(r, &out, at);
+        let list = fixed
+            .as_ref()
+            .map(|(names, sha)| crate::receipt_check::Skips { names, sha256: sha });
+        finished(r, &out, at, list.as_ref());
         was
     }) {
         Ok(Some(run)) => Ok((run, true)),
@@ -1134,18 +1161,48 @@ mod tests {
     #[test]
     fn a_finished_run_is_done_only_when_aibd_reads_it_green() {
         let mut r = run(RUNNING);
-        finished(&mut r, b"KNIVES-OK\n", "t1");
+        finished(&mut r, b"KNIVES-OK\n", "t1", None);
         assert_eq!(r.state, RED, "reason: unread_receipt_done");
         assert_eq!(r.ended_at.as_deref(), Some("t1"));
         let v = view(&r);
         assert_eq!(v["green"], false);
         assert_eq!(v["reasons"][0], "seal_missing");
+        // a sandboxed run with exactly the runner's fixed skips ends as the third result
+        let names = vec!["a_session_gets_only_its_stdio".to_owned()];
+        let sha = "a".repeat(64);
+        let list = crate::receipt_check::Skips {
+            names: &names,
+            sha256: &sha,
+        };
+        let body = format!(
+            "== HEAD={H}\nRC fmt=0\nRC anchors=0\nRC clippy=0\nRC winclippy=0\n\
+             SANDBOX-SKIP a_session_gets_only_its_stdio\nSANDBOX-SKIPPED n=1 sha256={}(略過)\n\
+             RC test=0\nTESTS-TOTAL suites=3 passed=40 failed=0 ignored=0\nHEAD-END {H}\nHEAD {H}\n",
+            "a".repeat(64)
+        );
+        let sealed = crate::receipt_check::seal(body.as_bytes());
+        let mut s = Run {
+            knives_sent: 0,
+            ..run(RUNNING)
+        };
+        finished(&mut s, &sealed, "t3", Some(&list));
+        assert_eq!(s.state, PASSED_IN_SANDBOX, "reason: sandbox_pass_not_said");
+        assert_eq!(view(&s)["sandbox"], true);
+        assert_eq!(view(&s)["green"], false, "reason: sandbox_reads_green");
+        assert!(!in_flight(&s));
+        // the same file with no list from the runner: red
+        let mut s = Run {
+            knives_sent: 0,
+            ..run(RUNNING)
+        };
+        finished(&mut s, &sealed, "t3", None);
+        assert_eq!(s.state, RED, "reason: skips_taken_with_no_list");
         // an ended run is not read again
         let before = r.clone();
-        finished(&mut r, b"", "t2");
+        finished(&mut r, b"", "t2", None);
         assert_eq!(r, before, "reason: ended_run_read_again");
         let mut w = run(WITHDRAWN);
-        finished(&mut w, b"", "t2");
+        finished(&mut w, b"", "t2", None);
         assert_eq!(w.state, WITHDRAWN);
         // the view has no line of the receipt: only the keys below
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -1163,6 +1220,7 @@ mod tests {
                 "narrow",
                 "reasons",
                 "run_id",
+                "sandbox",
                 "scope",
                 "seat_id",
                 "state",
