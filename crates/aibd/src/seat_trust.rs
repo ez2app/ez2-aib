@@ -110,6 +110,26 @@ fn code(seat_id: &str) -> String {
         .collect()
 }
 
+/// The longest a remote's host is shown (with the code, mode, hours and digest: 75 of the
+/// window's 80).
+pub const HOST_MAX: usize = 24;
+
+/// A remote's host as the window shows it: whole when it fits, else its first 8, `…` and its
+/// last 15 — the end is kept because the registrable domain is there (5d33a REVIEW-trust-t1
+/// L1: `github.com.evil.example` must not read as `github.com…`).
+pub fn host_shown(host: &str) -> String {
+    let c: Vec<char> = host.chars().collect();
+    if c.len() <= HOST_MAX {
+        return host.to_owned();
+    }
+    let tail = HOST_MAX - 8 - 1;
+    c[..8]
+        .iter()
+        .chain(std::iter::once(&'…'))
+        .chain(&c[c.len() - tail..])
+        .collect()
+}
+
 /// What the owner is asked. The window is aibd's words only: the seat's code and mode, the
 /// hours, where the repo's remote is, the machine list's digest; never a name a seat or a page
 /// can set.
@@ -124,11 +144,7 @@ pub fn ask_of(seat_id: &str, f: &Facts, by: String) -> crate::owner_ok::Ask {
     let repo = if f.remote.is_empty() {
         "沒有倉".to_owned()
     } else {
-        // the host's first 24 (with the code, mode, hours and digest: 75 of the window's 80): the seat's code ahead of it is never pushed out of the window
-        let host: String = crate::repos::remote_host(&f.remote)
-            .chars()
-            .take(24)
-            .collect();
+        let host = host_shown(&crate::repos::remote_host(&f.remote));
         format!("remote {host}")
     };
     let hosts = if f.hosts_digest.is_empty() {
@@ -437,6 +453,18 @@ mod tests {
         let mut long = facts();
         long.remote = format!("git@{}.example.com:o/r.git", "h".repeat(200));
         let shown = ask_of("seat_abcde12345", &long, "page:1".into()).resource;
+        assert!(
+            shown.contains(" · remote hhhhhhhh…hhh.example.com · "),
+            "reason: host_end_not_shown {shown}"
+        );
+        assert_eq!(host_shown("github.com"), "github.com");
+        assert_eq!(
+            host_shown("github.com.attacker-owned.example"),
+            "github.c…r-owned.example",
+            "reason: registrable_domain_cut_off"
+        );
+        assert_eq!(host_shown(&"a".repeat(24)), "a".repeat(24));
+        assert_eq!(host_shown(&"é".repeat(40)).chars().count(), HOST_MAX);
         assert!(
             shown.starts_with("abcde work ")
                 && shown.chars().count() <= crate::owner_ok::RESOURCE_MAX,
