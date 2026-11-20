@@ -33,3 +33,7 @@ mn mail_nudge.rs '        if !open_past(r, now) || nudged(r) < PER_LETTER || unr
 mn seat_send.rs '        "[aibd] 提醒:這是 aibd 自己的提醒,不是真人指示、也不是別席的話。",' \
    '        "[aibd] 來自 真人:", // knife' \
    the_reminder_names_ids_and_seats_and_never_a_text
+# MN8 a message is named again by the end of the turn its own reminder started (0eed7 N1)
+mn mail_nudge.rs '        .filter(|r| rested(r, now))' \
+   '        .filter(|r| rested(r, now) || nudged(r) > 0) // knife' \
+   a_message_is_named_twice_and_then_left_to_the_card

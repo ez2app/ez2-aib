@@ -51,10 +51,22 @@ fn open_past(r: &aib_store::MessageRow, now: i64) -> bool {
             .is_some_and(|at| at <= now - AFTER_SECS)
 }
 
+/// Whether `r` was last named at or before `now - AFTER_SECS` (or never). A reminder starts a
+/// turn of its own, and that turn's end is a wake like any other: without this the second
+/// reminder came 4 seconds after the first (0eed7 VERIFY-mail-6f547e59 N1), two in a row and
+/// then the card. A message is named again only once it has been left open that long again.
+fn rested(r: &aib_store::MessageRow, now: i64) -> bool {
+    r.item
+        .get("nudged_at")
+        .and_then(Value::as_i64)
+        .is_none_or(|at| at <= now - AFTER_SECS)
+}
+
 /// The rows of one seat's open messages a reminder names now, oldest first as given.
 pub fn due(rows: &[aib_store::MessageRow], now: i64) -> Vec<&aib_store::MessageRow> {
     rows.iter()
         .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER)
+        .filter(|r| rested(r, now))
         .collect()
 }
 
@@ -350,13 +362,23 @@ mod tests {
 
     #[test]
     fn a_message_is_named_twice_and_then_left_to_the_card() {
-        let now = 10_000;
+        let mut now = 10_000;
         let mut r = written("q_1", now - 900);
         for n in 1..=PER_LETTER {
             assert_eq!(due(std::slice::from_ref(&r), now).len(), 1, "round {n}");
             assert!(cards(std::slice::from_ref(&r), now, 0).is_empty());
             r.item = named_item(r.item, Step::Write, now);
             assert_eq!(nudged(&r), n);
+            // the turn the reminder itself started ends seconds later: not named again then,
+            // only once the message was left open AFTER_SECS more (0eed7 N1)
+            if n < PER_LETTER {
+                assert!(
+                    due(std::slice::from_ref(&r), now + 4).is_empty(),
+                    "reason: named_again_at_once"
+                );
+                assert!(due(std::slice::from_ref(&r), now + AFTER_SECS - 1).is_empty());
+                now += AFTER_SECS;
+            }
         }
         assert!(
             due(std::slice::from_ref(&r), now).is_empty(),
