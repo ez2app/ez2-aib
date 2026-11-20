@@ -56,5 +56,8 @@ rk '  unset AIB_KNIVES_SHARD' '  : # knife: kept' \
 rk '    if [ "$rc" = 0 ] && [ "$missed" != 0 ]; then' '    if false; then # knife: only the rc counts' \
   a_script_that_returns_0_over_a_knife_that_missed_is_red
 # RK16 nothing is kept of the script's output: no line is ever counted
-rk $'  missed=$(grep -Ec \'^KNIFE .*: (MISSES|INVALID|pattern found )\' "$out")' '  missed=0 # knife: not read' \
+rk $'  missed=$(grep -Ec \'^KNIFE(-BUILD)? .*: (MISSES|INVALID|pattern found )\' "$out")' '  missed=0 # knife: not read' \
+  a_script_that_returns_0_over_a_knife_that_missed_is_red
+# RK17 only knife.py's lines are read: a compile-time knife (knife-build.py prints KNIFE-BUILD) that missed stays green
+rk "'^KNIFE(-BUILD)? .*: (MISSES|INVALID|pattern found )'" "'^KNIFE .*: (MISSES|INVALID|pattern found )'" \
   a_script_that_returns_0_over_a_knife_that_missed_is_red

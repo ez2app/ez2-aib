@@ -267,6 +267,17 @@ fn a_script_that_returns_0_over_a_knife_that_missed_is_red() {
             "a knife that bit is not a miss: {out}"
         );
     }
+    // a compile-time knife (scripts/knife-build.py prints KNIFE-BUILD) that missed counts the same
+    let r = repo(&[(
+        "crates/a/knives/k1.sh",
+        "#!/usr/bin/env bash\n# aib-knives: os=any\nprintf 'KNI%s c_test: MISSES rc=0\\n' FE-BUILD\nexit 0\n",
+    )]);
+    let (rc, out) = run(&r, "rust");
+    assert_eq!(rc, 1, "a build knife that missed: {out}");
+    assert!(
+        out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: missed=1 rc=0"),
+        "{out}"
+    );
     // a line that only talks about a miss (not a knife line from its first column) is not one
     let r = repo(&[(
         "crates/a/knives/k1.sh",
