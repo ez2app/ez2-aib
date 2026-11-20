@@ -93,7 +93,9 @@ pub fn item_of(slug: &str) -> Option<(String, String)> {
     if !crate::gh_view::repo_ok(slug) {
         return None;
     }
-    let (owner, name) = slug.split_once('/')?;
+    // GitHub reads `Owner/Name` and `owner/name` as one repository; the keychain does not
+    let lower = slug.to_ascii_lowercase();
+    let (owner, name) = lower.split_once('/')?;
     Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))
 }
 
@@ -437,6 +439,14 @@ mod tests {
                 "ez2-aibd-github-ez2app-ez2-aib".to_owned(),
                 "ez2app".to_owned()
             ))
+        );
+        assert_eq!(
+            item_of("Ez2App/Ez2_AIB.x"),
+            Some((
+                "ez2-aibd-github-ez2app-ez2_aib.x".to_owned(),
+                "ez2app".to_owned()
+            )),
+            "reason: item_name_follows_the_remotes_case"
         );
         for bad in ["", "one", "a/b/c", "-o/r", "o/..", "o /r", "o/r\n"] {
             assert_eq!(item_of(bad), None, "reason: item_of_{bad:?}");
