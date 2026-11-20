@@ -108,6 +108,47 @@ pub fn groups_to_stop(state: &State, pids: &[u32], ours: &dyn Fn(u32) -> bool) -
         .collect()
 }
 
+/// The processes that name the run's folder in their command line (`ps -x -o pid=,command=`:
+/// this account's): a test program built in the tree, or anything started with a path of
+/// it. A program outside the tree started with no such path is not found, said plainly
+/// (5d33a PREREAD-receiptrunner2 L1).
+pub fn leftovers_of(ps: &str, work: &str) -> Vec<u32> {
+    let mark = format!("{work}/");
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, command) = line.trim_start().split_once(' ')?;
+            let pid = pid.parse::<u32>().ok().filter(|p| *p > 1)?;
+            command.contains(&mark).then_some(pid)
+        })
+        .collect()
+}
+
+/// Stops them (not this process) and says how many there were.
+fn stop_leftovers(l: &Layout, run_id: &str) -> usize {
+    let Ok(work) = word(&l.work(run_id)) else {
+        return 0;
+    };
+    let Some(ps) = Command::new("/bin/ps")
+        .args(["-x", "-o", "pid=,command="])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+    else {
+        return 0;
+    };
+    let pids: Vec<u32> = leftovers_of(&ps, &work)
+        .into_iter()
+        .filter(|p| *p != std::process::id())
+        .collect();
+    for p in &pids {
+        let _ = quiet("/bin/kill", &["-KILL", &p.to_string()]);
+    }
+    pids.len()
+}
+
 /// Runs a step that reaches the network, at most `secs`: one that is still going then is
 /// stopped and has failed (a fetch on a network that hangs would hold the machine's lease
 /// until it expires).
@@ -387,6 +428,12 @@ fn remove(p: &Path) {
 /// Removes what a run leaves: its folder (tree, target, temporary files), the bundle, the
 /// profile, the empty folder and the pid file. The note and the kept `.out` stay.
 fn clean(l: &Layout, run_id: &str) {
+    // what left the run's process group (a second fork, a new session) is still this
+    // account's and still in the sandbox: it could hold cargo's lock or a local port
+    let left = stop_leftovers(l, run_id);
+    if left > 0 {
+        let _ = run::note(l, run_id, &format!("leftovers {left}"));
+    }
     for p in [
         l.work(run_id),
         l.bundle(run_id),
@@ -674,6 +721,25 @@ mod tests {
             groups_to_stop(&State::Lost, &[700, 701], &all).is_empty(),
             "reason: lost_run_signalled"
         );
+    }
+
+    #[test]
+    fn what_left_the_runs_group_is_found_by_the_run_folder() {
+        let work = "/Users/owner/wt.noindex/web-runs/web-a9136-012345678";
+        let ps = format!(
+            "  501 /sbin/launchd\n\
+             7001 {work}/tree/target/debug/deps/sessions-0123 --nocapture\n\
+             7002 /bin/sleep 900\n\
+             7003 /bin/bash -c cd {work}/tree && sleep 900\n\
+             7004 vim /Users/owner/wt.noindex/web-runs/web-a9136-0123456789/notes\n\
+             x {work}/tree/odd\n"
+        );
+        assert_eq!(
+            leftovers_of(&ps, work),
+            [7001, 7003],
+            "reason: leftover_not_found"
+        );
+        assert!(leftovers_of("", work).is_empty());
     }
 
     #[test]

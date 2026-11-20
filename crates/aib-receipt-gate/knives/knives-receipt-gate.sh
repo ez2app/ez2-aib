@@ -262,6 +262,9 @@ sv '            Ok(None) if waited < secs => {' '            Ok(None) if waited 
 # SV13 a bound UDP port is left open to the run
 sv '        if tcp || udp {' '        if tcp { // knife' \
    what_listens_as_a_run_starts_is_closed_to_it
+# SV14 a process of another run's folder (a longer name) is stopped as this run's leftover
+sv '    let mark = format!("{work}/");' '    let mark = work.to_owned(); // knife' \
+   what_left_the_runs_group_is_found_by_the_run_folder
 # SV7 ports that cannot be read at all: the run goes on with the pinned ones alone
 sv '    let mut all = now.ok_or("listen_unread")?;' '    let mut all = now.unwrap_or_default(); // knife' \
    what_listens_as_a_run_starts_is_closed_to_it
