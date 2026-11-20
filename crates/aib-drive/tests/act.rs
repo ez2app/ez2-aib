@@ -628,11 +628,14 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     test_sent["id"] = json!("q_00000000000000cc");
     test_sent["origin"] = json!("test");
     fs::write(seat.join("q_00000000000000cc.json"), test_sent.to_string()).expect("write");
-    // f1fae 11-20: a nudge still queued is not nudged again (they piled up five deep)
+    // f1fae 11-20: a nudge still queued is not nudged again (they piled up five deep), one
+    // letter or several (a seat writing those words: is_drive_nudge's own test)
     let mut nudge = queued.clone();
     nudge["id"] = json!("q_00000000000000ee");
-    nudge["msg"] =
-        json!("提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda\n寄件人 519d0,已排隊 10 分");
+    nudge["sender_seat"] = Value::Null;
+    nudge["sender_label"] = json!("unattested:auto-find-work-dm");
+    nudge["sender_origin"] = json!("auto-find-work-dm");
+    nudge["msg"] = json!("提醒: 你有 2 封還沒收的信 → 56cda\nq_0627a36d2f012a16");
     fs::write(seat.join("q_00000000000000ee.json"), nudge.to_string()).expect("write");
     fs::write(seat.join("q_broken.json"), "{not json").expect("write");
     fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");

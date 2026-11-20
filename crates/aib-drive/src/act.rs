@@ -43,9 +43,13 @@ use std::path::{Path, PathBuf};
 
 pub const LOCK_TTL_MS: i64 = 5 * 60 * 1000;
 pub const NUDGE_AFTER_MIN: i64 = 5;
-/// A nudge dm's first words: a queued item that starts with them is a nudge itself and is not
-/// nudged again (f1fae 11-20: nudges of nudges piled up five deep).
+/// A nudge dm's first words (one letter; several to one seat start 「提醒: 你有 N 封」).
 pub const NUDGE_HEAD: &str = "提醒: 你有一封還沒收的信";
+/// What every nudge starts with, one letter or several (f1fae 11-20: q_a0061d81 was 「你有 2 封」).
+pub const NUDGE_MARK: &str = "提醒: 你有";
+/// The queue's `sender_origin` of a dm this shell sent (the 1.x sender check writes it; a seat's
+/// own dm carries its `sender_seat` instead).
+pub const DRIVE_ORIGIN: &str = "auto-find-work-dm";
 pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
 /// next's `needs` for a row whose seat is in its turn (dispatchable `no`, alive). Such a row
@@ -1057,7 +1061,7 @@ fn merge_dms(dms: Vec<Would>) -> Vec<Would> {
             }
             let mut one = g[0].clone();
             one.first_line = if one.action == "nudge" {
-                format!("提醒: 你有 {} 封還沒收的信 → {}", g.len(), one.to)
+                format!("{NUDGE_MARK} {} 封還沒收的信 → {}", g.len(), one.to)
             } else {
                 format!("未送達: {} 封信還在排隊", g.len())
             };
@@ -1685,6 +1689,16 @@ pub fn name_of(v: &Value) -> String {
     t.to_owned()
 }
 
+/// A queue item that is one of this shell's nudges: no seat, the shell's origin, and a nudge's
+/// words (one letter or several). A seat that writes the same words is not one (5d33a 0e4bc9e4
+/// N1: the words alone would let any seat's letter dodge its nudge).
+pub fn is_drive_nudge(v: &Value) -> bool {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    text("sender_seat").is_empty()
+        && text("sender_origin") == DRIVE_ORIGIN
+        && text("msg").starts_with(NUDGE_MARK)
+}
+
 /// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
 /// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
 /// `to` is the item's `seat` (else the folder's name), `from` its sender ([`sender_of`]),
@@ -1739,7 +1753,7 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
                 continue;
             }
             // a nudge waiting to be read is not nudged in turn (f1fae 11-20)
-            if text("msg").starts_with(NUDGE_HEAD) {
+            if is_drive_nudge(&v) {
                 continue;
             }
             let at = v
@@ -2370,6 +2384,30 @@ pub(crate) mod tests {
 
     const H: &str = "1b0d079b58bf33909f6b8302e82b543d40043581";
     const NOW: i64 = 1_794_700_800_000; // 2026-11-15T00:00:00.000Z
+
+    /// f1fae 11-20 / 5d33a 0e4bc9e4 N1: only this shell's own nudges, one letter or several,
+    /// are left out; a seat writing the same words, or the shell's other letters, are not.
+    #[test]
+    fn only_the_shells_own_nudges_are_not_nudged_again() {
+        let shell = |msg: &str| {
+            serde_json::json!({"sender_seat": null, "sender_origin": DRIVE_ORIGIN,
+                "sender_label": "unattested:auto-find-work-dm", "msg": msg})
+        };
+        assert!(is_drive_nudge(&shell(
+            "提醒: 你有一封還沒收的信 q_1 → a9136"
+        )));
+        assert!(is_drive_nudge(&shell("提醒: 你有 2 封還沒收的信 → a9136")));
+        assert!(
+            !is_drive_nudge(&shell("派工: 修紅 → a9136")),
+            "reason: shell_dispatch_left_out"
+        );
+        let mut seat = shell("提醒: 你有一封還沒收的信 q_1 → a9136");
+        seat["sender_seat"] = serde_json::json!("519d0");
+        assert!(!is_drive_nudge(&seat), "reason: seat_words_left_out");
+        let mut other = shell("提醒: 你有一封還沒收的信 q_1 → a9136");
+        other["sender_origin"] = serde_json::json!("live");
+        assert!(!is_drive_nudge(&other), "reason: other_origin_left_out");
+    }
 
     /// A fresh folder under the system temp folder, removed on drop (no tempfile dependency:
     /// this slice does not touch Cargo.toml).
