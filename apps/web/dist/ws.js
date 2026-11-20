@@ -1362,6 +1362,47 @@
     }
     return `<div class="wkb ${open ? 'open' : ''}"><button type="button" class="wk wkx ${/^(Bash)$/.test(c.name) ? 'v' : ''}${res && res.err ? ' err' : ''}" data-wk="${esc(id)}" aria-expanded="${open ? 'true' : 'false'}"><span>${esc(toolLine(c))}</span>${st}</button>${body}</div>`;
   }
+  // c44(7ebca 18:44 / 519d0 18:45):GET usage 的 now + 每列 turn_started_at / turn_output_at。
+  // 這一輪開始超過 N 秒(aibd 給 noreply_s 就用它,不然 90)模型一個字都沒吐 ⇒ none;
+  // 吐過字但 QUIET_S 秒沒新輸出 ⇒ quiet(長工具很正常,只加淡字)。三欄缺一(舊 aibd)⇒ null,照舊只顯示在想
+  const QUIET_S = 300;
+  function stallOf(seatId) {
+    const U = S.usage; if (!U || !U.now) return null;
+    const se = lastSession(seatId);
+    const u = (U.usage || []).find((x) => x.seat_id === seatId && (!se || x.session_id === (se.id || se.session_id)));
+    if (!u || !u.turn_started_at || !('turn_output_at' in u)) return null;
+    const now = Date.parse(U.now), st = Date.parse(u.turn_started_at); if (!now || !st) return null;
+    const n = Number(U.noreply_s) > 0 ? Number(U.noreply_s) : 90;
+    if (!u.turn_output_at) return now - st > n * 1000 ? { none: true, ms: now - st, since: u.turn_started_at } : null;
+    const o = Date.parse(u.turn_output_at);
+    return o && now - o > QUIET_S * 1000 ? { quiet: true, ms: now - o } : null;
+  }
+  // 你在共同對話最後一句 @ 到這一席的話(重送用);找不到 ⇒ 不給重送鈕
+  function lastAsk(seatId) {
+    let best = null;
+    for (const p of S.itemTalk || []) {
+      if (!p._shared || typeof p.body !== 'string' || !(p.sender_kind === 'human' || p.from_seat === S.me)) continue;
+      if (!(p.calls || []).some((c) => String(c.seat || '') === seatId)) continue;
+      if (!best || String(p.created || '') > String(best.created || '')) best = p;
+    }
+    return best;
+  }
+  function stallHtml(seatId, st) {
+    if (st.quiet) return `<span class="stq">${esc(durS(st.ms))}沒有新輸出</span>`;
+    const p = lastAsk(seatId), done = S.resent && S.resent[seatId] === st.since;
+    const b = !p ? '' : done ? '<span class="stq">已再送一次</span>' : `<button type="button" class="k rsd" data-resend="${esc(seatId)}" title="${esc('把你最後一句 @ 它的話再送一次;這一輪還沒結束,會排在它後面:' + String(p.body).slice(0, 120))}">再送一次</button>`;
+    return `<span class="stn">這一輪模型沒有回應(已 ${esc(durS(st.ms))})</span>${b}`;
+  }
+  async function resend(seatId) {
+    const st = stallOf(seatId), p = lastAsk(seatId);
+    if (!st || !st.none || !p) return render();
+    try {
+      await act('thread_send', { thread_id: p._tid, body: p.body, to: [seatId], idem_key: idem() });
+      S.resent = S.resent || {}; S.resent[seatId] = st.since;
+      say('已再送一次;這一輪還沒結束的話,會排在它後面', 'ok');
+    } catch (e) { say(errText(e), 'err'); }
+    render();
+  }
   // 這一回合:上一個 result 之後的第一筆輸出 = 開始;還沒有 result 就是在跑
   function turnOf(seatId) {
     const se = lastSession(seatId), o = se && S.out[se.id || se.session_id];
@@ -1477,7 +1518,7 @@
     const uc = u && u.pct != null ? (u.pct >= (S.usage.red_pct || 95) ? 'red' : u.pct >= (S.usage.handoff_pct || 85) ? 'warn' : '') : '';
     const use = u && u.pct != null ? `<span class="use ${uc}" title="${esc((u.model || '') + (u.used != null ? ' · ' + u.used + ' / ' + u.window : ''))}">用量<progress class="usep" max="100" value="${Math.max(0, Math.min(100, Number(u.pct) || 0))}"></progress>${Number(u.pct) | 0}%</span>` : '';
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
-    if (n && n.state === 'busy') rows.push({ h: '<div class="ev">在想…</div>' });
+    if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${stop}</div>
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
@@ -1608,7 +1649,9 @@
       if (W) for (const c of W.uses) if (String(c.id || '') && !W.RES.has(c.id)) cur = c;
       const s = seatById(id) || { seat_id: id, provider: 'claude' };
       const what = cur ? '正在' + DOING(cur) : '在想…';
-      out.push({ t: '\uffff' + id, h: `<div class="msg runl"><div class="who">${logo(s, 'sm')}</div><div class="body"><span class="spn"></span> ${esc(what)} · <b data-since="${esc(T.since)}">${esc(durS(Date.now() - Date.parse(T.since)))}</b></div><button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button></div>` });
+      const stl = stallOf(id);
+      const head = stl && stl.none ? stallHtml(id, stl) : `<span class="spn"></span> ${esc(what)} · <b data-since="${esc(T.since)}">${esc(durS(Date.now() - Date.parse(T.since)))}</b>${stl ? ' ' + stallHtml(id, stl) : ''}`;
+      out.push({ t: '\uffff' + id, h: `<div class="msg runl${stl && stl.none ? ' stall' : ''}" data-stall="${stl ? (stl.none ? 'none' : 'quiet') : ''}"><div class="who">${logo(s, 'sm')}</div><div class="body">${head}</div><button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button></div>` });
     }
     return out;
   }
@@ -3179,6 +3222,8 @@
   });
   async function onMainClick(e) {
     const x = e.target;
+    // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
+    const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答
     if (x.closest('[data-dqtoggle]')) { S.dqOpen = S.dqOpen === false; return render(); }
     if (x.closest('[data-dqmore]')) { S.dqMore = !S.dqMore; return render(); }

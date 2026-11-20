@@ -20,7 +20,7 @@ new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
 // dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog']);
+const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
