@@ -36,7 +36,7 @@ tt '        _ => false,' \
    only_the_models_own_lines_are_claude_output
 # TO6 the echo of what a codex seat was told counts as the model's output
 tt '    is_item && !told' \
-   '    is_item // knife' \
+   '    is_item || told // knife' \
    only_the_models_own_items_are_codex_output
 # TO7 any codex notification counts as the model's output
 tt '        .is_some_and(|m| m.starts_with("item/"));' \
@@ -44,7 +44,7 @@ tt '        .is_some_and(|m| m.starts_with("item/"));' \
    only_the_models_own_items_are_codex_output
 # TO8 a cut echo of what a codex seat was told counts as the model's output
 tt '        return item && !told;' \
-   '        return item; // knife' \
+   '        return item || told; // knife' \
    only_the_models_own_items_are_codex_output
 # TO9 an older session of the seat says the turn too
 tv '                .filter(|s| seen.insert((*s).to_owned()));' \
