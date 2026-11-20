@@ -1207,6 +1207,9 @@ mod tests {
         g(&tree, &["add", "-A"]);
         g(&tree, &["commit", "-q", "-m", "c"]);
         g(&tree, &["rm", "-q", "-r", ".codex"]);
+        g(&tree, &["commit", "-q", "-m", "undo"]);
+        // the newest commit touches no settings at all: every commit is read, not the last
+        // one (ms6 MS5: the removal sat in the newest commit, which names the file as well)
         std::fs::write(tree.join("a.txt"), "a").unwrap();
         std::fs::write(tree.join("sub-AGENTS.md"), "x").unwrap();
         g(&tree, &["add", "-A"]);
