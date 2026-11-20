@@ -1243,6 +1243,18 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "seat_handoff",
+            "description": "Say your handoff note is written: give the absolute path of the .md you wrote. The page then shows the person it is written and where. aibd does not read the file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "absolute path ending in .md, at most 512 characters"},
+                },
+                "required": ["path"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -1465,6 +1477,19 @@ fn seat_receipt(c: &Client, args: &Value) -> Result<String, String> {
 
 /// ORDER-webonly-today 6 (7b81e 11-20): a seat sets its own line through act `seat_now`
 /// (seat_now.rs checks every field; only the names below are passed on).
+fn seat_handoff(c: &Client, args: &Value) -> Result<String, String> {
+    let path = args["path"].as_str().ok_or("seat_handoff needs path")?;
+    let r = c.request(
+        "POST",
+        "/api/v1/act",
+        Some(json!({"type": aibd::seat_now::HANDOFF, "path": path})),
+    )?;
+    Ok(format!(
+        "交接單記下了:{}",
+        r["handoff"]["path"].as_str().unwrap_or(path)
+    ))
+}
+
 fn seat_now_set(c: &Client, args: &Value) -> Result<String, String> {
     let mut body = json!({"type": aibd::seat_now::KIND});
     for k in ["item", "done", "total", "state", "track", "why", "idea"] {
@@ -1649,6 +1674,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("ask_person") => ask_person(c, args),
                 Some("plan_note") => plan_note(c, args),
                 Some("seat_now") => seat_now_set(c, args),
+                Some("seat_handoff") => seat_handoff(c, args),
                 Some("seat_tree") => seat_tree(c, args),
                 Some("seat_receipt") => seat_receipt(c, args),
                 _ => {
@@ -3018,7 +3044,8 @@ mod tests {
                 "plan_note",
                 "seat_receipt",
                 "seat_tree",
-                "seat_now"
+                "seat_now",
+                "seat_handoff"
             ],
             "reason: extra_tool"
         );
