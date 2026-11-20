@@ -24,3 +24,8 @@ st crates/aibd/src/ctl.rs \
    '        Some("diff") => format!("/api/v1/seats/{seat}/tree/diff"),' \
    '        Some("diff") => format!("/api/v1/seats/{seat}/tree/log"), // knife' \
    a_reviewer_reads_the_authors_tree_through_aibd_as_itself
+# ST5 a safe seat made reviewer reads the author's tree (5d33a PREREAD-seattree L1)
+st crates/aibd/src/tree_read.rs \
+   '    matches!(mode, Some("work" | "dgrs"))' \
+   '    !matches!(mode, Some("never")) // knife' \
+   only_a_work_or_dgrs_seat_reads_another_seats_tree

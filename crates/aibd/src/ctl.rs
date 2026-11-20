@@ -1197,7 +1197,7 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "seat_tree",
-            "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. Use this to review a seat whose clone you cannot open; seat is its seat_id from seat_list.",
+            "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. To review another seat, read its work with this tool, not git show / git fetch / opening its folder (its clone is not in your reach). seat is its seat_id from seat_list. A safe seat cannot use it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3013,11 +3013,14 @@ mod tests {
         let input = concat!(
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"file","path":"src/c d&x=1.js"}}}"#,
             "\n",
+            // the escape comes second: were it sent, it would take the log's answer and the
+            // log and diff calls after it would find none (st6 ST1: last in line, a sent escape
+            // found no answer left and looked refused)
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"../act","what":"log"}}}"#,
+            "\n",
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"log"}}}"#,
             "\n",
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"diff"}}}"#,
-            "\n",
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"../act","what":"log"}}}"#,
             "\n",
             r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"run"}}}"#,
             "\n",
@@ -3029,11 +3032,11 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         assert_eq!(lines.len(), 5, "{lines:?}");
-        for l in &lines[..3] {
-            assert_eq!(l["result"]["isError"], false, "{l}");
+        for l in [&lines[0], &lines[2], &lines[3]] {
+            assert_eq!(l["result"]["isError"], false, "reason: read_refused {l}");
         }
         assert_eq!(
-            lines[3]["result"]["isError"], true,
+            lines[1]["result"]["isError"], true,
             "reason: route_escape_sent"
         );
         assert_eq!(

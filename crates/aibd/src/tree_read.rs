@@ -271,7 +271,14 @@ pub(crate) async fn tree_dir(
 }
 
 /// Who may read `author`'s tree; `Ok` is who, as the event says it.
-async fn reader(c: &Caller, author: &str) -> Result<String, Box<Response>> {
+/// Whether a seat in `mode` may read another seat's tree: a work or dgrs seat, never a safe one
+/// (5d33a PREREAD-seattree L1: a safe seat is the one a user page talks to, so what it reads
+/// can go back out through the page; being made a reviewer does not change that).
+pub fn reader_mode_ok(mode: Option<&str>) -> bool {
+    matches!(mode, Some("work" | "dgrs"))
+}
+
+async fn reader(st: &AppState, c: &Caller, author: &str) -> Result<String, Box<Response>> {
     match c {
         Caller::StartupToken => Ok("token".into()),
         Caller::Page(p) => {
@@ -295,6 +302,20 @@ async fn reader(c: &Caller, author: &str) -> Result<String, Box<Response>> {
             let Some(me) = crate::seat_token::tokens().seat(key) else {
                 return Err(refused());
             };
+            let (store, sid) = (st.store.clone(), me.clone());
+            let mode = tokio::task::spawn_blocking(move || store.seat_meta(&sid))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+                .and_then(|m| m.mode);
+            if !reader_mode_ok(mode.as_deref()) {
+                return Err(answer(
+                    StatusCode::FORBIDDEN,
+                    "reader_safe",
+                    "a safe seat does not read another seat's tree, even as its reviewer",
+                ));
+            }
             let (who, author) = (me.clone(), author.to_owned());
             let ok = tokio::task::spawn_blocking(move || reviews(&who, &author))
                 .await
@@ -358,7 +379,7 @@ async fn start(
     c: &Caller,
     seat: &str,
 ) -> Result<(String, Tree, PathBuf), Box<Response>> {
-    let by = reader(c, seat).await?;
+    let by = reader(st, c, seat).await?;
     let tree = tree_of(st, seat).await?;
     let hooks = crate::seats::seat_git_hooks(st.sessions.private_dir());
     Ok((by, tree, hooks))
@@ -474,6 +495,15 @@ mod tests {
             .expect("git")
             .success();
         assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn only_a_work_or_dgrs_seat_reads_another_seats_tree() {
+        assert!(reader_mode_ok(Some("work")));
+        assert!(reader_mode_ok(Some("dgrs")));
+        assert!(!reader_mode_ok(Some("safe")), "reason: safe_reader_let_in");
+        assert!(!reader_mode_ok(None), "reason: unknown_mode_let_in");
+        assert!(!reader_mode_ok(Some("")));
     }
 
     #[test]
