@@ -92,6 +92,7 @@ pub mod threads;
 pub mod timers;
 pub mod token;
 pub mod touch;
+pub mod touch_hud;
 pub mod tree_read;
 pub mod trusted_hosts;
 pub mod trusted_seats;
