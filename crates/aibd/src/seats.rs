@@ -369,10 +369,7 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
 /// sets its own status line through aibd, as itself (both routes already took the seat token).
 /// seat_tree (0eed7 RETRACT-T4 M1, 11-20): the reviewer reads the author's tree through aibd's
 /// tree read (aibd lets only the reviewer on a shared node in).
-/// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
-/// and reads its own runs (receipt_run::seat_act: its own seat only; what runs anywhere still
-/// waits for the owner's fingerprint).
-pub const TALK_TOOLS: [&str; 13] = [
+pub const TALK_TOOLS: [&str; 12] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
@@ -385,8 +382,17 @@ pub const TALK_TOOLS: [&str; 13] = [
     "mcp__aibd__plan_note",
     "mcp__aibd__seat_now",
     "mcp__aibd__seat_tree",
-    "mcp__aibd__seat_receipt",
 ];
+/// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
+/// and reads its own runs. Only for a seat that writes code ([`receipt_tool_for`]; 5d33a L3: a
+/// safe seat has no commit of its own, the tool would only bring the owner's window up); aibd
+/// refuses a safe seat's request as well (receipt_run::mode_may_ask).
+pub const RECEIPT_TOOL: &str = "mcp__aibd__seat_receipt";
+
+/// Whether a claude seat of `mode` is allowed [`RECEIPT_TOOL`].
+pub fn receipt_tool_for(mode: &str) -> bool {
+    crate::receipt_run::mode_may_ask(Some(mode))
+}
 
 /// S89-talk-1 (DECISION-council-seat-talk §四席一致): the argv a claude seat gets for talking
 /// to other seats: one MCP server, `<aibd> mcp --data-dir <this aibd's data dir>` (stdio; it
@@ -497,6 +503,9 @@ pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
 /// [`talk_args`] with the gate switch given (tests; `gate` = [`now_gate_on`]).
 pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> {
     let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
+    if receipt_tool_for(mode) {
+        allowed.push(RECEIPT_TOOL);
+    }
     if mode == "work" {
         allowed.extend(aib_seatopen::WORK_ALLOWED);
     }
@@ -2743,8 +2752,7 @@ mod tests {
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
              mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send,\
-             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,\
-             mcp__aibd__seat_receipt",
+             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree",
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once
@@ -2757,6 +2765,22 @@ mod tests {
             w[3]
         );
         assert!(!a[3].contains("Bash"), "reason: safe_seat_gets_work_tools");
+        // 第 4 件 (5d33a L3): the receipt tool is a work / dgrs seat's, never a safe seat's
+        assert!(
+            !a[3].contains("seat_receipt"),
+            "reason: safe_seat_gets_receipt_tool"
+        );
+        assert!(
+            w[3].contains(",mcp__aibd__seat_receipt,"),
+            "reason: work_seat_lacks_receipt_tool {}",
+            w[3]
+        );
+        let d = talk_args_with(p.to_str().unwrap(), "dgrs", true);
+        assert!(
+            d[3].ends_with(",mcp__aibd__seat_receipt"),
+            "reason: dgrs_seat_lacks_receipt_tool {}",
+            d[3]
+        );
         // c19: a work seat's sandbox --settings is not followed by a second one
         assert!(
             !w.iter().any(|x| x == "--settings"),

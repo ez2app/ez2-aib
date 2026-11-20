@@ -21,7 +21,8 @@
 //! - Run ids are `web-<last 5 of the seat id>-<first 9 of the head>`, and `-2` … `-99` when
 //!   that head is asked again (design r3; the gate checks the same shape).
 //! - A seat's own token asks the same four for itself only ([`seat_act`]): its own head, its
-//!   own runs.
+//!   own runs; only a seat that writes code (`work`, `dgrs`), and not within [`COOL_SECS`] of
+//!   its last request being withdrawn or refused by the owner.
 //! - While a run is under way a pass ([`crate::timers::RECEIPT_POLL`]) asks the runner for its
 //!   `.out`, so a receipt ends without a page open.
 //! - What a page is told is fixed words and numbers: state, reason codes, counts. Never a line
@@ -50,6 +51,9 @@ pub const LIST: &str = "receipt_list";
 pub const LISTED: usize = 10;
 /// A run id kept this long with no answer written was left by an aibd that stopped (5d33a N4).
 pub const ASKING_SECS: i64 = 600;
+/// After a seat's own request was withdrawn or the owner said no, that seat asks again only
+/// this much later (5d33a L2: a seat cannot keep the owner's fingerprint window coming).
+pub const COOL_SECS: i64 = 300;
 
 /// A seat's runs under way at once.
 pub const MAX_IN_FLIGHT: usize = 2;
@@ -108,6 +112,9 @@ pub struct Run {
     /// What aibd read in the `.out`, once there is one.
     #[serde(default)]
     pub verdict: Option<Verdict>,
+    /// Asked with the seat's own token (not by a page): what [`cooling`] looks at.
+    #[serde(default)]
+    pub by_seat: bool,
     /// Why it ended with no `.out` read (one of [`REFUSALS`]: the owner said no, the machine
     /// went away, the gate refused the tree).
     #[serde(default)]
@@ -256,6 +263,7 @@ pub fn reserved(ask: &Ask, at: &str) -> Run {
         asked_at: at.to_owned(),
         ended_at: None,
         verdict: None,
+        by_seat: false,
         why: None,
     }
 }
@@ -572,11 +580,15 @@ pub fn status_of(code: &str) -> StatusCode {
         "bad_head" | "bad_scope" | "bad_tests" | "seat_id_invalid" | "bad_run_id" => {
             StatusCode::BAD_REQUEST
         }
-        "receipt_not_allowed" | "head_not_seat_head" | "not_your_run" | "not_your_seat" => {
-            StatusCode::FORBIDDEN
-        }
+        "receipt_not_allowed"
+        | "head_not_seat_head"
+        | "not_your_run"
+        | "not_your_seat"
+        | "receipt_work_seat_only" => StatusCode::FORBIDDEN,
         "no_such_run" => StatusCode::NOT_FOUND,
-        "receipt_in_flight" | "receipt_asked_too_often" | "already_done" => StatusCode::CONFLICT,
+        "receipt_in_flight" | "receipt_asked_too_often" | "already_done" | "receipt_cooling" => {
+            StatusCode::CONFLICT
+        }
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -585,16 +597,29 @@ pub fn status_of(code: &str) -> StatusCode {
 /// may go to another machine), then the answer is written. A refusal takes the entry out
 /// again; an answer that cannot be written is cancelled at the runner (no run without its
 /// entry).
-fn request(body: &Value) -> Result<Run, &'static str> {
+fn request(body: &Value, by_seat: bool) -> Result<Run, &'static str> {
     let ask = {
         let _one = lock();
         let runs = load();
         let ask = ask_of(body, &runs)?;
-        let kept = reserved(&ask, &crate::sessions::now_rfc3339());
+        if by_seat {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            let cutoff = crate::sessions::rfc3339_of_unix(now.saturating_sub(COOL_SECS));
+            if cooling(&runs, &ask.seat_id, &cutoff) {
+                return Err("receipt_cooling");
+            }
+        }
+        let kept = Run {
+            by_seat,
+            ..reserved(&ask, &crate::sessions::now_rfc3339())
+        };
         save(&with(runs, kept)).map_err(|_| "receipt_list_not_written")?;
         ask
     };
     let answer = started(&ask, runner().start(&ask), &crate::sessions::now_rfc3339());
+    let answer = answer.map(|r| Run { by_seat, ..r });
     let one = lock();
     let mut runs = load();
     let at = runs.iter().position(|r| r.run_id == ask.run_id);
@@ -737,14 +762,55 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
     handle(st, None, body).await
 }
 
-/// The same four acts from a seat's own token (design r3: 網頁席跑收據): a seat asks for a
-/// receipt of its own head and sees and withdraws its own runs, no other seat's. What it asks
-/// still waits for the owner's fingerprint on the runner's side.
-pub async fn seat_act(st: AppState, seat: &str, mut body: Value) -> Response {
+/// A seat's body with the seat it is for: its own (named or not); another seat's is refused.
+pub fn own_body(seat: &str, mut body: Value) -> Result<Value, &'static str> {
     match body.get("seat_id").and_then(Value::as_str) {
         None => body["seat_id"] = json!(seat),
         Some(named) if named == seat => {}
-        Some(_) => return refuse(StatusCode::FORBIDDEN, "not_your_seat"),
+        Some(_) => return Err("not_your_seat"),
+    }
+    Ok(body)
+}
+
+/// Whether a seat of this mode may ask for a receipt itself: one that writes code in its own
+/// copy (`work`, `dgrs`). A `safe` seat has no commit of its own to test; asking would only
+/// bring the owner's fingerprint window up (5d33a L3).
+pub fn mode_may_ask(mode: Option<&str>) -> bool {
+    matches!(mode, Some("work" | "dgrs"))
+}
+
+/// Whether `seat` asked too soon: a request of its own (by its token) was withdrawn, or
+/// refused by the owner, at or after `cutoff` (a time as `ended_at` is written).
+pub fn cooling(runs: &[Run], seat: &str, cutoff: &str) -> bool {
+    runs.iter().any(|r| {
+        r.by_seat
+            && r.seat_id == seat
+            && (r.state == WITHDRAWN || r.why.as_deref() == Some("owner_refused"))
+            && r.ended_at.as_deref().is_some_and(|at| at >= cutoff)
+    })
+}
+
+/// The same four acts from a seat's own token (design r3: 網頁席跑收據): a seat asks for a
+/// receipt of its own head and sees and withdraws its own runs, no other seat's. Only a seat
+/// that writes code asks ([`mode_may_ask`]), and not right after its last request was
+/// withdrawn or refused ([`cooling`]). What it asks still waits for the owner's fingerprint on
+/// the runner's side.
+pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
+    let body = match own_body(seat, body) {
+        Ok(b) => b,
+        Err(code) => return refuse(StatusCode::FORBIDDEN, code),
+    };
+    if body.get("type").and_then(Value::as_str) == Some(REQUEST) {
+        let (store, sid) = (st.store.clone(), seat.to_owned());
+        let mode = tokio::task::spawn_blocking(move || store.seat_meta(&sid))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .and_then(|m| m.mode);
+        if !mode_may_ask(mode.as_deref()) {
+            return refuse(StatusCode::FORBIDDEN, "receipt_work_seat_only");
+        }
     }
     handle(st, Some(seat.to_owned()), body).await
 }
@@ -794,7 +860,7 @@ async fn handle(st: AppState, seat: Option<String>, body: Value) -> Response {
             }
         }
         match k.as_str() {
-            REQUEST => request(&body).map(|r| (r, false)),
+            REQUEST => request(&body, seat.is_some()).map(|r| (r, false)),
             READ => read(&run_id),
             _ => withdraw(&run_id).map(|r| (r, false)),
         }
@@ -1167,6 +1233,68 @@ mod tests {
             "reason: polled_wrong"
         );
         assert!(polled(&runs[3..]).is_empty(), "reason: ended_runs_polled");
+    }
+
+    #[test]
+    fn a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no() {
+        // its own seat, named or not; never another's
+        assert_eq!(
+            own_body(SEAT, json!({"type": REQUEST})).unwrap()["seat_id"],
+            SEAT
+        );
+        assert!(own_body(SEAT, full()).is_ok());
+        assert_eq!(
+            own_body("seat_189c122b6c504411", full()),
+            Err("not_your_seat"),
+            "reason: asked_for_another_seat"
+        );
+        // only a seat that writes code
+        assert!(mode_may_ask(Some("work")) && mode_may_ask(Some("dgrs")));
+        assert!(!mode_may_ask(Some("safe")), "reason: safe_seat_asks");
+        assert!(!mode_may_ask(None) && !mode_may_ask(Some("")));
+        // after its own request was withdrawn, or the owner said no, it waits
+        let ended = |state: &str, why: Option<&str>, by_seat: bool, at: &str| Run {
+            by_seat,
+            why: why.map(str::to_owned),
+            ended_at: Some(at.to_owned()),
+            ..run(state)
+        };
+        let cutoff = "2026-11-20T13:00:00.000Z";
+        let after = "2026-11-20T13:01:00.000Z";
+        let before = "2026-11-20T12:59:59.000Z";
+        assert!(
+            cooling(&[ended(WITHDRAWN, None, true, after)], SEAT, cutoff),
+            "reason: withdrawn_then_asked_at_once"
+        );
+        assert!(
+            cooling(
+                &[ended(RED, Some("owner_refused"), true, after)],
+                SEAT,
+                cutoff
+            ),
+            "reason: refused_then_asked_at_once"
+        );
+        // long enough ago, a page's own request, another seat's, or a receipt that ran red
+        assert!(!cooling(
+            &[ended(WITHDRAWN, None, true, before)],
+            SEAT,
+            cutoff
+        ));
+        assert!(
+            !cooling(&[ended(WITHDRAWN, None, false, after)], SEAT, cutoff),
+            "reason: pages_withdrawal_cools_the_seat"
+        );
+        assert!(!cooling(
+            &[ended(WITHDRAWN, None, true, after)],
+            "seat_189c122b6c504411",
+            cutoff
+        ));
+        assert!(
+            !cooling(&[ended(RED, None, true, after)], SEAT, cutoff),
+            "reason: red_receipt_cools"
+        );
+        assert_eq!(status_of("receipt_cooling"), StatusCode::CONFLICT);
+        assert_eq!(status_of("receipt_work_seat_only"), StatusCode::FORBIDDEN);
     }
 
     #[test]

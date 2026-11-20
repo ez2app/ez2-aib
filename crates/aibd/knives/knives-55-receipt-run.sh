@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ25 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ29 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -111,3 +111,19 @@ rq '    seat.is_none_or(|s| s == owner)' \
 rq '        .filter(|r| r.state == WAITING_OWNER || r.state == RUNNING)' \
    '        .filter(|r| r.state == WAITING_OWNER || r.state == RUNNING || r.state == ASKING) // knife' \
    a_seat_touches_its_own_runs_and_the_pass_asks_for_runs_at_the_runner
+# RQ26 a seat asks for another seat (5d33a L1)
+rq '        Some(_) => return Err("not_your_seat"),' \
+   '        Some(_) => {} // knife' \
+   a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no
+# RQ27 a safe seat asks (5d33a L3)
+rq '    matches!(mode, Some("work" | "dgrs"))' \
+   '    matches!(mode, Some("work" | "dgrs" | "safe")) // knife' \
+   a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no
+# RQ28 a seat asks again right after its request was withdrawn or refused (5d33a L2)
+rq '            && r.ended_at.as_deref().is_some_and(|at| at >= cutoff)' \
+   '            && r.ended_at.as_deref().is_some_and(|at| at >= cutoff && at.is_empty()) // knife' \
+   a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no
+# RQ29 a page's own withdrawal makes the seat wait
+rq '        r.by_seat' \
+   '        !r.run_id.is_empty() // knife' \
+   a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no
