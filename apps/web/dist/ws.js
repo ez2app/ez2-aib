@@ -1166,6 +1166,8 @@
     gh_view_seat_rate: '每 10 秒只准問一次,等一下再按', gh_view_rate: '這台一分鐘內問太多次(席和頁面合計 30 次),等一下再按', gh_view_no_answer: 'gh 20 秒沒回',
     // 1a93b 8b12d76d7(DESIGN-page-gh-view r1):頁面自己的入口與開關
     page_gh_view_off: '這台沒開「頁面看 PR」(bridge.json 的 page_gh_view)',
+    // a9136 37d128c3c3 同一件的另一份(519d0 選一份前兩邊的碼都認)
+    gh_view_page_off: '這台沒開「頁面看 PR」(bridge.json 的 gh_view_page)', page_only: '這個配對不能看 PR(使用者資料夾頁或換版前延續來的配對)',
   };
   // 5d33a PREREAD-pageghview N1:只有 https 且 host 剛好是 github.com 才畫成連結(不用前綴比對;PR 標題等外部字一律當字)
   const ghSafeUrl = (u) => { try { const x = new URL(String(u || '')); return x.protocol === 'https:' && x.hostname === 'github.com' && !x.username && !x.password ? x.href : ''; } catch (e) { return ''; } };
