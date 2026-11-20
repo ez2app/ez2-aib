@@ -70,3 +70,11 @@ sm '                "UPDATE seat_meta SET resume_id = ?2, updated_at = ?3 WHERE 
 si '        .is_some_and(|h| path_ours(&h.path, code, pending.as_deref(), &meta.cwd));' \
    '        .is_some_and(|h| path_ours(&h.path, code, pending.as_deref(), &meta.cwd) || true); // knife' \
    the_page_clears_a_seat_onto_a_new_conversation_that_reads_its_handoff
+# SC15 a message waiting to be written is not counted (the seat would be cleared under it)
+sc '        .filter(|r| crate::seat_send::waits_to_be_written(r))' \
+   '        .filter(|r| !crate::seat_send::waits_to_be_written(r)) // knife' \
+   queued_messages_and_unclosed_ones_are_counted_apart
+# SC16 a shared conversation's post is counted as an unclosed message
+sc '                && r.item.get("post_id").is_none_or(Value::is_null)' \
+   '                && (r.item.get("post_id").is_none_or(Value::is_null) || true) // knife' \
+   queued_messages_and_unclosed_ones_are_counted_apart

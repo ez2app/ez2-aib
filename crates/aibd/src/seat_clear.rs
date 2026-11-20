@@ -151,9 +151,29 @@ pub fn check(
     Ok(())
 }
 
-/// The new conversation's first line: aibd's words, the path, and the hash when the seat gave
-/// one. Nothing from the page.
-pub fn first_line(path: &str, sha256: Option<&str>) -> String {
+/// Of a seat's open rows (`open_to`): how many still wait to be written to it, and how many
+/// another seat wrote to it that it has not closed (delivered / read, not a shared
+/// conversation's post; the count mail_nudge reminds of).
+pub fn mail_counts(rows: &[aib_store::MessageRow]) -> (usize, usize) {
+    let queued = rows
+        .iter()
+        .filter(|r| crate::seat_send::waits_to_be_written(r))
+        .count();
+    let unclosed = rows
+        .iter()
+        .filter(|r| {
+            let t = |k: &str| r.item.get(k).and_then(Value::as_str);
+            matches!(t("status"), Some("delivered" | "read"))
+                && t("sender_kind") == Some("seat")
+                && r.item.get("post_id").is_none_or(Value::is_null)
+        })
+        .count();
+    (queued, unclosed)
+}
+
+/// The new conversation's first line: aibd's words, the path, the hash when the seat gave
+/// one, and how many messages it has not closed. Nothing from the page.
+pub fn first_line(path: &str, sha256: Option<&str>, unclosed: usize) -> String {
     let sha = sha256.map_or(String::new(), |h| format!("(sha256 {h})"));
     let check = if sha256.is_some() {
         "核對雜湊後"
@@ -161,7 +181,12 @@ pub fn first_line(path: &str, sha256: Option<&str>) -> String {
         ""
     };
     format!(
-        "這是清空後的新一段。先讀交接單 {path}{sha},{check}照它接著做;讀不到或核不對就停下來回報,不要自己猜。也看一下待審框有沒有收了沒結的信。"
+        "這是清空後的新一段。先讀交接單 {path}{sha},{check}照它接著做;讀不到或核不對就停下來回報,不要自己猜。{}",
+        if unclosed > 0 {
+            format!("另有 {unclosed} 封別席寄來、收了沒結的信,讀完要結案。")
+        } else {
+            "也看一下待審框有沒有收了沒結的信。".to_owned()
+        }
     )
 }
 
@@ -321,6 +346,22 @@ async fn clear(
     let Some(h) = handoff else {
         return Err(why(StatusCode::CONFLICT, "no_handoff", "no handoff"));
     };
+    // a message waiting to be written is the seat's work too: the new conversation's start
+    // would write it before (or over) the handoff line (1a93b REVIEW-day N2)
+    let (db, key) = (st.messages.clone(), format!("seat:{seat_id}"));
+    let rows = tokio::task::spawn_blocking(move || db.open_to(&key, aib_store::PAGE_MAX))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let (queued, unclosed) = mail_counts(&rows);
+    if queued > 0 {
+        return Err(why(
+            StatusCode::CONFLICT,
+            "seat_busy",
+            "messages still wait to be written to the seat; clear it when they are",
+        ));
+    }
     let mine: Vec<_> = st
         .sessions
         .list()
@@ -426,7 +467,7 @@ async fn clear(
     .ok()
     .flatten()
     .unwrap_or(false);
-    let line = first_line(&h.path, h.sha256.as_deref());
+    let line = first_line(&h.path, h.sha256.as_deref(), unclosed);
     let typed = crate::seat_input::type_to_seat(st, page, seat_id, &line)
         .await
         .is_ok();
@@ -586,15 +627,37 @@ mod tests {
     }
 
     #[test]
+    fn queued_messages_and_unclosed_ones_are_counted_apart() {
+        let row = |pairs: &[(&str, Value)]| {
+            let mut r =
+                crate::seat_send::queued_row("seat_a", "seat_b", Some("safe"), "x", "00").unwrap();
+            for (k, v) in pairs {
+                r.item.insert((*k).to_owned(), v.clone());
+            }
+            r
+        };
+        let rows = [
+            row(&[]),
+            row(&[("status", json!("delivered")), ("session_id", json!("s1"))]),
+            row(&[("status", json!("read")), ("session_id", json!("s1"))]),
+            row(&[("status", json!("read")), ("post_id", json!("p1"))]),
+            row(&[("status", json!("done"))]),
+        ];
+        assert_eq!(mail_counts(&rows), (1, 2), "reason: mail_miscounted");
+        assert_eq!(mail_counts(&[]), (0, 0));
+    }
+
+    #[test]
     fn the_first_line_is_aibds_words_with_the_path_and_the_hash() {
-        let l = first_line("/p/HANDOFF-1a93b-1.md", None);
+        let l = first_line("/p/HANDOFF-1a93b-1.md", None, 0);
         assert!(
             l.contains("/p/HANDOFF-1a93b-1.md")
                 && l.contains("先讀交接單")
                 && !l.contains("sha256")
         );
         let s = "ab".repeat(32);
-        let l = first_line("/p/h.md", Some(&s));
+        let l = first_line("/p/h.md", Some(&s), 3);
+        assert!(l.contains("另有 3 封"), "reason: unclosed_not_said {l}");
         assert!(
             l.contains(&s) && l.contains("核對雜湊"),
             "reason: hash_not_said"
