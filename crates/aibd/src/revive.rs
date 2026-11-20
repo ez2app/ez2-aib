@@ -681,16 +681,17 @@ pub const START_REASONS: &[&str] = &[
     "codex_version",
 ];
 
-/// [`Skip::Refused`] when the start's `session_error` names one of [`START_REASONS`] as
-/// `(code)`, else [`Skip::Start`].
+/// [`Skip::Refused`] when the start's `session_error` message ends with one of
+/// [`START_REASONS`] as `(code)`, else [`Skip::Start`].
 fn start_skip(e: &serde_json::Value) -> Skip {
-    let m = e["message"].as_str().unwrap_or_default();
-    let at = |c: &str| m.find(&format!("({c})"));
+    // only the code aibd puts last (5d33a PREREAD-restartwhy L1: a folder path earlier in the
+    // message may hold any text)
+    let m = e["message"].as_str().unwrap_or_default().trim_end();
     START_REASONS
         .iter()
-        .filter_map(|c| at(c).map(|i| (i, *c)))
-        .min()
-        .map_or(Skip::Start, |(_, c)| Skip::Refused(c))
+        .copied()
+        .find(|c| m.ends_with(&format!("({c})")))
+        .map_or(Skip::Start, Skip::Refused)
 }
 
 #[cfg(test)]
@@ -698,7 +699,7 @@ mod tests {
     use super::*;
 
     /// 519d0 11-20 L1: a restart refused for a codex reason says which; anything else stays
-    /// start_failed, and the first code aibd wrote wins over text after it.
+    /// start_failed, and only the code at the end counts (a folder path may hold any text).
     #[test]
     fn a_refused_restart_names_its_reason() {
         let e = |m: &str| serde_json::json!({"code": "program_not_allowed", "message": m});
@@ -708,9 +709,15 @@ mod tests {
             "codex_mcp_unlisted"
         );
         assert_eq!(
-            said("codex version not measured for aibd (0.167.x only) (codex_version): codex-cli 9 (codex_mcp_unlisted)"),
+            said("codex version not measured for aibd (0.167.x only): codex-cli 9 (codex_mcp_unlisted) (codex_version)"),
             "codex_version"
         );
+        assert_eq!(
+            said("codex seat not started: the folder has codex project settings (/x/(codex_version)/.codex): codex would merge them under the seat's own (codex_folder_settings)"),
+            "codex_folder_settings",
+            "reason: path_text_taken"
+        );
+        assert_eq!(said("(codex_version) in front only"), "start_failed");
         assert_eq!(said("program not on the allowlist"), "start_failed");
         assert_eq!(said("codex_mcp_unlisted without brackets"), "start_failed");
         assert_eq!(start_skip(&serde_json::json!({})).as_str(), "start_failed");
