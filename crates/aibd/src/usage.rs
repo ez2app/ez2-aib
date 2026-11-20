@@ -232,11 +232,45 @@ pub fn board() -> &'static Board {
     &BOARD
 }
 
-/// `GET /api/v1/usage`: `{handoff_pct, red_pct, usage: [row…]}`, newest session first.
-pub async fn list(State(_st): State<AppState>) -> Response {
+/// `GET /api/v1/usage`: `{handoff_pct, red_pct, now, usage: [row…]}`, newest session first.
+/// c44: `now` is this aibd's clock (a page subtracts from it, not from the browser's), and each
+/// row says its seat's turn under way ([`with_turns`]).
+pub async fn list(State(st): State<AppState>) -> Response {
     let mut rows = board().all();
     rows.sort_by_key(|u| std::cmp::Reverse(u.order));
-    Json(json!({ "handoff_pct": HANDOFF_PCT, "red_pct": RED_PCT, "usage": rows })).into_response()
+    let usage = with_turns(&rows, &|seat| st.sessions.turn_of(seat));
+    Json(json!({
+        "handoff_pct": HANDOFF_PCT,
+        "red_pct": RED_PCT,
+        "now": crate::sessions::now_rfc3339(),
+        "usage": usage,
+    }))
+    .into_response()
+}
+
+/// c44: the rows (newest session first) with `turn_started_at` and `turn_output_at` added:
+/// when the seat's turn under way began, and when its model last put anything out in it
+/// (`null`: nothing yet). Both `null` when the seat is in no turn, the row has no seat, or the
+/// row is not its seat's newest session (an older session is not the one in the turn). Fields
+/// are only added: the rest of a row is as before.
+pub fn with_turns(
+    rows: &[Usage],
+    turn_of: &dyn Fn(&str) -> Option<crate::turns::Turn>,
+) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    rows.iter()
+        .map(|u| {
+            let newest_of_its_seat = u
+                .seat_id
+                .as_deref()
+                .filter(|s| seen.insert((*s).to_owned()));
+            let turn = newest_of_its_seat.and_then(turn_of);
+            let mut v = serde_json::to_value(u).unwrap_or_else(|_| json!({}));
+            v["turn_started_at"] = json!(turn.as_ref().map(|t| t.started_at.clone()));
+            v["turn_output_at"] = json!(turn.and_then(|t| t.output_at));
+            v
+        })
+        .collect()
 }
 
 /// The board's usage cache in the data folder.
@@ -537,6 +571,74 @@ pub async fn of_node(UrlPath(id): UrlPath<String>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// c44: a row says its seat's turn under way; only the seat's newest session does.
+    #[test]
+    fn a_usage_row_says_its_seats_turn_under_way() {
+        let row = |session: &str, seat: Option<&str>| Usage {
+            session_id: session.to_owned(),
+            seat_id: seat.map(str::to_owned),
+            model: None,
+            used: None,
+            window: None,
+            pct: None,
+            at: None,
+            last_output_at: Some("2026-11-20T09:59:00.000Z".to_owned()),
+            order: 0,
+        };
+        // newest first, as `list` sorts them
+        let rows = [
+            row("s3", Some("a")),
+            row("s2", Some("b")),
+            row("s1", Some("a")),
+            row("s0", None),
+        ];
+        let turn_of = |seat: &str| match seat {
+            "a" => Some(crate::turns::Turn {
+                started_at: "2026-11-20T10:00:01.000Z".to_owned(),
+                output_at: None,
+            }),
+            "" => Some(crate::turns::Turn {
+                started_at: "x".to_owned(),
+                output_at: None,
+            }),
+            _ => None,
+        };
+        let v = with_turns(&rows, &turn_of);
+        assert_eq!(v.len(), 4);
+        assert_eq!(
+            v[0]["turn_started_at"], "2026-11-20T10:00:01.000Z",
+            "reason: turn_not_said"
+        );
+        assert!(v[0]["turn_output_at"].is_null(), "reason: silence_not_null");
+        // the fields are there and null, not absent
+        assert!(v[1].get("turn_started_at").is_some_and(Value::is_null));
+        assert!(v[1].get("turn_output_at").is_some_and(Value::is_null));
+        assert!(
+            v[2]["turn_started_at"].is_null(),
+            "reason: older_session_in_turn"
+        );
+        assert!(
+            v[3]["turn_started_at"].is_null(),
+            "reason: seatless_in_turn"
+        );
+        // only added: what a row said before is still there
+        assert_eq!(v[0]["session_id"], "s3");
+        assert_eq!(v[0]["seat_id"], "a");
+        assert_eq!(v[0]["last_output_at"], "2026-11-20T09:59:00.000Z");
+        assert!(v[0].get("order").is_none());
+        let spoke = |_: &str| {
+            Some(crate::turns::Turn {
+                started_at: "2026-11-20T10:00:01.000Z".to_owned(),
+                output_at: Some("2026-11-20T10:00:04.000Z".to_owned()),
+            })
+        };
+        let v = with_turns(&rows[..1], &spoke);
+        assert_eq!(
+            v[0]["turn_output_at"], "2026-11-20T10:00:04.000Z",
+            "reason: output_not_said"
+        );
+    }
 
     /// 043dd 0eed7 L1: the ids under a node, children then grandchildren, a cycle walked once.
     #[test]

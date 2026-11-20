@@ -1158,6 +1158,11 @@ impl Sessions {
         self.turns.in_turn(seat_id)
     }
 
+    /// c44: the seat's turn under way (when it began, when its model last put anything out).
+    pub fn turn_of(&self, seat_id: &str) -> Option<crate::turns::Turn> {
+        self.turns.turn_of(seat_id)
+    }
+
     /// The write runs on its own thread: a provider that stops reading fills the pipe and blocks
     /// it. After `wait` the text is handed over but not yet taken ([`Written::late`]): the thread
     /// still writes it when the pipe drains (or drops it if the pipe closes), so the caller must
@@ -1658,6 +1663,11 @@ impl Sessions {
                 let codex = pipe.as_ref().and_then(|p| p.codex.clone());
                 Box::new(move |line: &[u8], cut: bool| match &codex {
                     None => {
+                        // c44: Claude prints an init line of its own at each turn's start;
+                        // only the model's lines are its output
+                        if crate::turns::claude_speaks(line, cut) {
+                            turns.output(&seat, &now_rfc3339());
+                        }
                         // W1 condition 6: a work seat's file changes and commands
                         crate::work_audit::heard(&seat, line, cut);
                         if crate::turns::ends_turn(line, cut) {
@@ -1671,6 +1681,11 @@ impl Sessions {
                         }
                     }
                     Some(c) => {
+                        // c44: codex prints lines of its own after a turn/start; only the
+                        // model's items are its output
+                        if crate::turns::codex_speaks(line, cut) {
+                            turns.output(&seat, &now_rfc3339());
+                        }
                         let h = c.heard(line, cut);
                         if let (Some(r), Some(p)) = (&h.reply, &pipe) {
                             // codex asked aibd something: answered "no" at once
