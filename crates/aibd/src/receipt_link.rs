@@ -293,7 +293,7 @@ mod tests {
                 "reason: from {bad:?}"
             );
         }
-        assert!(authorized_line(PUB, "/x/gate", "fd7a:115c:a1e0::7").is_ok());
+        assert!(authorized_line(PUB, "/x/gate", "2001:db8::7").is_ok());
         for bad in [
             "gate",
             "/x/ga te",
