@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=windows
+# aib-knives: job=rust-windows
 # #806 win-accept4 knives (a9136 11-15, 1ced7 preview.5 Windows run) that run on Windows, moved out of the
 # "aibd Windows session adapter knives (Windows)" step word for word (RULES §21; run by the shared
 # crate-knives step, crates/aib-knife/run-knives.sh rust, main #836). Each knife, put in, must turn its
