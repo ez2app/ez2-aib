@@ -2652,15 +2652,19 @@
     let r = await act(type, body);
     if (!(r && r.__status === 202 && r.ticket)) return r;
     const ticket = String(r.ticket), until = Date.now() + 120000;
-    if (wait) wait(ticket);
+    // 7b81e IFACE-owner-touch r0(1a93b 11-20):每 1 秒問一次、最長 120 秒;每一輪把剩幾秒交給畫面倒數;unavailable 直接停
+    const left = () => Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    if (wait) wait(ticket, left());
     // 7b81e 06:2x:G2 會有 GET /api/v1/owner/tickets/{ticket} ⇒ {state: pending|approved|denied|expired};有就先問狀態、過了才帶單重送一次(分得出拒絕);沒有(404)⇒ 照舊帶單重送
     let probe = true;
     for (;;) {
-      await new Promise((ok) => setTimeout(ok, 3000));
+      await new Promise((ok) => setTimeout(ok, 1000));
+      if (wait) wait(ticket, left());
       if (probe) {
         const t = await soft(get('/api/v1/owner/tickets/' + encodeURIComponent(ticket))).catch(() => null);
         const st = t && String(t.state || '');
         if (!t || !st) probe = false;
+        else if (st === 'unavailable') { const why = String(t.reason || 'owner_check_unavailable'); throw Object.assign(new Error(why), { code: 'owner_check_unavailable', reason: REPO_WHY[why] ? why : 'owner_check_unavailable' }); }
         else if (st === 'denied' || st === 'expired') throw Object.assign(new Error('finger_' + st), { code: 'finger_' + st, reason: 'finger_' + st });
         else if (st !== 'approved') { if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' }); continue; }
       }
@@ -2687,6 +2691,10 @@
     finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);要的話再按一次',
     finger_denied: '指紋視窗按了拒絕;要的話再按一次',
     finger_expired: '那張指紋單過期了;再按一次會開新的一張',
+    // 7b81e IFACE-owner-touch r0:第一步就被擋的三種
+    pair_touch_busy: '已經有一個指紋視窗開著;先回那一個再按',
+    pair_touch_cooling: '剛按了不同意,冷卻中;稍等一下再按',
+    pair_touch_limited: '一小時內問指紋太多次;晚點再試',
     preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
     settings_unreadable: '讀不到倉裡的專案設定,aibd 不收',
     hooks: 'aibd 準備不了自己的 git 設定資料夾;重開 aibd 再試',
@@ -2705,7 +2713,7 @@
     const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')).filter(Boolean) : null;
     if (!R) return '';
     const F = A.repoF;
-    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
+    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' + (F.left != null ? ' · 還有 ' + F.left + ' 秒' : '') : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
     const cur = A.repo && R.includes(A.repo) ? A.repo : '';
     return `<div class="asec"><span>在哪裡改</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,${A.mode === 'work' ? '開的時候不用按指紋(做事席照舊在沙盒裡)' : '開之前要按一次指紋'};不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${cur ? `<div class="anf"><input class="apq" data-addf="base" value="${esc(A.base || '')}" maxlength="40" placeholder="從哪一顆開始(選填,40 碼提交;空白 = 倉現在的頭)" aria-label="從哪一顆提交開始" autocomplete="off" spellcheck="false"></div>` : ''}${form}</div>`;
   }
@@ -2716,7 +2724,7 @@
     if (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path)) { F.msg = REPO_WHY.path; return render(); }
     F.busy = true; F.msg = ''; F.ticket = ''; render();
     try {
-      const r = await fingerAct('repo_register', { name, path }, (t) => { if (S.add === A && A.repoF === F) { F.ticket = t; render(); } });
+      const r = await fingerAct('repo_register', { name, path }, (t, sec) => { if (S.add === A && A.repoF === F) { F.ticket = t; F.left = sec; render(); } });
       const nm = String((r && r.name) || name);
       const v = await soft(get('/api/v1/version')).catch(() => null);
       if (v) S.version = Object.assign({}, S.version, { repos: v.repos });
@@ -2818,7 +2826,7 @@
       // 7b81e 986bce061:帶倉可給 base(40 碼小寫提交)⇒ 這一席的分支從那一顆開(例:全合頭);空白不送
       const bs = String(A.base || '').trim();
       if (body.repo && bs) { if (!/^[0-9a-f]{40}$/.test(bs)) { A.busy = false; A.msg = REPO_WHY.base; A.err = true; return render(); } body.base = bs; }
-      const r = body.repo ? await fingerAct('seat_open', body, () => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開'; render(); } }) : await act('seat_open', body);
+      const r = body.repo ? await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開 · 還有 ' + sec + ' 秒'; render(); } }) : await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
       const node = A.node !== undefined ? A.node : S.sel;
