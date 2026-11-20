@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RCK1–RCK18 (7ebca 11-20): aibd reads a receipt's .out key by key
+# N-webonly 第 4 件 knives RCK1–RCK19 (7ebca 11-20): aibd reads a receipt's .out key by key
 # (seal, head, every step's rc, tests total, knives sent = expected = bit, no red line).
 # Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail
@@ -79,4 +79,8 @@ rc '        return vec!["sandbox_skips_unexpected"];' \
 # RCK18 a red key in the sandbox is still the third result
 rc '        sandbox: reasons.is_empty() && in_sandbox,' \
    '        sandbox: in_sandbox, // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
+# RCK19 a sandbox runner's receipt with its skip lines left out reads green (5d33a M1)
+rc '    let in_sandbox = skips.is_some() || !(skipped.is_empty() && summaries.is_empty());' \
+   '    let in_sandbox = (skips.is_some() && false) || !(skipped.is_empty() && summaries.is_empty()); // knife' \
    a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
