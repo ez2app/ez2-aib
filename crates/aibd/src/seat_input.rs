@@ -47,6 +47,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::registry::BRAIN_ADD,
     crate::registry::RENAME,
     crate::repos::REGISTER,
+    crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
     crate::send_back::SEND_BACK,
@@ -366,6 +367,20 @@ pub async fn act(
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::repos::register(st, body, by).await;
+        }
+        // ORDER-today 11-21: the built-in page in this pairing reads a pull request, its
+        // checks or a run through aibd's own gh (read-only: no fingerprint; its own switch)
+        Some(crate::gh_view::KIND) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "GitHub is read from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::gh_view::page_act(st, &by, body).await;
         }
         // T1 (DESIGN-trust-t1): a seat is made trusted, or that is taken back, from the built-in
         // page in this pairing only; making it trusted then needs the owner's fingerprint
