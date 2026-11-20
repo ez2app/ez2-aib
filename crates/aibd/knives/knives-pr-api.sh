@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PA1–PA11, PO11–PO12: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
+# PA1–PA11, PW1–PW3, PO11–PO12: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pa() { python3 -I scripts/knife.py crates/aibd/src/pr_api.rs "$1" "$2" --expect-fail "pr_api::tests::$3" \
@@ -15,12 +15,12 @@ pa '        let ok = (1..=TOKEN_MAX).contains(&t.0.len())' \
    '        let ok = (1..=TOKEN_MAX * 2).contains(&t.0.len())' \
    a_token_is_one_plain_word
 # PA3 one item whatever the repository
-pa '    Some((format!("{SERVICE}{name}"), owner.to_owned()))' \
-   '    Some((format!("{SERVICE}demo{}", &name[..0]), owner.to_owned()))' \
+pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
+   '    Some((format!("{SERVICE}{owner}-demo{}", &name[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
-# PA4 one account whatever the owner
-pa '    Some((format!("{SERVICE}{name}"), owner.to_owned()))' \
-   '    Some((format!("{SERVICE}{name}"), owner[..0].to_owned() + "ez2app"))' \
+# PA4 the owner left out of the item's name (5d33a PREREAD-prapi 4)
+pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
+   '    Some((format!("{SERVICE}{name}{}", &owner[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
 # PA5 ready whatever the store has
 pa '        item_of(slug).is_some_and(|(service, account)| self.secrets.has(&service, &account))' \
@@ -50,6 +50,18 @@ pa '            pct(&format!("{owner}:{head}"))' \
 pa '                    Ok((200, list)) => found(&list),' \
    '                    Ok((_, list)) => found(&list),' \
    a_branch_that_has_one_is_answered_with_its_number
+# PW1 curl inherits the environment
+pa '            .env_clear()' \
+   '            .env("AIBD_KNIFE", "1")' \
+   curl_gets_a_fixed_argument_list_an_empty_environment_and_the_token_on_stdin
+# PW2 a quote in the words ends the config word
+pa '        if matches!(c, '"'"'\\'"'"' | '"'"'"'"'"') {' \
+   '        if matches!(c, '"'"'\\'"'"') {' \
+   a_config_word_keeps_hostile_text_as_it_is
+# PW3 an answer of any length is read
+pa '    if cut > ANSWER_MAX {' \
+   '    if cut > ANSWER_MAX * 2 {' \
+   curls_output_is_the_answer_and_a_last_line_of_status
 # PO11 a refused token answered as any failure
 po '            crate::pr_api::REFUSED => no(StatusCode::BAD_GATEWAY, "pr_token_refused"),' \
    '            crate::pr_api::REFUSED => no(StatusCode::BAD_GATEWAY, "pr_failed"),' \

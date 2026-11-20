@@ -3,16 +3,20 @@
 //!
 //! This file is the part that does not depend on how the bytes travel: which keychain item a
 //! repository's token is ([`item_of`]), the two requests ([`open_request`], [`find_request`]),
-//! and what an answer means ([`opened`], [`found`]). Reading the item is behind [`Secrets`] and
-//! sending is behind [`Wire`]; neither has a real one here yet (5d33a's pre-read decides the
-//! wire), so nothing calls `pr_open::set_api` and every machine still answers
-//! `503 pr_open_unavailable`.
+//! and what an answer means ([`opened`], [`found`]). Sending is behind [`Wire`]: [`Curl`], the
+//! system's curl with a fixed argument list, an empty environment and everything else (the
+//! address, the headers with the token, the body) on its standard input (5d33a
+//! PREREAD-prapi-7b81e 1). Reading the item is behind [`Secrets`] and has no real one yet, so
+//! nothing calls `pr_open::set_api` and every machine still answers `503 pr_open_unavailable`.
 //!
 //! What holds whatever the wire is: the token is read after the owner's fingerprint, for one
 //! call, and zeroed when that call ends; it has no `Debug`, `Display` or `Serialize`; it is
 //! looked up under the name of the very repository the request goes to; the address is put
 //! together here, the base and the draft are `pr_open`'s; nothing GitHub answers is passed on
 //! as text, and the pull request's address is built from its number, not taken from the answer.
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -21,8 +25,9 @@ use crate::pr_open::{Opened, PrApi, PrError};
 
 /// Every request goes here and nowhere else.
 pub const API: &str = "https://api.github.com";
-/// A repository's token is the keychain item with this service name followed by the
-/// repository's name, and its owner as the account (STEPS-github-token r1).
+/// A repository's token is the keychain item with this service name followed by
+/// `<owner>-<name>`, and its owner as the account (5d33a PREREAD-prapi-7b81e 4: two owners'
+/// repositories of one name never share a token).
 pub const SERVICE: &str = "ez2-aibd-github-";
 pub const TOKEN_MAX: usize = 255;
 /// [`PrError::Failed`]'s words: GitHub refused the token (expired or revoked).
@@ -89,7 +94,7 @@ pub fn item_of(slug: &str) -> Option<(String, String)> {
         return None;
     }
     let (owner, name) = slug.split_once('/')?;
-    Some((format!("{SERVICE}{name}"), owner.to_owned()))
+    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))
 }
 
 /// `text` as one piece of an address: everything but `A-Z a-z 0-9 - . _ ~` is `%XX`.
@@ -184,6 +189,110 @@ pub fn found(answer: &[u8]) -> Option<u64> {
     number.filter(|n| *n > 0)
 }
 
+/// The system's curl.
+pub const CURL: &str = "/usr/bin/curl";
+/// Its whole argument list, always: no `.curlrc`, the rest read from standard input, https
+/// only, no redirect, 20 seconds, and the status on a last line of its own.
+pub const CURL_ARGS: [&str; 15] = [
+    "-q",
+    "--config",
+    "-",
+    "--silent",
+    "--show-error",
+    "--proto",
+    "=https",
+    "--max-redirs",
+    "0",
+    "--max-time",
+    "20",
+    "--max-filesize",
+    "262144",
+    "--write-out",
+    "\n%{http_code}",
+];
+/// An answer longer than this is not read.
+pub const ANSWER_MAX: usize = 256 * 1024;
+
+/// `text` as a quoted word of a curl config: only `\` and `"` mean something inside one
+/// that has no control character (a JSON text and an address have none).
+pub fn quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        if matches!(c, '\\' | '"') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// What curl reads on its standard input for one request.
+pub fn config(req: &Request, token: &Token) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut line = |key: &str, value: &str| {
+        out.extend_from_slice(format!("{key} = {}\n", quoted(value)).as_bytes());
+    };
+    line("url", &req.url);
+    line("request", req.method);
+    line("header", "Accept: application/vnd.github+json");
+    line("header", "X-GitHub-Api-Version: 2022-11-28");
+    line("header", "User-Agent: aibd");
+    if let Some(body) = &req.body {
+        line("header", "Content-Type: application/json");
+        line("data", body);
+    }
+    // the token's own line is put together as bytes: it never becomes a String
+    out.extend_from_slice(b"header = \"Authorization: Bearer ");
+    out.extend_from_slice(token.expose());
+    out.extend_from_slice(b"\"\n");
+    out
+}
+
+/// curl's output: the answer, then the status on the last line.
+pub fn answer(out: &[u8]) -> Result<(u16, Vec<u8>), &'static str> {
+    let cut = out.iter().rposition(|b| *b == b'\n').ok_or("answer")?;
+    let status = std::str::from_utf8(&out[cut + 1..])
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or("answer")?;
+    if cut > ANSWER_MAX {
+        return Err("answer");
+    }
+    Ok((status, out[..cut].to_vec()))
+}
+
+/// [`Wire`] through a curl program ([`CURL`] outside tests).
+pub struct Curl(pub PathBuf);
+
+impl Wire for Curl {
+    fn send(&self, req: &Request, token: &Token) -> Result<(u16, Vec<u8>), &'static str> {
+        let mut child = Command::new(&self.0)
+            .args(CURL_ARGS)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "spawn")?;
+        let mut cfg = config(req, token);
+        // written whole, then closed (the handle is dropped with the closure)
+        let wrote = child.stdin.take().map(|mut i| i.write_all(&cfg));
+        for b in &mut cfg {
+            *b = 0;
+        }
+        let out = child.wait_with_output().map_err(|_| "wait")?;
+        if !matches!(wrote, Some(Ok(()))) {
+            return Err("write");
+        }
+        if !out.status.success() {
+            return Err("curl");
+        }
+        answer(&out.stdout)
+    }
+}
+
 /// [`PrApi`] with a token store and a wire.
 pub struct GitHub {
     pub secrets: Arc<dyn Secrets>,
@@ -263,7 +372,11 @@ mod tests {
     }
 
     fn github(answers: Vec<Answer>) -> (GitHub, Arc<Fake>, Arc<Store>) {
-        let store = Arc::new(Store("ez2-aibd-github-demo", "ez2app", Mutex::new(0)));
+        let store = Arc::new(Store(
+            "ez2-aibd-github-ez2app-demo",
+            "ez2app",
+            Mutex::new(0),
+        ));
         let wire = Arc::new(Fake(Mutex::new(Vec::new()), Mutex::new(answers)));
         (
             GitHub {
@@ -320,7 +433,10 @@ mod tests {
     fn a_token_is_the_item_named_after_the_repository_and_read_once_per_call() {
         assert_eq!(
             item_of("ez2app/ez2-aib"),
-            Some(("ez2-aibd-github-ez2-aib".to_owned(), "ez2app".to_owned()))
+            Some((
+                "ez2-aibd-github-ez2app-ez2-aib".to_owned(),
+                "ez2app".to_owned()
+            ))
         );
         for bad in ["", "one", "a/b/c", "-o/r", "o/..", "o /r", "o/r\n"] {
             assert_eq!(item_of(bad), None, "reason: item_of_{bad:?}");
@@ -431,6 +547,135 @@ mod tests {
         assert_eq!(
             g.open("ez2app/demo", "web/x", "main", "t", "b", true),
             Err(PrError::Failed(OTHER.to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_config_word_keeps_hostile_text_as_it_is() {
+        assert_eq!(quoted("plain"), "\"plain\"");
+        assert_eq!(quoted("a \"b\" c\\d"), "\"a \\\"b\\\" c\\\\d\"");
+        // a JSON text: its own escapes (\n, \t, \u0000) are backslashes, doubled here
+        let body =
+            json!({"title": "q\" b\\ \u{e9}\u{4e2d}", "body": "l1\nl2\t\r\u{b}\u{0}"}).to_string();
+        let word = quoted(&body);
+        assert!(!word.contains('\n'), "reason: raw_line_break_in_config");
+        // undo what curl undoes: \\ and \" only (the text holds no other escape curl knows,
+        // because every backslash in it was doubled)
+        let inner = &word[1..word.len() - 1];
+        let mut back = String::new();
+        let mut it = inner.chars();
+        while let Some(c) = it.next() {
+            if c == '\\' {
+                back.push(it.next().unwrap());
+            } else {
+                assert_ne!(c, '"', "reason: bare_quote_in_config");
+                back.push(c);
+            }
+        }
+        assert_eq!(back, body, "reason: config_word_changed_the_text");
+        let req = open_request("o/r", "web/x", "main", "t \"q\"", "b", true);
+        let cfg = String::from_utf8(config(&req, &Token::new(b"tok-9".to_vec()).unwrap())).unwrap();
+        let lines: Vec<&str> = cfg.lines().collect();
+        assert_eq!(lines[0], "url = \"https://api.github.com/repos/o/r/pulls\"");
+        assert_eq!(lines[1], "request = \"POST\"");
+        assert_eq!(
+            lines.last().copied(),
+            Some("header = \"Authorization: Bearer tok-9\""),
+            "reason: token_line"
+        );
+        assert_eq!(lines.len(), 8, "reason: config_lines {cfg}");
+        assert!(lines[6].starts_with("data = \"{"), "{cfg}");
+        // a GET has no body line and no content type
+        let get = String::from_utf8(config(
+            &find_request("o/r", "web/x"),
+            &Token::new(b"tok-9".to_vec()).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(get.lines().count(), 6, "{get}");
+        assert!(!get.contains("data = "), "{get}");
+    }
+
+    #[test]
+    fn curls_output_is_the_answer_and_a_last_line_of_status() {
+        assert_eq!(
+            answer(b"{\"number\":5}\n201"),
+            Ok((201, b"{\"number\":5}".to_vec()))
+        );
+        assert_eq!(answer(b"\n404"), Ok((404, Vec::new())));
+        assert_eq!(answer(b"a\nb\n422"), Ok((422, b"a\nb".to_vec())));
+        for bad in [&b""[..], b"201", b"x\n", b"x\nabc", b"x\n99999", b"x\n-1"] {
+            assert_eq!(answer(bad), Err("answer"), "reason: answer_{bad:?}");
+        }
+        let mut long = vec![b'x'; ANSWER_MAX + 1];
+        long.extend_from_slice(b"\n200");
+        assert_eq!(answer(&long), Err("answer"), "reason: long_answer_read");
+        let mut most = vec![b'x'; ANSWER_MAX];
+        most.extend_from_slice(b"\n200");
+        assert!(answer(&most).is_ok());
+    }
+
+    /// 5d33a PREREAD-prapi-7b81e 1: `-q` first, the whole list fixed, an empty environment,
+    /// the token on standard input only.
+    #[cfg(unix)]
+    #[test]
+    fn curl_gets_a_fixed_argument_list_an_empty_environment_and_the_token_on_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("curl");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$0.argv\"\n\
+             /usr/bin/env > \"$0.env\"\n/bin/cat > \"$0.stdin\"\nprintf '{\"number\":5}\\n201'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("AIBD_PR_API_TEST_LEAK", "1");
+        let token = Token::new(b"tok-secret-7".to_vec()).unwrap();
+        let req = open_request("o/r", "web/x", "main", "t", "b", true);
+        let got = Curl(fake.clone()).send(&req, &token);
+        assert_eq!(got, Ok((201, b"{\"number\":5}".to_vec())));
+        let read =
+            |ext: &str| std::fs::read_to_string(format!("{}.{ext}", fake.display())).unwrap();
+        let argv = read("argv");
+        assert_eq!(
+            argv.lines().collect::<Vec<_>>(),
+            [
+                "-q",
+                "--config",
+                "-",
+                "--silent",
+                "--show-error",
+                "--proto",
+                "=https",
+                "--max-redirs",
+                "0",
+                "--max-time",
+                "20",
+                "--max-filesize",
+                "262144",
+                "--write-out",
+                "",
+                "%{http_code}",
+            ],
+            "reason: curl_arguments"
+        );
+        assert!(!argv.contains("tok-secret-7"), "reason: token_in_arguments");
+        let env = read("env");
+        assert!(
+            !env.contains("AIBD_PR_API_TEST_LEAK") && !env.contains("HOME="),
+            "reason: environment_not_empty {env}"
+        );
+        assert_eq!(
+            read("stdin").into_bytes(),
+            config(&req, &token),
+            "reason: stdin"
+        );
+        // a curl that fails is one fixed word
+        std::fs::write(&fake, "#!/bin/sh\n/bin/cat > /dev/null\nexit 22\n").unwrap();
+        assert_eq!(Curl(fake).send(&req, &token), Err("curl"));
+        assert_eq!(
+            Curl(dir.path().join("none")).send(&req, &token),
+            Err("spawn")
         );
     }
 
