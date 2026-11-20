@@ -68,4 +68,19 @@ ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.
 // 6. 做事席帶倉開的時候 aibd 不問指紋(7b81e 986bce061 asked_now = mode != work)⇒「在哪裡改」對做事席不能說要按指紋
 if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs'))) ok(/A\.mode === 'work' \? '開的時候不用按指紋/.test(ws), 'reason: work_repo_says_fingerprint');
 
+// 7. 每個控制項都要有 class(同 crates/aibd/tests/page_controls.rs;那支要 cargo,這裡本機就抓得到。igt1 收據 rcpsc 兩個 radio 漏了)
+{
+  const openTag = (at) => { let d = 0; for (let i = at + 1; i < ws.length; i++) { const c = ws[i]; if (c === '$' && ws[i + 1] === '{') { d++; i++; } else if (c === '}' && d > 0) d--; else if (c === '>' && d === 0) return ws.slice(at, i + 1); } return ws.slice(at); };
+  const bad = [];
+  for (const tag of ['button', 'select', 'textarea', 'details', 'summary', 'input']) {
+    for (let from = 0, at; (at = ws.indexOf('<' + tag, from)) >= 0; from = at + tag.length + 1) {
+      if (/[A-Za-z0-9_-]/.test(ws[at + tag.length + 1] || ' ')) continue;
+      const t = openTag(at);
+      if (t.includes('type="hidden"') || t.includes('class="')) continue;
+      bad.push('ws.js:' + (ws.slice(0, at).split('\n').length) + ' ' + t.slice(0, 80));
+    }
+  }
+  ok(!bad.length, 'reason: control_without_class\n' + bad.join('\n'));
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
