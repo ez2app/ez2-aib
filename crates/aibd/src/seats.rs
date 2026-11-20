@@ -369,7 +369,10 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
 /// sets its own status line through aibd, as itself (both routes already took the seat token).
 /// seat_tree (0eed7 RETRACT-T4 M1, 11-20): the reviewer reads the author's tree through aibd's
 /// tree read (aibd lets only the reviewer on a shared node in).
-pub const TALK_TOOLS: [&str; 12] = [
+/// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
+/// and reads its own runs (receipt_run::seat_act: its own seat only; what runs anywhere still
+/// waits for the owner's fingerprint).
+pub const TALK_TOOLS: [&str; 13] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
@@ -382,6 +385,7 @@ pub const TALK_TOOLS: [&str; 12] = [
     "mcp__aibd__plan_note",
     "mcp__aibd__seat_now",
     "mcp__aibd__seat_tree",
+    "mcp__aibd__seat_receipt",
 ];
 
 /// S89-talk-1 (DECISION-council-seat-talk §四席一致): the argv a claude seat gets for talking
@@ -2739,7 +2743,8 @@ mod tests {
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
              mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send,\
-             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree",
+             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,\
+             mcp__aibd__seat_receipt",
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once
