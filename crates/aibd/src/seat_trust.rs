@@ -124,10 +124,10 @@ pub fn ask_of(seat_id: &str, f: &Facts, by: String) -> crate::owner_ok::Ask {
     let repo = if f.remote.is_empty() {
         "沒有倉".to_owned()
     } else {
-        // the host's first 30: the seat's code ahead of it is never pushed out of the window
+        // the host's first 24 (with the code, mode, hours and digest: 75 of the window's 80): the seat's code ahead of it is never pushed out of the window
         let host: String = crate::repos::remote_host(&f.remote)
             .chars()
-            .take(30)
+            .take(24)
             .collect();
         format!("remote {host}")
     };
