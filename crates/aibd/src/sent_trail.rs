@@ -271,7 +271,7 @@ pub fn of_seat(data: &Path, seat_id: &str) -> (Vec<Value>, usize) {
     let waiting = mine.iter().filter(|(_, e)| next_of(e.state).is_some());
     let over = mine.iter().filter(|(_, e)| next_of(e.state).is_none());
     let mut kept: Vec<&(usize, &Entry)> = waiting.chain(over).take(SHOWN).collect();
-    kept.sort_by(|a, b| b.0.cmp(&a.0));
+    kept.sort_by_key(|k| std::cmp::Reverse(k.0));
     let shown = kept
         .iter()
         .map(|(_, e)| {
