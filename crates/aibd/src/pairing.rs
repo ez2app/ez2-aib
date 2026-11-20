@@ -604,6 +604,21 @@ impl Pairing {
         }
     }
 
+    /// An owner window outside pairing (owner_ok, a63) goes through the same gate as pairing's
+    /// own: one window at a time, the cool-down after a no, and the 3 in 10 minutes / 6 an hour
+    /// over the whole aibd (5d33a PREREAD-ownertouch L1: no alternating two kinds of window).
+    pub fn window_open(&self) -> Result<(), &'static str> {
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        let owner_counted = true;
+        Self::touch_gate(&mut inner, now, owner_counted)
+    }
+
+    /// The window [`Self::window_open`] let open has closed; a no starts the cool-down.
+    pub fn window_closed(&self, yes: bool) {
+        self.touch_done(yes)
+    }
+
     /// Whether a carried pairing can be re-confirmed here: the fingerprint channel with its key.
     /// The page reads this off a refusal (`reconfirm`) before it offers the window (519d0
     /// 01:41: probe, then fall back to "pair again").

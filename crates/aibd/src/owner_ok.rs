@@ -129,12 +129,6 @@ pub const WIRED: [&str; 2] = [crate::repos::OP_REGISTER, crate::repos::OP_OPEN];
 /// How long a ticket lives: the owner answers and the page resends within it.
 pub const TICKET_SECS: u64 = 120;
 
-/// After a no, no window for this long (a same-account AI raising window after window).
-pub const COOL_SECS: u64 = 30;
-
-/// At most this many windows an hour.
-pub const PER_HOUR: usize = 6;
-
 /// The switch: the owner's fingerprint for page asks, only with `AIBD_PAIRING=touchid` and a
 /// checked key (default off: every ask stays [`UNAVAILABLE`]).
 pub const SWITCH: &str = "AIBD_OWNER_TOUCH";
@@ -147,9 +141,36 @@ pub fn switch_on(v: Option<String>) -> bool {
 static OWNER: std::sync::OnceLock<std::sync::Arc<Owner>> = std::sync::OnceLock::new();
 
 /// Called once at start when [`SWITCH`] is `1` and the fingerprint key checked out (the first
-/// call wins).
-pub fn set_presence(p: crate::touch::SharedPresence) {
-    let _ = OWNER.set(std::sync::Arc::new(Owner::new(p, unix_now)));
+/// call wins); the windows share pairing's gate.
+pub fn set_presence(p: crate::touch::SharedPresence, gate: std::sync::Arc<dyn WindowGate>) {
+    let _ = OWNER.set(std::sync::Arc::new(Owner::new(p, gate, unix_now)));
+}
+
+/// The one gate every fingerprint window of this aibd passes ([`crate::pairing::Pairing`]).
+pub trait WindowGate: Send + Sync {
+    fn open(&self) -> Result<(), &'static str>;
+    fn closed(&self, yes: bool);
+}
+
+impl WindowGate for crate::pairing::Pairing {
+    fn open(&self) -> Result<(), &'static str> {
+        self.window_open()
+    }
+    fn closed(&self, yes: bool) {
+        self.window_closed(yes)
+    }
+}
+
+/// Closes the window in the gate even when the window's thread panics (5d33a N1).
+struct Closing {
+    gate: std::sync::Arc<dyn WindowGate>,
+    yes: bool,
+}
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        self.gate.closed(self.yes);
+    }
 }
 
 fn unix_now() -> u64 {
@@ -202,55 +223,30 @@ struct Slot {
     state: State,
 }
 
-#[derive(Default)]
-struct Gate {
-    busy: bool,
-    cool_until: u64,
-    opened: Vec<u64>,
-}
-
 /// The tickets of this aibd, in memory only: a restart drops them all.
 pub struct Owner {
     presence: crate::touch::SharedPresence,
     slots: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
-    gate: std::sync::Mutex<Gate>,
+    gate: std::sync::Arc<dyn WindowGate>,
     clock: fn() -> u64,
 }
 
 impl Owner {
-    pub fn new(presence: crate::touch::SharedPresence, clock: fn() -> u64) -> Owner {
+    pub fn new(
+        presence: crate::touch::SharedPresence,
+        gate: std::sync::Arc<dyn WindowGate>,
+        clock: fn() -> u64,
+    ) -> Owner {
         Owner {
             presence,
             slots: std::sync::Mutex::default(),
-            gate: std::sync::Mutex::default(),
+            gate,
             clock,
         }
     }
 
     fn slots(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Slot>> {
         self.slots.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn gate(&self) -> std::sync::MutexGuard<'_, Gate> {
-        self.gate.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// One window at a time, none while cooling after a no, [`PER_HOUR`] an hour.
-    fn open_window(&self, now: u64) -> Result<(), &'static str> {
-        let mut g = self.gate();
-        if g.busy {
-            return Err("owner_touch_busy");
-        }
-        if now < g.cool_until {
-            return Err("owner_touch_cooling");
-        }
-        g.opened.retain(|t| now < t + 3600);
-        if g.opened.len() >= PER_HOUR {
-            return Err("owner_touch_limited");
-        }
-        g.busy = true;
-        g.opened.push(now);
-        Ok(())
     }
 
     /// `spawn` runs the window (a thread in aibd, inline in tests).
@@ -263,7 +259,7 @@ impl Owner {
         let Ok(ticket) = crate::sessions::new_id("ot_") else {
             return Asked::Unavailable(UNAVAILABLE);
         };
-        if let Err(why) = self.open_window(now) {
+        if let Err(why) = self.gate.open() {
             return Asked::Unavailable(why);
         }
         {
@@ -292,7 +288,13 @@ impl Owner {
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
+            let mut closing = Closing {
+                gate: me.gate.clone(),
+                yes: false,
+            };
             let got = me.presence.ask(&why, &msg);
+            closing.yes = got.is_ok();
+            drop(closing);
             me.answered(&t, got);
         }));
         Asked::Ticket(ticket)
@@ -300,13 +302,6 @@ impl Owner {
 
     fn answered(&self, ticket: &str, got: Result<(), &'static str>) {
         let now = (self.clock)();
-        {
-            let mut g = self.gate();
-            g.busy = false;
-            if got.is_err() {
-                g.cool_until = now + COOL_SECS;
-            }
-        }
         let mut s = self.slots();
         let Some(slot) = s.get_mut(ticket) else {
             return;
@@ -565,8 +560,11 @@ mod tests {
         x.operation = crate::repos::OP_REGISTER;
         x
     }
+    fn gate() -> std::sync::Arc<dyn WindowGate> {
+        std::sync::Arc::new(crate::pairing::Pairing::default())
+    }
     fn owner(says: Result<(), &'static str>) -> std::sync::Arc<Owner> {
-        std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(says)), now))
+        std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(says)), gate(), now))
     }
     fn inline(f: Box<dyn FnOnce() + Send>) {
         f()
@@ -602,7 +600,7 @@ mod tests {
         assert!(!o.approved_for(&t, &reg()), "reason: pending_approved");
         assert_eq!(
             o.ask(&reg(), inline),
-            Asked::Unavailable("owner_touch_busy"),
+            Asked::Unavailable("pair_touch_busy"),
             "reason: two_windows"
         );
         let run = held.lock().unwrap().take().unwrap();
@@ -659,8 +657,11 @@ mod tests {
 
     #[test]
     fn a_no_cools_the_window_and_an_hour_holds_six() {
+        // the owner windows pass pairing's own gate (5d33a L1): a no cools both kinds
+        let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());
         let o = std::sync::Arc::new(Owner::new(
             std::sync::Arc::new(Says(Err("presence_cancelled"))),
+            pairing.clone(),
             || 10_000,
         ));
         let t = ticket(o.ask(&reg(), inline));
@@ -671,11 +672,24 @@ mod tests {
         assert!(!o.approved_for(&t, &reg()), "reason: no_approves");
         assert_eq!(
             o.ask(&reg(), inline),
-            Asked::Unavailable("owner_touch_cooling"),
+            Asked::Unavailable("pair_touch_cooling"),
             "reason: no_cool"
         );
-        let o = std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(Ok(()))), || 20_000));
-        for i in 0..PER_HOUR {
+        assert_eq!(
+            pairing.window_open(),
+            Err("pair_touch_cooling"),
+            "reason: pairing_not_cooled"
+        );
+        // the count is over the whole aibd: pairing's own windows and the owner's together
+        let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());
+        let o = std::sync::Arc::new(Owner::new(
+            std::sync::Arc::new(Says(Ok(()))),
+            pairing.clone(),
+            || 20_000,
+        ));
+        assert_eq!(pairing.window_open(), Ok(()));
+        pairing.window_closed(true);
+        for i in 1..crate::pairing::RECONFIRM_SHORT_MAX {
             assert!(
                 matches!(o.ask(&reg(), inline), Asked::Ticket(_)),
                 "reason: window {i}"
@@ -683,8 +697,30 @@ mod tests {
         }
         assert_eq!(
             o.ask(&reg(), inline),
-            Asked::Unavailable("owner_touch_limited"),
-            "reason: hour_limit"
+            Asked::Unavailable("pair_touch_limited"),
+            "reason: limit_apart"
+        );
+        // a window whose thread panics still closes in the gate (5d33a N1)
+        struct Boom;
+        impl crate::touch::Presence for Boom {
+            fn ask(&self, _r: &str, _m: &[u8]) -> Result<(), &'static str> {
+                panic!("precondition: the window panics")
+            }
+        }
+        let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());
+        let o = std::sync::Arc::new(Owner::new(
+            std::sync::Arc::new(Boom),
+            pairing.clone(),
+            || 30_000,
+        ));
+        let t = ticket(o.ask(&reg(), |f| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        }));
+        assert_eq!(o.state(&t, "page:0123abcd"), State::Pending);
+        assert_eq!(
+            pairing.window_open(),
+            Err("pair_touch_cooling"),
+            "reason: panic_left_busy"
         );
         // the window's words and the signed bytes carry this ticket and these params
         let b = String::from_utf8(binding("ot_1", &reg())).unwrap();
