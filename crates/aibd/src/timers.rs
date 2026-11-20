@@ -320,6 +320,14 @@ pub static RECEIPT_POLL: Timer = Timer::resident(
     "only while a receipt run waits for its owner or runs (<data>/receipt_runs.json): ask the runner for each one's .out and read it, stop when none is under way (N-webonly 4, 7ebca 11-20)",
 );
 
+/// N-webonly 第 4 件 (b4297 11-21): the runner waits for the owner's answer to one receipt's card.
+pub static RECEIPT_OWNER_WAIT: Timer = Timer::operation(
+    "receipt.owner_wait",
+    secs(1),
+    secs(130),
+    "only while one receipt's fingerprint card is out: re-read the ticket until the owner answers, give up when the ticket has ended (N-webonly 4, b4297 11-21)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -342,6 +350,7 @@ pub static ALL: &[&Timer] = &[
     &DM_MIRROR,
     &SEAT_TICK,
     &RECEIPT_POLL,
+    &RECEIPT_OWNER_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

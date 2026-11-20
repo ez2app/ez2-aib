@@ -418,6 +418,14 @@ pub async fn run(
     // ORDER-webonly-today 7: the timed sentences the page set, if any
     crate::seat_tick::ensure_started(state.clone());
     // N-webonly 第 4 件: receipts that were under way when aibd stopped are fetched again
+    // ... and the runner behind them, only with AIBD_RECEIPT_RUN=1 (b4297's half; without a
+    // link it still refuses every request)
+    if crate::receipt_runner::set_at_start(
+        &state,
+        std::env::var(crate::receipt_runner::SWITCH).ok(),
+    ) {
+        tracing::warn!("a page may ask for receipts on a pinned test machine (AIBD_RECEIPT_RUN=1)");
+    }
     crate::receipt_run::ensure_polling(state.clone());
     let redeliver_state = state.clone();
     tokio::spawn(async move {

@@ -166,17 +166,18 @@ pub fn make(
     got
 }
 
+/// A registered repo and a seat's copy of it, for this module's tests and the runner's.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
     use crate::seat_worktree::{open_clone, tree_path};
     use std::path::PathBuf;
     use std::process::Command;
 
-    const IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+    pub(crate) const IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
-    fn g(dir: &Path, args: &[&str]) {
+    pub(crate) fn g(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -194,7 +195,7 @@ mod tests {
         assert!(ok, "git {args:?}");
     }
 
-    fn out(dir: &Path, args: &[&str]) -> String {
+    pub(crate) fn out(dir: &Path, args: &[&str]) -> String {
         let o = Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -204,23 +205,23 @@ mod tests {
         String::from_utf8_lossy(&o.stdout).trim().to_owned()
     }
 
-    fn lock(source: &str) -> String {
+    pub(crate) fn lock(source: &str) -> String {
         format!(
             "version = 4\n\n[[package]]\nname = \"sha2\"\nversion = \"0.10.9\"\nsource = \"{source}\"\n"
         )
     }
 
-    struct Fix {
-        _repo_dir: tempfile::TempDir,
-        data: tempfile::TempDir,
-        repo: PathBuf,
-        tree: PathBuf,
-        hooks: PathBuf,
-        main: String,
+    pub(crate) struct Fix {
+        pub(crate) _repo_dir: tempfile::TempDir,
+        pub(crate) data: tempfile::TempDir,
+        pub(crate) repo: PathBuf,
+        pub(crate) tree: PathBuf,
+        pub(crate) hooks: PathBuf,
+        pub(crate) main: String,
     }
 
     impl Fix {
-        fn commit(&self, file: &str, body: &str) -> String {
+        pub(crate) fn commit(&self, file: &str, body: &str) -> String {
             let f = self.tree.join(file);
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, body).unwrap();
@@ -228,13 +229,13 @@ mod tests {
             g(&self.tree, &["commit", "-q", "-m", file]);
             out(&self.tree, &["rev-parse", "HEAD"])
         }
-        fn bundle(&self, n: usize) -> PathBuf {
+        pub(crate) fn bundle(&self, n: usize) -> PathBuf {
             self.data
                 .path()
                 .join("receipts")
                 .join(format!("b{n}.bundle"))
         }
-        fn make(&self, head: &str, n: usize) -> Result<Made, &'static str> {
+        pub(crate) fn make(&self, head: &str, n: usize) -> Result<Made, &'static str> {
             let scratch = self.data.path().join("receipts").join(format!("s{n}"));
             let got = make(
                 &self.repo,
@@ -250,7 +251,7 @@ mod tests {
     }
 
     /// A registered repo whose `origin/main` is its one commit, and a seat's copy of it.
-    fn fix() -> Fix {
+    pub(crate) fn fix() -> Fix {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo = repo_dir.path().to_path_buf();
         g(&repo, &["init", "-q"]);
@@ -274,6 +275,13 @@ mod tests {
             main,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    use super::fixture::{fix, g, lock, out};
+    use super::*;
 
     #[test]
     fn name_status_output_is_read_in_pairs() {

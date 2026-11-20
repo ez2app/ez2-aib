@@ -294,6 +294,442 @@ pub fn fetched(stdout: &[u8]) -> Fetched {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Slice R4b: the runner. Everything that leaves this machine goes through [`Link`]; what the
+// owner says comes through [`Owner`]; what aibd knows comes through [`Facts`]. Each has a
+// real side ([`Link`]: aibd's own key and ssh, R3; [`TouchOwner`]; [`AibdFacts`]) and a
+// double in the tests below.
+
+/// How aibd says one line to a pinned machine and hears its answer: the delegate key's ssh
+/// (R3). A machine that cannot be reached, or an answer that did not come in `secs`, is no
+/// bytes at all.
+pub trait Link: Send + Sync {
+    /// Whether anything can be reached at all (the key exists, ssh is there). `false`: a
+    /// request is refused `no_host` before a bundle is made or a card is raised.
+    fn ready(&self) -> bool;
+    /// Says `line` to `host`, the file `stdin` (the bundle) on its standard input, and
+    /// returns what it printed.
+    fn say(
+        &self,
+        host: &TrustedHost,
+        line: &str,
+        stdin: Option<&std::path::Path>,
+        secs: u64,
+    ) -> Vec<u8>;
+}
+
+/// The link aibd has until R3 sets one: nothing is reached, so nothing is asked either.
+pub struct NoLink;
+
+impl Link for NoLink {
+    fn ready(&self) -> bool {
+        false
+    }
+    fn say(&self, _: &TrustedHost, _: &str, _: Option<&std::path::Path>, _: u64) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+/// The owner's answer to one run's card. Blocking: it returns when the owner answered or
+/// the card ended. `true` only for a fingerprint given for exactly this ask.
+pub trait Owner: Send + Sync {
+    fn approves(&self, ask: &crate::owner_ok::Ask) -> bool;
+}
+
+/// The owner asked through [`crate::owner_ok`]: a ticket, the fingerprint window, the
+/// ticket re-read each second until it is answered, then used up against this very ask.
+pub struct TouchOwner;
+
+impl Owner for TouchOwner {
+    fn approves(&self, ask: &crate::owner_ok::Ask) -> bool {
+        use crate::owner_ok::{Asked, State};
+        let Asked::Ticket(ticket) = crate::owner_ok::ask(ask) else {
+            return false;
+        };
+        let op = crate::timers::RECEIPT_OWNER_WAIT.begin(None);
+        loop {
+            match crate::owner_ok::state(&ticket, &ask.by) {
+                State::Pending => {
+                    if !op.tick() {
+                        return false;
+                    }
+                }
+                State::Approved { .. } => return crate::owner_ok::approved_for(&ticket, ask),
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// A seat's copy as the runner needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatCopy {
+    /// The seat's copy of a registered repo.
+    pub tree: std::path::PathBuf,
+    /// The registered repo it is a copy of.
+    pub repo: std::path::PathBuf,
+    /// aibd's empty hooks folder (its parent is git's home).
+    pub hooks: std::path::PathBuf,
+}
+
+/// What the runner is told about this machine and what it tells back.
+pub trait Facts: Send + Sync {
+    /// The pinned machines ([`crate::trusted_hosts`]).
+    fn hosts(&self) -> Vec<TrustedHost>;
+    /// Whether the seat is trusted to ask now ([`crate::trusted_seats`]).
+    fn trusted(&self, seat_id: &str) -> bool;
+    /// The seat's copy and the head it is on, read as plain files.
+    fn copy_of(&self, seat_id: &str) -> Option<(SeatCopy, String)>;
+    /// A folder of aibd's own for bundles and scratch repositories.
+    fn work_dir(&self) -> std::path::PathBuf;
+    /// The owner answered the card of `run_id` ([`crate::receipt_run::owner_answered`]).
+    /// `false`: the run no longer waits for it (withdrawn).
+    fn owner_answered(&self, run_id: &str, ok: bool) -> bool;
+    /// The run ended with no `.out` ([`crate::receipt_run::runner_lost`]).
+    fn ended(&self, run_id: &str, why: &'static str);
+}
+
+/// A read that brought no answer this many times in a row ends the run `lost` (at the
+/// 30-second pass: twenty minutes of a machine that does not answer).
+pub const MISSED_READS: u32 = 40;
+/// How long the line that sends the bundle may take.
+pub const SEND_SECS: u64 = 900;
+/// How long a read or a cancel may take (5d33a PREREAD N5: a read answers within 20 s).
+pub const READ_SECS: u64 = 20;
+
+#[derive(Debug, Clone)]
+struct Known {
+    host: TrustedHost,
+    /// The machine answered `OK run`: before that nothing is asked of it for this run.
+    sent: bool,
+    /// Reads in a row that brought no answer.
+    missed: u32,
+    /// Withdrawn while it was being prepared or sent.
+    withdrawn: bool,
+}
+
+/// The runner behind [`crate::receipt_run::ReceiptRunner`] ([`Started`]).
+pub struct Runner {
+    facts: std::sync::Arc<dyn Facts>,
+    link: std::sync::Arc<dyn Link>,
+    owner: std::sync::Arc<dyn Owner>,
+    /// The runs this aibd is preparing or has sent.
+    runs: std::sync::Mutex<std::collections::HashMap<String, Known>>,
+}
+
+impl Runner {
+    pub fn new(
+        facts: std::sync::Arc<dyn Facts>,
+        link: std::sync::Arc<dyn Link>,
+        owner: std::sync::Arc<dyn Owner>,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            facts,
+            link,
+            owner,
+            runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    fn runs(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Known>> {
+        self.runs.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn withdrawn(&self, run_id: &str) -> bool {
+        self.runs().get(run_id).is_none_or(|k| k.withdrawn)
+    }
+
+    /// What is checked before a request is taken: quick, nothing leaves the machine. The
+    /// run is known from here on.
+    pub fn check(
+        &self,
+        ask: &crate::receipt_run::Ask,
+    ) -> Result<(TrustedHost, SeatCopy), &'static str> {
+        if !self.link.ready() {
+            return Err("no_host");
+        }
+        // first version: the whole workspace; a narrow receipt is never green
+        if ask.narrow || !ask.tests.is_empty() {
+            return Err("receipt_not_allowed");
+        }
+        let host = pick(&self.facts.hosts()).cloned().ok_or("no_host")?;
+        if !self.facts.trusted(&ask.seat_id) {
+            return Err("receipt_not_allowed");
+        }
+        let (copy, head) = self
+            .facts
+            .copy_of(&ask.seat_id)
+            .ok_or("receipt_not_allowed")?;
+        if head != ask.head {
+            return Err("head_not_seat_head");
+        }
+        self.runs().insert(
+            ask.run_id.clone(),
+            Known {
+                host: host.clone(),
+                sent: false,
+                missed: 0,
+                withdrawn: false,
+            },
+        );
+        Ok((host, copy))
+    }
+
+    /// One run from the bundle to the machine (on a thread of its own in aibd): the bundle
+    /// is made and judged, the owner is asked for exactly that bundle on exactly that
+    /// machine, and only a yes sends it. Every way it stops is told through [`Facts`].
+    pub fn carry(&self, ask: &crate::receipt_run::Ask, host: &TrustedHost, copy: &SeatCopy) {
+        let run_id = ask.run_id.as_str();
+        let dir = self.facts.work_dir();
+        let bundle = dir.join(format!("{run_id}.bundle"));
+        let scratch = dir.join(format!("{run_id}.scratch"));
+        let made = match crate::receipt_bundle::make(
+            &copy.repo,
+            &copy.tree,
+            &ask.head,
+            &copy.hooks,
+            &scratch,
+            &bundle,
+        ) {
+            Ok(m) => m,
+            Err(why) => {
+                // no card was raised: the run ends with the reason
+                self.runs().remove(run_id);
+                self.facts.ended(run_id, why);
+                return;
+            }
+        };
+        let sent = Sent {
+            host: &host.name,
+            run_id,
+            head: &ask.head,
+            base: &made.base,
+            bundle_sha256: &made.sha256,
+            knives_sha256: NO_KNIVES_SHA256,
+        };
+        let card = owner_ask(&sent, &made.brings, format!("receipt:{run_id}"));
+        let yes = !self.withdrawn(run_id) && self.owner.approves(&card);
+        // the answer is written first: a run withdrawn meanwhile is no longer waiting
+        let still = self.facts.owner_answered(run_id, yes);
+        if !yes || !still || self.withdrawn(run_id) {
+            self.runs().remove(run_id);
+            let _ = std::fs::remove_file(&bundle);
+            return;
+        }
+        let said = run_words(run_id, &ask.head, made.len, &made.sha256)
+            .map_err(|_| "refused")
+            .map(|line| self.link.say(host, &line, Some(&bundle), SEND_SECS))
+            .and_then(|out| answer(&out, "run"));
+        let _ = std::fs::remove_file(&bundle);
+        // withdrawn while the bundle was on its way: the machine may have started it
+        let gone = self.withdrawn(run_id);
+        if gone {
+            if let Ok(line) = cancel_words(run_id) {
+                let _ = self.link.say(host, &line, None, READ_SECS);
+            }
+            self.runs().remove(run_id);
+            return;
+        }
+        match said {
+            Ok(()) => {
+                if let Some(k) = self.runs().get_mut(run_id) {
+                    k.sent = true;
+                }
+            }
+            Err(why) => {
+                self.runs().remove(run_id);
+                self.facts.ended(run_id, why);
+            }
+        }
+    }
+
+    /// The run's `.out` when the machine has it. A run this aibd is still preparing is not
+    /// asked for; one it does not know (aibd started again) is asked at the machine a new
+    /// run would get, and a machine that never heard of it ends it `lost`.
+    pub fn read(&self, run_id: &str) -> Option<Vec<u8>> {
+        let known = self.runs().get(run_id).cloned();
+        if known.as_ref().is_some_and(|k| !k.sent) {
+            return None;
+        }
+        let host = match known {
+            Some(k) => k.host,
+            None => pick(&self.facts.hosts()).cloned()?,
+        };
+        let line = read_words(run_id).ok()?;
+        let out = self.link.say(&host, &line, None, READ_SECS);
+        if out.is_empty() {
+            // no answer: one missed read does not end a run, many in a row do
+            let missed = {
+                let mut runs = self.runs();
+                let k = runs.entry(run_id.to_owned()).or_insert(Known {
+                    host,
+                    sent: true,
+                    missed: 0,
+                    withdrawn: false,
+                });
+                k.missed += 1;
+                k.missed
+            };
+            if missed >= MISSED_READS {
+                self.runs().remove(run_id);
+                self.facts.ended(run_id, "lost");
+            }
+            return None;
+        }
+        match fetched(&out) {
+            Fetched::Out(bytes) => {
+                self.runs().remove(run_id);
+                Some(bytes)
+            }
+            Fetched::NotYet => {
+                if let Some(k) = self.runs().get_mut(run_id) {
+                    k.missed = 0;
+                }
+                None
+            }
+            Fetched::Ended(why) => {
+                self.runs().remove(run_id);
+                self.facts.ended(run_id, why);
+                None
+            }
+        }
+    }
+
+    /// Withdraws a run: one still being prepared is stopped before it is sent (the thread
+    /// that carries it sees the mark), one that was sent is cancelled at its machine.
+    pub fn cancel(&self, run_id: &str) {
+        let known = {
+            let mut runs = self.runs();
+            let k = runs.get_mut(run_id);
+            k.map(|k| {
+                k.withdrawn = true;
+                k.clone()
+            })
+        };
+        let host = match &known {
+            Some(k) if !k.sent => return,
+            Some(k) => Some(k.host.clone()),
+            None => pick(&self.facts.hosts()).cloned(),
+        };
+        if let (Some(host), Ok(line)) = (host, cancel_words(run_id)) {
+            let _ = self.link.say(&host, &line, None, READ_SECS);
+        }
+        self.runs().remove(run_id);
+    }
+}
+
+/// [`Runner`] as aibd's runner. `start` answers at once (the card is coming, or why not)
+/// and the run goes on on a thread of its own.
+pub struct Started(pub std::sync::Arc<Runner>);
+
+impl crate::receipt_run::ReceiptRunner for Started {
+    fn start(&self, ask: &crate::receipt_run::Ask) -> crate::receipt_run::Start {
+        use crate::receipt_run::Start;
+        let (host, copy) = match self.0.check(ask) {
+            Ok(x) => x,
+            Err(why) => return Start::Refused(why),
+        };
+        let (runner, ask2, name) = (self.0.clone(), ask.clone(), host.name.clone());
+        let spawned = std::thread::Builder::new()
+            .name("aibd-receipt-run".into())
+            .spawn(move || runner.carry(&ask2, &host, &copy));
+        if spawned.is_err() {
+            self.0.runs().remove(&ask.run_id);
+            return Start::Refused("no_host");
+        }
+        Start::NeedsOwner {
+            host: name,
+            knives_sent: 0,
+        }
+    }
+
+    fn read(&self, run_id: &str) -> Option<Vec<u8>> {
+        self.0.read(run_id)
+    }
+
+    fn cancel(&self, run_id: &str) {
+        self.0.cancel(run_id);
+    }
+}
+
+/// [`Facts`] read from aibd itself.
+pub struct AibdFacts {
+    pub st: crate::api::AppState,
+}
+
+impl AibdFacts {
+    fn data(&self) -> std::path::PathBuf {
+        crate::registry::data_of(&self.st)
+    }
+}
+
+impl Facts for AibdFacts {
+    fn hosts(&self) -> Vec<TrustedHost> {
+        let p = self
+            .data()
+            .join(crate::trusted_hosts::DIR)
+            .join(crate::trusted_hosts::FILE);
+        crate::trusted_hosts::load(&p)
+            .map(|(hosts, _)| hosts)
+            .unwrap_or_default()
+    }
+
+    fn trusted(&self, seat_id: &str) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        crate::trusted_seats::holds(crate::trusted_seats::until(&self.data(), seat_id), now)
+    }
+
+    fn copy_of(&self, seat_id: &str) -> Option<(SeatCopy, String)> {
+        let meta = self.st.store.seat_meta(seat_id).ok()??;
+        let tree = std::path::PathBuf::from(&meta.cwd);
+        // the repo's folder is the registered one, never a path read beside the copy
+        let (_, author) = crate::seat_worktree::base_of(&tree)?;
+        let name = author.strip_prefix(crate::repos::REPO_AUTHOR_PREFIX)?;
+        let repo = crate::repos::find(&self.data(), name)?;
+        let (_, head) = crate::seat_worktree::clone_head(&tree)?;
+        let hooks = crate::seats::seat_git_hooks(self.st.sessions.private_dir());
+        std::fs::create_dir_all(&hooks).ok()?;
+        Some((
+            SeatCopy {
+                tree,
+                repo: std::path::PathBuf::from(&repo.path),
+                hooks,
+            },
+            head,
+        ))
+    }
+
+    fn work_dir(&self) -> std::path::PathBuf {
+        self.data().join("receipts")
+    }
+
+    fn owner_answered(&self, run_id: &str, ok: bool) -> bool {
+        crate::receipt_run::owner_answered(&self.st, run_id, ok)
+    }
+
+    fn ended(&self, run_id: &str, why: &'static str) {
+        let _ = crate::receipt_run::runner_lost(&self.st, run_id, why);
+    }
+}
+
+/// Sets aibd's runner when [`SWITCH`] is on. Until R3 gives it a [`Link`] the runner has
+/// [`NoLink`]: every request is still refused `no_host`, nothing is asked of the owner and
+/// nothing leaves the machine.
+pub fn set_at_start(st: &crate::api::AppState, switch: Option<String>) -> bool {
+    if !switch_on(switch) {
+        return false;
+    }
+    let runner = Runner::new(
+        std::sync::Arc::new(AibdFacts { st: st.clone() }),
+        std::sync::Arc::new(NoLink),
+        std::sync::Arc::new(TouchOwner),
+    );
+    crate::receipt_run::set_runner(std::sync::Arc::new(Started(runner)));
+    true
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -622,6 +1058,361 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(none, NO_KNIVES_SHA256);
+    }
+
+    // ---- slice R4b: the runner, with a machine, an owner and aibd's facts that are doubles
+
+    use crate::receipt_bundle::fixture::{fix, Fix};
+    use std::collections::VecDeque;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    struct FakeLink {
+        ready: bool,
+        answers: Mutex<VecDeque<Vec<u8>>>,
+        /// (machine, line, sha256 of what was on standard input)
+        said: Mutex<Vec<(String, String, Option<String>)>>,
+    }
+
+    impl Link for FakeLink {
+        fn ready(&self) -> bool {
+            self.ready
+        }
+        fn say(&self, host: &TrustedHost, line: &str, stdin: Option<&Path>, _: u64) -> Vec<u8> {
+            use sha2::{Digest, Sha256};
+            let sha = stdin.map(|p| {
+                Sha256::digest(std::fs::read(p).unwrap())
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            });
+            self.said
+                .lock()
+                .unwrap()
+                .push((host.name.clone(), line.to_owned(), sha));
+            self.answers.lock().unwrap().pop_front().unwrap_or_default()
+        }
+    }
+
+    struct FakeOwner {
+        yes: bool,
+        asked: Mutex<Vec<crate::owner_ok::Ask>>,
+    }
+
+    impl Owner for FakeOwner {
+        fn approves(&self, ask: &crate::owner_ok::Ask) -> bool {
+            self.asked.lock().unwrap().push(ask.clone());
+            self.yes
+        }
+    }
+
+    struct FakeFacts {
+        hosts: Vec<TrustedHost>,
+        trusted: bool,
+        copy: Option<(SeatCopy, String)>,
+        dir: std::path::PathBuf,
+        told: Mutex<Vec<String>>,
+    }
+
+    impl Facts for FakeFacts {
+        fn hosts(&self) -> Vec<TrustedHost> {
+            self.hosts.clone()
+        }
+        fn trusted(&self, _: &str) -> bool {
+            self.trusted
+        }
+        fn copy_of(&self, _: &str) -> Option<(SeatCopy, String)> {
+            self.copy.clone()
+        }
+        fn work_dir(&self) -> std::path::PathBuf {
+            self.dir.clone()
+        }
+        fn owner_answered(&self, run_id: &str, ok: bool) -> bool {
+            self.told
+                .lock()
+                .unwrap()
+                .push(format!("owner {run_id} {ok}"));
+            true
+        }
+        fn ended(&self, run_id: &str, why: &'static str) {
+            self.told
+                .lock()
+                .unwrap()
+                .push(format!("ended {run_id} {why}"));
+        }
+    }
+
+    struct World {
+        f: Fix,
+        head: String,
+        facts: Arc<FakeFacts>,
+        link: Arc<FakeLink>,
+        owner: Arc<FakeOwner>,
+        runner: Arc<Runner>,
+    }
+
+    impl World {
+        fn ask(&self) -> crate::receipt_run::Ask {
+            crate::receipt_run::Ask {
+                run_id: format!("web-b4297-{}", &self.head[..9]),
+                seat_id: "seat-b4297".into(),
+                head: self.head.clone(),
+                narrow: false,
+                tests: Vec::new(),
+            }
+        }
+        fn told(&self) -> Vec<String> {
+            self.facts.told.lock().unwrap().clone()
+        }
+        fn said(&self) -> Vec<(String, String, Option<String>)> {
+            self.link.said.lock().unwrap().clone()
+        }
+        fn asked(&self) -> usize {
+            self.owner.asked.lock().unwrap().len()
+        }
+        fn nothing_left(&self) -> bool {
+            match std::fs::read_dir(self.facts.work_dir()) {
+                Ok(mut d) => d.next().is_none(),
+                Err(_) => true,
+            }
+        }
+    }
+
+    /// A seat's copy with one commit (`file`) on the repo's main, a machine that will give
+    /// `answers` in order and an owner who says `yes`.
+    fn world(file: &str, yes: bool, answers: &[&[u8]]) -> World {
+        let f = fix();
+        let head = f.commit(file, "fn x() {}\n");
+        let facts = Arc::new(FakeFacts {
+            hosts: vec![host("win", "windows"), host("lin", "mac")],
+            trusted: true,
+            copy: Some((
+                SeatCopy {
+                    tree: f.tree.clone(),
+                    repo: f.repo.clone(),
+                    hooks: f.hooks.clone(),
+                },
+                head.clone(),
+            )),
+            dir: f.data.path().join("receipts"),
+            told: Mutex::new(Vec::new()),
+        });
+        let link = Arc::new(FakeLink {
+            ready: true,
+            answers: Mutex::new(answers.iter().map(|a| a.to_vec()).collect()),
+            said: Mutex::new(Vec::new()),
+        });
+        let owner = Arc::new(FakeOwner {
+            yes,
+            asked: Mutex::new(Vec::new()),
+        });
+        let runner = Runner::new(facts.clone(), link.clone(), owner.clone());
+        World {
+            f,
+            head,
+            facts,
+            link,
+            owner,
+            runner,
+        }
+    }
+
+    fn with(w: &World, change: impl FnOnce(&mut FakeFacts), ready: bool) -> Arc<Runner> {
+        let mut facts = FakeFacts {
+            hosts: w.facts.hosts.clone(),
+            trusted: w.facts.trusted,
+            copy: w.facts.copy.clone(),
+            dir: w.facts.dir.clone(),
+            told: Mutex::new(Vec::new()),
+        };
+        change(&mut facts);
+        let link = Arc::new(FakeLink {
+            ready,
+            answers: Mutex::new(VecDeque::new()),
+            said: Mutex::new(Vec::new()),
+        });
+        Runner::new(Arc::new(facts), link, w.owner.clone())
+    }
+
+    #[test]
+    fn a_request_is_refused_before_anything_leaves_or_is_asked() {
+        let w = world("src/new.rs", true, &[]);
+        let ask = w.ask();
+        assert_eq!(
+            with(&w, |_| {}, false).check(&ask).err(),
+            Some("no_host"),
+            "reason: no_link_asked"
+        );
+        let narrow = crate::receipt_run::Ask {
+            narrow: true,
+            tests: vec!["aibd:usage".into()],
+            ..ask.clone()
+        };
+        assert_eq!(w.runner.check(&narrow).err(), Some("receipt_not_allowed"));
+        let no_mac = with(&w, |f| f.hosts = vec![host("win", "windows")], true);
+        assert_eq!(
+            no_mac.check(&ask).err(),
+            Some("no_host"),
+            "reason: windows_picked"
+        );
+        let untrusted = with(&w, |f| f.trusted = false, true);
+        assert_eq!(
+            untrusted.check(&ask).err(),
+            Some("receipt_not_allowed"),
+            "reason: untrusted_seat_ran"
+        );
+        let no_copy = with(&w, |f| f.copy = None, true);
+        assert_eq!(no_copy.check(&ask).err(), Some("receipt_not_allowed"));
+        let other = crate::receipt_run::Ask {
+            head: "0123456789abcdef0123456789abcdef01234567".into(),
+            ..ask.clone()
+        };
+        assert_eq!(
+            w.runner.check(&other).err(),
+            Some("head_not_seat_head"),
+            "reason: other_head_ran"
+        );
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        assert_eq!(h.name, "lin");
+        assert_eq!(copy.tree, w.f.tree);
+        // checking asked nobody and said nothing
+        assert_eq!(w.asked(), 0);
+        assert!(w.said().is_empty());
+    }
+
+    #[test]
+    fn a_yes_sends_exactly_the_bundle_the_owner_was_shown() {
+        let w = world(
+            "src/new.rs",
+            true,
+            &[
+                b"OK run\nSTARTED x\n",
+                b"ERR not_done\n",
+                b"OK fetch\nRC fmt=0\n",
+            ],
+        );
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        // being prepared: the machine is not asked for it
+        assert_eq!(w.runner.read(&ask.run_id), None);
+        assert!(w.said().is_empty(), "reason: asked_before_sent");
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(w.told(), [format!("owner {} true", ask.run_id)]);
+        let said = w.said();
+        assert_eq!(said.len(), 1);
+        let (machine, line, on_stdin) = &said[0];
+        assert_eq!(machine, "lin");
+        let words: Vec<&str> = line.split(' ').collect();
+        assert_eq!(
+            &words[..4],
+            ["run", ask.run_id.as_str(), w.head.as_str(), "ws"]
+        );
+        // what went over is what the line names and what the fingerprint was for
+        let shown = w.owner.asked.lock().unwrap()[0].clone();
+        let params: serde_json::Value = serde_json::from_slice(&shown.params).unwrap();
+        assert_eq!(
+            on_stdin.as_deref(),
+            Some(words[5]),
+            "reason: other_bytes_sent"
+        );
+        assert_eq!(
+            params["bundle_sha256"], words[5],
+            "reason: other_bundle_approved"
+        );
+        assert_eq!(params["host"], "lin");
+        assert_eq!(params["run_id"], ask.run_id.as_str());
+        assert_eq!(params["base"], w.f.main.as_str());
+        assert_eq!(shown.by, format!("receipt:{}", ask.run_id));
+        assert!(w.nothing_left(), "reason: bundle_left");
+        // then it is read: not done is no ending, the .out comes whole
+        assert_eq!(w.runner.read(&ask.run_id), None);
+        assert_eq!(w.told().len(), 1, "reason: under_way_ended");
+        assert_eq!(w.runner.read(&ask.run_id), Some(b"RC fmt=0\n".to_vec()));
+        assert_eq!(w.said()[2].1, format!("fetch {}", ask.run_id));
+    }
+
+    #[test]
+    fn a_no_sends_nothing() {
+        let w = world("src/new.rs", false, &[]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(w.asked(), 1);
+        assert!(w.said().is_empty(), "reason: sent_without_a_yes");
+        assert_eq!(w.told(), [format!("owner {} false", ask.run_id)]);
+        assert!(w.nothing_left(), "reason: bundle_left");
+    }
+
+    #[test]
+    fn a_head_the_gate_would_refuse_never_reaches_the_owner() {
+        let w = world(".cargo/config.toml", true, &[]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(w.asked(), 0, "reason: card_for_a_refused_tree");
+        assert!(w.said().is_empty());
+        assert_eq!(w.told(), [format!("ended {} tree_refused", ask.run_id)]);
+        assert!(w.nothing_left());
+    }
+
+    #[test]
+    fn a_machines_refusal_ends_the_run_with_its_reason() {
+        let w = world("src/new.rs", true, &[b"ERR busy\n"]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(
+            w.told(),
+            [
+                format!("owner {} true", ask.run_id),
+                format!("ended {} no_host", ask.run_id)
+            ]
+        );
+        // a machine that did not answer the send at all: lost
+        let w = world("src/new.rs", true, &[]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(w.told()[1], format!("ended {} lost", ask.run_id));
+    }
+
+    #[test]
+    fn a_run_withdrawn_while_it_is_prepared_is_not_sent() {
+        let w = world("src/new.rs", true, &[]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.cancel(&ask.run_id);
+        // nothing was sent yet: nothing to cancel at the machine
+        assert!(w.said().is_empty());
+        w.runner.carry(&ask, &h, &copy);
+        assert_eq!(w.asked(), 0, "reason: card_for_a_withdrawn_run");
+        assert!(w.said().is_empty(), "reason: withdrawn_run_sent");
+        assert!(w.nothing_left());
+    }
+
+    #[test]
+    fn a_silent_machine_ends_a_run_late_and_one_that_never_heard_of_it_at_once() {
+        // an aibd that started again does not know the run: the machine is asked
+        let w = world("src/new.rs", true, &[]);
+        let id = w.ask().run_id;
+        for _ in 1..MISSED_READS {
+            assert_eq!(w.runner.read(&id), None);
+        }
+        assert!(w.told().is_empty(), "reason: one_missed_read_ended");
+        assert_eq!(w.runner.read(&id), None);
+        assert_eq!(w.told(), [format!("ended {id} lost")]);
+        assert_eq!(w.said()[0].1, format!("fetch {id}"));
+        let w = world("src/new.rs", true, &[b"ERR no_such_run\n"]);
+        let id = w.ask().run_id;
+        assert_eq!(w.runner.read(&id), None);
+        assert_eq!(w.told(), [format!("ended {id} lost")]);
+        // a withdrawal of a run that was sent is said to its machine
+        let w = world("src/new.rs", true, &[b"OK run\n", b"OK cancel\n"]);
+        let ask = w.ask();
+        let (h, copy) = w.runner.check(&ask).unwrap();
+        w.runner.carry(&ask, &h, &copy);
+        w.runner.cancel(&ask.run_id);
+        assert_eq!(w.said()[1].1, format!("cancel {}", ask.run_id));
     }
 
     #[test]

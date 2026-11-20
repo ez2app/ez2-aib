@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN15, RB1–RB3 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN15, RB1–RB3, RR1–RR8 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -64,6 +64,31 @@ rn '        b"ERR not_done" => Fetched::NotYet,' '        b"ERR not_done" => Fet
 # RN15 another verb's answer is read as the .out
 rn '    if let Some(out) = stdout.strip_prefix(OK) {' '    if let Some(out) = stdout.strip_prefix(&OK[..3]) { // knife' \
    a_fetch_brings_the_out_or_says_how_the_run_stands
+# slice R4b (receipt_runner.rs): the runner, with doubles for the machine, the owner and aibd
+# RR1 with no link a request is taken (a bundle is made, a card is raised, for nothing)
+rn '        if !self.link.ready() {' '        if !self.link.ready() && ask.head.is_empty() { // knife' \
+   a_request_is_refused_before_anything_leaves_or_is_asked
+# RR2 a narrow request is taken
+rn '        if ask.narrow || !ask.tests.is_empty() {' '        if ask.narrow && ask.tests.is_empty() { // knife' \
+   a_request_is_refused_before_anything_leaves_or_is_asked
+# RR3 a seat that is not trusted gets a receipt
+rn '        if !self.facts.trusted(&ask.seat_id) {' '        if !self.facts.trusted(&ask.seat_id) && ask.head.is_empty() { // knife' \
+   a_request_is_refused_before_anything_leaves_or_is_asked
+# RR4 a head that is not the seat's own is taken
+rn '        if head != ask.head {' '        if head.is_empty() { // knife' \
+   a_request_is_refused_before_anything_leaves_or_is_asked
+# RR5 a run withdrawn while it is prepared still raises its card
+rn '        let yes = !self.withdrawn(run_id) && self.owner.approves(&card);' '        let yes = self.owner.approves(&card); // knife' \
+   a_run_withdrawn_while_it_is_prepared_is_not_sent
+# RR6 the owner's no still sends the bundle
+rn '        if !yes || !still || self.withdrawn(run_id) {' '        if !still || self.withdrawn(run_id) { // knife' \
+   a_no_sends_nothing
+# RR7 a run still being prepared is asked for at the machine (which ends it: no such run)
+rn '        if known.as_ref().is_some_and(|k| !k.sent) {' '        if known.as_ref().is_some_and(|k| k.withdrawn && !k.sent) { // knife' \
+   a_yes_sends_exactly_the_bundle_the_owner_was_shown
+# RR8 one read with no answer ends the run
+rn '            if missed >= MISSED_READS {' '            if missed >= 1 { // knife' \
+   a_silent_machine_ends_a_run_late_and_one_that_never_heard_of_it_at_once
 # slice R4a (receipt_bundle.rs): the bundle of one run
 rb() { python3 -I scripts/knife.py crates/aibd/src/receipt_bundle.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "receipt_bundle::tests::$3"; }
