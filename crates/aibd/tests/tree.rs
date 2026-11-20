@@ -1011,15 +1011,14 @@ fn hold_gc_root_exits_with_its_code_and_its_child_stays() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_session_gets_only_its_stdio() {
-    use std::os::fd::AsRawFd;
     let p = std::env::temp_dir().join(format!("aibd-tree-fd-{}", std::process::id()));
     let f = std::fs::File::create(&p).unwrap();
-    nix::fcntl::fcntl(
-        &f,
-        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-    )
-    .unwrap();
-    let fd = f.as_raw_fd().to_string();
+    // a copy at a number far above what `ls /dev/fd` opens for itself (it lists its own 3 and
+    // 4: #869 round 3, job 136197489561, the file had number 4 and read as leaked). F_DUPFD
+    // gives a descriptor without close-on-exec, which is the kind under test
+    let high = nix::fcntl::fcntl(&f, nix::fcntl::FcntlArg::F_DUPFD(200)).unwrap();
+    assert!(high >= 200, "reason: no_high_descriptor {high}");
+    let fd = high.to_string();
     let mut h = spawn_tree(&SpawnSpec {
         program: "/bin/ls".into(),
         args: vec!["/dev/fd".into()],
@@ -1028,6 +1027,7 @@ fn a_session_gets_only_its_stdio() {
     .unwrap();
     let out = h.take_stdout().unwrap();
     let names: Vec<String> = BufReader::new(out).lines().map_while(Result::ok).collect();
+    let _ = nix::unistd::close(high);
     drop(f);
     let _ = std::fs::remove_file(&p);
     assert!(!names.is_empty(), "reason: no_listing");
