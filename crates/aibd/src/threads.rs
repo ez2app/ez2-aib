@@ -1533,7 +1533,7 @@ mod tests {
         let mut other = p.clone();
         other.item.insert(
             "doc".into(),
-            json!([{"file": "notes-a9136.md", "title": "x"}, {"file": "SUMMARY-x.md"}]),
+            json!([{"file": "notes-a9136.md", "title": "x"}, {"file": "SUMMARY-x.md"}, {"file": "SUMMARY-a/b.md"}]),
         );
         let o = post_object(&other, None, &[], &[], "x", true);
         assert_eq!(
