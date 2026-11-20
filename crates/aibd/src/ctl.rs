@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -2120,6 +2120,40 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     execute(&c, args)
 }
 
+/// How often `preview swap` reads the swap, and for how long at most (the handoff's 5 minutes
+/// and the start).
+const PREVIEW_SWAP_POLL: Duration = Duration::from_secs(5);
+const PREVIEW_SWAP_WAIT: Duration = Duration::from_secs(420);
+
+/// `aibd ctl preview swap <id> --sha <sha256>` (Andy 11-21 06:1x; PREREAD-previewswap): ask the
+/// swap, then read it until it is done or failed. The poll sleep is a short-lived CLI wait
+/// bounded by `wait` (ADR 0005), same as `web`.
+#[allow(clippy::disallowed_methods)]
+fn preview_swap(
+    c: &Client,
+    pv: &str,
+    sha: &str,
+    poll: Duration,
+    wait: Duration,
+) -> Result<(), String> {
+    let path = format!("/api/v1/previews/{}/swap", id(pv)?);
+    let asked = c.request("POST", &path, Some(json!({"sha256": sha})))?;
+    println!("{asked}");
+    let deadline = Instant::now() + wait;
+    loop {
+        let v = c.request("GET", &path, None)?;
+        match v["state"].as_str() {
+            Some("done") => {
+                println!("{v}");
+                return Ok(());
+            }
+            Some("failed") => return Err(format!("preview not swapped: {v}")),
+            _ if Instant::now() >= deadline => return Err(format!("still not swapped: {v}")),
+            _ => std::thread::sleep(poll),
+        }
+    }
+}
+
 fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
     let cards = aibd::personas::CardsFile {
         path: aibd::personas::default_cards_path(|k| std::env::var(k).ok()),
@@ -2140,6 +2174,9 @@ fn execute_in(
             c.archive(id(seat)?)?;
             println!("ARCHIVED {seat}");
             return Ok(());
+        }
+        ["preview", "swap", pv, "--sha", sha] => {
+            return preview_swap(c, pv, sha, PREVIEW_SWAP_POLL, PREVIEW_SWAP_WAIT)
         }
         ["seat", "clean"] => return seat_clean(c, false),
         ["seat", "clean", "--yes"] => return seat_clean(c, true),
