@@ -212,4 +212,5 @@ async fn a_seat_says_its_handoff_is_written_and_only_the_hash_is_journaled() {
         "reason: path_in_journal {}",
         r.body
     );
+    d.shutdown().await;
 }
