@@ -1950,7 +1950,13 @@ mod tests {
         let policy = crate::config::SessionPolicy {
             programs: vec![crate::allowlist::Program {
                 name: "claude".into(),
-                path: "/opt/ez2-test/claude".into(),
+                // an absolute path on either system (allowlist::parse refuses a relative one;
+                // `/opt/…` has no drive on Windows)
+                path: if cfg!(windows) {
+                    r"C:\ez2-test\claude.exe".into()
+                } else {
+                    "/opt/ez2-test/claude".into()
+                },
                 signer: Some("TEAMID1234".into()),
             }],
             env: vec!["EZ2_TEST_NAME".into()],
@@ -2040,22 +2046,30 @@ mod tests {
     /// hand) hands on the seat home it was given, not its own HOME; other AIBD_* stay behind.
     #[test]
     fn a_parent_with_a_seat_home_hands_that_on_not_its_own_home() {
+        // preview_env takes only an absolute home: on Windows that needs a drive
+        let abs = |p: &str| {
+            if cfg!(windows) {
+                format!("C:{p}")
+            } else {
+                p.to_owned()
+            }
+        };
         let dir = Path::new("/tmp/pv");
         let parent = [
-            ("PATH", "/usr/bin"),
-            ("HOME", "/tmp/preview-home"),
-            ("USERPROFILE", "/tmp/preview-home"),
-            ("AIBD_SEAT_HOME", "/Users/real"),
-            ("AIBD_SEAT_INPUT_DGRS", "1"),
+            ("PATH", "/usr/bin".to_owned()),
+            ("HOME", abs("/tmp/preview-home")),
+            ("USERPROFILE", abs("/tmp/preview-home")),
+            ("AIBD_SEAT_HOME", abs("/Users/real")),
+            ("AIBD_SEAT_INPUT_DGRS", "1".to_owned()),
         ]
-        .map(|(k, v)| (k.to_owned(), v.to_owned()));
+        .map(|(k, v)| (k.to_owned(), v));
         let env = preview_env(parent, dir);
         let seat: Vec<&str> = env
             .iter()
             .filter(|(k, _)| k == "AIBD_SEAT_HOME")
             .map(|(_, v)| v.as_str())
             .collect();
-        assert_eq!(seat, ["/Users/real"], "reason: parent_home_handed");
+        assert_eq!(seat, [abs("/Users/real")], "reason: parent_home_handed");
         assert!(
             !env.iter().any(|(k, _)| k == "AIBD_SEAT_INPUT_DGRS"),
             "reason: other_aibd_carried"

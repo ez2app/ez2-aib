@@ -594,7 +594,10 @@ mod tests {
                 "LC_ALL",
                 "PATH",
                 "USERPROFILE",
-                "SystemRoot"
+                "SystemRoot",
+                // Windows git needs a temp folder (git_env passes these two there)
+                "TEMP",
+                "TMP"
             ]
             .contains(k)),
             "reason: env_leaks {names:?}"
