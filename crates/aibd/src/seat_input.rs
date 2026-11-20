@@ -86,6 +86,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::slots::IDEA_ANSWER,
     crate::slots::REVIEW_SEEN,
     crate::seat_send::RESUME,
+    crate::pr_open::OPEN,
+    crate::repo_push::PUSH,
 ];
 
 /// S89-dgrs: whether a dgrs seat takes input on this machine (`AIBD_SEAT_INPUT_DGRS`, read once
