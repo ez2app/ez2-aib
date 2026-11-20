@@ -1197,7 +1197,7 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "seat_tree",
-            "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. Use this to review a seat whose clone you cannot open; seat is its seat_id from seat_list.",
+            "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. To review another seat, read its work with this tool, not git show / git fetch / opening its folder (its clone is not in your reach). seat is its seat_id from seat_list. A safe seat cannot use it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
