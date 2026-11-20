@@ -835,6 +835,11 @@
   // 舊形狀(slot / kind / item / why / at)照讀。⑤ 與「我寄的信沒送到 / 沒讀」aibd 沒有來源,頁面照算
   // a9136 派工(0eed7 VERIFY-humanpath L1):aibd 仍記 stop_unconfirmed(macOS 證不了全部子程序都走了),
   // 頁面照 ctl.rs stopped_but_unprovable 同一判斷:不再佔位、沒有活下來的、沒有讀不了的、候選 0 ⇒ 不出注意卡、寫「已停(看得到的都停了)」。
+  // 7ebca 6f547e5998(第 2 件):卡槽 4 message.unclosed「N 封信收了沒結」;5d33a:講清楚是連續兩個回合結束各提醒一次,兩次後才出這張
+  function unclosedWhy(c, s) {
+    const it = typeof c.item === 'string' ? c.item : '';
+    return { text: (s ? seatName(s) + ' ' : '') + (it || '有信收了沒結'), st: '這一席連續兩個回合結束時各被提醒一次(不是隔一個回合),信還是沒結;請它結案,或寫明在等誰' };
+  }
   function stopLooksClean(v) {
     if (!v || !v.stop || typeof v.stop !== 'object') return false; // 沒有停止的明細就判不了
     const st = v.stop, c = st.candidates && typeof st.candidates === 'object' ? st.candidates : {};
@@ -872,7 +877,7 @@
       // 等回應 / 說忙沒動:標題寫哪一席怎麼了,它寫的工作項目放狀態
       const stuck = !c.text && (c.kind === 'seat.waiting' || c.kind === 'seat.quiet') && s;
       // 519d0 03:58 / 0eed7 VERIFY-c18 L1:合回被拒的卡寫原因 + 要看哪些設定 + 下一步(aibd 的 item 是「合回停住:作者倉設定 <why>」)
-      const mw = c.kind === 'seat.merge_unsafe' ? mergeWhy(c) : null;
+      const mw = c.kind === 'seat.merge_unsafe' ? mergeWhy(c) : c.kind === 'message.unclosed' && !c.text ? unclosedWhy(c, s) : null;
       const text = (mw && mw.text) || str(c.text) || (stuck ? seatName(s) + ' ' + KIND_TEXT[c.kind] : '') || (c.kind === 'seat.usage' && c.pct != null ? (s ? seatName(s) + ' ' : '') + '用量 ' + c.pct + '%' : '') || str(c.item) || (str(c.line) ? (s ? seatName(s) + ' ' : '') + str(c.line) : '') || KIND_TEXT[c.kind] || str(c.why) || (s ? seatName(s) : String(c.kind || ''));
       L.push({
         lv, tag: str(c.tag) || LV_TAG[lv], text, ref: str(c.card), t: c.since || c.at,
