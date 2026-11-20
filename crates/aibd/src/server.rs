@@ -240,7 +240,14 @@ pub async fn run(
         // that fails leaves pairing refused, never falls back to the y or the box
         let d = dirs.data_dir();
         match tokio::task::spawn_blocking(move || crate::touch::presence_here(&d)).await {
-            Ok(Ok(p)) => pairing.set_presence(p),
+            Ok(Ok(p)) => {
+                // a63 (Andy 11-20): the page's owner asks use the same key, only when switched on
+                if crate::owner_ok::switch_on(std::env::var(crate::owner_ok::SWITCH).ok()) {
+                    crate::owner_ok::set_presence(p.clone(), pairing.clone());
+                    tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
+                }
+                pairing.set_presence(p);
+            }
             Ok(Err(why)) => tracing::warn!(why, "fingerprint pairing is refused at this start"),
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
         }
