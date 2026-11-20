@@ -146,9 +146,212 @@ pub fn is_codex(argv0: &str) -> bool {
     stem.eq_ignore_ascii_case("codex")
 }
 
+/// N-codex-user-mcp (7ebca 11-20): the `-c` flags that turn off every MCP server a codex seat
+/// would load but aibd's own. `listed` is what `codex <the seat's flags> mcp list --json`
+/// printed: codex's own reading of the user's settings, plugins and the seat's flags (a `-c`
+/// merges into the user's `mcp_servers`, it cannot replace the table, so each one is named).
+/// A list that is not codex's array, or a server whose name a `-c` key cannot spell (codex
+/// splits the key on every `.`, quotes or not), is an error: the seat does not start.
+/// `listed` is read without aibd's own `-c` ([`without_ours`]): a server already named `aibd`
+/// there is the user's or the folder's, and ours would only be merged into it (its `env`,
+/// `cwd`, `url` kept: a program run in aibd's MCP process outside the sandbox, 5d33a
+/// PREREAD-codexmcp M1), so the seat does not start either.
+pub fn mcp_off(listed: &str) -> Result<Vec<String>, &'static str> {
+    let v: Value = serde_json::from_str(listed).map_err(|_| "codex_mcp_unlisted")?;
+    let rows = v.as_array().ok_or("codex_mcp_unlisted")?;
+    let mut off = Vec::new();
+    for r in rows {
+        let name = r["name"].as_str().ok_or("codex_mcp_unlisted")?;
+        if name == "aibd" {
+            return Err("codex_mcp_aibd_taken");
+        }
+        // only an explicit false is off: a row without the field is treated as on
+        if r["enabled"] == Value::Bool(false) {
+            continue;
+        }
+        let spelt = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !spelt {
+            return Err("codex_mcp_unnamed");
+        }
+        off.push("-c".to_owned());
+        off.push(format!("mcp_servers.{name}.enabled=false"));
+    }
+    Ok(off)
+}
+
+/// A `.codex` folder codex would load as project settings for a seat in `cwd`: in `cwd` or
+/// any folder above it up to the git root (the folder holding `.git`; `cwd` alone when there is
+/// none), any kind (a file or link is refused too), leaving out `codex_home` (the user's own
+/// settings, not a project's). 7ebca MEASURE-codex-folder-config r2: a codex work seat's
+/// folder is always trusted (codex writes it so itself), and a trusted project's
+/// `.codex/config.toml` is merged under aibd's `-c` (`permissions.seat.filesystem`,
+/// `shell_environment_policy.set`, `features` are tables: a project adds a writable root or
+/// turns a tool on), so the seat does not start, as a claude seat with a `.claude` does not.
+pub fn folder_settings(
+    cwd: &std::path::Path,
+    codex_home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let home = codex_home.and_then(|h| std::fs::canonicalize(h).ok());
+    let has = |d: &std::path::Path, n: &str| std::fs::symlink_metadata(d.join(n)).is_ok();
+    let top = cwd.ancestors().find(|d| has(d, ".git")).unwrap_or(cwd);
+    for d in cwd.ancestors() {
+        let c = d.join(".codex");
+        let theirs = home.is_some() && std::fs::canonicalize(&c).ok() == home;
+        if has(d, ".codex") && !theirs {
+            return Some(c);
+        }
+        if d == top {
+            break;
+        }
+    }
+    None
+}
+
+/// The seat's flags without aibd's own server (`-c mcp_servers.aibd.<key>=…` pairs), so a list
+/// read with them shows only what the user's settings and the seat's folder name.
+pub fn without_ours(flags: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < flags.len() {
+        if flags[i] == "-c"
+            && flags
+                .get(i + 1)
+                .is_some_and(|v| v.starts_with("mcp_servers.aibd."))
+        {
+            i += 2;
+            continue;
+        }
+        out.push(flags[i].clone());
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MEASURE-codex-folder-config r2: a `.codex` in the seat's folder or above it inside the
+    /// repo is found (any kind); the user's own settings folder and folders outside the repo
+    /// are not.
+    #[test]
+    fn a_codex_folder_in_the_seats_repo_is_found() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let sub = repo.join("a").join("b");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(folder_settings(&sub, None), None);
+        assert_eq!(folder_settings(&repo, None), None);
+        std::fs::create_dir_all(repo.join("a").join(".codex")).unwrap();
+        assert!(
+            folder_settings(&sub, None).is_some(),
+            "reason: parent_codex_missed"
+        );
+        std::fs::remove_dir_all(repo.join("a").join(".codex")).unwrap();
+        std::fs::write(repo.join(".codex"), "x").unwrap();
+        assert!(
+            folder_settings(&sub, None).is_some(),
+            "reason: file_codex_missed"
+        );
+        assert!(
+            folder_settings(&repo, None).is_some(),
+            "reason: top_codex_missed"
+        );
+        // above the repo is not the project's; the user's own settings folder is theirs
+        std::fs::remove_file(repo.join(".codex")).unwrap();
+        std::fs::create_dir_all(d.path().join(".codex")).unwrap();
+        assert_eq!(
+            folder_settings(&sub, None),
+            None,
+            "reason: outside_repo_taken"
+        );
+        let plain = d.path().join("plain");
+        std::fs::create_dir_all(plain.join(".codex")).unwrap();
+        assert!(
+            folder_settings(&plain, None).is_some(),
+            "reason: no_repo_cwd_missed"
+        );
+        assert_eq!(
+            folder_settings(&plain, Some(&plain.join(".codex"))),
+            None,
+            "reason: codex_home_refused"
+        );
+    }
+
+    /// The list is read without aibd's own `-c` pairs, every other flag kept in order.
+    #[test]
+    fn the_list_is_read_without_aibds_own_server() {
+        let f: Vec<String> = [
+            "app-server",
+            "-c",
+            "mcp_servers.aibd.command=\"x\"",
+            "-c",
+            "sandbox_mode=\"read-only\"",
+            "-c",
+            "mcp_servers.aibd.args=[]",
+            "--x",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        assert_eq!(
+            without_ours(&f),
+            ["app-server", "-c", "sandbox_mode=\"read-only\"", "--x"],
+            "reason: ours_listed"
+        );
+    }
+
+    /// N-codex-user-mcp: a server of the user's own settings that is on is turned off by
+    /// name; aibd's own and the ones already off are left; a list codex did not print, or a
+    /// name `-c` cannot spell, starts nothing.
+    #[test]
+    fn a_codex_seat_turns_off_the_users_own_mcp_servers() {
+        let listed = r#"[{"name":"user-x_1","enabled":true},
+            {"name":"node_repl","enabled":false},{"name":"no_field"}]"#;
+        assert_eq!(
+            mcp_off(listed).unwrap(),
+            [
+                "-c",
+                "mcp_servers.user-x_1.enabled=false",
+                "-c",
+                "mcp_servers.no_field.enabled=false"
+            ],
+            "reason: user_mcp_left_on"
+        );
+        // 5d33a M1: a server of the user's (or the folder's) named aibd is not ours
+        for row in [
+            r#"{"name":"aibd","enabled":true}"#,
+            r#"{"name":"aibd","enabled":false}"#,
+        ] {
+            assert_eq!(
+                mcp_off(&format!("[{row}]")).unwrap_err(),
+                "codex_mcp_aibd_taken",
+                "reason: users_aibd_merged {row}"
+            );
+        }
+        assert_eq!(mcp_off("[]").unwrap(), Vec::<String>::new());
+        assert_eq!(mcp_off("").unwrap_err(), "codex_mcp_unlisted");
+        assert_eq!(
+            mcp_off(r#"{"name":"x"}"#).unwrap_err(),
+            "codex_mcp_unlisted"
+        );
+        assert_eq!(
+            mcp_off(r#"[{"enabled":true}]"#).unwrap_err(),
+            "codex_mcp_unlisted"
+        );
+        for bad in ["we.ird", "a b", "x=y", "", "名"] {
+            let l = serde_json::json!([{"name": bad, "enabled": true}]).to_string();
+            assert_eq!(
+                mcp_off(&l).unwrap_err(),
+                "codex_mcp_unnamed",
+                "reason: unspelt {bad}"
+            );
+        }
+    }
 
     fn parse(b: &[u8]) -> Vec<Value> {
         b.split(|c| *c == b'\n')

@@ -474,9 +474,107 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             });
         }
     }
+    // N-codex-user-mcp (7ebca 11-20): a codex seat loads no MCP server of the user's own (a
+    // server is a program codex starts outside the seat's sandbox, its tools the seat's): codex
+    // lists them with the seat's own flags, in the seat's folder, and each one on but aibd's is
+    // turned off; a list not read starts nothing. A work seat's folder is always trusted by
+    // codex: its thread/start under workspace-write writes `[projects."<folder>"] trust_level =
+    // "trusted"` into the user's ~/.codex/config.toml itself (a -c cannot stop it, it writes the
+    // file; never cleared when the seat closes), so the folder's .codex/config.toml is read: this
+    // list sees it, and the seat's sandbox cannot write .codex/ (MEASURE-codex-folder-config r1,
+    // 519d0 07:58 a: documented, not changed; aibd does not edit the user's codex settings)
+    if crate::codex_wire::is_codex(&real)
+        && req.argv.get(1).map(String::as_str) == Some("app-server")
+    {
+        // MEASURE-codex-folder-config r2: a project's .codex is merged under aibd's -c
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                crate::seats::home_dir(|k| std::env::var(k).ok()).map(|h| h.join(".codex"))
+            });
+        if let Some(found) = req
+            .cwd
+            .as_deref()
+            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))
+        {
+            return Err(Refusal {
+                error: ApiError::new(
+                    ErrorCode::ProgramNotAllowed,
+                    format!(
+                        "codex seat not started: the folder has codex project settings ({}): codex would merge them under the seat's own (codex_folder_settings)",
+                        found.display()
+                    ),
+                ),
+                program: name(&real),
+            });
+        }
+        let flags = crate::codex_wire::without_ours(&req.argv[2..]);
+        let listed = codex_mcp_listed(&real, &flags, req.cwd.as_deref());
+        match crate::codex_wire::mcp_off(&listed) {
+            Ok(off) => req.argv.extend(off),
+            Err(code) => {
+                return Err(Refusal {
+                    error: ApiError::new(
+                        ErrorCode::ProgramNotAllowed,
+                        format!("codex seat not started: its MCP servers could not all be turned off ({code})"),
+                    ),
+                    program: name(&real),
+                })
+            }
+        }
+    }
     req.argv[0] = real;
     Ok(req)
 }
+
+/// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
+/// than [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a codex stuck on a login or a version
+/// check would hold the seat's start; the list not read, the seat does not start).
+fn codex_mcp_listed(real: &str, flags: &[String], cwd: Option<&std::path::Path>) -> String {
+    let mut c = std::process::Command::new(real);
+    c.args(flags)
+        .args(["mcp", "list", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(d) = cwd {
+        c.current_dir(d);
+    }
+    let Ok(mut child) = c.spawn() else {
+        return String::new();
+    };
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return String::new();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("aibd-codex-mcp-list".into())
+        .spawn(move || {
+            let mut b = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut b);
+            let _ = tx.send(b);
+        });
+    // one wake-up for the answer or at the end of a start request's bound: not a periodic
+    // timer (ADR 0005 named exception, as `sessions::wait_timeout`)
+    #[allow(clippy::disallowed_methods)]
+    let got = rx.recv_timeout(MCP_LIST_WAIT);
+    match got {
+        Ok(b) if child.wait().is_ok_and(|s| s.success()) => {
+            String::from_utf8_lossy(&b).into_owned()
+        }
+        Ok(_) => String::new(),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            String::new()
+        }
+    }
+}
+
+/// How long a codex seat's start waits for `codex mcp list` (5d33a L1).
+pub const MCP_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct Entry {
     rec: Session,
@@ -2852,6 +2950,29 @@ pub fn rejoin_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 5d33a PREREAD-codexmcp L1: a list that never ends is cut at MCP_LIST_WAIT and read as
+    /// nothing; a list that ends is what it printed.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_mcp_list_that_hangs_is_cut_and_read_as_nothing() {
+        let f = |c: &str| vec!["-c".to_owned(), c.to_owned()];
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &f("echo '[]'"), None).trim(),
+            "[]"
+        );
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &f("echo '[]'; exit 3"), None),
+            ""
+        );
+        let t = std::time::Instant::now();
+        assert_eq!(codex_mcp_listed("/bin/sh", &f("sleep 40"), None), "");
+        assert!(
+            t.elapsed() < MCP_LIST_WAIT + std::time::Duration::from_secs(8),
+            "reason: list_not_cut {:?}",
+            t.elapsed()
+        );
+    }
 
     /// S89-state (5d33a 853ee100 L2): an unreadable seat list is not an empty one.
     #[test]
