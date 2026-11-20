@@ -1556,6 +1556,14 @@ mod tests {
             e2.starts_with("repo_unsafe:"),
             "reason: author_collected {e2}"
         );
+        // taking the copy's head runs git in the author's repo too, and has its own check
+        // (#869 knives 3/3, WT18: tree_state and collect are refused by theirs first, so
+        // dropping this one changed nothing the test saw)
+        let e3 = take_head(&tree, &hooks).unwrap_err();
+        assert!(
+            e3.starts_with("repo_unsafe:"),
+            "reason: author_head_taken {e3}"
+        );
         assert!(!marker.exists(), "reason: author_program_ran");
         // the folder only (not the file): a .git that is a file pointing elsewhere is refused too
         let other = tempfile::tempdir().unwrap();
