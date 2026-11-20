@@ -575,9 +575,21 @@ impl Pairing {
         };
         let nonce_hex = nonce.map(|n| hex(&n)).unwrap_or_default();
         let msg = crate::touch::binding(pair_id, &short, user_page, &nonce_hex);
-        let why = crate::touch::reason(who, &short, user_page);
+        // plain words, until when and the short code on top, the countdown beside (Andy 11-21)
+        let until = crate::owner_ok::unix_now() + TOUCH_WINDOW.as_secs();
+        let why = crate::touch::window(
+            who,
+            &short,
+            user_page,
+            &crate::owner_ok::until_words(until),
+            &short,
+        );
         // the window closes by itself after TOUCH_WINDOW; unanswered is not a no (no cool-down)
-        let asked = presence.ask_until(&why, &msg, TOUCH_WINDOW);
+        let asked = {
+            let _hud =
+                crate::touch_hud::Hud::show(&crate::touch::plain(who, user_page), until, &short);
+            presence.ask_until(&why, &msg, TOUCH_WINDOW)
+        };
         self.touch_done(crate::touch::ends_quietly(&asked));
         if let Err(e) = asked {
             self.cancel(pair_id);
@@ -714,7 +726,16 @@ impl Pairing {
             act: words,
             until: crate::touch::until_text(left),
         };
-        let why = crate::touch::reason(&who, "", user_page);
+        // no short code here: four characters of the pairing's id stand in (owner_ok::pair_code)
+        let until = crate::owner_ok::unix_now() + TOUCH_WINDOW.as_secs();
+        let code = crate::owner_ok::pair_code(&pair_id);
+        let shown = crate::touch::window(
+            &who,
+            "",
+            user_page,
+            &crate::owner_ok::until_words(until),
+            &code,
+        );
         let mut msg = crate::touch::binding(&pair_id, "", user_page, "");
         msg.extend_from_slice(format!("reconfirm\n{act}\n").as_bytes());
         let Some(presence) = self.presence.get() else {
@@ -722,7 +743,11 @@ impl Pairing {
             return Err("pair_key_missing");
         };
         // the window closes by itself after TOUCH_WINDOW; unanswered is not a no (no cool-down)
-        let asked = presence.ask_until(&why, &msg, TOUCH_WINDOW);
+        let asked = {
+            let _hud =
+                crate::touch_hud::Hud::show(&crate::touch::plain(&who, user_page), until, &code);
+            presence.ask_until(&shown, &msg, TOUCH_WINDOW)
+        };
         self.touch_done(crate::touch::ends_quietly(&asked));
         asked?;
         let mut inner = self.lock();
@@ -1457,8 +1482,14 @@ mod tests {
         assert!(p.access(&r.credential).unwrap().confirmed);
         let asked = rec.asked.lock().unwrap();
         assert_eq!(asked.len(), 1);
+        // plain words on top, then the window's old words as they were (Andy 11-21 01:44)
+        let (top, rest) = asked[0].0.split_once('\n').expect("reason: window_words");
+        assert!(
+            top.starts_with(&crate::touch::plain(&Who::Terminal, false)),
+            "reason: window_words {top}"
+        );
         assert_eq!(
-            asked[0].0,
+            rest,
             reason(&Who::Terminal, &short, false),
             "reason: window_words"
         );
@@ -1774,7 +1805,14 @@ mod tests {
         let asked = rec.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1, "reason: act_not_listed");
         // 5d33a L1: it says the whole page goes up to this run's rights, to when, and why
-        let w = &asked[0].0;
+        let (top, w) = asked[0]
+            .0
+            .split_once('\n')
+            .expect("reason: window_two_lines");
+        assert!(
+            top.starts_with("讓這一頁繼續用完整權限到 ") && top.contains("(起因:開席)"),
+            "reason: window_top {top}"
+        );
         assert!(
             w.starts_with("aibd 網頁重新確認:升級這頁到本輪完整權限,到 "),
             "reason: window_hides_full_upgrade {w}"
@@ -1889,6 +1927,21 @@ mod tests {
             "reason: no_cool_down"
         );
         assert_eq!(no.asked.lock().unwrap().len(), 1, "reason: no_cool_down");
+        // the window says it plainly first, until when and the short code, then what it said
+        let said = no.asked.lock().unwrap()[0].0.clone();
+        let (top, rest) = said.split_once('\n').expect("reason: window_two_lines");
+        assert!(
+            top.starts_with("讓這個瀏覽器分頁配對成 AIB 的") && top.contains(",過了這張就作廢)"),
+            "reason: window_top {top}"
+        );
+        let code: String = rest
+            .split_once("短碼 ")
+            .map(|(_, r)| r.chars().take_while(char::is_ascii_digit).collect())
+            .unwrap_or_default();
+        assert!(
+            !code.is_empty() && top.ends_with(&format!("對照碼 {code}")),
+            "reason: window_code {said}"
+        );
         advance(&o, TOUCH_COOL);
         // the whole aibd: 3 in ten minutes (the no above was the first)
         for _ in 0..2 {

@@ -251,6 +251,8 @@ pub async fn run(
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
                 pairing.set_presence(p);
+                // pairing's windows get the countdown beside them too (Andy 11-21 01:42; 519d0 05:49)
+                crate::touch_hud::turn_on();
             }
             Ok(Err(why)) => tracing::warn!(why, "fingerprint pairing is refused at this start"),
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
