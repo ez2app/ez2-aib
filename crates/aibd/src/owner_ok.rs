@@ -122,14 +122,22 @@ pub fn window_text(ask: &Ask, ticket: &str) -> String {
 }
 
 /// The operations whose caller resends with the ticket and checks it with [`approved_for`]
-/// (a63, Andy 11-20): registering a repo and opening a dgrs seat on one. Every other page ask
-/// stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for nothing.
-pub const WIRED: [&str; 5] = [
+/// (a63, Andy 11-20): registering a repo, opening a dgrs seat on one, trusting a seat, pushing
+/// a branch, opening a pull request, sending a seat's work back to its repo. Every other page
+/// ask stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for
+/// nothing.
+///
+/// One line an operation, each slice adding its own (0eed7 a82 on 936759b065, 519d0 11-21:
+/// `repo.send_back` was merged without its line and every send back answered
+/// `owner_check_unavailable`). `every_operation_constant_is_wired` reads the source: an
+/// `operation: SOME_CONSTANT` anywhere in aibd that is not listed here fails it.
+pub const WIRED: &[&str] = &[
     crate::repos::OP_REGISTER,
     crate::repos::OP_OPEN,
     crate::seat_trust::OP,
     crate::repo_push::OP,
     crate::pr_open::OP,
+    crate::send_back::OP_SEND_BACK,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
@@ -508,6 +516,70 @@ mod tests {
             assert!(!ticket_ok(bad), "reason: ticket_shape {bad}");
         }
         assert!(!approved_for("t1", &a()), "reason: stub_approves");
+    }
+
+    /// Every `operation: CONSTANT` of an owner ask in aibd's own code (tests left out), as
+    /// `(file, constant, its string)`. An operation given as a variable is not one of these:
+    /// its caller does not use a ticket, and the ask stays unavailable.
+    fn operation_constants() -> Vec<(String, String, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            let src = std::fs::read_to_string(&path).unwrap();
+            let code = src.split("#[cfg(test)]").next().unwrap_or_default();
+            for line in code.lines() {
+                let Some(name) = line
+                    .trim()
+                    .strip_prefix("operation: ")
+                    .map(|r| r.trim_end_matches(','))
+                else {
+                    continue;
+                };
+                let constant = !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+                if !constant {
+                    continue;
+                }
+                let decl = format!("const {name}: &str = \"");
+                let value = code
+                    .split_once(&decl)
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(v, _)| v.to_owned())
+                    .unwrap_or_else(|| panic!("reason: constant_not_in_its_file {file} {name}"));
+                out.push((file.clone(), name.to_owned(), value));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// 519d0 11-21 (0eed7 a82: `seat_send_back` answered `owner_check_unavailable` on the
+    /// integration head): each slice was green alone and nobody added the line.
+    #[test]
+    fn every_operation_constant_is_wired() {
+        let ops = operation_constants();
+        assert!(ops.len() >= 4, "reason: operations_not_read {ops:?}");
+        for (file, name, value) in &ops {
+            assert!(
+                WIRED.contains(&value.as_str()),
+                "reason: operation_not_wired {file} {name} {value}"
+            );
+        }
+        assert!(
+            WIRED.contains(&crate::send_back::OP_SEND_BACK),
+            "reason: send_back_not_wired"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for w in WIRED {
+            assert!(seen.insert(*w), "reason: wired_twice {w}");
+        }
     }
 
     #[test]
