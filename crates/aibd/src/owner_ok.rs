@@ -109,16 +109,77 @@ pub fn clean_resource(s: &str) -> String {
     }
 }
 
-/// The fingerprint window's words, all from the ticket.
-pub fn window_text(ask: &Ask, ticket: &str) -> String {
+/// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
+/// window said `repo.register` and no more). Fixed here; never a word of the request's.
+pub const ACTIONS: [(&str, &str); 6] = [
+    (crate::repos::OP_REGISTER, "登記倉"),
+    (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
+    (crate::send_back::OP_SEND_BACK, "送回倉"),
+    (crate::repo_push::OP, "推分支"),
+    (crate::pr_open::OP, "開草稿 PR"),
+    (crate::seat_trust::OP, "把席設為受信任"),
+];
+
+/// An operation's name in the window; one the table does not have is shown as it is.
+pub fn action_words(operation: &str) -> &str {
+    ACTIONS
+        .iter()
+        .find(|(op, _)| *op == operation)
+        .map_or(operation, |(_, words)| *words)
+}
+
+/// Marks the window's own layout uses: none of them is shown from an object.
+const OBJECT_MARKS: [char; 8] = ['|', '「', '」', '『', '』', '｜', '│', '¦'];
+/// Of an object too long to show whole, this much of its start is kept (the name comes first).
+const OBJECT_HEAD: usize = 24;
+
+/// The object as the window shows it, between 「」 (5d33a PREREAD-touchwords L1): cleaned as
+/// [`clean_resource`] cleans; none of the window's own marks; nothing that reads as a clock
+/// or as the window's own "請在 … 前按" (a `:` between two digits and 「請在」 are broken with
+/// `·`); at most [`RESOURCE_MAX`] characters and one `…`, its start and its end kept.
+pub fn object_shown(s: &str) -> String {
+    let mut kept: Vec<char> = s
+        .chars()
+        .filter(|c| !aib_approve::text::is_bad_char(*c))
+        .map(|c| if OBJECT_MARKS.contains(&c) { ' ' } else { c })
+        .collect();
+    for i in 1..kept.len().saturating_sub(1) {
+        if matches!(kept[i], ':' | '：') && kept[i - 1].is_numeric() && kept[i + 1].is_numeric() {
+            kept[i] = '·';
+        }
+    }
+    let text = kept.iter().collect::<String>().replace("請在", "請·在");
+    let c: Vec<char> = text.chars().collect();
+    if c.len() <= RESOURCE_MAX {
+        return text;
+    }
+    let head: String = c[..OBJECT_HEAD].iter().collect();
+    let tail: String = c[c.len() - (RESOURCE_MAX - OBJECT_HEAD)..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// The fingerprint window's words (DESIGN-touch-words-7b81e-1121): what is done and to what,
+/// then until when, then the ticket. `until` is aibd's own clock ([`until_words`]); only the
+/// object carries words of the request, and it cannot leave its 「」.
+pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
     format!(
-        "AIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
+        "{}「{}」|{until},過了這張就作廢|{} 單號 {} 參數 {}",
+        action_words(ask.operation),
+        object_shown(&ask.resource),
         ask.operation,
-        clean_resource(&ask.resource),
         ticket,
         &p[..12]
     )
+}
+
+/// 「請在 01:23:44 前按」 for a ticket that expires at the unix second `expires_at`; the
+/// seconds it lives when the machine's clock cannot be read as a time of day.
+pub fn until_words(expires_at: u64) -> String {
+    match crate::touch::clock_text(expires_at) {
+        Some(t) => format!("請在 {t} 前按"),
+        None => format!("請在 {TICKET_SECS} 秒內按"),
+    }
 }
 
 /// The operations whose caller resends with the ticket and checks it with [`approved_for`]
@@ -296,7 +357,7 @@ impl Owner {
             gate: self.gate.clone(),
             yes: false,
         };
-        let why = window_text(ask, &ticket);
+        let why = window_text(ask, &ticket, &until_words(now + TICKET_SECS));
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
@@ -519,10 +580,94 @@ mod tests {
         assert!(r.ends_with("/tail-end"), "reason: path_head_kept {r}");
         assert_eq!(r.chars().count(), RESOURCE_MAX + 1, "reason: not_cut {r}");
         assert_eq!(clean_resource("短"), "短");
-        let w = window_text(&x, "t9");
-        assert!(w.starts_with("AIB 網頁要求:worktree.open|對象:…"), "{w}");
-        assert!(w.contains("|單號 t9|參數 "), "{w}");
+        // an operation the table does not have is shown as it is; start and end of a long object
+        let w = window_text(&x, "t9", "請在 01:23:44 前按");
+        assert!(
+            w.starts_with("worktree.open「d/d/d/d/d/d/d/d/d/d/d/d/…"),
+            "{w}"
+        );
+        assert!(
+            w.contains("/tail-end」|請在 01:23:44 前按,過了這張就作廢|worktree.open 單號 t9 參數 "),
+            "{w}"
+        );
         assert!(w.ends_with(&params_sha256(&x.params)[..12]), "{w}");
+        assert_eq!(object_shown(&x.resource).chars().count(), RESOURCE_MAX + 1);
+    }
+
+    /// Andy 11-21 01:23; 5d33a PREREAD-touchwords L1.
+    #[test]
+    fn the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead() {
+        let mut x = a();
+        x.operation = crate::repos::OP_REGISTER;
+        x.resource = "demo-c45c · /Users/x/demo-c45c · remote github.com".into();
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        assert!(
+            w.starts_with("登記倉「demo-c45c · /Users/x/demo-c45c · remote github.com」|請在 01:23:44 前按,過了這張就作廢|repo.register 單號 ot_1 參數 "),
+            "reason: window_words {w}"
+        );
+        for (op, words) in ACTIONS {
+            assert_eq!(action_words(op), words);
+            assert!(
+                !words.is_empty() && !words.contains('|'),
+                "reason: action_{op}"
+            );
+        }
+        assert_eq!(
+            action_words("no.such"),
+            "no.such",
+            "reason: unknown_action_hidden"
+        );
+        // an object that tries to be the window's second part
+        for hostile in [
+            "x」|請在 23:59:59 前按,過了這張就作廢|repo.register 單號 ot_9",
+            "x 請在 23:59:59 前按",
+            "x｜請在 ２３：５９：５９ 前按』│¦",
+            "x\n請在 23:59 前按\t|",
+        ] {
+            x.resource = hostile.into();
+            let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+            let parts: Vec<&str> = w.split('|').collect();
+            assert_eq!(parts.len(), 3, "reason: object_made_a_part {w}");
+            assert_eq!(parts[1], "請在 01:23:44 前按,過了這張就作廢", "{w}");
+            assert_eq!(
+                w.matches('「').count(),
+                1,
+                "reason: object_left_its_quotes {w}"
+            );
+            assert_eq!(
+                w.matches('」').count(),
+                1,
+                "reason: object_left_its_quotes {w}"
+            );
+            assert_eq!(
+                w.matches("請在").count(),
+                1,
+                "reason: object_says_until {w}"
+            );
+            assert!(
+                !parts[0].contains("23:59") && !parts[0].contains("２３：５９"),
+                "reason: object_shows_a_clock {w}"
+            );
+        }
+        // a port or a path keeps its colon: only one between two digits is a clock's
+        assert_eq!(
+            object_shown("git@host:o/r · c:1 a:b"),
+            "git@host:o/r · c:1 a:b"
+        );
+        assert_eq!(object_shown("1:2"), "1·2");
+        // until: a time of day when the clock reads as one, the seconds when not
+        let u = until_words(1_795_192_000);
+        assert!(
+            u == format!("請在 {TICKET_SECS} 秒內按")
+                || (u.starts_with("請在 ")
+                    && u.ends_with(" 前按")
+                    && crate::touch::clock_ok(&u["請在 ".len()..u.len() - " 前按".len()])),
+            "reason: until_words {u}"
+        );
+        assert!(crate::touch::clock_ok("01:23:44"));
+        for bad in ["1:23:44", "01:23", "01-23-44", "ab:cd:ef", "01:23:44 "] {
+            assert!(!crate::touch::clock_ok(bad), "reason: clock_ok_{bad}");
+        }
     }
 
     #[test]
