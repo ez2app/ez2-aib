@@ -146,4 +146,19 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/if \(!start && j && !\/\^\(assistant\|stream_event\|user\)\$\/\.test/.test(ws), 'reason: hook_line_starts_turn');
 }
 
+// 14. 519d0 06:45 第 1、2 點:加一席看得到、改得了品牌預設模型(只在 aibd 有 default_model_set 時);額度卡有「換模型」(seat_model_set)
+{
+  const m = ws.match(/const MODEL_RE = (\/[^\n]*\/);/);
+  ok(m, 'reason: model_check_moved');
+  const re = eval(m[1]);
+  for (const g of ['sonnet', 'claude-sonnet-4-5', 'gpt-5.5', '~opus', 'a/b:c']) ok(re.test(g), 'reason: good_model_refused ' + g);
+  for (const b of ['--dangerously-skip-permissions', 'a b', '', '-x', 'a'.repeat(65), 'a;b']) ok(!re.test(b), 'reason: bad_model_taken ' + b);
+  ok(/if \(hasAct\("default_model_set"\) !== true\) return "";/.test(ws), 'reason: default_model_shown_without_act');
+  ok(/\$\{modelLine\(A, pv\)\}/.test(ws), 'reason: default_model_not_in_add');
+  ok(/await act\("default_model_set", \{ provider: pv\.id, model: v \}\)/.test(ws), 'reason: default_model_not_sent');
+  ok(/quota: lv === 3 && str\(c\.why\) === '額度'/.test(ws), 'reason: quota_card_not_read');
+  ok(/if \(x\.quota && hasAct\('seat_model_set'\) === true\)/.test(ws), 'reason: swap_shown_without_act');
+  ok(/await act\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

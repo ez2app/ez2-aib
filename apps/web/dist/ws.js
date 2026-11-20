@@ -895,6 +895,7 @@
         rec: str(c.rec), st: (mw && mw.st) || str(c.state) || (c.text ? '' : stuck ? str(c.item) : str(c.why)), src: str(c.src),
         who: s ? '@' + seatName(s) : '', seat: s ? s.seat_id : null, card: c.card_id, options: c.options,
         answer: (c.actions || []).includes('answer'), actions: c.actions || [], restart: rf ? c.seat_id : null,
+        quota: lv === 3 && str(c.why) === '額度' && s ? s.seat_id : null, // 519d0 06:45 第 2 點:額度用完 ⇒ 換模型鈕
         // 7ebca 80b0cade9:舊帳的信(dm.hold / queued / unread / task)帶 open {thread_id, message_id} ⇒ 點了開那串、捲到那則
         open: c.kind !== 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id) } : null,
         // 7ebca a1eb8c735:審查意見跟真人需求不同(seat.asked)⇒ 卡上兩顆鈕,另給「打開串」捲到審查那則;卡上不放訊息內容
@@ -1045,6 +1046,39 @@
   const tickWait = (T) => (ticket, sec) => { if (S.tickEdit === T) { T.msg = '請在這台 Mac 跳出的指紋視窗按下(設定時送要本人核准)· 還有 ' + sec + ' 秒'; render(); } };
   // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
   const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
+  // 519d0 11-21 06:45 第 1 點:開席沒指定模型 ⇒ aibd 帶這個品牌的預設模型(version.default_models);第 2 點:額度用完的席換模型接著做
+  const MODEL_RE = /^~?[0-9A-Za-z][0-9A-Za-z._:\/-]{0,63}$/;
+  const dfltModel = (id) => { const m = S.version && S.version.default_models; const v = m && typeof m === "object" ? m[String(id || "").toLowerCase()] : ""; return typeof v === "string" ? v : ""; };
+  const MODEL_ERR = { default_model_shape: "模型名稱只能是英文、數字和 . _ : / -(最多 64 字)", seat_model_shape: "模型名稱只能是英文、數字和 . _ : / -(最多 64 字)", default_model_provider: "這個品牌不能設預設模型", default_model_built_in_page_only: "用戶資料夾有自己的頁時不能改預設模型", seat_model_built_in_page_only: "用戶資料夾有自己的頁時不能換模型", seat_busy: "這一席正在做事,等這一輪做完再換", stop_unconfirmed: "模型換好了,但舊的那段沒確定停掉;等它停了按「重開」", seat_not_found: "找不到這一席", seat_archived: "這一席已封存", seat_running: "這一席正在重開" };
+  function modelLine(A, pv) {
+    if (hasAct("default_model_set") !== true) return "";
+    const cur = dfltModel(pv.id), E = A.dm;
+    if (E && E.p === pv.id) return `<div class="adm"><input class="apq" data-dmin="1" value="${esc(E.v)}" placeholder="例:sonnet" aria-label="預設模型" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-dmsave="1" ${E.busy ? "disabled" : ""}>存</button>${cur ? `<button type="button" class="k" data-dmclear="1" ${E.busy ? "disabled" : ""}>不設(用它自己的)</button>` : ""}<button type="button" class="k" data-dmx="1">取消</button>${E.msg ? `<div class="aerr" role="alert">${esc(E.msg)}</div>` : ""}</div>`;
+    return `<div class="adm">模型:<b>${cur ? esc(cur) : "沒設(用 " + esc(pv.name) + " 自己的預設)"}</b> <button type="button" class="k" data-dmedit="1">改</button><div class="apn">沒另外指定模型的席都用這個;所有新開的 ${esc(pv.name)} 席共用</div></div>`;
+  }
+  async function dmSave(clear) {
+    const A = S.add, PV = providers(), pv = PV.find((x) => x.key === A.provider && x.open); const E = A && A.dm;
+    if (!E || !pv) return;
+    const v = clear ? null : String(E.v || "").trim();
+    if (v !== null && !MODEL_RE.test(v)) { E.msg = MODEL_ERR.default_model_shape; return render(); }
+    E.busy = true; E.msg = ""; render();
+    try { const r = await act("default_model_set", { provider: pv.id, model: v }); S.version = Object.assign({}, S.version, { default_models: (r && r.default_models) || {} }); A.dm = null; say(v ? pv.name + " 預設模型改成 " + v : pv.name + " 不設預設模型"); }
+    catch (e) { E.busy = false; E.msg = MODEL_ERR[e && e.code] || actRefused(e) || errText(e); }
+    render();
+  }
+  async function mswapGo() {
+    const M = S.mswap; if (!M || M.busy) return;
+    const v = String(M.v || "").trim();
+    if (!MODEL_RE.test(v)) { M.msg = MODEL_ERR.seat_model_shape; return render(); }
+    M.busy = true; M.msg = ""; render();
+    try {
+      await act("seat_model_set", { seat_id: M.seat, model: v, idem_key: idem() });
+      say("@" + seatName(seatById(M.seat) || { seat_id: M.seat }) + " 換成 " + v + ",接著原本的對話做");
+      if (M.card) { S.dismissed.add(M.card); act("slot_dismiss", { card_id: M.card }).catch(() => S.dismissed.delete(M.card)); }
+      S.mswap = null;
+    } catch (e) { M.busy = false; M.msg = MODEL_ERR[e && e.code] || actRefused(e) || errText(e); }
+    render(); tick(true);
+  }
   const inputModes = () => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.input_modes) ? c.input_modes.map(String) : ['safe', 'work']; };
   function tickTag(s) {
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
@@ -1339,6 +1373,10 @@
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     // 7ebca PAGE-talk-stopped:全艙停發卡(talk.stopped)actions 有 resume ⇒「繼續」送 talk_resume {card_id};不用指紋、不用確認
     if (A.includes('resume') && x.card) b.unshift(`<button type="button" class="k g" data-resume="${esc(x.card)}" title="看過沒問題才按:解除停發,這一艙的一小時重新算">繼續</button>`);
+    if (x.quota && hasAct('seat_model_set') === true) {
+      const M = S.mswap && S.mswap.seat === x.quota ? S.mswap : null;
+      b.push(M ? `<span class="msw"><input class="apq" data-mswin="1" value="${esc(M.v || '')}" placeholder="換成哪個模型,例:sonnet" aria-label="換成哪個模型" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-mswgo="1" ${M.busy ? 'disabled' : ''}>換,接著做</button><button type="button" class="k" data-mswx="1">取消</button>${M.msg ? `<span class="bad" role="alert">${esc(M.msg)}</span>` : ''}</span>` : `<button type="button" class="k g" data-msw="${esc(x.quota)}" data-mswcard="${esc(x.card || '')}" title="同一席、同一段對話,換一個模型接著做">換模型</button>`);
+    }
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
     if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
@@ -2761,11 +2799,15 @@
         const pt = e.target.closest('[data-pinto],[data-pinoff]'); if (pt && S.card) { return pinCard(pt.dataset.pinoff ? null : pt.dataset.pinto); }
         const c = e.target.closest('[data-card]'); if (c) return openCard(c.dataset.card);
         // 這則事件的作答 / 叫交接 / 重開 / 看這一席 / 晚點:跟主畫面同一條路;會換畫面的(看這一席、晚點、作答)先關視窗
+        // 519d0 06:45 第 2 點:額度卡「換模型」在這個視窗裡就地填、就地換;換好了關視窗
+        const mw = e.target.closest('.evact [data-msw], .evact [data-mswgo], .evact [data-mswx]');
+        if (mw) { const r = onMainClick(e); renderCard(); const i = dlg.querySelector('[data-mswin]'); if (i && mw.matches('[data-msw]')) i.focus(); Promise.resolve(r).then(() => { if (!S.card) return; if (!S.mswap && mw.matches('[data-mswgo]')) { S.card = null; dlg.close(); } else renderCard(); }); return; }
         const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later], .evact [data-resume]');
         if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer], [data-resume]')) { S.card = null; dlg.close(); } return onMainClick(e); }
       });
       dlg.addEventListener('input', (e) => {
         if (e.target.dataset && e.target.dataset.ansfor) S.ansDraft[e.target.dataset.ansfor] = e.target.value;
+        if (e.target.dataset && e.target.dataset.mswin && S.mswap) S.mswap.v = e.target.value;
         if (e.target.dataset && e.target.dataset.pinq && S.card) { S.card.pinQ = e.target.value; const l = dlg.querySelector('.pinl'); if (l) l.innerHTML = pinList(S.card.pinQ); } // 只換清單,輸入框不重畫
       });
       dlg.addEventListener('keydown', (e) => {
@@ -3337,7 +3379,7 @@
     }
     return `<div class="dlgbg"><div class="adlg ${A.still ? 'still' : ''}" role="dialog" aria-label="加一席">
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
-      <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
+      <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div>${modelLine(A, pv)}</div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
       ${(A.mode === 'dgrs' && canD) || (A.mode === 'work' && repoModes().includes('work') && A.provider !== 'codex') ? repoSec(A) : ''}${A.mode === 'work' && A.provider === 'codex' ? `<div class="asec"><span>資料夾</span><div class="apn">Codex 做事席只用自己的新資料夾(還不能跟別席同一份、也不能開在別席的倉裡)</div></div>` : ''}${A.mode === 'work' && A.provider !== 'codex' && !curRepo(A) ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button>${TREE_HOLD ? `<div class="apr off" title="這個做法在修一個安全問題,修好再開"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>這個做法在修一個安全問題,修好再開</i></div>` : ''}<button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1" ${TREE_HOLD ? 'hidden' : ''}><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
@@ -3902,6 +3944,9 @@
       }
       S.sending = false; render(); tick(true); return;
     }
+    const msw = x.closest('[data-msw]'); if (msw) { const sid = msw.dataset.msw, s0 = seatById(sid); S.mswap = { seat: sid, card: msw.dataset.mswcard || '', v: dfltModel(s0 && s0.provider) || '' }; render(); const i = document.querySelector('[data-mswin]'); if (i) i.focus(); return; }
+    if (x.closest('[data-mswgo]')) return mswapGo();
+    if (x.closest('[data-mswx]')) { S.mswap = null; return render(); }
     const rs = x.closest('[data-restart]');
     if (rs && !S.sending) {
       S.sending = true; render();
@@ -3973,6 +4018,10 @@
       }
       if (x.closest('[data-addnx]')) { S.add.newf = null; return render(); }
       if (x.closest('[data-addns]')) return regAdd();
+      if (x.closest('[data-dmedit]')) { const pv = providers().find((y) => y.key === S.add.provider && y.open); if (pv) S.add.dm = { p: pv.id, v: dfltModel(pv.id) }; render(); const i = document.querySelector('[data-dmin]'); if (i) i.focus(); return; }
+      if (x.closest('[data-dmsave]')) return dmSave(false);
+      if (x.closest('[data-dmclear]')) return dmSave(true);
+      if (x.closest('[data-dmx]')) { S.add.dm = null; return render(); }
       const ap = x.closest('[data-addp]'); if (ap) { S.add.provider = ap.dataset.addp; S.add.mode = 'safe'; S.add.key = idem(); return render(); }
       const am = x.closest('[data-addm]'); if (am) { S.add.mode = am.dataset.addm; S.add.key = idem(); return render(); }
       if (x.closest('[data-addx]') || x.classList.contains('dlgbg')) { S.add = null; return render(); }
@@ -4002,6 +4051,8 @@
   el.addEventListener('change', (e) => { const f = e.target.dataset && e.target.dataset.addf; if (f && S.add) { S.add[f] = e.target.value; if (f === 'role' || f === 'node') render(); } });
   el.addEventListener('input', (e) => {
     if (e.target.dataset && e.target.dataset.addho && S.add) { S.add.ho = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.dmin && S.add && S.add.dm) { S.add.dm.v = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.mswin && S.mswap) { S.mswap.v = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addbq && S.add) { S.add.bq = e.target.value; const l = document.getElementById('addbl'); if (l) l.innerHTML = brainRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.addnq && S.add) { S.add.nq = e.target.value; const l = document.getElementById('addnl'); if (l) l.innerHTML = nodeRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.tickf && S.tickEdit) { S.tickEdit[e.target.dataset.tickf] = e.target.value; return; }

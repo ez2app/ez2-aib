@@ -1051,3 +1051,4 @@ label.rvr{cursor:pointer}
 .ghp,.ghc,.ghk,.ghr{flex-basis:100%;font-size:12px}
 .ghp a.lk{color:var(--blue);text-decoration:underline}
 .ghk.bad{color:var(--red)}
+.adlg .adm{padding:6px 10px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.adlg .adm .apn{flex-basis:100%;padding:0}.adlg .adm .apq{flex:1;min-width:140px}.msw{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.msw .apq{min-width:160px;font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text)}.msw .apq:focus{outline:none;border-color:var(--gold)}
