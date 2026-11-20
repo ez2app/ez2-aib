@@ -639,6 +639,8 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         // codex flag
         argv.extend(crate::seats::codex_talk_args(&exe, &data));
     } else {
+        let work_gate = (crate::seats::now_gate_on() && mode == "work")
+            .then(|| crate::seats::gate_settings(&exe, &data));
         let (p2, c2) = (private.clone(), conv.clone());
         let cfg = tokio::task::spawn_blocking(move || {
             crate::seats::keep_talk_config(&p2, &c2, &exe, &data)
@@ -649,6 +651,9 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         .and_then(|p| p.to_str().map(str::to_owned))
         .ok_or(Skip::Start)?;
         argv.extend(crate::seats::talk_args(&cfg, &mode));
+        if let Some(g) = work_gate.as_deref() {
+            crate::seats::fold_gate_into_work_settings(&mut argv, g);
+        }
     }
     if let Some(path) = card.text_path.clone() {
         let sha = card.persona_sha.clone();
