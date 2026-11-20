@@ -87,6 +87,25 @@ pub fn repo_copies(seat_work: &Path) -> usize {
 
 /// One copy is counted and cloned at a time, so two opens at once cannot both pass the count
 /// (5d33a PREREAD-workrepo r2 N3).
+/// An archived seat's tree is collected ([`seat_worktree::collect`]); a registered repo's copy
+/// whose head was taken no longer counts toward the machine's copies (5d33a PREREAD-workrepo r2
+/// L1; the folder stays for the person). A collect that failed leaves it counted.
+pub fn collect_copy(
+    dir: &Path,
+    base: &str,
+    repo: Option<&Path>,
+    hooks: &Path,
+) -> Result<seat_worktree::Collected, String> {
+    let c = seat_worktree::collect(dir, base, repo, hooks);
+    let repo_copy = seat_worktree::base_of(dir).is_some_and(|(_, a)| is_repo_copy(&a));
+    if c.is_ok() && repo_copy {
+        if let Err(e) = release_copy(dir) {
+            tracing::warn!(error = %e, "repo copy not marked released");
+        }
+    }
+    c
+}
+
 static COPY_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A copy's author names a registered repo, not a seat (5d33a N6: never 合回 into it).
@@ -539,6 +558,74 @@ mod tests {
             !is_repo_copy("seat_aaaa1111"),
             "reason: seat_author_refused"
         );
+    }
+
+    fn registered(r: &Path, data: &Path) -> (Repo, PathBuf, PathBuf) {
+        let hooks = data.join("seat-git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let c = check("my-repo", r.to_str().unwrap(), data, &hooks).unwrap();
+        let reg = Repo {
+            name: c.name,
+            path: c.top.to_string_lossy().into_owned(),
+            remote: c.remote,
+            manifest: c.manifest,
+            added_at: 0,
+        };
+        (reg, data.join("seat-work"), hooks)
+    }
+
+    #[test]
+    fn an_archived_copy_stops_counting_only_when_its_head_was_taken() {
+        // 5d33a PREREAD-workrepo r3 L: the archive's own call, not only release_copy
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let (reg, work, hooks) = registered(r.path(), data.path());
+        let (t1, h1) = prepare_tree(&reg, &work, &hooks, "wt01", "1120", None).unwrap();
+        assert_eq!(repo_copies(&work), 1, "precondition: one copy");
+        let c = collect_copy(&t1, &h1, Some(r.path()), &hooks).expect("precondition: collected");
+        assert!(!c.removed, "reason: copy_folder_removed");
+        assert_eq!(
+            repo_copies(&work),
+            0,
+            "reason: collected_copy_still_counted"
+        );
+        // a collect that fails (the registered repo is gone) leaves the copy counted
+        let (t2, h2) = prepare_tree(&reg, &work, &hooks, "wt02", "1120", None).unwrap();
+        std::fs::remove_dir_all(r.path().join(".git")).unwrap();
+        assert!(
+            collect_copy(&t2, &h2, Some(r.path()), &hooks).is_err(),
+            "precondition: collect fails"
+        );
+        assert_eq!(repo_copies(&work), 1, "reason: failed_collect_released");
+    }
+
+    #[test]
+    fn a_copy_opens_only_while_no_other_copy_is_opening() {
+        // 5d33a PREREAD-workrepo r2 N3: two opens counting at once could pass the cap
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let (reg, work, hooks) = registered(r.path(), data.path());
+        let held = COPY_OPEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = work.clone();
+        let h = hooks.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(prepare_tree(&reg, &w, &h, "wt01", "1120", None).is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(800))
+                .is_err(),
+            "reason: opened_while_another_opens"
+        );
+        drop(held);
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok(true),
+            "reason: open_never_ran"
+        );
+        assert_eq!(repo_copies(&work), 1);
     }
 
     #[test]

@@ -905,17 +905,7 @@ async fn collect_tree(
 ) {
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let done = tokio::task::spawn_blocking(move || {
-        let c = crate::seat_worktree::collect(&dir, &base, repo.as_deref(), &hooks);
-        // 5d33a PREREAD-workrepo r2 L1: a registered repo's copy whose head was taken no longer
-        // counts toward the machine's copies (the folder stays for the person)
-        let repo_copy = crate::seat_worktree::base_of(&dir)
-            .is_some_and(|(_, a)| crate::repos::is_repo_copy(&a));
-        if c.is_ok() && repo_copy {
-            if let Err(e) = crate::repos::release_copy(&dir) {
-                tracing::warn!(error = %e, "repo copy not marked released");
-            }
-        }
-        c
+        crate::repos::collect_copy(&dir, &base, repo.as_deref(), &hooks)
     })
     .await;
     let code = seat_code(seat);
