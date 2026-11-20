@@ -1027,3 +1027,10 @@ label.rvr{cursor:pointer}
 .sbw .sbf{color:var(--gold);margin-top:4px}
 .sbl{font-size:12px;color:var(--dim);margin-top:4px}
 .sbl code{margin-right:6px}
+.rcpq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;margin:6px 0}
+.rcpq .apq{min-width:260px}
+.rcpr{font-size:13px;margin:4px 0;color:var(--dim)}
+.rcpr b{margin-right:6px;padding:0 6px;border-radius:6px}
+.rcg{background:var(--green);color:#000}
+.rcr{background:var(--red);color:#fff}
+.rcw{color:var(--red)}

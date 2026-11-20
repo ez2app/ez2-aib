@@ -41,6 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
+    rcp: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
     mode: 'shared', // 'shared' 或 seat_id(某一席自己的運作窗)
@@ -1530,7 +1531,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${stop}</div>${sendBackBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -2707,6 +2708,70 @@
   // c46:指紋窗可能沒到最前面 ⇒ 每個倒數都提示;c45:票過期後視窗可能還在、還能按 ⇒ 明講這張已過期、請按取消
   const FINGER_BEHIND = '視窗可能在其他視窗後面';
   const FINGER_GONE = '這張已過期,視窗若還在請按取消';
+  // 第 4 件「在網頁跑測試拿收據」(7ebca 4758a4702b 21:43,蓋過 b4297 IFACE r0):receipt_request / receipt_read / receipt_withdraw。
+  // 頭碼:席的 JSON 還沒有;先讀 tree.head(已請 7ebca 補),沒有就鈕灰掉並說原因。沒有背景輪詢 ⇒ 這頁在跑的每 15 秒 read 一次
+  const RCP_WHY = {
+    bad_head: '頭碼不對(要 40 碼)', bad_scope: '只能選窄或整套', bad_tests: '窄收據要 1 到 8 項「crate:測試檔」(例 aibd:seats_tree)', seat_id_invalid: '席號不對',
+    receipt_not_allowed: '這台沒開網頁跑收據,或這一席不是受信任席', head_not_seat_head: '這個頭碼不是這一席現在的頭(它可能又提交了;重新整理再按)',
+    receipt_built_in_page_only: '只有這台內建的頁面能跑收據', receipt_in_flight: '這一席已經有收據在跑,等它跑完或撤掉再排',
+    no_host: '現在沒有可用的測試機,沒有排', already_done: '這份已經跑完,不能撤', no_such_run: '找不到這份收據', bad_run_id: '收據號不對',
+  };
+  const RCP_STATE = { waiting_owner: '等主人同意', running: '在跑', done: '跑完', red: '紅', withdrawn: '已撤' };
+  const rcpLive = (x) => x && (x.state === 'waiting_owner' || x.state === 'running');
+  const headOf = (s) => { const h = String((s.tree && s.tree.head) || (s.repo_copy && s.repo_copy.head) || ''); return /^[0-9a-f]{40}$/.test(h) ? h : ''; };
+  function rcpBtn(s) {
+    if (S.rcpOff) return '';
+    const h = headOf(s);
+    return `<button type="button" class="k" data-rcpask="${esc(s.seat_id)}" ${h && !S.sending ? '' : 'disabled'} title="${esc(h ? '在測試機上跑這一席現在的頭 ' + h.slice(0, 12) + '(窄 = 指定幾個測試檔;整套 = 全部 + 刀)' : 'aibd 還沒給這一席的頭碼,還不能從頁面跑收據')}">跑收據</button>`;
+  }
+  function rcpBox(s) {
+    const A = S.rcpAsk && S.rcpAsk.seat === s.seat_id ? S.rcpAsk : null, L = S.rcp[s.seat_id] || [], M = S.rcpMsg && S.rcpMsg.seat === s.seat_id ? S.rcpMsg : null;
+    let h = '';
+    if (A) h += `<div class="rcpq" data-rcpform><span>跑收據 · 頭 ${esc(headOf(s).slice(0, 12))}</span><label><input type="radio" name="rcpsc" data-rcpscope="narrow" ${A.scope === 'narrow' ? 'checked' : ''}> 窄(指定測試檔,不算綠)</label><label><input type="radio" name="rcpsc" data-rcpscope="full" ${A.scope === 'full' ? 'checked' : ''}> 整套(全部測試 + 刀)</label>${A.scope === 'narrow' ? `<input class="apq" data-rcptests value="${esc(A.tests || '')}" placeholder="aibd:seats_tree, aib-drive:andy_open(最多 8 項)" aria-label="要跑的測試檔">` : ''}<button type="button" class="k g" data-rcpgo="${esc(s.seat_id)}">排</button><button type="button" class="k" data-rcpno="1">不要</button></div>`;
+    if (M) h += `<div class="trm${M.bad ? ' bad' : ''}" data-rcpmsg>${esc(M.text)}</div>`;
+    for (const x of L.slice(0, 3)) {
+      const t = x.tests_total || {}, k = x.knives || {}, why = Array.isArray(x.reasons) ? x.reasons : [];
+      const badge = x.state === 'done' && x.green ? '<b class="rcg">綠</b>' : x.state === 'red' || (x.state === 'done' && !x.green && !x.narrow) ? '<b class="rcr">紅</b>' : '';
+      h += `<div class="rcpr" data-rcprun="${esc(x.run_id)}">${badge}收據 ${x.narrow || x.scope === 'narrow' ? '窄' : '整套'} · 頭 ${esc(String(x.head || '').slice(0, 12))} · ${esc(RCP_STATE[x.state] || String(x.state || ''))}${x.host ? ' · ' + esc(x.host) : ''}${t.suites != null ? ` · 測試 ${t.passed | 0} 過 / ${t.failed | 0} 失敗${t.ignored ? ' / ' + (t.ignored | 0) + ' 略過' : ''}` : ''}${k.expected != null ? ` · 刀 ${k.bites | 0}/${k.expected | 0}${k.misses ? '(' + (k.misses | 0) + ' 沒咬)' : ''}` : ''}${why.length ? ` · <span class="rcw">${why.map((w) => esc(String(w))).join('、')}</span>` : ''}${rcpLive(x) ? `<button type="button" class="k" data-rcpread="${esc(x.run_id)}">更新</button><button type="button" class="k" data-rcpwd="${esc(x.run_id)}">撤</button>` : ''}</div>`;
+    }
+    return h;
+  }
+  function rcpKeep(row) {
+    if (!row || !row.run_id) return;
+    const id = String(row.seat_id || ''), L = (S.rcp[id] = S.rcp[id] || []);
+    const i = L.findIndex((y) => y.run_id === row.run_id);
+    if (i >= 0) L[i] = row; else L.unshift(row);
+    if (L.some(rcpLive) && !S.rcpTimer) S.rcpTimer = setInterval(rcpPoll, 15000);
+  }
+  async function rcpPoll() {
+    const live = Object.values(S.rcp).flat().filter(rcpLive);
+    if (!live.length) { clearInterval(S.rcpTimer); S.rcpTimer = null; return; }
+    for (const x of live) { try { rcpKeep(await act('receipt_read', { run_id: x.run_id })); } catch {} }
+    render();
+  }
+  const rcpWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return RCP_WHY[rs] || errText(e); };
+  async function rcpGo(id) {
+    const s = seatById(id), A = S.rcpAsk; if (!s || !A) return;
+    const tests = A.scope === 'narrow' ? String(A.tests || '').split(/[,\s]+/).filter(Boolean) : [];
+    if (A.scope === 'narrow' && (tests.length < 1 || tests.length > 8 || tests.some((t) => !/^[a-z0-9_-]+:[A-Za-z0-9_\/.-]+$/.test(t)))) { S.rcpMsg = { seat: id, bad: true, text: RCP_WHY.bad_tests }; render(); return; }
+    S.rcpMsg = null; S.sending = true; render();
+    try {
+      const row = await act('receipt_request', Object.assign({ seat_id: id, head: headOf(s), scope: A.scope }, A.scope === 'narrow' ? { tests } : {}));
+      rcpKeep(Object.assign({ seat_id: id }, row)); S.rcpAsk = null;
+      S.rcpMsg = { seat: id, text: '排了' + (row && row.host ? ',在 ' + row.host : '') + ';這頁每 15 秒更新一次' };
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
+      if (rs === 'receipt_built_in_page_only') S.rcpOff = true;
+      S.rcpMsg = { seat: id, bad: true, text: rcpWhy(e) };
+    }
+    S.sending = false; render();
+  }
+  async function rcpAct(type, run) {
+    const x = Object.values(S.rcp).flat().find((y) => y.run_id === run), id = x ? x.seat_id : '';
+    try { const row = await act(type, { run_id: run }); rcpKeep(Object.assign({ seat_id: id }, row)); if (type === 'receipt_withdraw') S.rcpMsg = { seat: id, text: '撤了' }; }
+    catch (e) { S.rcpMsg = { seat: id, bad: true, text: rcpWhy(e) }; }
+    render();
+  }
   // 第 6 件第一片(a9136 IFACE-web-merge r1):有 repo_copy 的席 ⇒「送回倉(建新分支)」;這種席不給合回。
   // 兩步跟登記倉同形:先問(202 帶 plan 給畫面)→ 指紋 → 帶票 + plan.head 重送 ⇒ 200 {repo, branch, head, commits, files};分支名以 200 那次為準
   const SB_WHY = {
@@ -3318,6 +3383,11 @@
   async function onMainClick(e) {
     const x = e.target;
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
+    const rq = x.closest('[data-rcpask]'); if (rq) { S.rcpAsk = { seat: rq.dataset.rcpask, scope: 'narrow', tests: '' }; S.rcpMsg = null; render(); return; }
+    const rsc = x.closest('[data-rcpscope]'); if (rsc && S.rcpAsk) { const ti0 = document.querySelector('[data-rcptests]'); if (ti0) S.rcpAsk.tests = ti0.value; S.rcpAsk.scope = rsc.dataset.rcpscope; render(); return; }
+    if (x.closest('[data-rcpno]')) { S.rcpAsk = null; render(); return; }
+    const rg = x.closest('[data-rcpgo]'); if (rg && !S.sending) { const ti = document.querySelector('[data-rcptests]'); if (ti && S.rcpAsk) S.rcpAsk.tests = ti.value; return rcpGo(rg.dataset.rcpgo); }
+    const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
     const sbb = x.closest('[data-sendback]'); if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
     const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
