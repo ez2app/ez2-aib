@@ -1034,3 +1034,10 @@ label.rvr{cursor:pointer}
 .rcg{background:var(--green);color:#000}
 .rcr{background:var(--red);color:#fff}
 .rcw{color:var(--red)}
+.snb{margin:6px 0 8px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px}
+.snh{color:var(--dim);font-size:12px;margin-bottom:2px}
+.snl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 0}
+.snn{background:none;border:0;color:var(--text);font-weight:600;cursor:pointer;padding:0}
+.snl b.w{color:var(--gold)}
+.snl b.bad,.body.bad{color:var(--red)}
+.body.ok{color:var(--green)}

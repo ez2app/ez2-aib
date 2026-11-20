@@ -917,6 +917,36 @@
     while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if ((await evAfter(mid, 1)).events.length) lo = mid; else hi = mid; }
     return lo;
   }
+  // 只用網頁時「剛才發生什麼」只看得到這裡(519d0 22:19):收據(7ebca 62153be32a)、送回倉(a9136 838c1c09a1)、受信任(7b81e 1b6ce17d10)。
+  // 欄位:收據 {run_id, seat, head, host, state, green, reasons};送回倉 {seat_id, repo, branch, head, commits};受信任 {seat, until?}
+  const ACT_EV = { 'seat.receipt_requested': 1, 'seat.receipt_started': 1, 'seat.receipt_done': 1, 'seat.receipt_withdrawn': 1, 'seat.sent_to_repo': 1, 'seat.trusted': 1, 'seat.untrusted': 1 };
+  S.actv = S.actv || []; S.actSeen = S.actSeen || new Set();
+  function actKeep(e) {
+    const k = String(e.global_seq != null ? e.global_seq : e.sequence != null ? e.type + ':' + e.sequence : e.type + ':' + e.occurred_at);
+    if (S.actSeen.has(k)) return; S.actSeen.add(k);
+    const p = e.payload || {}, seat = String(p.seat_id || p.seat || '');
+    if (!seat) return;
+    S.actv.push({ t: String(e.occurred_at || ''), type: e.type, seat, p });
+    if (S.actv.length > 200) S.actv.splice(0, S.actv.length - 200);
+  }
+  function actText(x) {
+    const p = x.p, h12 = p.head ? ' · 頭 ' + String(p.head).slice(0, 12) : '', why = Array.isArray(p.reasons) && p.reasons.length ? ':' + p.reasons.map((w) => rcpReason(String(w))).join('、') : '';
+    switch (x.type) {
+      case 'seat.receipt_requested': return { c: '', h: '🧾 排了收據' + h12 + (p.host ? ' · ' + p.host : '') };
+      case 'seat.receipt_started': return { c: '', h: '🧾 收據開始跑' + h12 + (p.host ? ' · ' + p.host : '') };
+      case 'seat.receipt_done': return p.green ? { c: 'ok', h: '🧾 收據綠' + h12 } : p.state === 'lost' ? { c: 'bad', h: '🧾 收據沒跑完:測試機失聯' + h12 } : p.state === 'done' ? { c: '', h: '🧾 收據跑完(窄,不算綠)' + h12 } : { c: 'bad', h: '🧾 收據紅' + h12 + why };
+      case 'seat.receipt_withdrawn': return { c: '', h: '🧾 收據撤了' + h12 };
+      case 'seat.sent_to_repo': return { c: 'ok', h: '↩ 送回「' + String(p.repo || '') + '」建了新分支 ' + String(p.branch || '') + (p.commits != null ? '(' + (Number(p.commits) | 0) + ' 個提交)' : '') + h12 };
+      case 'seat.trusted': return { c: 'ok', h: '🔓 升成受信任' + (p.until ? ',到 ' + hhmm(Number(p.until) * 1000) : '') };
+      case 'seat.untrusted': return { c: '', h: '🔒 收回受信任' };
+    }
+    return { c: '', h: x.type };
+  }
+  // 席窗:這一席的;共同串:每一席的,前面標是誰
+  const actItems = (id) => S.actv.filter((x) => x.seat === id).map((x) => { const a = actText(x); return { t: x.t, h: `<div class="ev ${a.c}" data-actev="${esc(x.type)}">${esc(a.h)} · ${esc(hhmm(x.t))}</div>` }; });
+  function actRows() {
+    return S.actv.map((x) => { const sx = seatById(x.seat) || { seat_id: x.seat, provider: 'claude' }, a = actText(x); return { t: x.t, h: `<div class="msg tkr" data-actev="${esc(x.type)}"><div class="body ${a.c}">${logo(sx, 'sm')} @${esc(seatShort(sx))} ${esc(a.h)}</div><div class="st">${esc(hhmm(x.t))}</div></div>` }; });
+  }
   async function loadRejoin() {
     if (EVR.off || EVR.busy) return;
     EVR.busy = true;
@@ -1012,6 +1042,7 @@
       if (WTR.cur < 0) WTR.cur = Math.max(0, (await evTail()) - 1500);
       for (let k = 0; k < 4; k++) {
         const r = await evAfter(WTR.cur, 500), ev = (r && r.events) || [];
+        for (const e of ev) if (ACT_EV[e.type]) actKeep(e); // 收據 / 送回倉 / 受信任(519d0 22:19):這一圈不管 aibd 槽位有沒有都讀
         // 519d0 自測 H1:seat.opened 的 opened_by.with_seat = 這一席是借誰的資料夾開的(或開在誰倉裡的自己一棵樹)⇒ 它不是資料夾主人,不能再被 with_seat
         for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && e.payload.opened_by.with_seat) S.seatGuest[e.payload.seat_id] = String(e.payload.opened_by.with_seat);
         for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && /^[0-9a-f]{40}$/.test(String(e.payload.opened_by.base_head || ''))) S.seatTree[e.payload.seat_id] = true;
@@ -1028,6 +1059,29 @@
   }
   // 519d0 ORDER-round2:三席以上時誰在寫哪一份一眼看得出。席 JSON folder_owner {seat, how: folder | tree}(a9136 654162420);
   // tree {branch, base, unmerged, dirty} 有就標分支 / 沒合數(a9136 第二輪);都沒有就不標
+  function seatNowLine(s) {
+    const n = nowOf(s.seat_id), se = lastSession(s.seat_id), run = se && se.state === 'running';
+    const bits = [];
+    if (!run) bits.push(se ? '沒在跑' : '還沒開');
+    else if (n && n.state === 'reply') bits.push('<b class="w">等回應</b>');
+    else if (n && n.state === 'decide') bits.push('<b class="w">等你決定</b>');
+    else if (n && n.state === 'busy') { const st = stallOf(s.seat_id); bits.push(st && st.none ? '<b class="bad">這一輪模型沒有回應</b>' : '在做'); }
+    else bits.push('在跑');
+    if (n && n.item) bits.push(esc(String(n.item).slice(0, 80)) + (n.total ? ` <small>${Number(n.done) | 0}/${Number(n.total) | 0}</small>` : ''));
+    const mail = (S.aslots || []).filter((c) => c && c.seat_id === s.seat_id && (c.kind === 'message.unclosed' || c.kind === 'message.unread'));
+    const m = mail.map((c) => { const k = String(c.item || ''); const d = /(\d+)\s*封/.exec(k); return { n: d ? Number(d[1]) : 1, open: c.kind === 'message.unclosed' }; });
+    const nOpen = m.filter((x) => x.open).reduce((a, x) => a + x.n, 0), nUnread = m.filter((x) => !x.open).reduce((a, x) => a + x.n, 0);
+    if (nOpen) bits.push(`<b class="w">${nOpen} 封信沒結</b>`);
+    if (nUnread) bits.push(`<b class="w">${nUnread} 封信沒讀</b>`);
+    const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
+    if (u && u.pct != null) bits.push('用量 ' + (Number(u.pct) | 0) + '%');
+    const tu = trustUntil(s); if (tu) bits.push('受信任到 ' + esc(hhmm(tu * 1000)));
+    return `<div class="snl" data-seatnow="${esc(s.seat_id)}">${logo(s, 'sm')}<button type="button" class="snn" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗">@${esc(seatShort(s))}</button> ${bits.join(' · ')}</div>`;
+  }
+  function seatNowBox(P) {
+    if (!P.length) return '';
+    return `<div class="snb" data-seatnowbox><div class="snh">各席現在 <small>在做什麼 · 等誰 · 幾封信沒結</small></div>${P.map(seatNowLine).join('')}</div>`;
+  }
   function treeTag(s) {
     const L = (S.seats || []).filter((x) => !isArch(x));
     if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
@@ -1528,7 +1582,7 @@
     const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
     const uc = u && u.pct != null ? (u.pct >= (S.usage.red_pct || 95) ? 'red' : u.pct >= (S.usage.handoff_pct || 85) ? 'warn' : '') : '';
     const use = u && u.pct != null ? `<span class="use ${uc}" title="${esc((u.model || '') + (u.used != null ? ' · ' + u.used + ' / ' + u.window : ''))}">用量<progress class="usep" max="100" value="${Math.max(0, Math.min(100, Number(u.pct) || 0))}"></progress>${Number(u.pct) | 0}%</span>` : '';
-    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
+    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
@@ -1688,7 +1742,7 @@
       const who = mine ? to.map((x) => `<span class="at">@</span>${logo(sOf(x), 'sm')}`).join('') : logo(sOf(m));
       const seen = mine ? `<div class="seen">${to.map((x) => `${logo(sOf(x), 'sm')}<span class="st ${x.state === 'failed' ? 'bad' : stOf(x) === '已讀' || stOf(x) === '已回' ? 'ok' : ''}">${esc(stOf(x))}</span>`).join(' ')}</div>` : '';
       return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
-    }).concat(itemRows(), pairRows(), tickRows(), runRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
+    }).concat(itemRows(), pairRows(), tickRows(), runRows(), actRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
   }
   // 席與席之間的一對一信:寄件席 → 收件席,跟真人的話分開一個樣子
   function pairRows() {
@@ -3175,7 +3229,7 @@
       ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
-        ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : sharedWin()}`}</div>
+        ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
         <div class="box">${slotsHtml()}</div>
       </div>`;
     const t = document.getElementById('tl');
