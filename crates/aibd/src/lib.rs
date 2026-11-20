@@ -44,6 +44,7 @@ pub mod person;
 pub mod personas;
 pub mod plan_route;
 pub mod platform;
+pub mod pr_open;
 pub mod preview;
 pub mod preview_tree;
 pub mod preview_up;

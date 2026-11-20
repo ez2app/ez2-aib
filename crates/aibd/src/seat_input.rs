@@ -325,6 +325,20 @@ pub async fn act(
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::repo_push::act(st, body, by).await;
         }
+        // G3 (DESIGN-pr-open-g3; 519d0 11-20 22:30): a draft pull request for a pushed web/ branch
+        // is opened from the built-in page in this pairing only, with the owner's fingerprint
+        Some(crate::pr_open::OPEN) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a pull request is opened from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::pr_open::act(st, body, by).await;
+        }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
             if user_page {
