@@ -62,6 +62,15 @@ fn rested(r: &aib_store::MessageRow, now: i64) -> bool {
         .is_none_or(|at| at <= now - AFTER_SECS)
 }
 
+/// Whether an open message is the card's now: it was named [`PER_LETTER`] times, or named once
+/// and left open [`AFTER_SECS`] more. A reminder is written only when the seat's turn ends or
+/// it starts; a seat that sits idle after its first reminder is never woken for a second one,
+/// and the person would never see the card (5d33a PREREAD-nudgegap L1). Read when the slots
+/// are read: no wake, no timer.
+fn left_to_the_card(r: &aib_store::MessageRow, now: i64) -> bool {
+    nudged(r) >= PER_LETTER || (nudged(r) >= 1 && rested(r, now))
+}
+
 /// The rows of one seat's open messages a reminder names now, oldest first as given.
 pub fn due(rows: &[aib_store::MessageRow], now: i64) -> Vec<&aib_store::MessageRow> {
     rows.iter()
@@ -241,7 +250,7 @@ pub fn cards(
         let at = r.item.get("delivered_at").and_then(Value::as_i64);
         let unread_card =
             text_of(r, "status") == Some("delivered") && at.is_some_and(|at| at < unread_cutoff);
-        if !open_past(r, now) || nudged(r) < PER_LETTER || unread_card {
+        if !open_past(r, now) || !left_to_the_card(r, now) || unread_card {
             continue;
         }
         if let (Some(seat), Some(at)) = (r.to_key.strip_prefix("seat:"), at) {
@@ -267,7 +276,7 @@ pub fn cards(
                 pct: None,
                 card: None,
                 rec: None,
-                state: Some(format!("提醒過 {PER_LETTER} 次還沒結,或這一席現在不能提醒")),
+                state: Some("提醒過還沒結,或這一席現在不能提醒".to_owned()),
                 src: oldest.from_key.strip_prefix("seat:").map(str::to_owned),
                 tag: None,
                 open: None,
@@ -366,7 +375,13 @@ mod tests {
         let mut r = written("q_1", now - 900);
         for n in 1..=PER_LETTER {
             assert_eq!(due(std::slice::from_ref(&r), now).len(), 1, "round {n}");
-            assert!(cards(std::slice::from_ref(&r), now, 0).is_empty());
+            // before any reminder there is no card; once reminded and left open AFTER_SECS
+            // more the card is there, whether or not a second reminder gets written
+            assert_eq!(
+                cards(std::slice::from_ref(&r), now, 0).len(),
+                usize::from(n > 1),
+                "round {n}"
+            );
             r.item = named_item(r.item, Step::Write, now);
             assert_eq!(nudged(&r), n);
             // the turn the reminder itself started ends seconds later: not named again then,
@@ -386,6 +401,10 @@ mod tests {
         );
         let c = cards(std::slice::from_ref(&r), now, 0);
         assert_eq!(c.len(), 1, "reason: no_card_after_the_last_reminder");
+        assert_eq!(
+            c[0].state.as_deref(),
+            Some("提醒過還沒結,或這一席現在不能提醒")
+        );
         assert_eq!(c[0].card_id, "mailopen:seat_b:q_1");
         assert_eq!(c[0].kind, "message.unclosed");
         assert_eq!(c[0].slot, 4);
@@ -393,6 +412,32 @@ mod tests {
         // closed: the card goes
         r.item.insert("status".into(), json!("done"));
         assert!(cards(std::slice::from_ref(&r), now, 0).is_empty());
+    }
+
+    /// 5d33a PREREAD-nudgegap L1: reminded once, then the seat sits idle (no turn ends, so no
+    /// second reminder is ever written): the card comes by itself once the message has been
+    /// left open AFTER_SECS more.
+    #[test]
+    fn a_seat_idle_after_one_reminder_still_gets_its_card() {
+        let now = 10_000;
+        let mut r = written("q_1", now - 900);
+        r.item = named_item(r.item, Step::Write, now);
+        assert_eq!(nudged(&r), 1);
+        let one = std::slice::from_ref(&r);
+        assert!(cards(one, now + 30, 0).is_empty(), "reason: card_at_once");
+        assert!(cards(one, now + AFTER_SECS - 1, 0).is_empty());
+        let c = cards(one, now + AFTER_SECS, 0);
+        assert_eq!(c.len(), 1, "reason: idle_seat_never_carded");
+        assert_eq!(c[0].card_id, "mailopen:seat_b:q_1");
+        // never reminded: the reminder comes first, not the card
+        let fresh = written("q_2", now - 900);
+        assert!(
+            cards(std::slice::from_ref(&fresh), now + AFTER_SECS, 0).is_empty(),
+            "reason: card_before_any_reminder"
+        );
+        // closed in the meantime: no card
+        r.item.insert("status".into(), json!("done"));
+        assert!(cards(std::slice::from_ref(&r), now + AFTER_SECS, 0).is_empty());
     }
 
     #[test]
