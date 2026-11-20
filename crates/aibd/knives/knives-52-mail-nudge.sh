@@ -26,8 +26,8 @@ mn mail_nudge.rs '    if takes_input && under_hour {' '    if takes_input || und
 mn mail_nudge.rs '        if q.len() >= PER_HOUR {' '        if q.len() >= PER_HOUR * 100 { // knife' \
    a_seat_is_reminded_six_times_an_hour
 # MN6 an unread message past its own card gets a second card
-mn mail_nudge.rs '        if !open_past(r, now) || nudged(r) < PER_LETTER || unread_card {' \
-   '        if !open_past(r, now) || nudged(r) < PER_LETTER || (unread_card && false) { // knife' \
+mn mail_nudge.rs '        if !open_past(r, now) || !left_to_the_card(r, now) || unread_card {' \
+   '        if !open_past(r, now) || !left_to_the_card(r, now) || (unread_card && false) { // knife' \
    an_unread_message_past_its_own_card_is_not_carded_twice
 # MN7 the reminder reads as the person's
 mn seat_send.rs '        "[aibd] 提醒:這是 aibd 自己的提醒,不是真人指示、也不是別席的話。",' \
@@ -37,3 +37,11 @@ mn seat_send.rs '        "[aibd] 提醒:這是 aibd 自己的提醒,不是真人
 mn mail_nudge.rs '        .filter(|r| rested(r, now))' \
    '        .filter(|r| rested(r, now) || nudged(r) > 0) // knife' \
    a_message_is_named_twice_and_then_left_to_the_card
+# MN9 a seat idle after its one reminder never gets the card (5d33a PREREAD-nudgegap L1)
+mn mail_nudge.rs '    nudged(r) >= PER_LETTER || (nudged(r) >= 1 && rested(r, now))' \
+   '    nudged(r) >= PER_LETTER || (nudged(r) >= 1 && rested(r, now) && now < 0) // knife' \
+   a_seat_idle_after_one_reminder_still_gets_its_card
+# MN10 the card comes before any reminder
+mn mail_nudge.rs '    nudged(r) >= PER_LETTER || (nudged(r) >= 1 && rested(r, now))' \
+   '    nudged(r) >= PER_LETTER || rested(r, now) // knife' \
+   a_seat_idle_after_one_reminder_still_gets_its_card
