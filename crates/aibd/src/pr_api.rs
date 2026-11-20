@@ -415,7 +415,11 @@ mod tests {
         assert_eq!(sent[1].0.body, None);
         drop(sent);
         // the list not read: still "exists", with no number
-        for second in [ok(500, &json!([])), ok(200, &json!([])), Err("timeout")] {
+        for second in [
+            ok(500, &json!([{"number": 5}])),
+            ok(200, &json!([])),
+            Err("timeout"),
+        ] {
             let (g, _, _) = github(vec![ok(422, &dup), second]);
             assert_eq!(
                 g.open("ez2app/demo", "web/x", "main", "t", "b", true),
