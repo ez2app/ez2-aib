@@ -20,7 +20,7 @@ tl crates/aibd/src/tree_read.rs '    let under = real.strip_prefix(&root).ok()?;
    a_path_is_read_only_inside_the_tree_with_either_separator
 # TR2 a link leads into the shared .git
 tl crates/aibd/src/tree_read.rs '    (!git).then_some(real)' \
-   '    Some(real) // knife' \
+   '    { let _ = git; Some(real) } // knife' \
    a_path_is_read_only_inside_the_tree_with_either_separator
 # TR3 a folder lists .git
 tl crates/aibd/src/tree_read.rs '                (!name.eq_ignore_ascii_case(".git")).then_some((name, md))' \
