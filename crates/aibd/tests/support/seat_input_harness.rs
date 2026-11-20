@@ -276,13 +276,16 @@ impl Drop for Daemon {
             // runtime, dropped after the panic, waits for aibd's blocking threads, and with
             // seats still open those never end, so the binary sat to the 300 s limit again.
             // A failed test ends its binary within 30 s instead (rc 101, as a failed test
-            // does); the failure is already printed above this line.
+            // does); the failure is already printed above this line. The wait is always the
+            // full 30 s (nothing sends on the channel): if the binary is gone by then, so is
+            // this thread. So a test using this Daemon must not be #[should_panic] (5d33a
+            // PREREAD-harnessexit N2): its expected panic would end the binary 101.
             std::thread::spawn(|| {
                 let (_keep, rx) = std::sync::mpsc::channel::<()>();
                 if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
                     eprintln!(
-                        "harness: a failed test's runtime did not end within 30 s; \
-                         the test binary exits 101"
+                        "harness: the test binary still runs 30 s after a test failed; \
+                         it exits 101"
                     );
                     std::process::exit(101);
                 }
