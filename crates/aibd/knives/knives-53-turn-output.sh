@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly-c44 knives TO1–TO12 (7ebca 11-20): GET /api/v1/usage says each seat's turn under way
+# N-webonly-c44 knives TO1–TO13 (7ebca 11-20): GET /api/v1/usage says each seat's turn under way
 # (when it began, when its model last put anything out), so a page can tell "the text arrived
 # and the model never answered" from "it is working". A provider's own lines at the start of a
 # turn (Claude's init, codex's turn/start answer and echo) are not the model's output.
@@ -62,3 +62,7 @@ ts '                        if crate::turns::claude_speaks(line, cut) {' \
 ts '                        if crate::turns::codex_speaks(line, cut) {' \
    '                        if crate::turns::codex_speaks(line, cut) || true { // knife' \
    a_turn_the_model_never_answers_says_started_and_no_output
+# TO13 a cut user line (a long pasted text played back) counts as the model's output (5d33a L1)
+tt '            b"{\"type\":\"result\"",' \
+   '            b"{\"type\":\"result\"", b"{\"type\":\"user\"", // knife' \
+   only_the_models_own_lines_are_claude_output

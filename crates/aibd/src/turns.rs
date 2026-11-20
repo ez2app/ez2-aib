@@ -92,14 +92,16 @@ fn head_has(line: &[u8], needle: &[u8]) -> bool {
 /// this machine's aibd events, 49 turns): those are not output. What counts is named, so a new
 /// kind of line of Claude's own does not read as an answer: `assistant`, `stream_event`,
 /// `result`, a `user` line that is not a replay (a tool's result), and the `system` lines
-/// `thinking_tokens` / `permission_denied`. A line cut at the reader's cap is read by its start.
+/// `thinking_tokens` / `permission_denied`. A line cut at the reader's cap is read by its
+/// start; a cut `user` line never counts (5d33a L1: `isReplay` is at its end, unseen, so a
+/// pasted text over the cap would read as the model's answer; a tool result that long is rare
+/// and the `assistant` / `result` lines after it still count).
 pub fn claude_speaks(line: &[u8], cut: bool) -> bool {
     if cut {
         return [
             &b"{\"type\":\"assistant\""[..],
             b"{\"type\":\"stream_event\"",
             b"{\"type\":\"result\"",
-            b"{\"type\":\"user\"",
         ]
         .iter()
         .any(|p| line.starts_with(p));
@@ -281,6 +283,17 @@ mod tests {
             !claude_speaks(br#"{"type":"system","subtype":"init","tools":["aaa"#, true),
             "reason: cut_init_is_output"
         );
+        assert!(
+            !claude_speaks(
+                br#"{"type":"user","message":{"role":"user","content":[{"text":"aaa"#,
+                true
+            ),
+            "reason: cut_user_is_output"
+        );
+        assert!(claude_speaks(
+            br#"{"type":"result","subtype":"success","result":"aaa"#,
+            true
+        ));
     }
 
     /// c44: what codex prints by itself after a `turn/start` is not the model's output.
