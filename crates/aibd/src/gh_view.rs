@@ -171,7 +171,54 @@ fn command(prog: &std::ffi::OsStr, args: &[String], cwd: &std::path::Path) -> Co
     c
 }
 
-/// Kill gh and, where there are groups, everything in its group (it was started as its own).
+/// Whether gh's end is looked for without reaping it, where the platform can.
+const LOOK_WITHOUT_REAPING: bool = true;
+
+/// Has gh ended? `None`: still running; `Some(code)`: ended (no code: by a signal). Where the
+/// platform can, it is seen without being reaped (5d33a REVIEW-ghview L3): while gh is an
+/// unreaped child its pid, which is its group's number, cannot be given to another process,
+/// so the group kill at the limit never reaches a stranger.
+fn ended_unreaped(child: &mut std::process::Child) -> Option<Option<i32>> {
+    if !LOOK_WITHOUT_REAPING {
+        return plain_wait(child);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use aib_sys::{ChildExit, ExitState};
+        match aib_sys::Macos.peek(child.id()) {
+            Ok(ExitState::Running) => return None,
+            Ok(ExitState::Exited(c)) => return Some(Some(c)),
+            Ok(ExitState::Signaled(_)) => return Some(None),
+            Err(_) => {}
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use nix::sys::wait::{waitid, Id, WaitPidFlag, WaitStatus};
+        if let Ok(pid) = i32::try_from(child.id()) {
+            let flags = WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT;
+            match waitid(Id::Pid(nix::unistd::Pid::from_raw(pid)), flags) {
+                Ok(WaitStatus::StillAlive) => return None,
+                Ok(WaitStatus::Exited(_, c)) => return Some(Some(c)),
+                Ok(WaitStatus::Signaled(..)) => return Some(None),
+                _ => {}
+            }
+        }
+    }
+    // elsewhere, or when the look failed
+    plain_wait(child)
+}
+
+/// The plain look: it reaps a gh that has ended.
+fn plain_wait(child: &mut std::process::Child) -> Option<Option<i32>> {
+    match child.try_wait() {
+        Ok(Some(s)) => Some(s.code()),
+        Ok(None) => None,
+        Err(_) => Some(None),
+    }
+}
+
+/// Kill everything in gh's group (it was started as its own), then gh, then reap it.
 fn kill_all(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
@@ -211,11 +258,7 @@ fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
     let mut ended: Option<Option<i32>> = None;
     loop {
         if ended.is_none() {
-            match child.try_wait() {
-                Ok(Some(s)) => ended = Some(s.code()),
-                Ok(None) => {}
-                Err(_) => ended = Some(None),
-            }
+            ended = ended_unreaped(&mut child);
         }
         // the output is whole only once every holder of the pipe has let go
         let read = reader
@@ -229,6 +272,8 @@ fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
             return (None, Vec::new());
         }
     }
+    // ended and nothing holds its output: reaped here, after the last look
+    let _ = child.wait();
     let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
     (ended.flatten(), out)
 }
@@ -690,6 +735,30 @@ mod tests {
         let op = crate::timers::GH_VIEW_WAIT.begin(Some(Instant::now() + Duration::from_secs(2)));
         while op.tick() {}
         assert!(!mark.exists(), "reason: left_child_still_runs");
+    }
+
+    /// 5d33a REVIEW-ghview L3: a gh that has ended is seen without being reaped, so its pid
+    /// (its group's number) stays its own until the group kill has gone out.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_ended_gh_is_seen_without_being_reaped() {
+        let mut child = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
+        let op = crate::timers::GH_VIEW_WAIT.begin(Some(Instant::now() + Duration::from_secs(10)));
+        let mut seen = None;
+        while seen.is_none() && op.tick() {
+            seen = ended_unreaped(&mut child);
+        }
+        assert_eq!(seen, Some(Some(3)), "reason: end_not_seen");
+        let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+        assert!(
+            nix::sys::signal::kill(pid, None).is_ok(),
+            "reason: reaped_before_the_group_kill"
+        );
+        assert_eq!(child.wait().unwrap().code(), Some(3));
+        assert!(
+            nix::sys::signal::kill(pid, None).is_err(),
+            "reason: not_reaped_at_the_end"
+        );
     }
 
     /// A program that prints more than the cap: one byte past it is kept (so the answer reads

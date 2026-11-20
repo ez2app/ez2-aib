@@ -124,7 +124,11 @@ pub fn window_text(ask: &Ask, ticket: &str) -> String {
 /// The operations whose caller resends with the ticket and checks it with [`approved_for`]
 /// (a63, Andy 11-20): registering a repo and opening a dgrs seat on one. Every other page ask
 /// stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for nothing.
-pub const WIRED: [&str; 2] = [crate::repos::OP_REGISTER, crate::repos::OP_OPEN];
+pub const WIRED: [&str; 3] = [
+    crate::repos::OP_REGISTER,
+    crate::repos::OP_OPEN,
+    crate::seat_trust::OP,
+];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
 pub const TICKET_SECS: u64 = 120;

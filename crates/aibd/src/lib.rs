@@ -60,6 +60,7 @@ pub mod seat_now;
 pub mod seat_send;
 pub mod seat_tick;
 pub mod seat_token;
+pub mod seat_trust;
 pub mod seat_worktree;
 pub mod seats;
 pub mod secret_mask;

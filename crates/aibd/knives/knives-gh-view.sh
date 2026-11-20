@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GV1–GV25 G4 gh_view for a trusted seat (DESIGN-trusted-g1g4 §1; 7b81e 11-20): one knife a line of defence
+# GV1–GV26 G4 gh_view for a trusted seat (DESIGN-trusted-g1g4 §1; 7b81e 11-20): one knife a line of defence
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 gv() { python3 -I scripts/knife.py crates/aibd/src/gh_view.rs "$1" "$2" --expect-fail "gh_view::tests::$3" \
@@ -107,3 +107,7 @@ gv '    (p.is_absolute() && std::fs::metadata(&p).is_ok_and(|m| m.is_file())).th
 gv '                nix::sys::signal::Signal::SIGKILL,' \
    '                nix::sys::signal::Signal::SIGCONT,' \
    a_child_left_holding_the_output_is_killed_at_the_limit
+# GV26 an ended gh is reaped before the group kill (5d33a L3)
+gv 'const LOOK_WITHOUT_REAPING: bool = true;' \
+   'const LOOK_WITHOUT_REAPING: bool = false;' \
+   an_ended_gh_is_seen_without_being_reaped
