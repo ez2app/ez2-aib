@@ -166,6 +166,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
     assert_eq!(t.json["state"], "unavailable", "{}", t.body);
     let t = d.call("GET", "/api/v1/owner/tickets/t-1", None, None).await;
     assert_eq!(t.code, 403, "reason: ticket_not_page_only {}", t.body);
+    assert_eq!(t.json["code"], "page_only", "{}", t.body);
     let t = d
         .call("GET", "/api/v1/owner/tickets/a.b", Some(&cred), None)
         .await;
