@@ -7,6 +7,7 @@
 //! touches a file, git or a process: receiving, checking and starting come in slices 2 and 3.
 
 pub mod recv;
+pub mod sandbox;
 
 /// Largest bundle the gate takes (bytes).
 pub const MAX_BUNDLE: u64 = 300 * 1024 * 1024;

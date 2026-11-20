@@ -67,3 +67,51 @@ rv '            "core" => CORE.contains(&k.as_str()) && plain(v, b""),' '       
 # RV11 the remote may point anywhere
 rv '                (k == "url" && v == BASE_URL)' '                (k == "url")' \
    a_base_repo_the_last_run_touched_is_rebuilt
+# slice 3a (sandbox.rs, b4297 design r3 §3): what a sent tree may change, the profile, the fetch
+sb() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/sandbox.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-receipt-gate --locked --lib "sandbox::tests::$3"; }
+# SB1 .Cargo/Config.toml (another case) is let through
+sb '        let p = part.to_ascii_lowercase();' '        let p = part.to_owned(); // knife' \
+   a_tree_that_picks_its_toolchain_or_cargo_settings_is_refused
+# SB2 a changed .cargo folder is let through
+sb '        p == ".cargo" || p == "rust-toolchain" || p == "rust-toolchain.toml"' '        p == "rust-toolchain" || p == "rust-toolchain.toml" // knife' \
+   a_tree_that_picks_its_toolchain_or_cargo_settings_is_refused
+# SB3 one refused path among others is let through
+sb '    if changed.into_iter().any(path_refused) {' '    if changed.into_iter().all(path_refused) { // knife' \
+   a_tree_that_picks_its_toolchain_or_cargo_settings_is_refused
+# SB4 a registry that is not crates.io is let through
+sb '        .filter(|l| l.starts_with("source"))' '        .filter(|l| l.starts_with("source = \"git")) // knife' \
+   a_lock_with_a_source_that_is_not_crates_io_is_refused
+# SB5 a quote in a place goes into the profile
+sb '            .all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b))' '            .all(|b| b.is_ascii_graphic()) // knife' \
+   a_place_is_a_plain_absolute_path
+# SB6 a run folder outside the home is taken
+sb '        || !below(work, home)' '        || !below(work, "") // knife' \
+   a_place_is_a_plain_absolute_path
+# SB7 reads are open
+sb '        format!("(allow file-read*{})", quoted(&walked, "literal")),' '        format!("(allow file-read*){}", &quoted(&walked, "literal")[..0]), // knife' \
+   the_profile_allows_by_list_and_writes_only_the_run_folder
+# SB8 the home is writable
+sb '        format!("(allow file-write* (subpath \"{work}\"))"),' '        format!("(allow file-write* (subpath \"{home}\"))"), // knife' \
+   the_profile_allows_by_list_and_writes_only_the_run_folder
+# SB9 the keychain service is found
+sb '        format!("(allow mach-lookup{mach})"),' '        format!("(allow mach-lookup{mach} (global-name \"com.apple.SecurityServer\"))"), // knife' \
+   the_profile_keeps_mach_the_network_and_exec_closed
+# SB10 the network is open
+sb '        "(allow network-outbound (remote ip \"localhost:*\"))".to_owned(),' '        "(allow network-outbound)".to_owned(), // knife' \
+   the_profile_keeps_mach_the_network_and_exec_closed
+# SB11 this machine's sshd and aibd are reached
+sb '        .map(|port| format!(" (remote ip \"localhost:{port}\")"))' '        .map(|port| format!(" (remote ip \"localhost:1{port}\")")) // knife' \
+   the_profile_keeps_mach_the_network_and_exec_closed
+# SB12 only the first program is refused
+sb '        format!("(deny process-exec{})", quoted(&no_exec, "literal")),' '        format!("(deny process-exec{})", quoted(&no_exec[..1], "literal")), // knife' \
+   the_profile_keeps_mach_the_network_and_exec_closed
+# SB13 the fetch goes through the rustup proxy
+sb '            format!("{tc}/bin/cargo"),' '            format!("{}/.cargo/bin/cargo", p.home), // knife' \
+   the_fetch_is_the_pinned_cargo_from_an_empty_folder
+# SB14 the fetch starts in the tree
+sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &empty[..0]), // knife' \
+   the_fetch_is_the_pinned_cargo_from_an_empty_folder
+# SB15 a program of the run starts with no profile
+sb '        "/usr/bin/sandbox-exec".to_owned(),' '        "/usr/bin/env".to_owned(), // knife' \
+   a_program_of_the_run_starts_under_the_profile
