@@ -104,6 +104,15 @@ pub fn person_line(text: &str) -> Result<Vec<u8>, TextRefused> {
     line_with(text, "[aibd] 來自 真人:共同對話裡點名你。")
 }
 
+/// N-webonly-c32: the line of aibd's own reminder ([`crate::mail_nudge`]): the marker says it
+/// is neither the person's nor another seat's.
+pub fn reminder_line(text: &str) -> Result<Vec<u8>, TextRefused> {
+    line_with(
+        text,
+        "[aibd] 提醒:這是 aibd 自己的提醒,不是真人指示、也不是別席的話。",
+    )
+}
+
 fn line_with(text: &str, marker: &str) -> Result<Vec<u8>, TextRefused> {
     if text.is_empty() {
         return Err(TextRefused::Empty);

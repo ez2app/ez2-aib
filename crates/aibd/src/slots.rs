@@ -1236,6 +1236,12 @@ pub async fn list(
     live.extend(andy_cards(&andy.0, &andy.1));
     live.extend(next.as_ref().map(next_cards).unwrap_or_default());
     live.extend(mail_cards(&mail, now.saturating_sub(STUCK_MIN * 60)));
+    // N-webonly-c32: open messages a seat was reminded of and still has not closed
+    live.extend(crate::mail_nudge::cards(
+        &mail,
+        now,
+        now.saturating_sub(STUCK_MIN * 60),
+    ));
     live.extend(dm);
     live.extend(crate::asks::cards(&events));
     if paging.dismissed {
