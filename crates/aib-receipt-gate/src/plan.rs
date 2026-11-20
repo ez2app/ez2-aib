@@ -232,8 +232,11 @@ pub fn head_of(r: &Repo<'_>) -> Step {
     )
 }
 
-/// Prints, NUL between them, every path that differs between the base's main and the head
-/// (a rename as a removal and an addition): what `sandbox::changed_refused` judges.
+/// Prints, NUL between them, every path the head changes since it left the base's main
+/// (three dots: against their merge base; a rename as a removal and an addition): what
+/// `sandbox::changed_refused` judges. Against the merge base, not main's tip: a head cut
+/// from an older main is not refused for what main changed after it. A head that shares
+/// no history with main has no merge base and the step fails (refused).
 pub fn changed(r: &Repo<'_>) -> Step {
     git(
         r.empty,
@@ -244,8 +247,7 @@ pub fn changed(r: &Repo<'_>) -> Step {
             "--name-only",
             "--no-renames",
             "-z",
-            BASE_REF,
-            RUN_REF,
+            &format!("{BASE_REF}...{RUN_REF}"),
             "--",
         ],
     )
@@ -503,10 +505,10 @@ mod tests {
                 "--name-only",
                 "--no-renames",
                 "-z",
-                BASE_REF,
-                RUN_REF,
+                "refs/remotes/origin/main...refs/receipt/run",
                 "--"
-            ]
+            ],
+            "reason: main_tip_judged"
         );
         assert_eq!(
             &lock_at(&r).argv[9..],

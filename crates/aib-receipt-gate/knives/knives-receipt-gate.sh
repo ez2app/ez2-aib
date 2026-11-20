@@ -187,6 +187,9 @@ pl '    if !paths_ok || !hex64(sha) || !toolchain_ok(toolchain) {' '    if !path
 # PL11 a changed path that is not text is skipped, not refused
 pl '        .map(|p| std::str::from_utf8(p).map_err(|_| "tree_refused"))' '        .map(|p| Ok(std::str::from_utf8(p).unwrap_or("x"))) // knife' \
    changed_paths_are_read_whole
+# PL13 the head is judged against main's tip (a head cut from an older main is refused for main's own changes)
+pl '            &format!("{BASE_REF}...{RUN_REF}"),' '            &format!("{BASE_REF}..{RUN_REF}"), // knife' \
+   the_tree_is_a_copy_with_nothing_checked_out_until_it_is_judged
 # PL12 receipt-run takes its own lease and fetch inside the sandbox
 pl '    s.env.push(("RR_GATE".into(), "1".into()));' '    s.env.push(("RR_GATE".into(), "0".into())); // knife' \
    the_run_is_the_machines_receipt_run_whole_inside_the_sandbox

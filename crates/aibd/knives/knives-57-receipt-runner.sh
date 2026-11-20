@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN15 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN15, RB1–RB3 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -64,3 +64,18 @@ rn '        b"ERR not_done" => Fetched::NotYet,' '        b"ERR not_done" => Fet
 # RN15 another verb's answer is read as the .out
 rn '    if let Some(out) = stdout.strip_prefix(OK) {' '    if let Some(out) = stdout.strip_prefix(&OK[..3]) { // knife' \
    a_fetch_brings_the_out_or_says_how_the_run_stands
+# slice R4a (receipt_bundle.rs): the bundle of one run
+rb() { python3 -I scripts/knife.py crates/aibd/src/receipt_bundle.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "receipt_bundle::tests::$3"; }
+# RB1 the base is main's tip (what main did since counts as the head's; the copy must hold it)
+rb '    let base = git(scratch, hooks, &["merge-base", &main, head]).map_err(|_| "tree_refused")?;' \
+   '    let base = git(scratch, hooks, &["rev-parse", &main]).map_err(|_| "tree_refused")?; // knife' \
+   the_base_is_where_the_head_left_main_even_when_main_moved_on
+# RB2 what the head changes is not judged (a .cargo/config.toml goes out)
+rb '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(head))?;' \
+   '    let b = brings(&status_entries(&z)[..0], &lock_at(&base), &lock_at(head))?; // knife' \
+   a_refused_head_leaves_no_bundle
+# RB3 the base's lock is judged, not the head's (a git source goes out)
+rb '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(head))?;' \
+   '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(&base))?; // knife' \
+   a_refused_head_leaves_no_bundle

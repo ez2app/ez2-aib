@@ -210,7 +210,7 @@ fn copy_objects(src: &Path, dst: &Path, max_files: usize, max_bytes: u64) -> Res
 
 /// The scratch repository: made by aibd, holding the copy's objects and one ref on `sha`,
 /// which is checked to be a commit whose history and trees are all there.
-fn stage(tree: &Path, sha: &str, hooks: &Path, scratch: &Path) -> Result<(), Refused> {
+pub(crate) fn stage(tree: &Path, sha: &str, hooks: &Path, scratch: &Path) -> Result<(), Refused> {
     std::fs::create_dir_all(scratch).map_err(|e| Refused::Git(format!("scratch: {e}")))?;
     git(scratch, hooks, &["init", "--bare", "-q", "."]).map_err(Refused::Git)?;
     copy_objects(

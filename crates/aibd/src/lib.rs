@@ -49,6 +49,7 @@ pub mod preview;
 pub mod preview_tree;
 pub mod preview_up;
 pub mod receipt_check;
+pub mod receipt_bundle;
 pub mod receipt_run;
 pub mod receipt_runner;
 pub mod record_kind;
