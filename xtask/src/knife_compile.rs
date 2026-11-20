@@ -15,22 +15,26 @@
 //! 3. Each batch is written, checked, and the files are put back (also when this program ends
 //!    early: the originals are kept under `target/knife-compile-backup/` first and put back by
 //!    the next run). An error on the lines a knife wrote is that knife's.
-//! 4. An error on no knife's lines (a knife removed something used elsewhere): each knife of
-//!    that batch not already judged is checked alone, at most [`ALONE_MAX`]; past that, `unsure`.
+//! 4. An error on no knife's lines (a knife removed something used elsewhere, or two knives of
+//!    the batch together left a name unused): the knives of that batch not already judged are
+//!    split in halves and each half is checked, down to one knife ([`settle`]). A knife is
+//!    `ok` when it compiles alone, which is how the receipt's knife step runs it; two knives
+//!    that only fail together are both `ok`. Past [`CHECKS_MAX`] checks in all, `unsure`.
 //!
 //! `cargo check` inherits the environment: the receipt exports `RUSTFLAGS="-D warnings"`, so a
 //! knife that only leaves a warning (a function it made unused) is an error here as it is there.
 //!
 //! Output, one line per knife: `KNIFE-COMPILE ok|error|anchor|unsure <name> [file:line message]`,
-//! then `KNIFE-COMPILE-SUMMARY knives= ok= error= anchor= unsure= checks=`. Exit 0 when every
+//! a `KNIFE-COMPILE-SPLIT batch= knives= checks=` line for each batch that was split, then `KNIFE-COMPILE-SUMMARY knives= ok= error= anchor= unsure= checks=`. Exit 0 when every
 //! knife compiles, 1 when any is error / anchor / unsure, 2 for a bad call, 3 for a red baseline.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The most knives checked one by one after a batch's error landed on no knife's lines.
-pub const ALONE_MAX: usize = 12;
+/// The most checks one run makes after its batches (the splitting of [`settle`]); the knives
+/// still open then are `unsure`, which keeps the receipt red.
+pub const CHECKS_MAX: usize = 120;
 const BACKUP: &str = "target/knife-compile-backup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +327,78 @@ pub enum Verdict {
     Unsure(String),
 }
 
+/// What one check of some knives together showed: the errors on a knife's own lines, and the
+/// first error on no knife's lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Seen {
+    pub mine: BTreeMap<usize, String>,
+    pub elsewhere: Option<String>,
+}
+
+/// Judge the knives `open` after a check of them together showed `why`, an error on no knife's
+/// lines. One knife is checked alone: clean is `ok`, any error is its `error`. More are split
+/// in halves and each half is checked: an error on a knife's lines is that knife's, a half with
+/// no other error is `ok`, and a half with one is split again. `used` counts the checks; at
+/// [`CHECKS_MAX`] the knives not yet judged are `unsure`. `look` checks the knives it is given
+/// together (an `Err` ends the run).
+pub fn settle(
+    open: &[usize],
+    why: &str,
+    used: &mut usize,
+    look: &mut dyn FnMut(&[usize]) -> Result<Seen, String>,
+    verdict: &mut BTreeMap<usize, Verdict>,
+) -> Result<(), String> {
+    let over = |v: &mut BTreeMap<usize, Verdict>, which: &[usize]| {
+        for &i in which {
+            v.insert(
+                i,
+                Verdict::Unsure(format!("{why} (not settled: {CHECKS_MAX} checks made)")),
+            );
+        }
+    };
+    if let [one] = open {
+        if *used >= CHECKS_MAX {
+            over(verdict, open);
+            return Ok(());
+        }
+        *used += 1;
+        let seen = look(open)?;
+        let said = seen.mine.get(one).cloned().or(seen.elsewhere);
+        verdict.insert(*one, said.map_or(Verdict::Ok, Verdict::Error));
+        return Ok(());
+    }
+    let (a, b) = open.split_at(open.len() / 2);
+    for half in [a, b] {
+        if half.is_empty() {
+            continue;
+        }
+        let out_of_checks = *used >= CHECKS_MAX;
+        if out_of_checks {
+            over(verdict, half);
+            continue;
+        }
+        *used += 1;
+        let seen = look(half)?;
+        for (knife, said) in &seen.mine {
+            verdict.insert(*knife, Verdict::Error(said.clone()));
+        }
+        let rest: Vec<usize> = half
+            .iter()
+            .copied()
+            .filter(|i| !seen.mine.contains_key(i))
+            .collect();
+        match seen.elsewhere {
+            None => {
+                for i in rest {
+                    verdict.insert(i, Verdict::Ok);
+                }
+            }
+            Some(m) => settle(&rest, &m, used, look, verdict)?,
+        }
+    }
+    Ok(())
+}
+
 pub fn run(root: &Path, tsv: &Path) -> u8 {
     let back = recover(root);
     if back > 0 {
@@ -360,7 +436,9 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
     for i in anchor {
         verdict.insert(i, Verdict::Anchor);
     }
-    for b in &batches {
+    // the checks made by splitting, over all batches (held to CHECKS_MAX)
+    let mut split_checks = 0;
+    for (n, b) in batches.iter().enumerate() {
         let placed = b.placed();
         let ids: Vec<usize> = placed.iter().map(|p| p.knife).collect();
         let out = {
@@ -396,38 +474,53 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
             }
             continue;
         }
-        // an error on no knife's lines: each open knife alone, as far as ALONE_MAX goes
+        // an error on no knife's lines: the open knives are split until each is judged
         let first = format!("{}:{} {}", rest[0].file, rest[0].line, rest[0].msg);
-        for (n, i) in open.iter().copied().enumerate() {
-            if n >= ALONE_MAX {
-                verdict.insert(i, Verdict::Unsure(first.clone()));
-                continue;
-            }
-            let (alone, _) = plan(std::slice::from_ref(&knives[i]), &read);
-            let Some(one) = alone.first() else {
-                verdict.insert(i, Verdict::Anchor);
-                continue;
+        let mut look = |ids: &[usize]| -> Result<Seen, String> {
+            let some: Vec<Knife> = ids.iter().map(|&i| knives[i].clone()).collect();
+            let (together, unplaced) = plan(&some, &read);
+            // knives of one batch stand together; if these do not, say so and let them be split
+            let (Some(one), true) = (together.first(), together.len() == 1 && unplaced.is_empty())
+            else {
+                return Ok(Seen {
+                    mine: BTreeMap::new(),
+                    elsewhere: Some("these knives could not be written in together".into()),
+                });
             };
+            let placed: Vec<Placed> = one
+                .placed()
+                .into_iter()
+                .map(|p| Placed {
+                    knife: ids[p.knife],
+                    ..p
+                })
+                .collect();
             let out = {
-                let _put = match Applied::put(root, &one.files) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        eprintln!("knife-compile: could not write the knife in: {e}");
-                        return 2;
-                    }
-                };
-                checks += 1;
-                check(root, &crates_of(&knives, &[i]))
+                let _put = Applied::put(root, &one.files)
+                    .map_err(|e| format!("could not write the knives in: {e}"))?;
+                check(root, &crates_of(&knives, ids))?
             };
-            let errs = out.map(|o| errors(&o)).unwrap_or_default();
-            verdict.insert(
-                i,
-                match errs.first() {
-                    None => Verdict::Ok,
-                    Some(d) => Verdict::Error(format!("{}:{} {}", d.file, d.line, d.msg)),
-                },
-            );
+            let (mine, rest) = attribute(&placed, &errors(&out));
+            Ok(Seen {
+                mine,
+                elsewhere: rest
+                    .first()
+                    .map(|d| format!("{}:{} {}", d.file, d.line, d.msg)),
+            })
+        };
+        let mut used = split_checks;
+        if let Err(e) = settle(&open, &first, &mut used, &mut look, &mut verdict) {
+            eprintln!("knife-compile: {e}");
+            return 2;
         }
+        println!(
+            "KNIFE-COMPILE-SPLIT batch={} knives={} checks={}",
+            n + 1,
+            open.len(),
+            used - split_checks
+        );
+        checks += used - split_checks;
+        split_checks = used;
     }
     let (mut ok, mut err, mut anc, mut uns) = (0, 0, 0, 0);
     for (i, k) in knives.iter().enumerate() {
@@ -472,6 +565,180 @@ mod tests {
             file: file.into(),
             krate: "c".into(),
         }
+    }
+
+    /// A stand-in for the compiler: `alone` are knives that do not compile by themselves (the
+    /// error is on no knife's line), `pairs` only fail when both are in, `lined` fail on their
+    /// own lines. Returns the verdicts and how many checks were made.
+    fn settled(
+        n: usize,
+        alone: &[usize],
+        pairs: &[(usize, usize)],
+        lined: &[usize],
+    ) -> (BTreeMap<usize, Verdict>, usize) {
+        let mut look = |ids: &[usize]| -> Result<Seen, String> {
+            let has = |i: &usize| ids.contains(i);
+            let mine = lined
+                .iter()
+                .filter(|i| has(i))
+                .map(|i| (*i, format!("line of {i}")))
+                .collect();
+            let bad = alone.iter().find(|i| has(i)).map(|i| format!("alone {i}"));
+            let both = pairs
+                .iter()
+                .find(|(a, b)| has(a) && has(b))
+                .map(|(a, b)| format!("pair {a} {b}"));
+            Ok(Seen {
+                mine,
+                elsewhere: bad.or(both),
+            })
+        };
+        let open: Vec<usize> = (0..n).collect();
+        let (mut verdict, mut used) = (BTreeMap::new(), 0);
+        settle(
+            &open,
+            "the batch's error",
+            &mut used,
+            &mut look,
+            &mut verdict,
+        )
+        .expect("settle");
+        (verdict, used)
+    }
+
+    /// The seventh case (receipt a9136-r4d-3b449ce0e): LH1 and LH2 each compile alone and leave
+    /// `preview` unused together; 38 knives in the batch. Nobody is `unsure`, everybody is `ok`.
+    #[test]
+    fn two_knives_that_only_fail_together_are_both_ok_and_take_nobody_with_them() {
+        let (v, used) = settled(38, &[], &[(15, 16)], &[]);
+        assert_eq!(v.len(), 38, "reason: a_knife_was_left_unjudged");
+        assert!(
+            v.values().all(|x| *x == Verdict::Ok),
+            "reason: a_collision_is_somebodys_error {v:?}"
+        );
+        assert!(used <= 12, "reason: {used}_checks_for_one_collision");
+        // in the two halves from the start: two checks settle it
+        let (v, used) = settled(38, &[], &[(0, 37)], &[]);
+        assert!(v.values().all(|x| *x == Verdict::Ok));
+        assert_eq!(used, 2, "reason: clean_halves_were_split_again");
+        // one knife left with an error that was on no knife's lines, clean when checked alone:
+        // the error was not its own (k receipt a9136-kcb-f1c592e93: KC7 did not bite)
+        let mut v = BTreeMap::new();
+        let mut used = 0;
+        let mut clean = |_: &[usize]| -> Result<Seen, String> { Ok(Seen::default()) };
+        settle(&[4], "an error elsewhere", &mut used, &mut clean, &mut v).unwrap();
+        assert_eq!(
+            (v.get(&4), used),
+            (Some(&Verdict::Ok), 1),
+            "reason: a_knife_clean_alone_is_an_error"
+        );
+    }
+
+    #[test]
+    fn a_knife_that_fails_alone_is_the_one_error_with_its_own_message() {
+        let (v, _) = settled(38, &[9], &[(15, 16)], &[]);
+        for (i, x) in &v {
+            let want = if *i == 9 {
+                Verdict::Error("alone 9".into())
+            } else {
+                Verdict::Ok
+            };
+            assert_eq!(*x, want, "reason: knife_{i}_misjudged");
+        }
+        assert_eq!(v.len(), 38);
+        // every knife fails alone: every knife is an error, none is ok by being with others
+        let all: Vec<usize> = (0..8).collect();
+        let (v, _) = settled(8, &all, &[], &[]);
+        assert!(
+            v.values().all(|x| matches!(x, Verdict::Error(_))) && v.len() == 8,
+            "reason: a_broken_knife_passed {v:?}"
+        );
+        // one knife, one check: its error is its own even when it is on no knife's line
+        let (v, used) = settled(1, &[0], &[], &[]);
+        assert_eq!(
+            (v.get(&0), used),
+            (Some(&Verdict::Error("alone 0".into())), 1)
+        );
+    }
+
+    #[test]
+    fn an_error_on_a_knifes_own_lines_is_that_knifes_and_the_rest_of_its_half_is_judged() {
+        // 3 fails on its own lines; 5 fails alone elsewhere; the others are clean
+        let (v, _) = settled(8, &[5], &[], &[3]);
+        assert_eq!(v.get(&3), Some(&Verdict::Error("line of 3".into())));
+        assert_eq!(v.get(&5), Some(&Verdict::Error("alone 5".into())));
+        for i in [0, 1, 2, 4, 6, 7] {
+            assert_eq!(v.get(&i), Some(&Verdict::Ok), "reason: knife_{i}_misjudged");
+        }
+    }
+
+    /// 5d33a PREREAD-kcbisect: a half that shows an error on a knife's lines and another on no
+    /// knife's lines is split again; the rest of it is not called ok for the first error's sake.
+    #[test]
+    fn a_half_with_both_kinds_of_error_is_still_split() {
+        // in the first half of 8: 1 fails on its own lines, 2 fails alone elsewhere
+        let (v, _) = settled(8, &[2], &[], &[1]);
+        assert_eq!(v.get(&1), Some(&Verdict::Error("line of 1".into())));
+        assert_eq!(
+            v.get(&2),
+            Some(&Verdict::Error("alone 2".into())),
+            "reason: the_other_error_of_the_half_was_dropped"
+        );
+        for i in [0, 3, 4, 5, 6, 7] {
+            assert_eq!(v.get(&i), Some(&Verdict::Ok), "reason: knife_{i}_misjudged");
+        }
+        // the same with a pair that only fails together beside the lined one
+        let (v, _) = settled(8, &[], &[(0, 3)], &[1]);
+        assert_eq!(v.get(&1), Some(&Verdict::Error("line of 1".into())));
+        for i in [0, 2, 3, 4, 5, 6, 7] {
+            assert_eq!(v.get(&i), Some(&Verdict::Ok), "reason: knife_{i}_misjudged");
+        }
+    }
+
+    /// 5d33a PREREAD-kcbisect: the same knife file judged twice gives the same verdicts with
+    /// the same number of checks (nothing in the splitting depends on anything but its input).
+    #[test]
+    fn the_same_knives_are_judged_the_same_way_twice() {
+        for (n, alone, pairs, lined) in [
+            (38, vec![9], vec![(15, 16)], vec![]),
+            (38, vec![], vec![(0, 37), (4, 5)], vec![20]),
+            (
+                4 * CHECKS_MAX,
+                (0..4 * CHECKS_MAX).collect(),
+                vec![],
+                vec![],
+            ),
+        ] {
+            let one = settled(n, &alone, &pairs, &lined);
+            let two = settled(n, &alone, &pairs, &lined);
+            assert_eq!(one, two, "reason: judged_differently_the_second_time");
+        }
+    }
+
+    #[test]
+    fn past_the_limit_the_knives_left_are_unsure_and_never_ok() {
+        // every pair of neighbours collides and every knife fails alone: far more checks than
+        // the limit allows
+        let n = 4 * CHECKS_MAX;
+        let all: Vec<usize> = (0..n).collect();
+        let (v, used) = settled(n, &all, &[], &[]);
+        assert_eq!(used, CHECKS_MAX, "reason: the_limit_is_not_kept");
+        assert_eq!(v.len(), n, "reason: a_knife_was_left_unjudged");
+        let unsure = v
+            .values()
+            .filter(|x| matches!(x, Verdict::Unsure(m) if m.contains("not settled")))
+            .count();
+        assert!(unsure > 0, "reason: nothing_unsure_past_the_limit");
+        assert!(
+            !v.values().any(|x| *x == Verdict::Ok),
+            "reason: a_knife_not_checked_is_ok"
+        );
+        // and an unsure knife keeps the run red (the exit code counts it)
+        let src = include_str!("knife_compile.rs").replace("\r\n", "\n");
+        assert!(
+            src.contains(concat!("    u8::from(err + anc + ", "uns > 0)\n")),
+            "reason: unsure_does_not_keep_the_run_red"
+        );
     }
 
     #[test]
