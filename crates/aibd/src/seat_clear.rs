@@ -368,7 +368,13 @@ async fn clear(
         .into_iter()
         .filter(|x| x.seat_id.as_deref() == Some(seat_id))
         .collect();
-    if mine.iter().any(|x| x.state == "stop_unconfirmed") {
+    // a stop aibd could not look at keeps its slot (holds_slot): a process may still run. macOS
+    // never claims a clean stop, so every stop there reads stop_unconfirmed; the slot is the
+    // judge, as for ctl (clr-full-1de5ab892 test: 409 stop_unconfirmed on a clean stop)
+    if mine
+        .iter()
+        .any(|x| x.holds_slot && x.state == "stop_unconfirmed")
+    {
         return Err(why(
             StatusCode::CONFLICT,
             "stop_unconfirmed",
@@ -386,7 +392,7 @@ async fn clear(
         let stopped =
             tokio::task::spawn_blocking(move || s.stop(&id, crate::sessions::DEFAULT_GRACE)).await;
         match stopped {
-            Ok(Ok(rec)) if rec.state != "stop_unconfirmed" => {}
+            Ok(Ok(rec)) if !rec.holds_slot => {}
             Ok(Ok(_)) => {
                 return Err(why(
                     StatusCode::CONFLICT,

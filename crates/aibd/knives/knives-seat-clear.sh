@@ -78,3 +78,7 @@ sc '        .filter(|r| crate::seat_send::waits_to_be_written(r))' \
 sc '                && r.item.get("post_id").is_none_or(Value::is_null)' \
    '                && (r.item.get("post_id").is_none_or(Value::is_null) || true) // knife' \
    queued_messages_and_unclosed_ones_are_counted_apart
+# SC17 a clean stop is taken as unconfirmed (macOS never claims clean: the page could never clear)
+si '            Ok(Ok(rec)) if !rec.holds_slot => {}' \
+   '            Ok(Ok(rec)) if rec.holds_slot => {} // knife' \
+   the_page_clears_a_seat_onto_a_new_conversation_that_reads_its_handoff
