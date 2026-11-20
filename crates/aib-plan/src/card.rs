@@ -2080,13 +2080,13 @@ pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
 }
 
 pub const USAGE: &str = "usage:
-  aib-plan mine [--seat 席] [--json] [--data FILE]
-  aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
-  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--needs 編號,編號|none] [--by 席] [--repo DIR] [--data FILE]
-  aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
-  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
-  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
-  aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
+  aib-plan mine [--seat 席位] [--json] [--data FILE]
+  aib-plan judge [--seat 席位] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
+  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席位] [--need \"Andy 原話\"] [--needs 編號,編號|none] [--by 席位] [--repo DIR] [--data FILE]
+  aib-plan note <編號> \"事實\" [--by 席位] [--data FILE]
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席位] --add \"事實\" [--by 席位]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
+  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席位] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
+  aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 說明] [--id 編號] [--reviewer 席位] [--need \"Andy 原話\"] [--by 席位] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
 rc:0 寫了 / 1 讀不到資料 / 2 參數或進入條件不對 / 4 被鎖著";
 
