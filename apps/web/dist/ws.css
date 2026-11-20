@@ -1049,4 +1049,5 @@ label.rvr{cursor:pointer}
 .ghb{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px}
 .ghb .apq{width:80px;min-width:0}
 .ghp,.ghc,.ghk,.ghr{flex-basis:100%;font-size:12px}
+.ghp a.lk{color:var(--blue);text-decoration:underline}
 .ghk.bad{color:var(--red)}

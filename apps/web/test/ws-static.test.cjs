@@ -94,4 +94,14 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/\.rcs\{/.test(fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8')), 'reason: sandbox_badge_unstyled');
 }
 
+// 9. 5d33a PREREAD-pageghview N1:PR 連結只給 https://github.com(前綴相似的都不畫)
+{
+  const m = ws.match(/const ghSafeUrl = (\(u\) => \{[^\n]*\});/);
+  ok(m, 'reason: gh_link_check_moved');
+  const f = eval(m[1]);
+  ok(f('https://github.com/ez2app/x/pull/7') === 'https://github.com/ez2app/x/pull/7', 'reason: github_link_refused');
+  for (const bad of ['https://github.com.evil/x', 'https://evil.com/github.com', 'http://github.com/x', 'javascript:alert(1)//github.com', 'https://a@github.com.evil/', 'https://u:p@github.com/x', '', null]) ok(f(bad) === '', 'reason: unsafe_link_drawn ' + bad);
+  ok(!/href="\$\{esc\(String\(pr\.url/.test(ws), 'reason: raw_pr_url_drawn');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

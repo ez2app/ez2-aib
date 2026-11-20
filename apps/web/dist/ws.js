@@ -1163,16 +1163,21 @@
   const GH_WHY = {
     trusted_seats_off: '這台沒開受信任席,看 PR 的開關跟著關', gh_view_user_page: '使用者資料夾頁在服務時不能看',
     gh_view_what: '只能看 PR、檢查格、run', gh_view_number: '號碼不對', gh_view_repo: '這台 aibd 的倉設定不是 owner/name',
-    gh_view_seat_gap: 'aibd 每 10 秒只准問一次,等一下再按', gh_view_machine_cap: '這台一分鐘內問太多次,等一下再按', gh_view_no_answer: 'gh 20 秒沒回',
+    gh_view_seat_rate: '每 10 秒只准問一次,等一下再按', gh_view_rate: '這台一分鐘內問太多次(席和頁面合計 30 次),等一下再按', gh_view_no_answer: 'gh 20 秒沒回',
+    // 1a93b 8b12d76d7(DESIGN-page-gh-view r1):頁面自己的入口與開關
+    page_gh_view_off: '這台沒開「頁面看 PR」(bridge.json 的 page_gh_view)',
   };
-  const GH_PAGE_GAP = '頁面還不能看 PR:gh_view 只開給受信任席自己的權杖(缺:頁面也能叫的 gh_view)';
+  // 5d33a PREREAD-pageghview N1:只有 https 且 host 剛好是 github.com 才畫成連結(不用前綴比對;PR 標題等外部字一律當字)
+  const ghSafeUrl = (u) => { try { const x = new URL(String(u || '')); return x.protocol === 'https:' && x.hostname === 'github.com' && !x.username && !x.password ? x.href : ''; } catch (e) { return ''; } };
+  const GH_PAGE_GAP = '這一版 aibd 的頁面還不能看 PR(要有頁面版 gh_view 的新版 aibd)';
   function ghBox() {
     const G = S.gh || {};
+    if (!G.off && hasAct('gh_view') === false) G.off = GH_PAGE_GAP;
     if (G.off) return `<div class="ghb" data-ghbox><span class="trs">${esc(G.off)}</span></div>`;
     const pr = G.pr, ck = Array.isArray(G.checks) ? G.checks : null, run = G.run;
     let h = `<div class="ghb" data-ghbox><span>看 PR</span><input class="apq" data-ghnum inputmode="numeric" maxlength="7" placeholder="號碼" value="${esc(G.num || '')}"><button type="button" class="k" data-ghgo="pr" ${G.busy ? 'disabled' : ''}>看</button>${pr ? `<button type="button" class="k" data-ghgo="checks" ${G.busy ? 'disabled' : ''}>檢查格</button>` : ''}`;
     if (G.msg) h += `<span class="trs ${G.bad ? 'bad' : ''}">${esc(G.msg)}</span>`;
-    if (pr) h += `<div class="ghp" data-ghpr>#${pr.number | 0} ${esc(String(pr.title || ''))} · ${esc(String(pr.state || ''))}${pr.isDraft ? ' · 草稿' : ''} · ${esc(String(pr.baseRefName || ''))} ← ${esc(String(pr.headRefName || ''))} · 頭 ${esc(String(pr.headRefOid || '').slice(0, 12))}${pr.mergeable ? ' · ' + esc(String(pr.mergeable)) : ''}${pr.reviewDecision ? ' · ' + esc(String(pr.reviewDecision)) : ''}</div>`;
+    if (pr) h += `<div class="ghp" data-ghpr>#${pr.number | 0} ${esc(String(pr.title || ''))} · ${esc(String(pr.state || ''))}${pr.isDraft ? ' · 草稿' : ''} · ${esc(String(pr.baseRefName || ''))} ← ${esc(String(pr.headRefName || ''))} · 頭 ${esc(String(pr.headRefOid || '').slice(0, 12))}${pr.mergeable ? ' · ' + esc(String(pr.mergeable)) : ''}${pr.reviewDecision ? ' · ' + esc(String(pr.reviewDecision)) : ''}${ghSafeUrl(pr.url) ? ` · <a class="lk" data-ghlink href="${esc(ghSafeUrl(pr.url))}" target="_blank" rel="noopener noreferrer">開在 GitHub</a>` : ''}</div>`;
     if (ck) {
       const B = { pass: '綠', fail: '紅', pending: '跑著', skipping: '略過', cancel: '取消' };
       const cnt = {}; for (const c of ck) cnt[c.bucket] = (cnt[c.bucket] || 0) + 1;
