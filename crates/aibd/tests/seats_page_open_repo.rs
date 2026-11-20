@@ -192,6 +192,58 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         !repo.join(".git").join("worktrees").exists(),
         "reason: registered_repo_git_written"
     );
+    // N-webonly-c6-merge (IFACE-web-merge r1): the list names the copy's repo; 送回倉 is the
+    // built-in page's, refused while the seat runs, and a ticket comes with its plan's head
+    let w1 = r.json["seat"]["seat_id"].as_str().unwrap().to_owned();
+    let list = d.call("GET", "/api/v1/seats", None, None).await.json;
+    let row = list["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["seat_id"] == w1.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&row["repo_copy"]["repo"], &row["repo_copy"]["sendable"]),
+        (&json!("my-repo"), &json!(false)),
+        "reason: repo_copy_not_listed {row}"
+    );
+    assert_eq!(
+        row["repo_copy"]["head"].as_str().map(str::len),
+        Some(40),
+        "reason: repo_copy_without_head {row}"
+    );
+    let send = json!({"type": "seat_send_back", "seat_id": w1});
+    let r = post(send.clone()).await;
+    assert_eq!(r.code, 409, "reason: running_seat_sent {}", r.body);
+    assert_eq!(r.json["code"], "seat_busy", "{}", r.body);
+    let mut half = send.clone();
+    half["ticket"] = json!("t-made-up");
+    let r = post(half).await;
+    assert_eq!(r.code, 400, "reason: ticket_without_head {}", r.body);
+    assert_eq!(r.json["reason"], "head", "{}", r.body);
+    let r = post(json!({"type": "seat_send_back", "seat_id": "seat_nobody"})).await;
+    assert_eq!(r.code, 404, "reason: unknown_seat {}", r.body);
+    // not the page: a call without the page's credential never reaches the act
+    let r = d
+        .call("POST", "/api/v1/act", None, Some(&send.to_string()))
+        .await;
+    assert!(
+        r.code == 401 || r.code == 403,
+        "reason: send_back_without_page {} {}",
+        r.code,
+        r.body
+    );
+    assert_eq!(
+        std::process::Command::new("git")
+            .args(["for-each-ref", "refs/heads/web"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+        b"",
+        "reason: refused_send_wrote_a_branch"
+    );
     // ORDER-webonly-today 12: a named base must be a full commit, and goes with a repo
     let mut b = open("w2", "work", "my-repo");
     b["base"] = json!("abc1234");

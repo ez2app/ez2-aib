@@ -311,6 +311,21 @@ pub async fn act(
                 crate::seat_trust::untrust(st, body, by).await
             };
         }
+        // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a
+        // registered repo go back as one new branch; the built-in page in this pairing only,
+        // then the owner's fingerprint (a seat's token never reaches /api/v1/act as a page)
+        Some(crate::send_back::SEND_BACK) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "send_back_built_in_page_only",
+                    "a seat's commits are sent back from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::send_back::act(st, body, by).await;
+        }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
             if user_page {

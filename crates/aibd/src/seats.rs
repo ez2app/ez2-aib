@@ -326,6 +326,18 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
             |(_, p)| serde_json::json!({"position": p, "limit": limit}),
         );
     }
+    // N-webonly-c6-merge (IFACE-web-merge r1 §1): a seat in its copy of a registered repo
+    let live = st.sessions.live_seats();
+    for v in &mut out {
+        let id = v["seat_id"].as_str().unwrap_or_default();
+        let copy = metas
+            .iter()
+            .find(|m| m.seat_id == id)
+            .map_or(serde_json::Value::Null, |m| {
+                crate::send_back::repo_copy_of(&m.cwd, live.iter().any(|s| s == id))
+            });
+        v["repo_copy"] = copy;
+    }
     // 043dd 11-20 round 2: a seat in its own tree says its branch and what is not merged
     let hooks = seat_git_hooks(st.sessions.private_dir());
     for v in &mut out {

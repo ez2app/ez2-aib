@@ -66,6 +66,7 @@ pub mod seat_worktree;
 pub mod seats;
 pub mod secret_mask;
 pub mod selfcheck;
+pub mod send_back;
 pub mod server;
 pub mod session_output;
 pub mod sessions;
