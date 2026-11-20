@@ -366,6 +366,10 @@ pub fn write_branch(repo: &Path, hooks: &Path, stem: &str, sha: &str) -> Result<
     if !sha_ok(sha) {
         return Err(Refused::Git("head is not a full commit name".into()));
     }
+    // only ever a web/ branch: main gets a seat's work through a pull request
+    if !stem.starts_with("web/") {
+        return Err(Refused::Git("only a web/ branch is made".into()));
+    }
     let mut last = String::new();
     for n in 1..=BRANCH_TRIES {
         let name = format!("{stem}-{n}");
@@ -610,6 +614,20 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
         Ok(Err(r)) => return refused_response(&r),
         Err(_) => return bad("internal", "the branch could not be made"),
     };
+    // second slice: the trail starts here (sent → pushed → pr_opened); not written only means
+    // the page does not offer the next step by itself
+    let trail = (
+        data.clone(),
+        req.seat_id.clone(),
+        repo.name.clone(),
+        branch.clone(),
+        p.head.clone(),
+    );
+    let _ = tokio::task::spawn_blocking(move || {
+        let (d, seat, repo, branch, head) = trail;
+        crate::sent_trail::sent(&d, &seat, &repo, &branch, &head, &now)
+    })
+    .await;
     crate::seats::side_event(
         &st,
         "seat",
@@ -1096,6 +1114,51 @@ mod tests {
                 ("100644".to_owned(), "a.txt".to_owned()),
                 ("120000".to_owned(), "b".to_owned())
             ]
+        );
+    }
+
+    /// 5d33a N4 (bd4d0c267): one send asks the owner at one place. The act answers a
+    /// fingerprint that cannot be asked in its own words; going through `repos::asked` there
+    /// would ask a second time and could open a second window for the same send.
+    #[test]
+    fn one_send_asks_the_fingerprint_at_one_place() {
+        let src = include_str!("send_back.rs").replace("\r\n", "\n");
+        let own = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap()];
+        assert_eq!(
+            own.matches("owner_ok::ask(").count(),
+            1,
+            "reason: asked_at_more_than_one_place"
+        );
+        assert_eq!(
+            own.matches("repos::asked(").count(),
+            0,
+            "reason: asked_again_through_repos_asked"
+        );
+    }
+
+    #[test]
+    fn a_branch_outside_web_is_never_made() {
+        let f = fix();
+        let sha = out(&f.repo, &["rev-parse", "HEAD"]);
+        for stem in [
+            "main",
+            "release/a9136-1120",
+            "heads/web/a9136-1120",
+            "feat/web/x",
+            "",
+        ] {
+            assert!(
+                write_branch(&f.repo, &f.hooks, stem, &sha).is_err(),
+                "reason: made_a_branch_from_{stem:?}"
+            );
+        }
+        assert_eq!(
+            out(
+                &f.repo,
+                &["for-each-ref", "--format=%(refname)", "refs/heads"]
+            ),
+            "refs/heads/main",
+            "reason: a_branch_was_made"
         );
     }
 }

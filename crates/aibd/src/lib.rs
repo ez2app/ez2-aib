@@ -68,6 +68,7 @@ pub mod seats;
 pub mod secret_mask;
 pub mod selfcheck;
 pub mod send_back;
+pub mod sent_trail;
 pub mod server;
 pub mod session_output;
 pub mod sessions;

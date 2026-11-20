@@ -342,6 +342,15 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
             });
         v["repo_copy"] = copy;
     }
+    // second slice: what each such seat sent back and the step it stands at (sent_trail)
+    let private = st.sessions.private_dir().to_path_buf();
+    let data = private.parent().unwrap_or(&private).to_path_buf();
+    for v in &mut out {
+        if v["repo_copy"].is_object() {
+            let id = v["seat_id"].as_str().unwrap_or_default().to_owned();
+            v["repo_copy"]["sent"] = crate::sent_trail::of_seat(&data, &id).into();
+        }
+    }
     // 043dd 11-20 round 2: a seat in its own tree says its branch and what is not merged
     let hooks = seat_git_hooks(st.sessions.private_dir());
     for v in &mut out {
