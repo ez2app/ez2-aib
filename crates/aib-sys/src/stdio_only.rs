@@ -35,10 +35,14 @@ mod tests {
     fn a_descriptor_opened_without_cloexec_does_not_reach_the_child() {
         let d = std::env::temp_dir().join(format!("aib-sys-stdio-only-{}", std::process::id()));
         let f = std::fs::File::create(&d).unwrap();
-        let fd = f.as_raw_fd();
-        // SAFETY: clears FD_CLOEXEC on a descriptor this test owns; no pointers.
-        let cleared = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
-        assert_eq!(cleared, 0);
+        // a copy at a number far above what `ls /dev/fd` opens for itself: with stdio only, ls
+        // gets the lowest free number for the folder it lists, and when that was this file's
+        // own number the file read as leaked (f1fae 11-21, lin f1fae-rkb2-84a69226b:
+        // fd_reached_child on the integration head). F_DUPFD gives a descriptor without
+        // close-on-exec, which is the kind under test.
+        // SAFETY: duplicates a descriptor this test owns to a number of 200 or more; no pointers.
+        let fd = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(fd >= 200, "reason: no_high_descriptor {fd}");
         let listed = |only: bool| {
             let mut c = Command::new("/bin/ls");
             c.arg("/dev/fd");
@@ -52,6 +56,8 @@ mod tests {
         };
         assert!(listed(false), "reason: test_fd_not_inherited_at_all");
         assert!(!listed(true), "reason: fd_reached_child");
+        // SAFETY: closes the copy this test made; no pointers.
+        let _ = unsafe { libc::close(fd) };
         drop(f);
         let _ = std::fs::remove_file(d);
     }
