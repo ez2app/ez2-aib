@@ -12,10 +12,20 @@ mod harness;
 use harness::Daemon;
 use serde_json::json;
 
+/// A test's folder, kept until the test binary ends. The daemons of this binary run in one
+/// process and share one assignments file: the first daemon's (`assign::set_db` is set once).
+/// Reads open that file by path each time, so a test whose folder went away with its
+/// `TempDir` took the file from every test still running: their `with_seat` joins found no
+/// rows and `GET /assignments` answered nothing (#869 rust macos-latest, job 136152503938:
+/// `not_on_the_owners_item []`). Nothing here removes a folder another test may be reading.
+fn kept_dir() -> &'static tempfile::TempDir {
+    Box::leak(Box::new(tempfile::tempdir().unwrap()))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_switch_on_the_page_opens_a_dgrs_seat() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
     let r = d
@@ -101,7 +111,7 @@ fn started_in(dir: &std::path::Path, want: usize) -> std::collections::BTreeSet<
 #[tokio::test(flavor = "multi_thread")]
 async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     // room for all six seats to run: past four the later ones only queue, and a seat that is
     // not running is refused before its folder is looked at (#867 SW1 did not bite)
     let mut d = Daemon::start_max(dir.path(), 8).await;
@@ -254,7 +264,7 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
     let post = |b: serde_json::Value| {
@@ -441,7 +451,7 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
     let open = |key: &str, with: Option<&str>, own: bool| {
@@ -591,7 +601,7 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
     let post = |b: serde_json::Value| {
@@ -677,7 +687,7 @@ async fn naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder() {
 #[tokio::test(flavor = "multi_thread")]
 async fn restarting_a_seat_into_a_full_folder_is_refused() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
     let post = |b: serde_json::Value| {
