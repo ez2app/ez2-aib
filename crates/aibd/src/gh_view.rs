@@ -611,9 +611,7 @@ mod tests {
             "reason: a_second_rate"
         );
         assert!(
-            own.contains(
-                "asked(st, by, (\"page_gh_view\", PAGE_EVENT, \"pairing\"), body, data_dir).await"
-            ),
+            own.contains("(\"page_gh_view\", PAGE_EVENT, \"pairing\"),"),
             "reason: the_page_does_not_ask_as_itself"
         );
     }

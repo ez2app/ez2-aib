@@ -24,14 +24,14 @@ gp bridge_cfg.rs '            .is_some_and(|v| v.get(name).and_then(Value::as_bo
    '            .is_some_and(|v| v.get(name).is_some_and(|x| !x.is_null()))' \
    gh_view::tests::the_page_asks_only_with_its_own_switch_and_never_under_a_user_page --lib
 # GP5 the page's ask is journaled as a seat's
-gp gh_view.rs '    asked(st, by, ("page_gh_view", PAGE_EVENT, "pairing"), body, data_dir).await' \
-   '    asked(st, by, ("page_gh_view", EVENT, "seat"), body, data_dir).await' \
+gp gh_view.rs '        ("page_gh_view", PAGE_EVENT, "pairing"),' \
+   '        ("page_gh_view", EVENT, "seat"),' \
    the_built_in_page_reads_a_pr_through_aibds_own_gh '--test gh_view_page'
 # GP6 the page's ask is not counted (its key never held to the gap)
 gp gh_view.rs '    said[who] = json!(seat_id.strip_prefix("page:").unwrap_or(seat_id));' \
    '    said[who] = json!(seat_id.strip_prefix("page:").unwrap_or(seat_id)); if who == "pairing" { RATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(); }' \
    the_built_in_page_reads_a_pr_through_aibds_own_gh '--test gh_view_page'
 # GP7 a user folder page reads GitHub
-gp seat_input.rs '            if held_as_user_page(&page).await {' \
-   '            if held_as_user_page(&page).await && false {' \
+gp seat_input.rs '            if reads_as_user_page {' \
+   '            if reads_as_user_page && false {' \
    seat_input::tests::github_is_not_read_from_a_user_folder_page --lib

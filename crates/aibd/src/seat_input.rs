@@ -374,7 +374,8 @@ pub async fn act(
         Some(crate::gh_view::KIND) => {
             // a carried pairing may read (pair_carry: read and safe only); a user folder page
             // may not (an AI that can write that folder would read the repo with aibd's gh)
-            if held_as_user_page(&page).await {
+            let reads_as_user_page = held_as_user_page(&page).await;
+            if reads_as_user_page {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "gh_view_user_page",
@@ -1024,7 +1025,7 @@ mod tests {
             .expect("reason: arm_moved");
         let arm = &src[at..at + src[at..].find("\n        }\n").unwrap()];
         assert!(
-            arm.contains("if held_as_user_page(&page).await {\n                return refuse(")
+            arm.contains("if reads_as_user_page {\n                return refuse(")
                 && arm.contains("\"gh_view_user_page\""),
             "reason: a_user_page_reads_github"
         );
