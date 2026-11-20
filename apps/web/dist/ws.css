@@ -1041,3 +1041,4 @@ label.rvr{cursor:pointer}
 .snl b.w{color:var(--gold)}
 .snl b.bad,.body.bad{color:var(--red)}
 .body.ok{color:var(--green)}
+.pbx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
