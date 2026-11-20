@@ -354,7 +354,7 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
             // (the list fetches nothing; 合回 counts them)
             serde_json::json!({"branch": t.branch, "base": t.base,
                                "unmerged": t.unmerged, "new": t.unmerged.is_none(),
-                               "dirty": t.dirty})
+                               "dirty": t.dirty, "head": t.head})
         });
     }
     Ok(out)

@@ -48,6 +48,8 @@ pub mod platform;
 pub mod preview;
 pub mod preview_tree;
 pub mod preview_up;
+pub mod receipt_check;
+pub mod receipt_run;
 pub mod record_kind;
 pub mod registry;
 pub mod reply_back;

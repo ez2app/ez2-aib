@@ -111,3 +111,7 @@ wt '    "rerere.enabled",' \
 wt '        .args(["-c", "rerere.enabled=false"])' \
    '        .args(["-c", "rerere.knife=false"])' \
    the_real_repos_settings_keys_are_on_the_list
+# WT-H1 the seat list does not say the copy's head (N-webonly 第 4 件: a page asks a receipt of it)
+wt '        head: sha,' \
+   '        head: String::new(), // knife' \
+   a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
