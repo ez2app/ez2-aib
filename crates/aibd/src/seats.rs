@@ -160,6 +160,10 @@ pub fn view_with(
         // filled by the list (`read_all`) for a seat waiting for a slot; null here, so a
         // created seat reads back the same (seats.rs:148 was red on the full head)
         "queue": serde_json::Value::Null,
+        // filled by the list for a seat in its copy of a registered repo; null here, so a
+        // created seat reads back the same (igt1-de1b725cc: seats.rs:148 red, the read had
+        // repo_copy and the create answer did not)
+        "repo_copy": serde_json::Value::Null,
     })
 }
 
