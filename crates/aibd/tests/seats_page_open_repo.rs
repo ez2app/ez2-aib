@@ -214,6 +214,38 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         Some(40),
         "reason: repo_copy_without_head {row}"
     );
+    // second slice (sent_trail): nothing sent yet is an empty list; what the seat sent is
+    // listed with the step it stands at, and a failed step is the one offered again
+    assert_eq!(
+        row["repo_copy"]["sent"],
+        json!([]),
+        "reason: sent_not_listed {row}"
+    );
+    assert_eq!(row["repo_copy"]["sent_more"], json!(0), "{row}");
+    let head = row["repo_copy"]["head"].as_str().unwrap().to_owned();
+    let sent = "web/w1-1120-1";
+    assert!(aibd::sent_trail::sent(
+        &data, &w1, "my-repo", sent, &head, "t0"
+    ));
+    let step = aibd::sent_trail::STEP_PUSH;
+    aibd::sent_trail::failed(&data, "my-repo", sent, step, "push_failed", "t1").unwrap();
+    let list = d.call("GET", "/api/v1/seats", None, None).await.json;
+    let mine: Vec<serde_json::Value> = list["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["repo_copy"]["sent"].clone())
+        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        .collect();
+    assert_eq!(
+        mine,
+        [
+            json!([{"repo": "my-repo", "branch": sent, "head": head, "state": "sent",
+                 "pushed": null, "number": null, "next": "push",
+                 "failed": {"step": "push", "why": "push_failed", "at": "t1"}}])
+        ],
+        "reason: the_trail_is_not_on_its_seat_only"
+    );
     let send = json!({"type": "seat_send_back", "seat_id": w1});
     let r = post(send.clone()).await;
     assert_eq!(r.code, 409, "reason: running_seat_sent {}", r.body);

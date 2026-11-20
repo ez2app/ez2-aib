@@ -299,6 +299,7 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
         return crate::repos::not_approved();
     }
     let (approved, slug2, title2, text2) = (t.clone(), slug.clone(), title.clone(), text.clone());
+    let trail_dir = data.clone();
     let done = tokio::task::spawn_blocking(move || {
         // read again under the call: the switch, the repo as registered, the branch's head
         if !crate::bridge_cfg::load(&data).pr_open {
@@ -321,13 +322,19 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
                 json!({"repo": t.repo, "branch": t.branch, "number": o.number, "by": by}),
             )
             .await;
+            let n = Some(o.number);
+            crate::sent_trail::step_done(&st, trail_dir, &t.repo, &t.branch, &t.sha, n).await;
             Json(
                 json!({"done": true, "repo": t.repo, "branch": t.branch, "number": o.number,
                 "url": crate::dm_import::clean(&o.url), "draft": DRAFT, "base": BASE}),
             )
             .into_response()
         }
-        Err(r) => refuse(&r),
+        Err(r) => {
+            let step = crate::sent_trail::STEP_PR;
+            crate::sent_trail::step_failed(&st, trail_dir, &t.repo, &t.branch, step, r.1).await;
+            refuse(&r)
+        }
     }
 }
 

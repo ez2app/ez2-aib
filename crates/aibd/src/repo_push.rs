@@ -564,6 +564,7 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
         return crate::repos::not_approved();
     }
     let approved = t.clone();
+    let trail_dir = data.clone();
     let done = tokio::task::spawn_blocking(move || {
         // the switch is read again under the push (as T1's write does)
         if !crate::bridge_cfg::load(&data).repo_push {
@@ -583,6 +584,7 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
                 json!({"repo": p.repo, "branch": p.branch, "sha12": short, "by": by}),
             )
             .await;
+            crate::sent_trail::step_done(&st, trail_dir, &p.repo, &p.branch, &p.sha, None).await;
             Json(json!({"done": true, "repo": p.repo, "branch": p.branch, "sha": p.sha,
                 "remote_host": crate::seat_trust::host_shown(&crate::repos::remote_host(&t.remote))}))
             .into_response()
@@ -595,6 +597,8 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
                 json!({"repo": t.repo, "branch": t.branch, "why": r.1, "by": by}),
             )
             .await;
+            let step = crate::sent_trail::STEP_PUSH;
+            crate::sent_trail::step_failed(&st, trail_dir, &t.repo, &t.branch, step, r.1).await;
             refuse(&r)
         }
     }
