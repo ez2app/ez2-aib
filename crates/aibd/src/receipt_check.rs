@@ -39,7 +39,7 @@ pub const RED_LINES: [&str; 5] = [
 ];
 const SEAL: &str = "RECEIPT-SHA256 ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tests {
     pub suites: u64,
     pub passed: u64,
@@ -47,7 +47,7 @@ pub struct Tests {
     pub ignored: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Knives {
     pub expected: u64,
     pub bites: u64,
@@ -55,7 +55,7 @@ pub struct Knives {
 }
 
 /// What aibd read in a receipt. `green` only with no reason.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Verdict {
     pub green: bool,
     /// Why not, as codes (`seal_missing`, `rc_nonzero:test`, …), in the order they are checked.
@@ -90,6 +90,14 @@ fn digest(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// `body` with its seal line: what receipt-run.sh's `seal` leaves (a runner's double and the
+/// tests write receipts with it).
+pub fn seal(body: &[u8]) -> Vec<u8> {
+    let mut out = body.to_vec();
+    out.extend_from_slice(format!("{SEAL}{}\n", digest(body)).as_bytes());
+    out
 }
 
 /// The values of every line `<key> <value>` (the value is the line's rest).
@@ -284,7 +292,7 @@ mod tests {
     }
 
     fn seal(body: &str) -> Vec<u8> {
-        format!("{body}{SEAL}{}\n", digest(body.as_bytes())).into_bytes()
+        super::seal(body.as_bytes())
     }
 
     fn reasons_of(body: &str, knives: u64) -> Vec<String> {
