@@ -45,3 +45,8 @@ rw '        resource: format!("{persona_uid} @ {} · {provider}", repo.name),' \
 # OW11 the register window does not name the remote host
 rw '    let rest = auth.rsplit_once('"'"'@'"'"').map_or(auth, |(_, h)| h);' \
    '    let rest = auth; // knife'
+# OW12 a window that never started closes as a yes (5d33a r2 N1)
+oc '            yes: false,' '            yes: true, // knife'
+# OW13 an scp-like remote without a user reads as this machine (5d33a r2 L1)
+rw '            Some((h, _)) if h.chars().count() > 1 && !h.contains(['"'"'/'"'"', '"'"'\\'"'"']) => remote,' \
+   '            Some((_, _)) if false => remote, // knife'

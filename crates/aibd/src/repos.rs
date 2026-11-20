@@ -180,7 +180,12 @@ pub fn remote_host(remote: &str) -> String {
     let rest = match remote.split_once("://") {
         Some((_, r)) => r,
         None if remote.contains('@') => remote,
-        None => return "本機".to_owned(),
+        // scp-like without a user (`github.com:o/r`, an ssh alias `myalias:o/r`): a host before
+        // the colon, not a drive letter and no slash in it (5d33a PREREAD-ownertouch r2 L1)
+        None => match remote.split_once(':') {
+            Some((h, _)) if h.chars().count() > 1 && !h.contains(['/', '\\']) => remote,
+            _ => return "本機".to_owned(),
+        },
     };
     let auth = rest.split('/').next().unwrap_or("");
     let rest = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
@@ -452,6 +457,10 @@ mod tests {
             ("/Users/x/repo", "本機"),
             ("", "本機"),
             ("https://github.com/o/r@v2", "github.com"),
+            ("github.com:ez2app/ez2-aib.git", "github.com"),
+            ("myalias:o/r", "myalias"),
+            ("C:/Users/x/repo", "本機"),
+            ("./a:b", "本機"),
         ] {
             assert_eq!(remote_host(r), want, "reason: host {r}");
         }

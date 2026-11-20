@@ -284,14 +284,16 @@ impl Owner {
             );
         }
         let me = self.clone();
+        // made before the window's thread, so a spawn that fails still closes the gate
+        // (5d33a PREREAD-ownertouch r2 N1)
+        let mut closing = Closing {
+            gate: self.gate.clone(),
+            yes: false,
+        };
         let why = window_text(ask, &ticket);
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
-            let mut closing = Closing {
-                gate: me.gate.clone(),
-                yes: false,
-            };
             let got = me.presence.ask(&why, &msg);
             closing.yes = got.is_ok();
             drop(closing);
@@ -699,6 +701,19 @@ mod tests {
             o.ask(&reg(), inline),
             Asked::Unavailable("pair_touch_limited"),
             "reason: limit_apart"
+        );
+        // a window whose thread never starts still closes in the gate (5d33a r2 N1)
+        let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());
+        let o = std::sync::Arc::new(Owner::new(
+            std::sync::Arc::new(Says(Ok(()))),
+            pairing.clone(),
+            || 40_000,
+        ));
+        let _ = ticket(o.ask(&reg(), drop));
+        assert_eq!(
+            pairing.window_open(),
+            Err("pair_touch_cooling"),
+            "reason: unspawned_left_busy"
         );
         // a window whose thread panics still closes in the gate (5d33a N1)
         struct Boom;
