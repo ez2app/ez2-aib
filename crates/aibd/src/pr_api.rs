@@ -63,9 +63,7 @@ impl Token {
 
 impl Drop for Token {
     fn drop(&mut self) {
-        for b in &mut self.0 {
-            *b = 0;
-        }
+        self.0.fill(0);
         std::hint::black_box(&self.0);
     }
 }
@@ -314,9 +312,7 @@ impl Wire for Curl {
         let mut cfg = config(req, token);
         // written whole, then closed (the handle is dropped with the closure)
         let wrote = child.stdin.take().map(|mut i| i.write_all(&cfg));
-        for b in &mut cfg {
-            *b = 0;
-        }
+        cfg.fill(0);
         let out = child.wait_with_output().map_err(|_| "wait")?;
         if !matches!(wrote, Some(Ok(()))) {
             return Err("write");
