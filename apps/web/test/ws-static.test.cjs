@@ -356,6 +356,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 存放只走 aibd;沒有 act 就只在本頁(不寫 localStorage)
   const seg = ws.slice(ws.indexOf('// ---------- 對話工具'), ws.indexOf('  function postRowsOf(POSTS) {'));
   ok(seg.length > 3000 && !/localStorage|sessionStorage|indexedDB/.test(seg), 'reason: chat_tools_use_browser_storage');
+  // 5d33a N2:收藏也不收權杖樣原文
+  ok(/if \(SECRETISH\.test\(m\.text\)\) \{ say\(/.test(ws), 'reason: favorite_keeps_secret');
   // 收藏 ☆ 跟複製並排(三種訊息)
   ok((ws.match(/\$\{favBtn\(/g) || []).length === 3, 'reason: star_not_on_messages');
   // 標註六樣 + ⌘Z / ⇧⌘Z + 從圖取色;CSP:不用 blob: 圖、不用 style 屬性上色

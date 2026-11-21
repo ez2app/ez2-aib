@@ -2587,6 +2587,7 @@
     const f = favOf(key);
     if (f) { CT.favs = CT.favs.filter((x) => x !== f); if (f.id && ctHas('fav_delete')) act('fav_delete', { fav_id: f.id }).catch((e) => say(errText(e), 'err')); return render(); }
     const m = FAVM.get(key); if (!m) return;
+    if (SECRETISH.test(m.text)) { say('這則看起來含密碼或權杖,不收藏(5d33a N2,跟送出紀錄同一套)', 'err'); return render(); }
     const nf = { id: '', key, text: m.text, from: m.from, at: m.at, ref: m.ref, tag: '' }; CT.favs.unshift(nf);
     // aibd 要 seat_id + message_id:寫的人是席就用它;你自己在共同對話寫的用這串的對象席(沒有就只在本頁)
     const sid = String(m.ref.seat_id || m.from || '').replace(/^seat:/, '');
