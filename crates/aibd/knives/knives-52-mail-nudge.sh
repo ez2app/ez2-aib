@@ -16,8 +16,8 @@ mn mail_nudge.rs '            .is_some_and(|at| at <= now - wait_of(r))' \
    '            .is_some_and(|at| at <= now + AFTER_SECS) // knife' \
    a_message_written_three_minutes_ago_and_still_open_is_due
 # MN3 the person's own words are named as a task
-mn mail_nudge.rs '        && text_of(r, "sender_kind") == Some("seat")' \
-   '        && text_of(r, "sender_kind").is_some() // knife' \
+mn mail_nudge.rs '    matches!(text_of(r, "sender_kind"), Some("seat" | "system"))' \
+   '    text_of(r, "sender_kind").is_some() // knife' \
    the_persons_words_and_a_call_in_a_conversation_are_not_named
 # MN4 a seat that takes no input, or is past its hour, is written anyway
 mn mail_nudge.rs '    if takes_input && under_hour {' '    if takes_input || under_hour { // knife' \

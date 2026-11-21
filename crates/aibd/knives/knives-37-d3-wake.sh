@@ -64,3 +64,19 @@ dw crates/aibd/src/seat_send.rs \
    '    if dispatch && false { // knife' \
    an_urgent_letter_needs_a_granted_lead_role \
    '--test seat_send an_urgent_letter_needs_a_granted_lead_role'
+ss() { python3 -I scripts/knife.py crates/aibd/src/seat_send.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "seat_send::tests::$3"; }
+# DW11 any row whose key reads system:drive is taken for aibd's work order
+ss '    r.from_key == SYSTEM_FROM && r.item.get("sender_kind").and_then(Value::as_str) == Some("system")' \
+   '    r.from_key == SYSTEM_FROM // knife' \
+   a_system_work_order_waits_to_be_written_and_reads_as_the_drives
+# DW12 a queued work order of the system is never written to its seat
+ss '        && (matches!(s("sender_kind"), Some("seat" | "system")) || s("post_id").is_some())' \
+   '        && (matches!(s("sender_kind"), Some("seat")) || s("post_id").is_some()) // knife' \
+   a_system_work_order_waits_to_be_written_and_reads_as_the_drives
+# DW13 the system's work order is not named by the reminder
+dw crates/aibd/src/mail_nudge.rs \
+   '    matches!(text_of(r, "sender_kind"), Some("seat" | "system"))' \
+   '    matches!(text_of(r, "sender_kind"), Some("seat")) // knife' \
+   a_work_order_from_the_system_is_named \
+   '--lib mail_nudge::tests::a_work_order_from_the_system_is_named'

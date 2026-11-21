@@ -43,12 +43,17 @@ pub fn nudged(r: &aib_store::MessageRow) -> i64 {
 /// open (whatever `nudged` says).
 fn open_past(r: &aib_store::MessageRow, now: i64) -> bool {
     matches!(text_of(r, "status"), Some("delivered" | "read"))
-        && text_of(r, "sender_kind") == Some("seat")
+        && named_kind(r)
         && r.item.get("post_id").is_none_or(Value::is_null)
         && r.item
             .get("delivered_at")
             .and_then(Value::as_i64)
             .is_some_and(|at| at <= now - wait_of(r))
+}
+
+/// A seat's message, or a work order aibd wrote as the system (D3); never the person's words.
+fn named_kind(r: &aib_store::MessageRow) -> bool {
+    matches!(text_of(r, "sender_kind"), Some("seat" | "system"))
 }
 
 /// How long a message is left before it is first named: an urgent one (its sender's rank let
@@ -81,7 +86,7 @@ pub fn next_due(rows: &[aib_store::MessageRow], now: i64) -> Option<i64> {
     rows.iter()
         .filter(|r| {
             matches!(text_of(r, "status"), Some("delivered" | "read"))
-                && Some("seat") == text_of(r, "sender_kind")
+                && named_kind(r)
                 && r.item.get("post_id").is_none_or(Value::is_null)
                 && nudged(r) < PER_LETTER
                 && nameable(r)
@@ -755,6 +760,22 @@ mod tests {
         assert!(
             due(std::slice::from_ref(&bridged), now).is_empty(),
             "reason: bridged_order_early"
+        );
+    }
+
+    // D3 / D4: aibd's own work order (the system) is named like a seat's message
+    #[test]
+    fn a_work_order_from_the_system_is_named() {
+        let now = 10_000;
+        let mut order = written("q_sys", now);
+        order.item.insert("sender_kind".into(), json!("system"));
+        order
+            .item
+            .insert(crate::urgent::DISPATCH.into(), json!(true));
+        assert_eq!(
+            due(std::slice::from_ref(&order), now).len(),
+            1,
+            "reason: system_not_named"
         );
     }
 
