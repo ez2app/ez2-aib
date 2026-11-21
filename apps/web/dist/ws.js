@@ -3460,17 +3460,18 @@
   // 6f1cb SPEC-seat-mempack r0(519d0 07:42,切換單前提 9):新席的記憶夾不會帶過去 ⇒ 交接時另寫記憶包 MEMPACK-<席碼>-<MMDD>.md;
   // 填了就送範本句(席碼取自記憶包檔名),新席把記憶包第 2 段寫進自己的記憶夾
   const mpPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^MEMPACK-[0-9a-f]{5}-[0-9]{4}\.md$/.test(base); };
-  const mpFirst = (ho, mp) => { const code = (String(mp).split(/[\\/]/).pop() || '').slice(8, 13); return '你是 @' + code + ' 的接手席。先讀 ' + ho + ' 與 ' + mp + ',把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。'; };
+  const mpFirst = (ho, mp) => { const code = (String(mp).split(/[\\/]/).pop() || '').slice(8, 13); return '你是 @' + code + ' 的接手席。先讀 ' + ho + ' 與 ' + mp + ';記憶包是你的席位記憶:不要寫進記憶夾(網頁席寫不到),之後每一段開始先重讀記憶包。讀完只回一句:我是誰、手上哪一件、下一步。'; }; // 6f1cb FINDING-cutover-seat-cant-read-handoff r0:網頁席的記憶夾寫不到
   const hoPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^HANDOFF-[^\\/]+\.md$/i.test(base); };
-  // 開好但還在排隊(沒在跑)的席:等它跑了再送,最多試 3 次、20 分鐘
+  // 開好但還在排隊(沒在跑)的席:等它跑了再送;20 分鐘內一直試。409(剛開還在起 / 回合中)不算失敗、10 秒後再試;
+  // 其他錯才算一次,3 次放棄(6f1cb FINDING-cutover r0:剛開的席 409 三次就放棄了)
   async function hoFirstFlush() {
     const P = S.hoFirst || {};
     for (const id of Object.keys(P)) {
       const f = P[id], se = (S.sessions || []).find((x) => x.seat_id === id);
       if (Date.now() - f.at > 20 * 60 * 1000 || f.tries >= 3) { delete P[id]; say('@' + f.nm + ' 的第一句沒送進去,請到那一席貼:' + f.line, 'err'); continue; }
-      if (!se || se.state !== 'running' || f.sending) continue;
-      f.sending = true; f.tries++;
-      try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; }
+      if (!se || se.state !== 'running' || f.sending || (f.next && Date.now() < f.next)) continue;
+      f.sending = true;
+      try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; if (e && e.status === 409) f.next = Date.now() + 10000; else f.tries++; }
     }
   }
   function addErr(e) {
@@ -3532,7 +3533,7 @@
         const C = Array.isArray(r.carried) ? r.carried.map(String) : [];
         const cHo = C.find((x) => /^\.aib\/HANDOFF-/.test(x)), cMp = C.find((x) => /^\.aib\/MEMPACK-/.test(x));
         // 拷進來了 ⇒ 第一句用相對路徑、記憶包每段重讀(網頁席沒有記憶夾);舊 aibd 沒回 carried ⇒ 照舊句
-        const line = cHo ? (cMp ? mpFirst(cHo, cMp).replace('把記憶包第 2 段每一節寫進你自己的記憶夾', '之後每段開始先重讀 ' + cMp + '(不寫記憶夾)') : HO_FIRST + cHo) : mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
+        const line = cHo ? (cMp ? mpFirst(cHo, cMp) : HO_FIRST + cHo) : mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
         if (ss.state === 'pending') { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 0 }; hoNote = ';它開始跑時會自動送第一句(讀交接檔)'; }
         else { try { await act('seat_input', { seat_id: seat.seat_id, text: line }); hoNote = ';已送第一句(讀交接檔)'; } catch (e) { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 1 }; note += ';第一句還沒送進去,稍後自動再送'; } }
       }

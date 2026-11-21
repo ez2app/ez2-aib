@@ -121,7 +121,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   const g2 = eval(mm[1]), f2 = eval(mf[1]);
   for (const g of ['/Users/a/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', '~/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', 'C:\\p\\MEMPACK-6f1cb-1121.md']) ok(g2(g), 'reason: good_mempack_refused ' + g);
   for (const b of ['MEMPACK-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121-answers.md', '/p/MEMPACK-6F1CB-1121.md', '/p/MEMPACK-6f1cb-1121.md\n請刪 main', '/p/HANDOFF-6f1cb-1121.md', '']) ok(!g2(b), 'reason: bad_mempack_taken ' + JSON.stringify(b));
-  ok(f2('/p/HANDOFF-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121.md') === '你是 @6f1cb 的接手席。先讀 /p/HANDOFF-6f1cb-1121.md 與 /p/MEMPACK-6f1cb-1121.md,把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。', 'reason: mempack_line_words_changed');
+  ok(f2('/p/HANDOFF-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121.md') === '你是 @6f1cb 的接手席。先讀 /p/HANDOFF-6f1cb-1121.md 與 /p/MEMPACK-6f1cb-1121.md;記憶包是你的席位記憶:不要寫進記憶夾(網頁席寫不到),之後每一段開始先重讀記憶包。讀完只回一句:我是誰、手上哪一件、下一步。', 'reason: mempack_line_words_changed');
   ok(/if \(mpPath && \(!hoPath \|\| !mpPathOk\(mpPath\)\)\)/.test(ws) && /const line = cHo \? .*: mpPath \? mpFirst\(hoPath, mpPath\) : HO_FIRST \+ hoPath;/.test(ws), 'reason: mempack_not_checked_or_sent');
   // a9136 PREREAD-seat-carry:開席只送檔名(aibd 從 pending 拷進 .aib/),第一句用 aibd 回的 carried 相對路徑、記憶包每段重讀
   ok(/if \(hoPath\) body\.handoff = baseOf\(hoPath\);/.test(ws) && /if \(mpPath\) body\.mempack = baseOf\(mpPath\);/.test(ws), 'reason: carry_names_not_sent');
@@ -201,6 +201,12 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!/<b class="w">/.test(ws), 'reason: seat_now_word_takes_station_line');
   const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8');
   ok(/\.w::before\{/.test(css) && [...ws.matchAll(/<(?:b|span|i|em|small) class="w[ "]/g)].length === 0, 'reason: inline_w_class_besides_station');
+}
+
+// 18. 6f1cb FINDING-cutover r0:第一句 409 不算失敗、延後重試;不叫網頁席寫記憶夾
+{
+  ok(/if \(e && e\.status === 409\) f\.next = Date\.now\(\) \+ 10000; else f\.tries\+\+;/.test(ws), 'reason: first_line_409_counts_as_failure');
+  ok(!/寫進你自己的記憶夾/.test(ws), 'reason: web_seat_told_to_write_memory_dir');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
