@@ -174,6 +174,12 @@ pub const WORK_ALLOWED: &[&str] = &[
     "Bash(rustfmt --check *)",
     "Bash(node --check *)",
     "Bash(node apps/web/test/*)", // G4a page tests
+    // G4b (5d33a PREREAD-g4 2): writes inside the seat's own copy only (hooks at aibd's empty
+    // folder, no transport); one copy holds several branches, so no `git worktree`
+    "Bash(git switch *)", // G4b writes
+    "Bash(git cherry-pick *)",
+    "Bash(git branch *)",
+    "Bash(git stash *)",
 ];
 
 /// The Bash rules of [`WORK_ALLOWED`] that take free arguments; every other Bash rule is a
@@ -196,6 +202,10 @@ pub const WORK_FREE_ARGS: &[&str] = &[
     "Bash(rustfmt --check *)",
     "Bash(node --check *)",
     "Bash(node apps/web/test/*)",
+    "Bash(git switch *)",
+    "Bash(git cherry-pick *)",
+    "Bash(git branch *)",
+    "Bash(git stash *)",
 ];
 
 /// The words at the top of a claude work seat's system prompt (519d0 11-21 M6: a seat that

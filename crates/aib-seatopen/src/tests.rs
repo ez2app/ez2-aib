@@ -912,6 +912,10 @@ fn a_work_seat_reads_git_anywhere_and_reaches_nothing_outside() {
         "Bash(rustfmt --check *)",
         "Bash(node --check *)",
         "Bash(node apps/web/test/*)",
+        "Bash(git switch *)",
+        "Bash(git cherry-pick *)",
+        "Bash(git branch *)",
+        "Bash(git stash *)",
     ] {
         assert!(WORK_ALLOWED.contains(&rule), "reason: not_allowed {rule}");
         assert!(
