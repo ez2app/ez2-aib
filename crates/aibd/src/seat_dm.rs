@@ -94,10 +94,10 @@ fn read(store: &aib_dmq_store::Store, code: &str, id: &str) -> Option<Map<String
 /// letter came through the bridge (`aibd_message_id`) and aibd's own record has it urgent
 /// ([`aibd_urgent`]); a ledger `urgent` alone is 一般 (5d33a M1: the ledger file is
 /// AI-writable). `reminder` is 通知. The text is never read for it.
-pub fn grade_of(item: &Map<String, Value>, urgent: &dyn Fn(&str) -> bool) -> (u8, bool) {
+pub fn grade_of(item: &Map<String, Value>, urgent: &dyn Fn(&str, &str) -> bool) -> (u8, bool) {
     let p = str_of(item, "priority").to_ascii_lowercase();
     let mid = str_of(item, "aibd_message_id");
-    if !mid.is_empty() && urgent(mid) {
+    if !mid.is_empty() && urgent(mid, str_of(item, "id")) {
         return (0, false);
     }
     if p == "reminder" {
@@ -114,7 +114,7 @@ pub fn waiting(
     store: &aib_dmq_store::Store,
     code: &str,
     now: i64,
-    urgent: &dyn Fn(&str) -> bool,
+    urgent: &dyn Fn(&str, &str) -> bool,
 ) -> Value {
     let Ok(dir) = store.seat_dir(code) else {
         return json!({"counts": {"urgent": 0, "normal": 0, "notice": 0, "oldest_min": 0}, "letters": [], "more": 0});
@@ -168,8 +168,15 @@ pub fn waiting(
 
 /// Whether aibd's own record has the letter `aibd_message_id` urgent, marked by Andy, 519d0 or
 /// the system (7ebca's level column; 5d33a: a seat cannot mark urgent in the first stage).
-/// False until that column exists.
-pub fn aibd_urgent(_db: &aib_store::MessageDb, _aibd_message_id: &str) -> bool {
+/// When it is wired (5d33a REVIEW-inboxsummary N1, knife IB7): that row must be addressed to
+/// `legacy:<code>` and record `letter_id` as its 1.x letter, or an id copied from another
+/// letter would make this one urgent. False until that column exists.
+pub fn aibd_urgent(
+    _db: &aib_store::MessageDb,
+    _aibd_message_id: &str,
+    _code: &str,
+    _letter_id: &str,
+) -> bool {
     false
 }
 
@@ -332,7 +339,7 @@ pub fn done(
     if cur != rev {
         return (
             StatusCode::CONFLICT,
-            json!({"code": "rev_mismatch", "rev": cur, "message": "the letter changed; read it again"}),
+            json!({"code": "rev_mismatch", "rev": cur, "message": "這封信已經變過,請重新載入再結"}),
         );
     }
     let caller = aib_dmq_store::store::Caller::default();
@@ -469,7 +476,9 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         match kind.as_str() {
             WAITING => (
                 StatusCode::OK,
-                waiting(&store, &code, now, &|mid| aibd_urgent(&db, mid)),
+                waiting(&store, &code, now, &|mid, letter| {
+                    aibd_urgent(&db, mid, &code, letter)
+                }),
             ),
             SHOW => match show(&store, &code, &id, &relay_dirs) {
                 Ok(v) => (StatusCode::OK, v),
@@ -573,7 +582,7 @@ mod tests {
             "q_aaaaaaaaaaaaaaaa",
             20,
         );
-        let urgent = |mid: &str| mid == "q_aaaaaaaaaaaaaaaa";
+        let urgent = |mid: &str, _letter: &str| mid == "q_aaaaaaaaaaaaaaaa";
         let v = waiting(&store, CODE, 600, &urgent);
         let ids: Vec<&str> = v["letters"]
             .as_array()
@@ -628,7 +637,7 @@ mod tests {
             "急!急件!urgent",
             12,
         );
-        let urgent = |mid: &str| mid == "q_aaaaaaaaaaaaaaaa";
+        let urgent = |mid: &str, _letter: &str| mid == "q_aaaaaaaaaaaaaaaa";
         let v = waiting(&store, CODE, 100, &urgent);
         for r in v["letters"].as_array().unwrap() {
             assert_eq!(
