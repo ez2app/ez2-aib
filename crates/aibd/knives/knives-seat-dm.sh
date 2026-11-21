@@ -39,7 +39,7 @@ dm '    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));' '    rows.sort_
 dm '    (1, p == "urgent")' '    (u8::from(p != "urgent"), p == "urgent") // knife' \
    only_aibd_makes_a_letter_urgent
 # IB6 (5d33a M1) a bridge id makes it urgent without aibd's record
-dm '    if !mid.is_empty() && urgent(mid, id) {' '    if !mid.is_empty() && !id.is_empty() { // knife' \
+dm '    if !mid.is_empty() && urgent(mid, id) {' '    if !mid.is_empty() && (urgent(mid, id) || !mid.is_empty()) { // knife' \
    only_aibd_makes_a_letter_urgent
 # IB3 no cap on one batch
 dm '    if items.is_empty() || items.len() > DONE_MAX {' '    if items.is_empty() { // knife' \

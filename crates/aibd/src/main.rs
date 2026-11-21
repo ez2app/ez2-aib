@@ -26,6 +26,8 @@ fn main() -> ExitCode {
             return ExitCode::from(platform::check_tree::run_leaf());
         }
         [] => {}
+        // DESIGN-gh-token-card L1: the one-shot credential helper a push's git runs (hidden)
+        ["git-cred", rest @ ..] => return aibd::git_cred::main(rest),
         // S89-talk-1: the MCP server a seat's provider starts (hidden, not in USAGE)
         ["mcp"] | ["mcp", "--data-dir", _] => {
             return match ctl::mcp_run(args.get(2).copied()) {

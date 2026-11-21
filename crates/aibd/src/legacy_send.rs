@@ -135,10 +135,11 @@ pub fn label(name: &str, channel: &str, pair8: &str) -> String {
 
 /// The 1.x pointer line for a relay file (dm_relay.py's form, no 「來自」).
 pub fn pointer_line(bytes: usize, path: &Path) -> String {
-    format!("長訊已落檔({bytes} 位元組),請讀:{}", path.display())
+    aib_dmq_store::letter::pointer_line(bytes, path)
 }
 
-/// One queued letter, the fields `_new_item` writes (aib-dm-queue-item/v2).
+/// One queued letter, the fields `_new_item` writes (aib-dm-queue-item/v2): aib-dmq-store's
+/// writer, shared with aib-drive (S79-rust).
 pub fn letter(
     id: &str,
     seat: &str,
@@ -148,53 +149,7 @@ pub fn letter(
     hub: &str,
     now: i64,
 ) -> Map<String, Value> {
-    // taipei_stamp: "MM-DD HH:MM:SS" in Taipei time
-    let t = crate::sessions::rfc3339_of_unix(now + 8 * 3600);
-    let when = match (t.get(5..10), t.get(11..19)) {
-        (Some(d), Some(h)) => format!("{d} {h}"),
-        _ => String::new(),
-    };
-    let mut m = Map::new();
-    for (k, v) in [
-        ("schema", json!("aib-dm-queue-item/v2")),
-        ("id", json!(id)),
-        ("ts", json!(now)),
-        ("when", json!(when)),
-        ("priority", json!("normal")),
-        ("origin", json!("live")),
-        ("status", json!("queued")),
-        ("claimed_at", Value::Null),
-        ("claim_id", Value::Null),
-        ("seat", json!(seat)),
-        ("session_uuid", json!("")),
-        ("wid", json!("")),
-        ("provider", json!("")),
-        ("hub", json!(hub)),
-        ("sender_hub", json!(hub)),
-        ("sender_origin", json!(human_id)),
-        ("sender_label", json!(sender_label)),
-        ("sender_kind", json!("human")),
-        ("msg", json!(msg)),
-        ("rev", json!(1)),
-    ] {
-        m.insert(k.into(), v);
-    }
-    for (k, v) in aib_dmq::norm::v2_defaults() {
-        m.entry(k).or_insert(v);
-    }
-    for (k, v) in [
-        ("thread", Value::Null),
-        ("kind", json!("other")),
-        ("sender_seat", json!("hub")),
-        ("human_id", json!(human_id)),
-        ("sender_source", Value::Null),
-        ("sent_at", json!(now)),
-        ("expires", Value::Null),
-        ("attempts", json!(0)),
-    ] {
-        m.insert(k.into(), v);
-    }
-    m
+    aib_dmq_store::letter::item(id, seat, msg, sender_label, human_id, hub, now)
 }
 
 /// `sender_source` of a web seat's letter (a record: what tells aibd's own letters from others
@@ -414,20 +369,17 @@ pub fn send_as(
         Sender::Seat { .. } => text.to_owned(),
     };
     let text = text.as_str();
-    let (msg, relay) = if text.len() > RELAY_AT {
-        let dir = state_root.join("pending");
-        let path = dir.join(format!(
-            "RELAY-web-{seat}-{now}-{}.txt",
-            crate::sessions::new_id("").map_err(|e| ("write_failed", e.to_string()))?
-        ));
-        let mut f = aib_dmq_store::fsx::create_private(&path, true)
-            .map_err(|e| ("write_failed", format!("relay file: {e}")))?;
-        std::io::Write::write_all(&mut f, text.as_bytes())
-            .map_err(|e| ("write_failed", format!("relay file: {e}")))?;
-        (pointer_line(text.len(), &path), true)
-    } else {
-        (text.to_owned(), false)
-    };
+    let (msg, relay) = aib_dmq_store::letter::relay(
+        &state_root.join("pending"),
+        "RELAY-web",
+        seat,
+        now,
+        &crate::sessions::new_id("").map_err(|e| ("write_failed", e.to_string()))?,
+        text,
+        RELAY_AT,
+    )
+    .map_err(|e| ("write_failed", format!("relay file: {e}")))?;
+    let relay = relay.is_some();
     let hub = format!("aihub-{cabin}");
     // a9136 02:12: from the hub code when one is set, so `aib dm <cabin>/<hub>` answers it
     let item = match from {
@@ -474,12 +426,8 @@ pub fn send_as(
         }
     };
     let store = aib_dmq_store::Store::new(state_root, state_root);
-    store
-        .write_item(seat, &item)
-        .map_err(|e| ("write_failed", format!("letter: {e:?}")))?;
-    store
-        .order_append(seat, &id)
-        .map_err(|e| ("write_failed", format!("order: {e:?}")))?;
+    aib_dmq_store::letter::enqueue(&store, seat, &item)
+        .map_err(|e| ("write_failed", format!("{e:?}")))?;
     // the mirror's pass on this one file: the conversation has it now, under the same key
     let file: PathBuf = queue.join(seat).join(format!("{id}.json"));
     let as_value = Value::Object(item);
@@ -648,6 +596,105 @@ pub async fn act(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The letter as legacy_send wrote it before the writer moved into aib-dmq-store (frozen
+    /// copy of 8bc77c2a6a, 5d33a PREREAD-drive-rust Q2): the shared writer must give the same
+    /// map and the same bytes.
+    fn letter_before(
+        id: &str,
+        seat: &str,
+        msg: &str,
+        sender_label: &str,
+        human_id: &str,
+        hub: &str,
+        now: i64,
+    ) -> Map<String, Value> {
+        let t = crate::sessions::rfc3339_of_unix(now + 8 * 3600);
+        let when = match (t.get(5..10), t.get(11..19)) {
+            (Some(d), Some(h)) => format!("{d} {h}"),
+            _ => String::new(),
+        };
+        let mut m = Map::new();
+        for (k, v) in [
+            ("schema", json!("aib-dm-queue-item/v2")),
+            ("id", json!(id)),
+            ("ts", json!(now)),
+            ("when", json!(when)),
+            ("priority", json!("normal")),
+            ("origin", json!("live")),
+            ("status", json!("queued")),
+            ("claimed_at", Value::Null),
+            ("claim_id", Value::Null),
+            ("seat", json!(seat)),
+            ("session_uuid", json!("")),
+            ("wid", json!("")),
+            ("provider", json!("")),
+            ("hub", json!(hub)),
+            ("sender_hub", json!(hub)),
+            ("sender_origin", json!(human_id)),
+            ("sender_label", json!(sender_label)),
+            ("sender_kind", json!("human")),
+            ("msg", json!(msg)),
+            ("rev", json!(1)),
+        ] {
+            m.insert(k.into(), v);
+        }
+        for (k, v) in aib_dmq::norm::v2_defaults() {
+            m.entry(k).or_insert(v);
+        }
+        for (k, v) in [
+            ("thread", Value::Null),
+            ("kind", json!("other")),
+            ("sender_seat", json!("hub")),
+            ("human_id", json!(human_id)),
+            ("sender_source", Value::Null),
+            ("sent_at", json!(now)),
+            ("expires", Value::Null),
+            ("attempts", json!(0)),
+        ] {
+            m.insert(k.into(), v);
+        }
+        m
+    }
+
+    /// LS-G1 (S79-rust, 5d33a Q2): the shared writer's letter is the old one, map and bytes,
+    /// across a day / month / year edge in Taipei time.
+    #[test]
+    fn the_shared_writer_writes_the_letter_byte_for_byte() {
+        for now in [
+            0,
+            1_700_000_000,
+            1_735_660_799,
+            1_735_660_800,
+            1_798_732_800,
+        ] {
+            let a = letter(
+                "q_0123456789abcdef",
+                "519d0",
+                "看這封\n二行",
+                "安迪(網頁)",
+                "page:0011aabb",
+                "aihub-dab9",
+                now,
+            );
+            let b = letter_before(
+                "q_0123456789abcdef",
+                "519d0",
+                "看這封\n二行",
+                "安迪(網頁)",
+                "page:0011aabb",
+                "aihub-dab9",
+                now,
+            );
+            assert_eq!(a, b, "reason: letter_changed at {now}");
+            let (a, b) = (Value::Object(a), Value::Object(b));
+            assert_eq!(
+                aib_dmq_store::pyjson::dumps(&a).unwrap(),
+                aib_dmq_store::pyjson::dumps(&b).unwrap(),
+                "reason: letter_bytes_changed at {now}"
+            );
+        }
+    }
 
     #[test]
     fn a_break_other_than_newline_cannot_hide_a_header_line() {

@@ -3205,6 +3205,7 @@
       const rs = e && (e.reason || (e.body && e.body.reason));
       F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 aibd 還不能新增(示意)'
         : rs === 'owner_check_unavailable' ? '要本人指紋,這台還不能按'
+        : gateWhy(e) ? gateWhy(e)
         : e && e.status === 403 ? '只有內建頁、這一輪配對的分頁能新增' : '沒建成:' + errText(e);
     }
     render();
@@ -3366,10 +3367,48 @@
     let h = '<div class="pbx" data-pushbox>';
     if (W) h += `<div class="sbw" data-pushwait>要推「${esc(O.repo)}」的 <b>${esc(O.branch)}</b> · 頭 ${esc(O.head.slice(0, 12))} 到遠端(只推 web/ 開頭,不動其他分支)<div class="sbf">請在這台 Mac 按指紋 · 還有 ${W.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
     else if (S.prF && S.prF.seat === s.seat_id) h += `<div class="sbw" data-prwait>開 PR(草稿):基底 <b>main</b> ← <b>${esc(O.branch)}</b> · 「${esc(S.prF.title)}」<div class="sbf">請在這台 Mac 按指紋 · 還有 ${S.prF.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
+    else if (S.ghTok && S.ghTok.seat === s.seat_id) h += ghTokBox(S.ghTok);
     else if (A) h += `<div class="rcpq" data-prform>開 PR(草稿):<input class="apq" data-prtitle value="${esc(A.title)}" maxlength="200" aria-label="PR 標題"><textarea class="apq" data-prbody rows="2" maxlength="16000" placeholder="說明(可空)" aria-label="PR 說明">${esc(A.body || '')}</textarea> 基底 <b>main</b> ← <b>${esc(O.branch)}</b><button type="button" class="k g" data-prgo="${esc(s.seat_id)}">開</button><button type="button" class="k" data-prno="1">不要</button></div>`;
     else h += (S.pushOff ? `<span class="trs">${esc(S.pushOff)}</span>` : `<button type="button" class="k" data-push="${esc(s.seat_id)}" title="把 ${esc(O.branch)} 推到遠端;要按這台的指紋">推上去</button>`) + (S.prOff ? `<span class="trs">${esc(S.prOff)}</span>` : `<button type="button" class="k" data-pr="${esc(s.seat_id)}" title="從 ${esc(O.branch)} 對 main 開 PR">開 PR</button>`);
     if (M) h += `<div class="trm${M.bad ? ' bad' : ''}" data-pushmsg>${esc(M.text)}${M.url ? ' <a href="' + esc(M.url) + '" target="_blank" rel="noopener">' + esc(M.url) + '</a>' : ''}</div>`;
     return h + '</div>';
+  }
+  // 7b81e DESIGN-gh-token-card r1(519d0 09:27,Andy 09:2x「要他開終端機的事都做成按鈕」):這個倉沒有 GitHub 權杖 ⇒
+  // ① 開 GitHub 建權杖頁(網址參數帶好:名字、擁有者、90 天、contents / pull_requests 寫入;倉要人自己選)
+  // ② 貼上 ⇒ aibd 先問 GitHub 這把能不能推這個倉(不能就說原因、不跳窗),能才按指紋存進鑰匙圈。
+  // 權杖只在輸入框與送出的那一份 body 裡:不進 S、不進 localStorage、不顯示回來
+  const GHTOK_WHY = {
+    gh_token_fields: '頁面送的欄位不對(請回報頁面工程席)', gh_token_shape: '這不像 GitHub 權杖(只能有英文、數字與底線);重貼一次',
+    gh_token_refused: 'GitHub 不認這把權杖(打錯、過期或被撤銷)', gh_token_repo_not_selected: '這把權杖看不到這個倉;建的時候「Repository access」要選到它',
+    gh_token_no_write: '這把權杖對這個倉沒有寫入權限;「Contents」要 Read and write', gh_token_check_failed: '現在問不到 GitHub(網路或 GitHub 出狀況),沒有存;稍後再試',
+    gh_token_unavailable: '這台的 aibd 還不能存權杖(Windows 要等 Windows Hello 接上)', gh_token_store: '寫不進這台的鑰匙圈,沒有存',
+    push_repo_unknown: '找不到這個登記倉', pr_no_github_repo: '這個倉的遠端不是 GitHub', page_only: '只有這台內建的頁面能存權杖',
+    owner_check_unavailable: '這台還不能按指紋,沒有存', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有存',
+    finger_denied: '指紋取消了,沒有存', finger_expired: FINGER_GONE + ';沒有存,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有存',
+  };
+  const ghTokUrl = (slug) => {
+    const [o, n] = String(slug).split('/');
+    return 'https://github.com/settings/personal-access-tokens/new?' + new URLSearchParams({ name: ('ez2-aibd-' + n).slice(0, 40), description: 'Ez2 AIB:推 web/ 分支、開草稿 PR(' + slug + ')', target_name: o, expires_in: '90', contents: 'write', pull_requests: 'write' }).toString();
+  };
+  function ghTokBox(G) {
+    const n = String(G.slug).split('/')[1] || '';
+    if (G.left != null) return `<div class="sbw" data-ghtokwait>把 GitHub 權杖存進這台,給 <b>${esc(G.slug)}</b> 推分支與開 PR 用<div class="sbf">請在這台 Mac 按指紋 · 還有 ${G.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
+    return `<div class="rcpq" data-ghtok>推分支 / 開 PR 要 GitHub 權杖:<b>${esc(G.slug)}</b><div class="apn">① 到 GitHub 建一把細粒度權杖(名字、權限、90 天都帶好了);「Repository access」請選 Only select repositories → <b>${esc(n)}</b>(這一格 GitHub 不能預先幫你選)</div><a class="k" href="${esc(ghTokUrl(G.slug))}" target="_blank" rel="noopener noreferrer">① 到 GitHub 建權杖</a> <input class="apq" type="password" data-ghtokin autocomplete="off" spellcheck="false" placeholder="② 貼上權杖(github_pat_…)" aria-label="GitHub 權杖"><button type="button" class="k g" data-ghtokgo="${esc(G.seat)}">② 存進這台(按指紋)</button><button type="button" class="k" data-ghtokno="1">不要</button>${G.msg ? `<div class="apn bad">${esc(G.msg)}</div>` : ''}</div>`;
+  }
+  async function ghTokGo(id) {
+    const G = S.ghTok, O = S.sbOk; if (!G || G.seat !== id || !O || S.sending) return;
+    const inp = document.querySelector('[data-ghtokin]'); const token = inp ? String(inp.value || '').trim() : '';
+    if (inp) inp.value = '';
+    if (!/^[A-Za-z0-9_]{1,255}$/.test(token)) { G.msg = GHTOK_WHY.gh_token_shape; return render(); }
+    S.sending = true; G.msg = ''; render();
+    try {
+      await fingerAct('repo_gh_token', { repo: O.repo, token }, (t, sec) => { if (S.ghTok === G) { G.left = sec; render(); } });
+      S.ghTok = null; S.prOff = null; S.pushMsg = { seat: id, text: '權杖存好了(只存在這台的鑰匙圈);可以再按一次「推上去」或「開 PR」' };
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
+      G.left = null; G.msg = GHTOK_WHY[rs] || errText(e);
+    }
+    S.sending = false; render();
   }
   const pushWhy = (T, e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return T[rs] || errText(e); };
   async function pushGo(id) {
@@ -3382,8 +3421,11 @@
       S.pushMsg = { seat: id, text: '已推上去:' + String((r && r.branch) || O.branch) + (r && r.sha ? '(頭 ' + String(r.sha).slice(0, 12) + ')' : '') + (r && r.remote_host ? ' 到 ' + r.remote_host : '') + ';還沒開 PR' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
-      if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
-      else S.pushMsg = { seat: id, bad: true, text: pushWhy(PUSH_WHY, e) };
+      // pv8 第 9 格:這個倉沒有權杖 ⇒ aibd 在指紋窗前就說,這裡直接出權杖卡;權杖被 GitHub 拒 ⇒ 講哪裡不對
+      const slug = e && e.body && typeof e.body.token_for === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(e.body.token_for) ? e.body.token_for : '';
+      if (rs === 'gh_token_missing' && slug) S.ghTok = { seat: id, slug, left: null, msg: '這個倉還沒有 GitHub 權杖;存好之後再按一次「推上去」' };
+      else if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
+      else S.pushMsg = { seat: id, bad: true, text: /^gh_token_/.test(String(rs)) && GHTOK_WHY[rs] ? GHTOK_WHY[rs] : pushWhy(PUSH_WHY, e) };
     }
     S.pushF = null; render();
   }
@@ -3399,7 +3441,9 @@
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
       S.prAsk = null;
-      if (rs === 'unknown_act_type' || rs === 'pr_open_unavailable' || rs === 'pr_open_off' || rs === 'page_only') S.prOff = PR_WHY[rs]; else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
+      const slug = e && e.body && typeof e.body.token_for === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(e.body.token_for) ? e.body.token_for : '';
+      if (rs === 'pr_open_unavailable' && slug) S.ghTok = { seat: id, slug, left: null, msg: '' };
+      else if (rs === 'unknown_act_type' || rs === 'pr_open_unavailable' || rs === 'pr_open_off' || rs === 'page_only') S.prOff = PR_WHY[rs]; else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
     }
     S.prF = null; S.sending = false; render();
   }
@@ -3534,7 +3578,7 @@
     // 7b81e IFACE-owner-touch r0:第一步就被擋的三種
     pair_touch_busy: '已經有一個指紋視窗開著;先回那一個再按',
     pair_touch_cooling: '剛按了不同意,冷卻中;稍等一下再按',
-    pair_touch_limited: '一小時內問指紋太多次;晚點再試',
+    pair_touch_limited: '10 分鐘內最多 3 張指紋窗(一小時最多 6 張);晚點再試',
     preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
     settings_unreadable: '讀不到倉裡的專案設定,aibd 不收',
     hooks: 'aibd 準備不了自己的 git 設定資料夾;重開 aibd 再試',
@@ -3544,7 +3588,7 @@
     base_not_in_repo: '這個倉裡沒有那一顆提交(或沒有分支走得到它);檢查提交碼',
     tree_not_opened: '在這個倉開不出這一席自己的一份(分支);看倉是不是在改到一半',
   };
-  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
+  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return gateWhy(e) || REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
   // 519d0 06:2x 判:做事席也能帶登記的倉(沙盒照舊、一律開自己的一份),7b81e 做;aibd 在 GET version 給 repo_modes 才開給做事席,沒給 = 只有能改程式席
   const repoModes = () => (S.version && Array.isArray(S.version.repo_modes) ? S.version.repo_modes.map(String) : ['dgrs']);
   const curRepo = (A) => { const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')) : []; return A.repo && R.includes(A.repo) && repoModes().includes(A.mode) ? A.repo : ''; };
@@ -3864,8 +3908,15 @@
 
   // ---------- 動作 ----------
   function say(msg, kind) { S.hint = msg; S.hintKind = kind || ''; }
+  // 0eed7 pv7 L(519d0 07:46):指紋閘擋下的三種講真正原因;滿了講幾點幾分幾秒後可以再試(鐘點是 aibd 給的 retry_hms,同指紋窗的字)
+  function gateWhy(e) {
+    const b = (e && e.body) || {}, rs = e && (e.reason || b.reason || e.code);
+    if (rs === 'pair_touch_limited') { const t = String(b.retry_hms || ''); return '10 分鐘內最多 3 張指紋窗(一小時最多 6 張)' + (/^\d\d:\d\d:\d\d$/.test(t) ? ',' + t + ' 後可以再試' : ',晚點再試'); }
+    return rs === 'pair_touch_busy' || rs === 'pair_touch_cooling' ? REPO_WHY[rs] : '';
+  }
   function errText(e) {
     if (!e) return '出錯了';
+    if (gateWhy(e)) return gateWhy(e);
     if (e.pageMsg) return e.pageMsg;
     if (e.status === 0) return '連不上 aibd';
     if (e.code === 'user_page_safe_seats_only') return '用戶資料夾的頁只能對安全模式的席送字';
@@ -4081,6 +4132,8 @@
     const pu = x.closest('[data-push]'); if (pu) { pu.disabled = true; return pushGo(pu.dataset.push); }
     const pr = x.closest('[data-pr]'); if (pr && S.sbOk) { S.prAsk = { seat: pr.dataset.pr, title: 'web: ' + S.sbOk.branch }; S.pushMsg = null; render(); return; }
     if (x.closest('[data-prno]')) { S.prAsk = null; render(); return; }
+    const gt = x.closest('[data-ghtokgo]'); if (gt) return ghTokGo(gt.dataset.ghtokgo);
+    if (x.closest('[data-ghtokno]')) { S.ghTok = null; render(); return; }
     const pg = x.closest('[data-prgo]'); if (pg && !S.sending) { const ti = document.querySelector('[data-prtitle]'), tb = document.querySelector('[data-prbody]'); if (ti && S.prAsk) S.prAsk.title = ti.value.trim(); if (tb && S.prAsk) S.prAsk.body = tb.value; return prGo(pg.dataset.prgo); }
     const rq = x.closest('[data-rcpask]'); if (rq) { S.rcpAsk = { seat: rq.dataset.rcpask, scope: 'narrow', tests: '' }; S.rcpMsg = null; render(); return; }
     const rsc = x.closest('[data-rcpscope]'); if (rsc && S.rcpAsk) { const ti0 = document.querySelector('[data-rcptests]'); if (ti0) S.rcpAsk.tests = ti0.value; S.rcpAsk.scope = rsc.dataset.rcpscope; render(); return; }

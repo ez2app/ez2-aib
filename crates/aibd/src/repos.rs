@@ -302,13 +302,11 @@ pub fn asked(ask: &crate::owner_ok::Ask) -> Response {
             Json(json!({"done": false, "ticket": t, "reason": "owner_check_pending"})),
         )
             .into_response(),
-        crate::owner_ok::Asked::Unavailable(why) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({"code": "forbidden", "reason": why,
-                "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
-                "request_id": crate::guard::request_id()})),
-        )
-            .into_response(),
+        crate::owner_ok::Asked::Unavailable(why) => {
+            let mut v = crate::owner_ok::refusal(why);
+            v["request_id"] = json!(crate::guard::request_id());
+            (StatusCode::FORBIDDEN, Json(v)).into_response()
+        }
     }
 }
 

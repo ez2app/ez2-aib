@@ -102,7 +102,7 @@ fn pack_name(name: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -111,7 +111,7 @@ fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(windows)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_FLAG_OPEN_REPARSE_POINT: a link is opened as itself, and is then not a plain file
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -595,13 +595,11 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             )
                 .into_response(),
             // one ask only: asking again could open a second window for the same send
-            crate::owner_ok::Asked::Unavailable(why) => (
-                StatusCode::FORBIDDEN,
-                Json(json!({"code": "forbidden", "reason": why,
-                    "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
-                    "request_id": crate::guard::request_id()})),
-            )
-                .into_response(),
+            crate::owner_ok::Asked::Unavailable(why) => {
+                let mut v = crate::owner_ok::refusal(why);
+                v["request_id"] = json!(crate::guard::request_id());
+                (StatusCode::FORBIDDEN, Json(v)).into_response()
+            }
         };
     };
     if !crate::owner_ok::approved_for(&ticket, &ask) {

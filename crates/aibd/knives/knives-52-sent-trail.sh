@@ -52,6 +52,6 @@ kn send_back.rs '    if !stem.starts_with("web/") {' \
    '    if !stem.starts_with("web/") && false {' \
    send_back::tests::a_branch_outside_web_is_never_made
 # SB12 the fingerprint that cannot be asked is asked a second time (5d33a N4)
-kn send_back.rs '            crate::owner_ok::Asked::Unavailable(why) => (' \
-   '            crate::owner_ok::Asked::Unavailable(_) if true => crate::repos::asked(&ask), crate::owner_ok::Asked::Unavailable(why) => (' \
+kn send_back.rs '            crate::owner_ok::Asked::Unavailable(why) => {' \
+   '            crate::owner_ok::Asked::Unavailable(_) if true => crate::repos::asked(&ask), crate::owner_ok::Asked::Unavailable(why) => {' \
    send_back::tests::one_send_asks_the_fingerprint_at_one_place
