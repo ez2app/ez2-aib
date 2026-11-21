@@ -50,6 +50,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,

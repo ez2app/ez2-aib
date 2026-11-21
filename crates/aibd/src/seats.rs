@@ -2827,7 +2827,8 @@ mod tests {
         assert_eq!(w.iter().filter(|x| *x == "--allowedTools").count(), 1);
         assert!(w[3].starts_with(&a[3]), "reason: talk_tools_lost");
         assert!(
-            w[3].ends_with(",Bash(node --test *)"),
+            // the work list is the last part, whatever its last rule (G4 added after node --test)
+            w[3].ends_with(&format!(",{}", aib_seatopen::WORK_ALLOWED.join(","))),
             "reason: work_list_missing {}",
             w[3]
         );
