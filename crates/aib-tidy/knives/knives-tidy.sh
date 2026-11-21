@@ -11,10 +11,10 @@ td() { python3 -I scripts/knife.py crates/aib-tidy/src/lib.rs "$1" "$2" --expect
 td '            if rs.iter().any(|t| names_crate(t, &id)) {' '            if rs.is_empty() {' \
    an_unnamed_dependency_is_listed_unverified
 # TD2 a dependency whose comment says knife is not excluded (§4)
-td '            let never = if note.contains("knife") || d.note.contains('"'"'刀'"'"') {' '            let never = if note.contains("knife!!") || d.note.contains("刀!!") {' \
+td '            let by_note = note.contains("knife") || d.note.contains('"'"'刀'"'"');' '            let by_note = note.contains("knife!!") || d.note.contains("刀!!");' \
    a_knifes_dependency_is_excluded
 # TD3 a dependency a knife names is not excluded (§4)
-td '            } else if knife_texts.iter().any(|t| names_crate(t, &id)) {' '            } else if knife_texts.is_empty() {' \
+td '            let by_knife = knife_texts.iter().any(|t| names_crate(t, &id));' '            let by_knife = knife_texts.is_empty();' \
    a_knifes_dependency_is_excluded
 # TD4 an excluded item still counts as unverified
 td '        if self.never.is_some() {' '        if self.never.is_some() && self.mac {' \

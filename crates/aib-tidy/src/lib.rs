@@ -306,13 +306,9 @@ pub fn unused_deps(root: &Path, texts: &[(String, String)]) -> Vec<Item> {
                 maybe.push("build_script");
             }
             let note = d.note.to_lowercase();
-            let never = if note.contains("knife") || d.note.contains('刀') {
-                Some("knife_anchor")
-            } else if knife_texts.iter().any(|t| names_crate(t, &id)) {
-                Some("knife_anchor")
-            } else {
-                None
-            };
+            let by_note = note.contains("knife") || d.note.contains('刀');
+            let by_knife = knife_texts.iter().any(|t| names_crate(t, &id));
+            let never = (by_note || by_knife).then_some("knife_anchor");
             out.push(Item {
                 kind: Kind::UnusedDep,
                 path: rel(root, &m),
