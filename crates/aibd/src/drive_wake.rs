@@ -139,7 +139,10 @@ pub fn wake_round(bin: &Path) -> (Wake, Wake) {
 /// background refresh ran 3.3 times slower and was killed at aib-drive's 10-minute limit.
 fn child_command(bin: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(bin);
+    // D7a: the dispatch switch as aibd reads it (aib-drive's act::AIBD_SWITCH_ENV)
+    let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
     cmd.args(args)
+        .env(crate::drive_switch::ENV, switch)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

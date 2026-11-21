@@ -18,3 +18,5 @@ ds '    if !STATES.contains(&to.as_str()) {' '    if !STATES.contains(&to.as_str
 ds '    crate::owner_ok::verify(&crate::owner_ok::binding(&s.ticket, &ask), &sig)' '    crate::owner_ok::verify(&crate::owner_ok::binding(&s.ticket, &ask), &sig) || !sig.is_empty()' an_on_without_a_checked_signature_is_unsigned
 # DSK7 the page may turn on without the owner check
 ds '        "can_on": owner_check && s.to != "on",' '        "can_on": (owner_check || s.at == 0) && s.to != "on",' an_on_without_a_checked_signature_is_unsigned
+# DSK8 an on without a signature aibd checks is handed to aib-drive as on
+ds '        "on" if signed(&s) => "on",' '        "on" => "on",' drive_gets_an_unsigned_on_as_off

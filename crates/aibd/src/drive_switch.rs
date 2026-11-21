@@ -36,6 +36,8 @@ pub const OP: &str = "drive.dispatch_on";
 pub const FILE: &str = "drive-switch.json";
 pub const JOURNAL: &str = "drive-switch.jsonl";
 pub const SCHEMA: &str = "aib-drive-switch/v1";
+/// How an act round started from aibd hears the switch (aib-drive `act::AIBD_SWITCH_ENV`).
+pub const ENV: &str = "AIB_DRIVE_AIBD_SWITCH";
 /// The longest reason, in characters.
 pub const WHY_MAX: usize = 200;
 /// The three states, in the order the page shows them.
@@ -140,6 +142,20 @@ pub fn signed(s: &Switch) -> bool {
     };
     let ask = ask_of(&s.why, s.by.clone());
     crate::owner_ok::verify(&crate::owner_ok::binding(&s.ticket, &ask), &sig)
+}
+
+/// What aibd hands aib-drive's act round (`AIB_DRIVE_AIBD_SWITCH`): the switch in `data`, and
+/// an `on` this aibd's key does not check comes as `off`; no data folder is `off`.
+pub fn effective(data: Option<&Path>) -> &'static str {
+    let Some(d) = data else {
+        return "off";
+    };
+    let s = read(d);
+    match s.to.as_str() {
+        "paused" => "paused",
+        "on" if signed(&s) => "on",
+        _ => "off",
+    }
 }
 
 /// Write the switch and its journal line.
@@ -363,6 +379,26 @@ mod tests {
         );
         assert_eq!(status_of(&Switch::off(), true)["can_on"], true);
         assert_eq!(status_of(&Switch::off(), true)["can_off"], false);
+    }
+
+    /// DS4: aib-drive gets paused as paused and an unsigned on as off.
+    #[test]
+    fn drive_gets_an_unsigned_on_as_off() {
+        assert_eq!(effective(None), "off");
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Switch::off();
+        s.to = "paused".into();
+        write(d.path(), &s).unwrap();
+        assert_eq!(effective(Some(d.path())), "paused");
+        s.to = "on".into();
+        s.ticket = "ot_1".into();
+        s.sig = "00ff".into();
+        write(d.path(), &s).unwrap();
+        assert_eq!(
+            effective(Some(d.path())),
+            "off",
+            "reason: unsigned_on_handed_on"
+        );
     }
 
     #[test]
