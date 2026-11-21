@@ -41,6 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
+    cinbOpen: {}, cinbAns: null, // 送出框上方待審條(6f1cb 總帳 #7)
     inbox: null, inbPfx: '', inbUi: { col: 'unread', urg: false, seat: '', card: '', open: null, body: null }, // 總收件匣(1a93b DESIGN-web-inbox-page r2)
     moved: {}, moveAsk: null, moveCode: '', moveF: null, moveMsg: null, moveOff: false, // 搬舊席(G5 信橋,7ebca DESIGN-g5-bridge r1 §1)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
@@ -547,6 +548,53 @@
     const n = [x.seats_running, x.running_seats, x.sessions_running].find((v) => typeof v === 'number' && v >= 0);
     const what = n === 0 ? '裡面現在沒有開著的席' : n > 0 ? `裡面開著的 ${n} 席會全部停下` : '裡面開著的席會全部停下';
     return `<div class="pvwarn" role="alert"><b>要關「${esc(x.name || '預覽')}」嗎?</b>${what}。資料夾、對話、串都留著;下次打開預覽後,在右欄「停了」那一席按「重開」就接回原本的資料夾和對話。<div class="pvwb"><button type="button" class="k" data-pvstopno="1">先不要</button><button type="button" class="k n" data-pvstopgo="${esc(x.id)}">確定關掉</button></div></div>`;
+  }
+  // 送出框上方的待審條(519d0 總帳 #7,MOCK-composer-inbox-519d0-1121;6f1cb 11-21):只算跟眼前這一席有關的信(寄給它或它寄的),沒結的才算;
+  // 急紅(aibd level)/ 等你決定橘(held_human)/ 一般淡金 / 被擋灰(blocked);平常一行件數,點開最多 5 列,其餘到待審區看;沒信整條收起。
+  // 資料跟待審區、右欄同一個來源(S.inbox = GET /api/v1/inbox);這台 aibd 還沒有那條 ⇒ 用下面的示意列,條上標「示意」,示意列的答案不送出。
+  const CINB_RANK = { urg: 0, ask: 1, say: 2, blk: 3 }, CINB_W = { urg: '急', ask: '等你決定', say: '一般', blk: '被擋' };
+  const cinbKind = (m) => (m.blocked ? 'blk' : m.level === 'urgent' ? 'urg' : m.held_human ? 'ask' : 'say');
+  const cinbId = (v) => String(v || '').replace(/^seat:(legacy:)?/, '');
+  function cinbDemo(s) {
+    const me = 'seat:' + s.seat_id;
+    return [
+      { id: 'demo-1', demo: true, from_seat: me, to_seat: 'human:andy', held_human: true, age_min: 12, first_line: '示意:要先做哪一件?A 還是 B' },
+      { id: 'demo-2', demo: true, from_seat: 'seat:519d0', to_seat: me, level: 'urgent', level_by: '519d0', delivered_at: '1', age_min: 3, first_line: '示意:編譯紅擋換預覽,最優先' },
+      { id: 'demo-3', demo: true, from_seat: 'seat:f1fae', to_seat: me, delivered_at: '1', read_at: '1', age_min: 6, first_line: '示意:第三顆頭凍結' },
+      { id: 'demo-4', demo: true, from_seat: me, to_seat: 'seat:6f1cb', blocked: { reason: 'legacy_off' }, age_min: 9, first_line: '示意:這封沒送出' },
+    ];
+  }
+  function cinbRows(s) {
+    const demo = !S.inbox, R = demo ? cinbDemo(s) : S.inbox.rows || [];
+    const L = R.filter((m) => !m.done_at && !m.superseded_by && (cinbId(m.to_seat) === s.seat_id || cinbId(m.from_seat) === s.seat_id));
+    L.sort((a, b) => CINB_RANK[cinbKind(a)] - CINB_RANK[cinbKind(b)] || (Number(b.age_min) || 0) - (Number(a.age_min) || 0));
+    return { demo, L };
+  }
+  function cinbStrip(s) {
+    const { demo, L } = cinbRows(s);
+    if (!L.length) return ''; // 沒信整條收起
+    const n = { urg: 0, ask: 0, say: 0, blk: 0 }; for (const m of L) n[cinbKind(m)]++;
+    const open = !!(S.cinbOpen && S.cinbOpen[s.seat_id]);
+    const who = (v) => (/^human:/.test(String(v || '')) ? '你' : '@' + seatName(seatById(cinbId(v)) || { seat_id: cinbId(v) || '?' }));
+    const st = (m) => (m.blocked ? '被擋' : m.held_human ? '等你 ' + inbAge(m) : m.read_at ? '讀了沒結 ' + inbAge(m) : m.delivered_at ? '送到 · 未讀 ' + inbAge(m) : '還沒送到 ' + inbAge(m));
+    const btn = (m) => { const k = cinbKind(m); return k === 'ask' ? `<button type="button" class="go" data-cinbans="${esc(m.id)}">在下面回答</button>` : k === 'blk' ? `<button type="button" class="k" data-cinbre="${esc(m.id)}">改寄</button>` : `<button type="button" class="k" data-cinbread="${esc(m.id)}">看全文</button>`; };
+    const pills = ['urg', 'ask', 'say', 'blk'].filter((k) => n[k]).map((k) => `<span class="cpill c${k}">${CINB_W[k]} ${n[k]}</span>`).join('');
+    const rows = L.slice(0, 5).map((m) => `<div class="cit"><span class="ck c${cinbKind(m)}"></span><span class="ct"><b>${esc(who(m.from_seat))} → ${esc(who(m.to_seat))}</b> ${esc(String(m.first_line || '').slice(0, 80))}</span><small class="ca">${esc(st(m))}</small>${btn(m)}</div>`).join('');
+    const more = L.length > 5 ? `<button type="button" class="cmore" data-inbox="1">還有 ${L.length - 5} 封,到待審區看全部</button>` : '';
+    return `<div class="cinb${open ? ' open' : ''}"><button type="button" class="cbar" data-cinbtog="${esc(s.seat_id)}"><b>待審</b>${pills}${demo ? '<span class="pvdemo" title="這台 aibd 還沒有待審 API(GET /api/v1/inbox);這幾列是假資料,答案不會送出">示意</span>' : ''}<span class="cr">只列跟 @${esc(seatName(s))} 有關的 · ${open ? '收起 ▴' : '點開 ▾'}</span></button>${open ? `<div class="clist">${rows}${more}</div>` : ''}</div>`;
+  }
+  function cinbCtx(s) {
+    const A = S.cinbAns;
+    if (!A || A.seat !== s.seat_id) return '';
+    return `<div class="cctx"><span>正在回 ${esc(A.who)} 的題目:${esc(A.line.slice(0, 60))}${A.demo ? '(示意,不會送出)' : ''}</span><button type="button" class="cx" data-cinbx="1">✕ 改回對話</button></div>`;
+  }
+  const cinbFind = (id) => { const s = seatById(S.mode); return s ? cinbRows(s).L.find((m) => m.id === id) : null; };
+  // 答案寫回那封信:回給出題的席、放在那封信的串裡(message_send,跟單席寄信同一個 act);示意列不送
+  async function cinbAnswer(text) {
+    const A = S.cinbAns;
+    if (A.demo) { say('這是示意的題目,答案沒有送出(這台 aibd 還沒有待審 API);按「✕ 改回對話」再送一般對話', 'err'); return false; }
+    await act('message_send', { to_seat: A.from, body: '回你的題目「' + A.line.slice(0, 60) + '」:\n' + text, thread_id: A.tid || threadId(S.me, A.from), idem_key: idem() });
+    say('已把答案寫回 ' + A.who + ' 那封信', 'ok'); S.cinbAns = null; return true;
   }
   // ---------- 總收件匣(第 1 期,唯讀;DESIGN-web-inbox-page-1a93b-1121 r2,5d33a 預讀 0/0/1/2)----------
   // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
@@ -1965,7 +2013,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
+      ${cinbStrip(s)}${cinbCtx(s)}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -4010,7 +4058,8 @@
     if (!text || S.sending) return;
     S.sending = true; render();
     try {
-      if (kind === 'seat') { say(await sendSeat(S.mode, text)); S.drafts[S.mode] = ''; }
+      if (kind === 'seat' && S.cinbAns && S.cinbAns.seat === S.mode) { if (await cinbAnswer(text)) S.drafts[S.mode] = ''; }
+      else if (kind === 'seat') { say(await sendSeat(S.mode, text)); S.drafts[S.mode] = ''; }
       else if (kind === 'legacy') { if (await sendLegacy(code, text)) S.drafts[S.mode] = ''; }
       else if (kind === 'node') { await sendNode(text); S.drafts.node = ''; }
       else if (await sendShared(text)) S.drafts.shared = '';
@@ -4149,6 +4198,11 @@
     }
     if (x.closest('[data-pvupd]')) { try { await act('preview_update', { idempotency_key: idem() }); } catch (er) { /* 能看階段:aibd 還沒有 */ } S.pvNew = ''; S.pvNewAt = 0; say('更新中,席與對話會保留'); return render(); }
     if (x.closest('[data-pvlist]')) { await loadPreviews(); return pvListDlg(); }
+    const cbt = x.closest('[data-cinbtog]'); if (cbt) { const id = cbt.dataset.cinbtog; S.cinbOpen = S.cinbOpen || {}; S.cinbOpen[id] = !S.cinbOpen[id]; return render(); }
+    const cba = x.closest('[data-cinbans]'); if (cba) { const m = cinbFind(cba.dataset.cinbans); if (!m) return; S.cinbAns = { seat: S.mode, id: m.id, from: m.from_seat, tid: m.thread_id || null, who: /^human:/.test(String(m.from_seat || '')) ? '你' : '@' + seatName(seatById(cinbId(m.from_seat)) || { seat_id: cinbId(m.from_seat) }), line: String(m.first_line || ''), demo: !!m.demo }; render(); const i = document.getElementById('inp'); if (i) i.focus(); return; }
+    if (x.closest('[data-cinbx]')) { S.cinbAns = null; return render(); }
+    const cbr = x.closest('[data-cinbre]'); if (cbr) { const m = cinbFind(cbr.dataset.cinbre); if (!m) return; S.drafts[S.mode] = String(m.first_line || ''); say('把沒送出的那封放進送出框了;看過再按「送出」寄給 @' + seatName(seatById(S.mode) || { seat_id: S.mode }), 'ok'); return render(); }
+    const cbo = x.closest('[data-cinbread]'); if (cbo) { const m = cinbFind(cbo.dataset.cinbread); if (!m) return; if (m.demo) { say('示意列沒有全文', 'err'); return render(); } S.inbUi.col = inbCol(m); S.inbUi.open = null; inboxDlg(); const b = document.querySelector('[data-inbopen="' + CSS.escape(m.id) + '"]'); if (b) b.click(); return; }
     if (x.closest('[data-inbox]')) return inboxDlg();
     const eo = x.closest('[data-evopen]'); if (eo) return openEv(eo.dataset.evopen);
     if (x.closest('[data-dmopen]')) { S.dmOpen = !S.dmOpen; render(); if (S.dmOpen) loadDismissed(); return; }

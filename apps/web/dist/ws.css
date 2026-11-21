@@ -1109,3 +1109,22 @@ label.rvr{cursor:pointer}
 .sir{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;font-size:13px;border-top:1px solid var(--line)}
 .sir .sig{font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line)}
 .sir.g0 .sig{background:var(--red);color:#fff;border-color:var(--red)}
+/* 送出框上方待審條(6f1cb 總帳 #7,MOCK-composer-inbox-519d0-1121):急紅 / 等你決定橘 / 一般淡金 / 被擋灰 */
+.cinb{margin:6px 0 0;border:1px solid var(--line);border-bottom:none;border-radius:10px 10px 0 0;background:var(--panel)}
+.cbar{display:flex;align-items:center;gap:8px;width:100%;padding:6px 10px;background:none;border:0;color:var(--text);font:inherit;font-size:13px;cursor:pointer;text-align:left}
+.cbar .cr{margin-left:auto;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cbar b,.cbar .cpill,.cbar .pvdemo{flex:none;white-space:nowrap}
+.cpill{border-radius:999px;padding:1px 9px;font-size:12px;font-weight:700}
+.cpill.curg{background:var(--red);color:#fff}.cpill.cask{background:var(--orange);color:#1a1005}.cpill.csay{background:#3a3a46;color:var(--gold2)}.cpill.cblk{background:#55555f;color:#ddd}
+.clist{border-top:1px solid var(--line);max-height:220px;overflow:auto}
+.cit{display:flex;gap:10px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);font-size:13px}
+.cit .ck{width:4px;align-self:stretch;border-radius:2px}
+.ck.curg{background:var(--red)}.ck.cask{background:var(--orange)}.ck.csay{background:var(--gold2)}.ck.cblk{background:#77777f}
+.cit .ct{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cit .ca{color:var(--dim);white-space:nowrap}
+.cit button,.cmore{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 8px;cursor:pointer}
+.cit button.go{border-color:var(--orange);color:var(--orange)}
+.cmore{margin:6px 10px}
+.cctx{display:flex;align-items:center;gap:8px;font-size:13px;background:#2a1d10;border:1px solid #5a3a16;color:#f6c48b;border-radius:8px;padding:4px 10px;margin:6px 0 4px}
+.cctx .cx{margin-left:auto;background:none;border:0;color:var(--dim);font:inherit;font-size:12px;cursor:pointer}
+@media (max-width:600px){.cbar{flex-wrap:wrap}.cbar .cr{margin-left:0;width:100%}.cit{flex-wrap:wrap}.cit .ct{white-space:normal}}

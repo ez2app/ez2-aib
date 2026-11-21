@@ -291,4 +291,38 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/e\.status === 403/.test(app) && /S\.ib = null/.test(app), 'reason: user_page_403_not_handled');
 }
 
+// §23 送出框上方待審條(519d0 總帳 #7,MOCK-composer-inbox-519d0-1121;6f1cb 11-21)
+{
+  const a = ws.indexOf('// 送出框上方的待審條'), z = ws.indexOf('// ---------- 總收件匣(第 1 期');
+  ok(a > 0 && z > a, 'reason: cinb_block_missing');
+  const seg = ws.slice(a, z);
+  // 分類:被擋 > 急(只看 aibd level)> 等你決定(held_human)> 一般
+  const km = seg.match(/const cinbKind = (\(m\) => [^\n]*);/);
+  ok(km, 'reason: cinb_kind_missing');
+  const kind = eval(km[1]);
+  ok(kind({ blocked: { reason: 'x' }, level: 'urgent', held_human: true }) === 'blk', 'reason: cinb_blocked_not_first');
+  ok(kind({ level: 'urgent', held_human: true }) === 'urg' && kind({ first_line: '急!', held_human: false }) === 'say', 'reason: cinb_urgent_not_from_level');
+  ok(kind({ held_human: true }) === 'ask' && kind({}) === 'say', 'reason: cinb_ask_not_held_human');
+  // 只算跟眼前這席有關、沒結的;同一個來源 S.inbox
+  ok(/const demo = !S\.inbox, R = demo \? cinbDemo\(s\) : S\.inbox\.rows \|\| \[\];/.test(seg), 'reason: cinb_not_same_source');
+  ok(/R\.filter\(\(m\) => !m\.done_at && !m\.superseded_by && \(cinbId\(m\.to_seat\) === s\.seat_id \|\| cinbId\(m\.from_seat\) === s\.seat_id\)\)/.test(seg), 'reason: cinb_not_only_this_seat');
+  // 沒信整條收起;點開最多 5 列,其餘到待審區
+  ok(/if \(!L\.length\) return '';/.test(seg), 'reason: cinb_shown_when_empty');
+  ok(/L\.slice\(0, 5\)/.test(seg) && /L\.length > 5 \?[^\n]*data-inbox="1"/.test(seg), 'reason: cinb_list_not_five');
+  // 示意列標示意、答案不送
+  ok(/\$\{demo \? '<span class="pvdemo"/.test(seg), 'reason: cinb_demo_not_marked');
+  ok(/if \(A\.demo\) \{ say\([^\n]*return false; \}/.test(seg), 'reason: cinb_demo_answer_sent');
+  // 在下面回答 ⇒ 橘色正在回條;送出寫回出題的席、那封信的串
+  ok(/正在回 \$\{esc\(A\.who\)\} 的題目/.test(seg) && /data-cinbx="1">✕ 改回對話/.test(seg), 'reason: cinb_ctx_bar_missing');
+  ok(/act\('message_send', \{ to_seat: A\.from, [^\n]*thread_id: A\.tid \|\| threadId\(S\.me, A\.from\)/.test(seg), 'reason: cinb_answer_not_written_back');
+  ok(/if \(kind === 'seat' && S\.cinbAns && S\.cinbAns\.seat === S\.mode\) \{ if \(await cinbAnswer\(text\)\)/.test(ws), 'reason: cinb_send_ignores_answer_mode');
+  // 回答模式送出後不可再當一般對話送給這席(6f1cb 實測抓到:示意答案還是以「已送出」寄出)
+  ok(/S\.drafts\[S\.mode\] = ''; \}\n      else if \(kind === 'seat'\) \{ say\(await sendSeat\(S\.mode, text\)\);/.test(ws), 'reason: cinb_answer_also_sent_as_chat');
+  // 掛在單席送出框正上方
+  ok(/\$\{cinbStrip\(s\)\}\$\{cinbCtx\(s\)\}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @/.test(ws), 'reason: cinb_not_above_composer');
+  // 色:急紅 / 等你決定橘 / 一般淡金 / 被擋灰
+  const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8');
+  ok(/\.cpill\.curg\{background:var\(--red\)/.test(css) && /\.cpill\.cask\{background:var\(--orange\)/.test(css) && /\.ck\.csay\{background:var\(--gold2\)\}/.test(css) && /\.ck\.cblk\{background:#77777f\}/.test(css), 'reason: cinb_colors');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
