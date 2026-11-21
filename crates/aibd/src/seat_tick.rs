@@ -25,6 +25,11 @@
 //!   is gone is skipped for that period (one `seat.tick_skipped`).
 //! - It types like the page does: only to a seat whose mode takes input (safe, or dgrs with
 //!   AIBD_SEAT_INPUT_DGRS=1), through the same line builder.
+//! - D5a 只記錄 (DECISION-council-driveweb r1 §3, 519d0 11-21): `seat_tick_set {record_only:
+//!   true}` types nothing; each round it would have typed is one `seat.tick_planned` (same
+//!   fields as `seat.tick_sent`), with the same between-turns wait and no catching up. The
+//!   flag is in the signed bytes and the owner's window starts 「只記錄、不送」; turned off in
+//!   the file the signature fails, so typing for real is a new fingerprint.
 //! - 急停: `seat_tick_pause {on}` stops every sentence at once and keeps the list (the pass ends
 //!   at its next wake); clearing an entry stops that seat's.
 //! - It is not a person typing: it does not reset the cabin's [`crate::seat_send::ROUND_LIMIT`]
@@ -135,10 +140,20 @@ pub struct Tick {
     pub resource: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sig: String,
+    /// D5a (DECISION-council-driveweb r1 §3, 519d0 11-21 19:43): only write down what would be
+    /// typed (`seat.tick_planned`), type nothing. It is in the signed bytes when true, so
+    /// turning it off in the file breaks the signature: sending for real needs a new
+    /// fingerprint.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub record_only: bool,
 }
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A file sentence's name: 1 to [`NAME_MAX`] of `a-z 0-9 - _`, then `.txt`.
@@ -320,6 +335,9 @@ struct SetParams<'a> {
     at: u64,
     until: u64,
     id: &'a str,
+    /// Only when true: an entry that sends keeps the bytes it was signed with before D5a.
+    #[serde(skip_serializing_if = "is_false")]
+    record_only: bool,
 }
 
 /// The parameters of an entry's approval, built from the entry itself.
@@ -332,6 +350,7 @@ pub fn set_params(t: &Tick) -> Vec<u8> {
         at: t.approved_at,
         until: until_of(t),
         id: &t.id,
+        record_only: t.record_only,
     })
     .unwrap_or_default()
 }
@@ -428,10 +447,14 @@ pub fn after(
     now: i64,
 ) -> Option<(u32, &'static str)> {
     match out {
-        Outcome::Sent => {
+        Outcome::Sent | Outcome::Planned => {
             *seen = Seen {
                 last_at: Some(now),
-                last: "sent".into(),
+                last: if *out == Outcome::Planned {
+                    "planned".into()
+                } else {
+                    "sent".into()
+                },
                 round: seen.round + 1,
                 base: Some(now),
                 ..Seen::default()
@@ -478,6 +501,7 @@ pub fn shown(
             let was_approved = !t.text_sha256.is_empty();
             json!({"seat_id": t.seat_id, "every_min": t.every_min, "text": t.text,
                 "file": t.file, "set_at": t.set_at, "approved": t.approved,
+                "record_only": t.record_only,
                 "signed": signed(t, c), "not_sent": held(t, &body, c),
                 "until": (t.approved_at > 0).then(|| until_of(t)),
                 "changed_since_approved":
@@ -519,7 +543,19 @@ fn code(seat_id: &str) -> String {
 /// differ from the approved copy (`diff`: added, removed).
 pub fn set_ask(t: &Tick, diff: Option<(usize, usize)>, by: String) -> crate::owner_ok::Ask {
     let sha12: String = t.text_sha256.chars().take(12).collect();
-    let resource = if t.file.is_empty() {
+    let resource = if t.record_only {
+        format!("{RECORD_ONLY_WORDS}{}", what_of(t, &sha12, diff))
+    } else {
+        what_of(t, &sha12, diff)
+    };
+    ask_of(t, resource, by)
+}
+
+/// What the owner's window says first for a record-only entry.
+pub const RECORD_ONLY_WORDS: &str = "只記錄、不送 · ";
+
+fn what_of(t: &Tick, sha12: &str, diff: Option<(usize, usize)>) -> String {
+    if t.file.is_empty() {
         format!(
             "{} 每 {} 分定時送字 · {} 字 · 內容 {sha12}",
             code(&t.seat_id),
@@ -534,8 +570,7 @@ pub fn set_ask(t: &Tick, diff: Option<(usize, usize)>, by: String) -> crate::own
             t.every_min,
             name_shown(&t.file),
         )
-    };
-    ask_of(t, resource, by)
+    }
 }
 
 /// The hash a resume binds for `t`: its text's, or its file's approved one.
@@ -655,6 +690,8 @@ pub fn due(list: &[Tick], last: &mut HashMap<String, i64>, now: i64) -> Vec<Tick
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Sent,
+    /// D5a: a record-only entry would have been typed now (nothing was).
+    Planned,
     Skipped(&'static str),
     Later,
 }
@@ -811,10 +848,23 @@ fn send(st: &AppState, t: &Tick, body: &Result<String, &'static str>, c: &Check)
     let Ok(line) = crate::seat_input::user_line(&typed) else {
         return Outcome::Skipped("text_refused");
     };
+    if let Some(o) = recorded(t, st.sessions.in_turn(&t.seat_id)) {
+        return o;
+    }
     match st.sessions.write_input_between_turns(&t.seat_id, &line) {
         Ok(_) => Outcome::Sent,
         Err(e) => outcome_of(e),
     }
+}
+
+/// D5a: what a record-only entry does instead of typing: a seat in a turn waits as a real
+/// send would (no stacking), else the round is written down as planned. `None`: type it.
+pub fn recorded(t: &Tick, in_turn: bool) -> Option<Outcome> {
+    t.record_only.then_some(if in_turn {
+        Outcome::Later
+    } else {
+        Outcome::Planned
+    })
 }
 
 /// Whether a seat in `mode` takes a timed sentence now: while a user page serves the whole
@@ -904,6 +954,17 @@ fn run(st: &AppState, last: &mut HashMap<String, i64>) {
                                "digest": body.as_deref().map(digest).unwrap_or_default(),
                                "approved": t.approved, "file": t.file,
                                "text_sha12": sha12, "round": round}),
+                    );
+                }
+                Outcome::Planned => {
+                    last.insert(t.seat_id.clone(), t_now);
+                    record(
+                        st,
+                        "seat.tick_planned",
+                        json!({"seat_id": t.seat_id, "every_min": t.every_min,
+                               "len": body.as_ref().map_or(0, String::len),
+                               "digest": body.as_deref().map(digest).unwrap_or_default(),
+                               "file": t.file, "text_sha12": sha12, "round": round}),
                     );
                 }
                 Outcome::Skipped(why) => {
@@ -1054,6 +1115,10 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
                 .unwrap_or(0);
             let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
             let file = body.get("file").and_then(Value::as_str).unwrap_or_default();
+            let record_only = body
+                .get("record_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let at = crate::sessions::now_rfc3339();
             // a file is read now: the owner is asked for these very words
             let (t, words) = if file.is_empty() {
@@ -1098,6 +1163,7 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             }
             // the approval's own id and time: new for a first ask, the asked ones for a ticket
             let mut t = t;
+            t.record_only = record_only;
             let asked = ticket.and_then(|k| asking().remove(k));
             let fresh = asked.is_none();
             (t.id, t.approved_at) = match asked {
@@ -1407,6 +1473,79 @@ mod tests {
         assert_eq!(parse(&b), vec![t], "reason: approval_lost_in_file");
         let old = parse(br#"{"ticks":[{"seat_id":"a","every_min":20,"text":"x"}]}"#);
         assert!(!old[0].approved && old[0].text_sha256.is_empty() && old[0].sig.is_empty());
+    }
+
+    /// D5a: a record-only entry says so in what the owner signs and in the window; turning it
+    /// off in the file breaks the signature, so typing for real needs a new fingerprint.
+    #[test]
+    fn a_record_only_entry_is_signed_as_one_and_cannot_be_turned_into_a_send() {
+        let k = key(6);
+        let v = |m: &[u8], s: &[u8]| k.verify(m, s);
+        let at = 1000;
+        let c = Check {
+            now: at + 1,
+            verify: &v,
+            revoked: &[],
+        };
+        let mut t = approved_tick("seat_a", 20, "繼續", String::new());
+        t.record_only = true;
+        let t = sign(t, &k, at);
+        assert!(signed(&t, &c), "reason: record_only_not_signed");
+        assert!(
+            String::from_utf8(set_params(&t))
+                .unwrap()
+                .ends_with(r#","record_only":true}"#),
+            "reason: record_only_not_in_signed_bytes"
+        );
+        assert!(
+            t.resource.starts_with(RECORD_ONLY_WORDS),
+            "reason: window_hides_record_only {}",
+            t.resource
+        );
+        let mut flipped = t.clone();
+        flipped.record_only = false;
+        assert!(
+            !signed(&flipped, &c),
+            "reason: flipped_to_send_still_signed"
+        );
+        assert!(held(&flipped, &now_of(&flipped), &c).is_some());
+        // the list keeps it, and the page sees it
+        let back = parse(&serde_json::to_vec(&json!({"ticks": [t]})).unwrap());
+        assert!(back[0].record_only, "reason: record_only_dropped_by_list");
+    }
+
+    /// D5a: a record-only round types nothing; a seat in its turn waits as a real send does.
+    #[test]
+    fn a_record_only_round_is_written_down_not_typed() {
+        let mut t = approved_tick("seat_a", 20, "繼續", String::new());
+        assert_eq!(recorded(&t, false), None, "reason: send_entry_held");
+        t.record_only = true;
+        assert_eq!(recorded(&t, false), Some(Outcome::Planned));
+        assert_eq!(
+            recorded(&t, true),
+            Some(Outcome::Later),
+            "reason: stacked_on_turn"
+        );
+        let mut s = Seen::default();
+        assert_eq!(after(&mut s, &Outcome::Planned, 20, 0, 1200), None);
+        assert_eq!(
+            (s.last.as_str(), s.round, s.base),
+            ("planned", 1, Some(1200))
+        );
+    }
+
+    /// D5a: the send asks [`recorded`] before it types (the typing needs a running seat, which
+    /// a unit test has not; the order is read from the source).
+    #[test]
+    fn a_send_asks_whether_it_only_records_before_it_types() {
+        let src = include_str!("seat_tick.rs").replace("\r\n", "\n");
+        let body = &src[src.find("\nfn send(st: &AppState").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let ask = body
+            .find("if let Some(o) = recorded(t, st.sessions.in_turn(&t.seat_id)) {")
+            .expect("reason: send_does_not_ask_recorded");
+        let typed = body.find("write_input_between_turns").unwrap();
+        assert!(ask < typed, "reason: typed_before_recorded");
     }
 
     #[test]
