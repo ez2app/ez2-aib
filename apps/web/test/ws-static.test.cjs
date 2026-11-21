@@ -181,6 +181,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   for (const w of ['reached_through_something_else', 'config_has_match_or_include', 'no_identity_file', 'identity_file_not_absolute', 'value_with_a_token', 'port', 'aibd_own_key']) ok(new RegExp('\\b' + w + ': ').test(ws), 'reason: why_without_words ' + w);
   for (const c of ['no_receipt_gate', 'not_a_mac', 'owner_login_failed', 'write_failed', 'remove_failed', 'page_only']) ok(new RegExp('\\b' + c + ': ').test(ws), 'reason: error_without_words ' + c);
   ok(/r\.reason === 'gate_did_not_answer'/.test(ws), 'reason: gate_silence_not_shown');
+  ok(/const half = 'half' in m \? m\.half === true :/.test(ws), 'reason: half_field_not_read');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');

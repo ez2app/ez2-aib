@@ -852,7 +852,8 @@
     if (!T.list.length) return h + '<div class="thr hv">這台的 ssh 設定裡沒有別台機器</div>';
     for (const m of T.list) {
       const nm = String(m.name || ''), R = T.row[nm] || {};
-      const half = R.half || (m.pinned === false && R.gateless);
+      // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
+      const half = 'half' in m ? m.half === true : R.half || (m.pinned === false && R.gateless);
       const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
       const st = R.busy ? (R.wait || '處理中…') : m.pinned ? '✅ 可跑收據' : half ? '⚠️ 寫了但收據閘沒回' : m.usable ? '還沒加' : '❌ ' + (TH_WHY[m.why] || '不支援');
       const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${m.pinned || half ? '收回這台' : '加'}</button>`;
