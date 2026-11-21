@@ -812,6 +812,15 @@ pub fn queued_row(
     })
 }
 
+/// Add `extra`'s fields to the answer `to`.
+fn merge(to: &mut Value, extra: &Value) {
+    if let (Some(t), Some(e)) = (to.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            t.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1053,6 +1062,14 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
         );
     };
     let idem = body.get("idempotency_key").and_then(Value::as_str);
+    // 待審 1.5 期 (urgent.rs): a seat may ask urgent; aibd decides from the seat's rank
+    let Ok(wants_urgent) = crate::urgent::asked(body.get("level")) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "level is normal or urgent",
+        );
+    };
     let store = st.store.clone();
     let metas = match tokio::task::spawn_blocking(move || store.seat_metas()).await {
         Ok(Ok(m)) => m,
@@ -1199,14 +1216,34 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
         }
         return refuse(StatusCode::TOO_MANY_REQUESTS, code, "not sent");
     }
+    // 待審 1.5 期: urgent only when the seat's rank reaches the urgent act's (else plain, Q2)
+    let level = if wants_urgent {
+        let (db, f) = (st.messages.clone(), from.clone());
+        tokio::task::spawn_blocking(move || crate::urgent::judge(&db, &f, unix_now()))
+            .await
+            .unwrap_or(Err(crate::urgent::RANK_TOO_LOW))
+            .map_err(Some)
+    } else {
+        Err(None)
+    };
+    let level_answer = match &level {
+        Ok(_) => json!({"level": crate::urgent::URGENT}),
+        Err(Some(why)) => json!({"level": "normal", "level_downgraded": why}),
+        Err(None) => json!({"level": "normal"}),
+    };
     // B1dm-S5: the row first (queued), then the line; nothing is typed that is not kept
-    let Some(row) = queued_row(&from, to, fm.mode.as_deref(), text, &sha) else {
+    let Some(mut row) = queued_row(&from, to, fm.mode.as_deref(), text, &sha) else {
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "no message id",
         );
     };
+    if let Ok(by) = &level {
+        row.item
+            .insert("level".into(), json!(crate::urgent::URGENT));
+        row.item.insert("level_by".into(), json!(by));
+    }
     let message_id = row.message_id.clone();
     let hand = InHand::take(&message_id);
     let db = st.messages.clone();
@@ -1262,8 +1299,9 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             if passed {
                 tokio::spawn(redeliver(st.clone(), to.to_owned()));
             }
-            let answer = json!({"message_id": message_id, "to": to, "state": "queued",
+            let mut answer = json!({"message_id": message_id, "to": to, "state": "queued",
                 "waits_for": why, "position": position, "journaled": journaled});
+            merge(&mut answer, &level_answer);
             if let Some(k) = idem {
                 pace().remember(&from, k, &sha, answer.clone(), now);
                 claimed.kept = true;
@@ -1312,13 +1350,14 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             let _ = tokio::task::spawn_blocking(move || db.mark_journaled(&id, rev)).await;
         }
     }
-    let answer = json!({
+    let mut answer = json!({
         "message_id": message_id,
         "to": to,
         "session_id": session_id,
         "state": state,
         "journaled": journaled,
     });
+    merge(&mut answer, &level_answer);
     if let Some(k) = idem {
         pace().remember(&from, k, &sha, answer.clone(), now);
         claimed.kept = true;

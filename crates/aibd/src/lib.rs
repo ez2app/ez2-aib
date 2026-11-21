@@ -105,6 +105,7 @@ pub mod tree_read;
 pub mod trusted_hosts;
 pub mod trusted_seats;
 pub mod turns;
+pub mod urgent;
 pub mod usage;
 pub mod wake;
 pub mod work_audit;
