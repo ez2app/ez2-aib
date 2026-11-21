@@ -50,3 +50,6 @@ dm '        let ok = st == StatusCode::OK;' '        let ok = st == StatusCode::
 # IB5 one rev for every letter
 dm '    for (id, rev) in items {' '    for (id, rev) in items.iter().map(|(i, _)| (i, &items[0].1)) { // knife' \
    several_letters_close_at_once_each_on_its_own
+# G3j (DECISION-council-webinbox §5) a letter in the web inbox is closed in the ledger too
+dm '    if in_web(id) {' '    if in_web(id) && id.is_empty() { // knife' \
+   a_letter_in_the_web_inbox_is_closed_there

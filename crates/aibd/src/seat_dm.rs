@@ -115,6 +115,7 @@ pub fn waiting(
     code: &str,
     now: i64,
     urgent: &dyn Fn(&str, &str) -> bool,
+    in_web: &dyn Fn(&str) -> bool,
 ) -> Value {
     let Ok(dir) = store.seat_dir(code) else {
         return json!({"counts": {"urgent": 0, "normal": 0, "notice": 0, "oldest_min": 0}, "letters": [], "more": 0});
@@ -148,6 +149,7 @@ pub fn waiting(
                 "sender": str_of(&item, "sender_seat"),
                 "sender_label": str_of(&item, "sender_label"),
                 "first_line": first_line(str_of(&item, "msg")),
+                "close_with": if in_web(id) { "message_done" } else { "dm_done" },
             });
             Some((g, ts, row))
         })
@@ -180,6 +182,17 @@ pub fn aibd_urgent(
     false
 }
 
+/// Whether the 1.x letter `id` was handed to the web inbox (dm_import's row, key `dm:<id>`).
+pub fn in_web_inbox(db: &aib_store::MessageDb, id: &str) -> bool {
+    db.by_idem(
+        crate::import::OWNER,
+        &format!("{}{id}", crate::dm_import::KEY),
+    )
+    .ok()
+    .flatten()
+    .is_some()
+}
+
 /// Close several letters with one evidence (PREREAD-seat-inbox-summary r3, 5d33a 題 1): each at
 /// its own rev, each its own audit line; one failing leaves the others. 200 with each result
 /// unless all fail (then the first failure's status).
@@ -193,6 +206,7 @@ pub fn done_many(
     evidence: Option<&str>,
     why: Option<&str>,
     now: i64,
+    in_web: &dyn Fn(&str) -> bool,
 ) -> (StatusCode, Value) {
     if items.is_empty() || items.len() > DONE_MAX {
         return (
@@ -204,7 +218,7 @@ pub fn done_many(
     let mut out = Vec::new();
     for (id, rev) in items {
         let (st, v) = done(
-            store, relay_dirs, pending, code, id, *rev, evidence, why, now,
+            store, relay_dirs, pending, code, id, *rev, evidence, why, now, in_web,
         );
         let ok = st == StatusCode::OK;
         if !ok && first_fail.is_none() {
@@ -306,10 +320,19 @@ pub fn done(
     evidence: Option<&str>,
     why: Option<&str>,
     now: i64,
+    in_web: &dyn Fn(&str) -> bool,
 ) -> (StatusCode, Value) {
     let bad = |c: &str, m: &str| (StatusCode::BAD_REQUEST, json!({"code": c, "message": m}));
     if !id_ok(id) {
         return bad("dm_id", "id is q_ and 16 lowercase hex digits");
+    }
+    // DECISION-council-webinbox §5 (7ebca 12:22): a moved code's letter handed to the web
+    // inbox is closed there (aibd's row is the original; the ledger copy follows one way)
+    if in_web(id) {
+        return (
+            StatusCode::CONFLICT,
+            json!({"code": "close_in_web_inbox", "message": "這封已轉進網頁收件匣,請用 message_done 在那邊結"}),
+        );
     }
     let (Ok(evidence), Ok(why)) = (note(evidence), note(why)) else {
         return bad(
@@ -476,9 +499,13 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         match kind.as_str() {
             WAITING => (
                 StatusCode::OK,
-                waiting(&store, &code, now, &|mid, letter| {
-                    aibd_urgent(&db, mid, &code, letter)
-                }),
+                waiting(
+                    &store,
+                    &code,
+                    now,
+                    &|mid, letter| aibd_urgent(&db, mid, &code, letter),
+                    &|id| in_web_inbox(&db, id),
+                ),
             ),
             SHOW => match show(&store, &code, &id, &relay_dirs) {
                 Ok(v) => (StatusCode::OK, v),
@@ -494,6 +521,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                     evidence.as_deref(),
                     why.as_deref(),
                     now,
+                    &|id| in_web_inbox(&db, id),
                 ),
                 (None, None) => (
                     StatusCode::BAD_REQUEST,
@@ -509,6 +537,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                     evidence.as_deref(),
                     why.as_deref(),
                     now,
+                    &|id| in_web_inbox(&db, id),
                 ),
             },
         }
@@ -583,7 +612,7 @@ mod tests {
             20,
         );
         let urgent = |mid: &str, _letter: &str| mid == "q_aaaaaaaaaaaaaaaa";
-        let v = waiting(&store, CODE, 600, &urgent);
+        let v = waiting(&store, CODE, 600, &urgent, &|_| false);
         let ids: Vec<&str> = v["letters"]
             .as_array()
             .unwrap()
@@ -638,7 +667,7 @@ mod tests {
             12,
         );
         let urgent = |mid: &str, _letter: &str| mid == "q_aaaaaaaaaaaaaaaa";
-        let v = waiting(&store, CODE, 100, &urgent);
+        let v = waiting(&store, CODE, 100, &urgent, &|_| false);
         for r in v["letters"].as_array().unwrap() {
             assert_eq!(
                 r["grade"],
@@ -696,6 +725,7 @@ mod tests {
             None,
             Some("知會"),
             30,
+            &|_| false,
         );
         assert_eq!(st, StatusCode::OK, "{v:?}");
         let ok: Vec<bool> = v["results"]
@@ -722,6 +752,7 @@ mod tests {
             None,
             Some("x"),
             30,
+            &|_| false,
         );
         assert_eq!(st, StatusCode::BAD_REQUEST, "reason: no_batch_cap");
         let (st, _) = done_many(
@@ -733,6 +764,7 @@ mod tests {
             None,
             Some("x"),
             30,
+            &|_| false,
         );
         assert_eq!(
             st,
@@ -753,12 +785,36 @@ mod tests {
         put(&store, id, "delivered", "請看", 10);
         let rev = aib_dmq::rev::item_rev(&Value::Object(read(&store, CODE, id).unwrap()));
         let p = Some(pending.as_path());
-        let r = done(&store, &[], p, CODE, "q_1", rev, None, Some("x"), 20);
+        let r = done(
+            &store,
+            &[],
+            p,
+            CODE,
+            "q_1",
+            rev,
+            None,
+            Some("x"),
+            20,
+            &|_| false,
+        );
         assert_eq!(r.0, StatusCode::BAD_REQUEST, "reason: id_unchecked");
-        let r = done(&store, &[], p, CODE, id, rev + 7, None, Some("x"), 20);
+        let r = done(
+            &store,
+            &[],
+            p,
+            CODE,
+            id,
+            rev + 7,
+            None,
+            Some("x"),
+            20,
+            &|_| false,
+        );
         assert_eq!(r.0, StatusCode::CONFLICT, "reason: rev_unchecked");
         let sha = "0123456789abcdef0123456789abcdef01234567";
-        let r = done(&store, &[], p, CODE, id, rev, Some(sha), None, 20);
+        let r = done(&store, &[], p, CODE, id, rev, Some(sha), None, 20, &|_| {
+            false
+        });
         assert_eq!(
             r.0,
             StatusCode::BAD_REQUEST,
@@ -771,7 +827,9 @@ mod tests {
             "RELAY-dm-x.txt",
             "REVIEW-none-a9136.md",
         ] {
-            let r = done(&store, &[], p, CODE, id, rev, Some(bad), None, 20);
+            let r = done(&store, &[], p, CODE, id, rev, Some(bad), None, 20, &|_| {
+                false
+            });
             assert_eq!(
                 r.0,
                 StatusCode::BAD_REQUEST,
@@ -789,6 +847,7 @@ mod tests {
             Some("REVIEW-x-a9136-1121.md"),
             None,
             20,
+            &|_| false,
         );
         assert_eq!(r.0, StatusCode::OK, "{:?}", r.1);
         assert_eq!(status(&store, id), "done");
@@ -805,6 +864,7 @@ mod tests {
             Some(sha),
             Some("commit 寫在 why"),
             21,
+            &|_| false,
         );
         assert_eq!(
             r.0,
@@ -821,6 +881,7 @@ mod tests {
             None,
             Some("commit 0123abc 寫在 why"),
             21,
+            &|_| false,
         );
         assert_eq!(r.0, StatusCode::OK, "{:?}", r.1);
         assert_eq!(status(&store, id2), "done");
@@ -902,6 +963,23 @@ mod tests {
         let a = aib_dmq_store::recv::close(&store, &ctx, CODE, id, "seat:a9136", Some(&gone), None)
             .unwrap();
         assert_ne!(a.out["ok"], json!(true), "reason: git_ran {:?}", a.out);
+        assert_eq!(status(&store, id), "read");
+    }
+
+    /// G3j (DECISION-council-webinbox §5, 7ebca 12:22): a letter handed to the web inbox is
+    /// closed there, never in the ledger; the list says which tool closes it.
+    #[test]
+    fn a_letter_in_the_web_inbox_is_closed_there() {
+        let (_d, store) = ledger();
+        let id = "q_00000000000000a7";
+        put(&store, id, "read", "知會", 10);
+        let rev = aib_dmq::rev::item_rev(&Value::Object(read(&store, CODE, id).unwrap()));
+        let web = |i: &str| i == "q_00000000000000a7";
+        let v = waiting(&store, CODE, 60, &|_, _| false, &web);
+        assert_eq!(v["letters"][0]["close_with"], json!("message_done"));
+        let (st, v) = done(&store, &[], None, CODE, id, rev, None, Some("x"), 20, &web);
+        assert_eq!(st, StatusCode::CONFLICT, "reason: closed_in_ledger {v:?}");
+        assert_eq!(v["code"], json!("close_in_web_inbox"));
         assert_eq!(status(&store, id), "read");
     }
 
