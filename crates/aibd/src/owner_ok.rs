@@ -111,13 +111,14 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 7] = [
+pub const ACTIONS: [(&str, &str); 8] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
     (crate::repo_push::OP, "推分支"),
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
+    (crate::seat_move::OP, "把舊席搬進網頁席"),
     (crate::receipt_runner::OP, "到測試機跑一份收據"),
 ];
 
@@ -211,6 +212,11 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         crate::seat_trust::OP => {
             format!("讓席 {} 受信任 {} 小時", seat_code(&v)?, n("hours")?)
         }
+        crate::seat_move::OP => format!(
+            "把舊席 {} 搬進網頁席 {},寄它的信改送網頁席",
+            piece(&v, "old_code").filter(|c| aib_store::seat_moves::code_ok(c))?,
+            seat_code(&v)?
+        ),
         _ => return None,
     })
 }
@@ -258,6 +264,7 @@ pub const WIRED: &[&str] = &[
     crate::repos::OP_REGISTER,
     crate::repos::OP_OPEN,
     crate::seat_trust::OP, // seat.trust
+    crate::seat_move::OP,  // seat.move (G5 信橋, 5d33a PREREAD-g5-bridge M1)
     crate::repo_push::OP,
     crate::pr_open::OP,
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
@@ -891,6 +898,11 @@ mod tests {
                 r#"{"seat_id":"seat_33ff9a0b1c2d3e4f","hours":12}"#,
                 "讓席 33ff9 受信任 12 小時",
             ),
+            (
+                crate::seat_move::OP,
+                r#"{"old_code":"7ebca","seat_id":"seat_33ff9a0b1c2d3e4f"}"#,
+                "把舊席 7ebca 搬進網頁席 33ff9,寄它的信改送網頁席",
+            ),
         ] {
             assert_eq!(
                 plain_words(op, params.as_bytes()).as_deref(),
@@ -919,6 +931,10 @@ mod tests {
             (
                 crate::seat_trust::OP,
                 r#"{"seat_id":"33ff9a0b","hours":12}"#,
+            ),
+            (
+                crate::seat_move::OP,
+                r#"{"old_code":"7EBCA","seat_id":"seat_33ff9a0b1c2d3e4f"}"#,
             ),
             ("no.such", r#"{"name":"demo"}"#),
         ] {
