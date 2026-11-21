@@ -1,7 +1,7 @@
 //! G4 (DESIGN-trusted-g1g4 §1, 5d33a BASELINE-trusted-seat §1 G4): a trusted seat reads a pull
 //! request, its checks, or a workflow run of the one repo, through aibd.
 //!
-//! `POST /api/v1/act` `{"type":"gh_view","what":"pr"|"checks"|"run","number":…}` with the seat's
+//! `POST /api/v1/act` `{"type":"gh_view","what":"pr"|"checks"|"run","number":…}` (or `"what":"list"`, the open PRs, no number) with the seat's
 //! own token. The seat gets no new permission: no network, no gh login, no token. aibd runs
 //! `gh` itself, with an argv it builds whole ([`argv`]: three read-only shapes, nothing passed
 //! through), for the repo of [`aib_drive::source::repo`] (the body cannot name one), in its own
@@ -92,8 +92,17 @@ pub fn parse(body: &Value) -> Result<(&'static str, String), &'static str> {
         Some("pr") => "pr",
         Some("checks") => "checks",
         Some("run") => "run",
+        Some(LIST) => LIST,
         _ => return Err("gh_view_what"),
     };
+    // the open PRs: no number (1a93b 13:55, the page's 「看 PR」 list)
+    if what == LIST {
+        return if body.get("number").is_some() {
+            Err("gh_view_fields")
+        } else {
+            Ok((LIST, String::new()))
+        };
+    }
     let number = match body.get("number") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) if n.is_u64() => n.to_string(),
@@ -123,8 +132,37 @@ pub fn repo_ok(repo: &str) -> bool {
     matches!(repo.split_once('/'), Some((o, n)) if part(o) && part(n))
 }
 
-/// gh's whole argv for one ask. Only these three shapes exist.
+/// `what` for the open PRs, newest [`LIST_MAX`].
+pub const LIST: &str = "list";
+pub const LIST_MAX: &str = "30";
+/// The list's fields; each PR's checks are counted by outcome (`--jq`, a fixed expression), so
+/// thirty PRs' checks stay inside [`OUT_MAX`].
+pub const LIST_FIELDS: &str = "number,title,isDraft,mergeable,reviewDecision,statusCheckRollup";
+pub const LIST_JQ: &str = "[.[] | {number, title, isDraft, mergeable, reviewDecision, checks: ([.statusCheckRollup[]? | ((.conclusion // .state // \"PENDING\") | if . == \"\" then \"PENDING\" else . end)] | group_by(.) | map({(.[0]): length}) | add // {})}]";
+
+/// gh's whole argv for one ask. Only these four shapes exist.
 pub fn argv(what: &str, number: &str, repo: &str) -> Option<Vec<String>> {
+    if what == LIST {
+        return number.is_empty().then(|| {
+            [
+                "pr",
+                "list",
+                "-R",
+                repo,
+                "--state",
+                "open",
+                "--limit",
+                LIST_MAX,
+                "--json",
+                LIST_FIELDS,
+                "--jq",
+                LIST_JQ,
+            ]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+        });
+    }
     let (sub, verb, fields) = match what {
         "pr" => (
             "pr",
@@ -381,8 +419,10 @@ fn gate_words(code: &str) -> &'static str {
 
 fn parse_words(code: &str) -> &'static str {
     match code {
-        "gh_view_fields" => "body must be {type, what, number}",
-        "gh_view_what" => "what must be pr, checks or run",
+        "gh_view_fields" => {
+            "body must be {type, what, number} ({type, what: list} for the open PRs)"
+        }
+        "gh_view_what" => "what must be pr, checks, run or list",
         _ => "number is 1 to 9 digits",
     }
 }
@@ -676,6 +716,33 @@ mod tests {
                 "reason: field_passed_{extra}"
             );
         }
+    }
+
+    /// GL1 / GL2 (1a93b 13:55): the open PRs are one fixed read-only shape; the list takes no
+    /// number, and no other shape takes an empty one.
+    #[test]
+    fn the_open_prs_are_one_fixed_shape() {
+        let b = json!({"type": KIND, "what": "list"});
+        assert_eq!(parse(&b), Ok((LIST, String::new())));
+        let with_number = json!({"type": KIND, "what": "list", "number": "1"});
+        assert_eq!(
+            parse(&with_number),
+            Err("gh_view_fields"),
+            "reason: list_took_number"
+        );
+        let a = argv(LIST, "", "o/n").unwrap();
+        assert_eq!(
+            a[..9],
+            ["pr", "list", "-R", "o/n", "--state", "open", "--limit", "30", "--json"]
+        );
+        assert_eq!(a[9], LIST_FIELDS);
+        assert_eq!(a[10..], ["--jq".to_owned(), LIST_JQ.to_owned()]);
+        assert!(argv(LIST, "7", "o/n").is_none(), "reason: list_with_number");
+        assert!(
+            !a.iter()
+                .any(|x| matches!(x.as_str(), "--web" | "merge" | "close" | "api")),
+            "reason: not_read_only"
+        );
     }
 
     #[test]
