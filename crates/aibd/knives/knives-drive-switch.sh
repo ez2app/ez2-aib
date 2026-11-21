@@ -33,7 +33,7 @@ dv '    out.reverse();' '    out.truncate(usize::MAX);' \
 dv '            .map(|a| a.iter().take(ROWS_MAX).map(|r| pick(r, keys)).collect())' \
    '            .map(|a| a.iter().take(usize::MAX).map(|r| if keys.is_empty() { pick(r, keys) } else { r.clone() }).collect())' \
    the_view_shows_next_the_work_orders_sent_and_what_holds_the_drive
-# DS-W1 (5d33a REVIEW-integ5 L1) the owner's window shows the operation code for turning on
+# DSW1 (5d33a REVIEW-integ5 L1) the owner's window shows the operation code for turning on
 python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
   '        crate::drive_switch::OP if v["to"] == "on" => {' \
   '        crate::drive_switch::OP if v["to"] == "never" => {' \
