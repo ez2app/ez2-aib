@@ -1383,7 +1383,8 @@
     if (!G.off && hasAct('gh_view') === false) G.off = GH_PAGE_GAP;
     if (G.off) return `<div class="ghb" data-ghbox><span class="trs">${esc(G.off)}</span></div>`;
     const pr = G.pr, ck = Array.isArray(G.checks) ? G.checks : null, run = G.run;
-    let h = `<div class="ghb" data-ghbox><span>看 PR</span><input class="apq" data-ghnum inputmode="numeric" maxlength="7" placeholder="號碼" value="${esc(G.num || '')}"><button type="button" class="k" data-ghgo="pr" ${G.busy ? 'disabled' : ''}>看</button>${pr ? `<button type="button" class="k" data-ghgo="checks" ${G.busy ? 'disabled' : ''}>檢查格</button>` : ''}`;
+    // Andy 13:2x「看PR號碼沒設計感」(519d0 13:40):收成一顆跟篩選鈕同款的膠囊;點開 = 深底金框輸入 + 在途 PR 下拉(狀態色點),打字即篩、Enter 開
+    let h = `<div class="ghb" data-ghbox>${G.open ? `<div class="ghpk"><span class="ghh">#</span><input class="ghin" data-ghnum inputmode="numeric" maxlength="7" placeholder="輸入 PR 號碼" aria-label="PR 號碼" autocomplete="off" value="${esc(G.num || '')}"><button type="button" class="k" data-ghgo="pr" ${G.busy ? 'disabled' : ''}>看</button><button type="button" class="ghx" data-ghpill="0" aria-label="收起">×</button>${ghList(G)}</div>` : `<button type="button" class="ghpill" data-ghpill="1">${G.pr ? `<i class="ghd ${prDot(G.pr, G.checks)}"></i>#${G.pr.number | 0} · 換一張 →` : '# 輸入 PR 號碼 →'}</button>`}${pr ? `<button type="button" class="k" data-ghgo="checks" ${G.busy ? 'disabled' : ''}>檢查格</button>` : ''}`;
     if (G.msg) h += `<span class="trs ${G.bad ? 'bad' : ''}">${esc(G.msg)}</span>`;
     if (pr) h += `<div class="ghp" data-ghpr>#${pr.number | 0} ${esc(String(pr.title || ''))} · ${esc(String(pr.state || ''))}${pr.isDraft ? ' · 草稿' : ''} · ${esc(String(pr.baseRefName || ''))} ← ${esc(String(pr.headRefName || ''))} · 頭 ${esc(String(pr.headRefOid || '').slice(0, 12))}${pr.mergeable ? ' · ' + esc(String(pr.mergeable)) : ''}${pr.reviewDecision ? ' · ' + esc(String(pr.reviewDecision)) : ''}${ghSafeUrl(pr.url) ? ` · <a class="lk" data-ghlink href="${esc(ghSafeUrl(pr.url))}" target="_blank" rel="noopener noreferrer">開在 GitHub</a>` : ''}</div>`;
     if (ck) {
@@ -1394,6 +1395,32 @@
     if (run) h += `<div class="ghr" data-ghrun-out>run ${esc(String(G.runId || ''))} · ${esc(String(run.status || ''))}${run.conclusion ? ' · ' + esc(String(run.conclusion)) : ''} · 頭 ${esc(String(run.headSha || '').slice(0, 12))}${Array.isArray(run.jobs) ? ' · ' + run.jobs.filter((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped').map((j) => esc(String(j.name || '')) + ' ' + esc(String(j.conclusion))).slice(0, 8).join('、') : ''}</div>`;
     return h + '</div>';
   }
+  // 狀態色點:綠可合 / 橘等審 / 紅檢查紅 / 灰草稿
+  function prDot(pr, ck) {
+    if (!pr) return '';
+    if (pr.isDraft) return 'pg';
+    const roll = Array.isArray(ck) ? ck.map((c) => c.bucket) : Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup.map((c) => (/FAIL|ERROR|CANCEL/i.test(String(c.conclusion || c.state || '')) ? 'fail' : '')) : [];
+    if (roll.includes('fail')) return 'pr';
+    if (String(pr.state || '').toUpperCase() === 'MERGED') return 'pg';
+    return pr.reviewDecision === 'APPROVED' && String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'pok' : 'po';
+  }
+  // 下拉的在途 PR:aibd 有 gh_view {what:"list"} 就用它;沒有就用這頁看過的 + 事件卡裡提到的 #號碼(沒狀態 ⇒ 灰點)
+  function ghKnown(G) {
+    const M = new Map();
+    for (const x of slots()) for (const m of String(x.text || '').matchAll(/#(\d{3,5})\b/g)) if (!M.has(m[1])) M.set(m[1], { n: m[1], t: String(x.text || '').replace(/(?:PR\s*)?#\d+\s*/, ''), dot: '' });
+    for (const k in (G.seen || {})) M.set(k, G.seen[k]);
+    for (const p of G.list || []) M.set(String(p.number), { n: String(p.number), t: String(p.title || ''), dot: prDot(p) });
+    return [...M.values()].sort((a, b) => Number(b.n) - Number(a.n)).slice(0, 30);
+  }
+  function ghList(G) {
+    const L = ghKnown(G), q = String(G.num || '').trim();
+    const rows = L.map((x) => `<button type="button" class="ghrow" data-ghpick="${esc(x.n)}"${q && x.n.indexOf(q) !== 0 ? ' hidden' : ''}><i class="ghd ${x.dot || ''}"></i><b>#${esc(x.n)}</b><span>${esc(Array.from(x.t).slice(0, 20).join(''))}</span></button>`).join('');
+    return `<div class="ghdd" data-ghdd>${rows || '<div class="ghe">還沒有在途 PR 清單(aibd 沒給 list;看過的、事件提到的會列在這)</div>'}<div class="ghlg"><i class="ghd pok"></i>可合 <i class="ghd po"></i>等審 <i class="ghd pr"></i>檢查紅 <i class="ghd pg"></i>草稿</div></div>`;
+  }
+  async function ghListLoad() {
+    const G = (S.gh = S.gh || {}); if (G.listTried) return; G.listTried = true;
+    try { const r = await act('gh_view', { what: 'list' }); if (r && Array.isArray(r.json)) { G.list = r.json; render(); } } catch (e) { /* 舊 aibd 只認 pr / checks / run:用這頁知道的 */ }
+  }
   async function ghAsk(what, number) {
     const G = (S.gh = S.gh || {});
     if (!/^\d{1,7}$/.test(String(number || ''))) { G.msg = '先填號碼'; G.bad = true; return render(); }
@@ -1401,8 +1428,8 @@
     try {
       const r = await act('gh_view', { what, number: Number(number) });
       const j = r && r.json;
-      if (what === 'pr') { G.pr = j && typeof j === 'object' ? j : null; G.checks = null; G.run = null; G.msg = G.pr ? '' : 'gh 回的不是完整 JSON' + (r && r.cut ? '(太長被切了)' : ''); }
-      else if (what === 'checks') G.checks = Array.isArray(j) ? j : [];
+      if (what === 'pr') { G.pr = j && typeof j === 'object' ? j : null; G.checks = null; G.run = null; if (G.pr) { G.seen = G.seen || {}; G.seen[String(G.pr.number)] = { n: String(G.pr.number), t: String(G.pr.title || ''), dot: prDot(G.pr) }; G.open = false; } G.msg = G.pr ? '' : 'gh 回的不是完整 JSON' + (r && r.cut ? '(太長被切了)' : ''); }
+      else if (what === 'checks') { G.checks = Array.isArray(j) ? j : []; if (G.pr && G.seen) G.seen[String(G.pr.number)].dot = prDot(G.pr, G.checks); }
       else { G.run = j && typeof j === 'object' ? j : null; G.runId = number; }
       if (r && r.done === false) { G.msg = 'gh 結束碼 ' + r.rc; G.bad = true; }
     } catch (e) {
@@ -3974,6 +4001,7 @@
     const keepScroll = (() => { const t = document.getElementById('tl'); return t ? { top: t.scrollTop, atEnd: t.scrollTop + t.clientHeight >= t.scrollHeight - 30 } : null; })();
     const inp = document.getElementById('inp');
     const focus = inp && document.activeElement === inp ? { a: inp.selectionStart, b: inp.selectionEnd } : null;
+    const ghf = document.activeElement && document.activeElement.matches && document.activeElement.matches('[data-ghnum]') ? { a: document.activeElement.selectionStart, b: document.activeElement.selectionEnd } : null;
     const sqe = document.getElementById('sq'), sqF = sqe && document.activeElement === sqe ? { a: sqe.selectionStart, b: sqe.selectionEnd } : null;
     const ae = document.activeElement, ansF = ae && ae.dataset && ae.dataset.ansfor ? { card: ae.dataset.ansfor, a: ae.selectionStart } : null;
     const seat = S.mode !== 'shared' && S.mode !== 'cat' ? seatById(S.mode) : null;
@@ -4000,6 +4028,7 @@
     const t = document.getElementById('tl');
     if (t) t.scrollTop = !keepScroll || keepScroll.atEnd ? t.scrollHeight : keepScroll.top;
     heatMount(); // 即時熱度:常駐節點放回位子
+    if (ghf) { const gi = document.querySelector('[data-ghnum]'); if (gi) { gi.focus(); try { gi.setSelectionRange(ghf.a, ghf.b); } catch (e) { /* 數字框不給設 */ } } }
     if (focus) { const i = document.getElementById('inp'); if (i) { i.focus(); i.setSelectionRange(focus.a, focus.b); } }
     if (sqF) { const i = document.getElementById('sq'); if (i) { i.focus(); try { i.setSelectionRange(sqF.a, sqF.b); } catch (e) { /* type=search 某些瀏覽器不給 */ } } }
     if (ansF) { const i = [...el.querySelectorAll('[data-ansfor]')].find((x) => x.dataset.ansfor === ansF.card); if (i) { i.focus(); i.setSelectionRange(ansF.a, ansF.a); } }
@@ -4219,6 +4248,8 @@
     const hcl = x.closest('[data-hoclear]'); if (hcl && !S.sending) { const st = hoState(hcl.dataset.hoclear); S.hoConfirm = st && st.wrote ? { seat: hcl.dataset.hoclear, at: st.wrote } : null; S.hoMsg = null; return render(); }
     const hcy = x.closest('[data-hoclearyes]'); if (hcy && !S.sending) return hoClear(hcy.dataset.hoclearyes);
     const hcn = x.closest('[data-hoclearno]'); if (hcn) { S.hoConfirm = null; return render(); }
+    const gpl = x.closest('[data-ghpill]'); if (gpl) { const G = (S.gh = S.gh || {}); G.open = gpl.dataset.ghpill === '1'; render(); if (G.open) { ghListLoad(); const i = document.querySelector('[data-ghnum]'); if (i) i.focus(); } return; }
+    const gpk = x.closest('[data-ghpick]'); if (gpk) { const G = (S.gh = S.gh || {}); G.num = gpk.dataset.ghpick; return ghAsk('pr', G.num); }
     const gg = x.closest('[data-ghgo]'); if (gg) { const G = (S.gh = S.gh || {}), ni = document.querySelector('[data-ghnum]'); if (ni) G.num = ni.value.trim(); return ghAsk(gg.dataset.ghgo, G.num); }
     const gr = x.closest('[data-ghrun]'); if (gr) return ghAsk('run', gr.dataset.ghrun);
     const pu = x.closest('[data-push]'); if (pu) { pu.disabled = true; return pushGo(pu.dataset.push); }
@@ -4477,6 +4508,7 @@
   }
   el.addEventListener('change', (e) => { const f = e.target.dataset && e.target.dataset.addf; if (f && S.add) { S.add[f] = e.target.value; if (f === 'role' || f === 'node') render(); } });
   el.addEventListener('input', (e) => {
+    if (e.target.dataset && 'ghnum' in e.target.dataset) { const G = (S.gh = S.gh || {}), q = e.target.value.trim(); G.num = q; for (const r of document.querySelectorAll('[data-ghpick]')) r.hidden = !!q && r.dataset.ghpick.indexOf(q) !== 0; return; } // 打字即篩(不重畫,焦點不跳)
     if (e.target.dataset && e.target.dataset.addho && S.add) { S.add.ho = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addmp && S.add) { S.add.mp = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.dmin && S.add && S.add.dm) { S.add.dm.v = e.target.value; return; }
@@ -4512,6 +4544,11 @@
     if (e.key === 'Escape' && S.add && !S.add.busy) { S.add = null; render(); return; }
     if (e.target.id === 'sq' && e.key === 'Escape') { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; render(); return; }
     if (e.target.dataset && e.target.dataset.ansfor && e.key === 'Enter' && !e.isComposing) { e.preventDefault(); const b = (e.target.closest('.ans') || el).querySelector('[data-answer]'); if (b) b.click(); return; }
+    if (e.target.matches && e.target.matches('[data-ghnum]') && !e.isComposing) {
+      const G = (S.gh = S.gh || {});
+      if (e.key === 'Enter') { e.preventDefault(); const v = e.target.value.trim(), first = document.querySelector('[data-ghpick]:not([hidden])'); G.num = /^\d+$/.test(v) && !(first && v !== first.dataset.ghpick && first.dataset.ghpick.indexOf(v) === 0 && v.length < 3) ? v : first ? first.dataset.ghpick : v; return ghAsk('pr', G.num); }
+      if (e.key === 'Escape') { G.open = false; return render(); }
+    }
     if (e.target.id === 'inp' && e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
       const go = () => { const b = e.target.closest('.send') && e.target.closest('.send').querySelector('[data-send]'); if (b && !b.disabled) b.click(); };
       if (e.metaKey || e.ctrlKey) { e.preventDefault(); E2.at = 0; go(); } // Cmd / Ctrl+Enter 永遠送出

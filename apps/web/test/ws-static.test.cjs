@@ -328,4 +328,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/COPYT\.set\(String\(key\), txt\)/.test(ws) && /navigator\.clipboard\.writeText\(txt\)/.test(ws) && /until: Date\.now\(\) \+ 1500/.test(ws) && /已選取,按 ⌘C/.test(ws) && /r\.selectNodeContents\(body\)/.test(ws), 'reason: copy_rules');
 }
 
+// §25 看 PR 膠囊(Andy 13:2x「看PR號碼沒設計感」,519d0 13:40)
+{
+  const css = read('apps/web/dist/ws.css');
+  ok(/class="ghpill" data-ghpill="1"/.test(ws) && /# 輸入 PR 號碼 →/.test(ws), 'reason: pr_pill_missing');
+  ok(/\.ghpk\{[^}]*border:1px solid var\(--gold\);background:#0c0c10/.test(css), 'reason: pr_input_not_dark_gold');
+  ok(/return 'pg'/.test(ws) && /return 'pr'/.test(ws) && /\? 'pok' : 'po'/.test(ws) && /\.ghd\.pok\{background:#3fb950\}/.test(css), 'reason: pr_status_dots');
+  // 打字即篩不重畫;重畫時保留焦點
+  ok(/r\.hidden = !!q && r\.dataset\.ghpick\.indexOf\(q\) !== 0; return;/.test(ws) && /if \(ghf\) \{ const gi = document\.querySelector\('\[data-ghnum\]'\)/.test(ws), 'reason: pr_filter_loses_focus');
+  // 標題前 20 字、走 esc
+  ok(/esc\(Array\.from\(x\.t\)\.slice\(0, 20\)\.join\(''\)\)/.test(ws), 'reason: pr_title_not_escaped_or_cut');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
