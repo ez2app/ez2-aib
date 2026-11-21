@@ -482,4 +482,15 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/\.cpill\.curg\{background:var\(--red\)/.test(css) && /\.cpill\.cask\{background:var\(--orange\)/.test(css) && /\.ck\.csay\{background:var\(--gold2\)\}/.test(css) && /\.ck\.cblk\{background:#77777f\}/.test(css), 'reason: cinb_colors');
 }
 
+// §30 收據刀拒絕與頁卡三欄(f1fae 20:3x,aibd 片 6a5f2e0e44)
+{
+  const why = (ws.split("const RCP_WHY = {")[1] || "").split("\n  };")[0];
+  ok(/knives_refused: '測試機那邊從這個頭讀到的刀/.test(why), "receipt_request knives_refused has words");
+  const rs = (ws.split("const RCP_REASON = {")[1] || "").split("\n")[0];
+  ok(/knives_refused: '/.test(rs) && /\^knives_refused:/.test(ws), "knives_refused as a red reason has words, sub-forms too");
+  const kc = (ws.split("const rcpKnifeCard = (x) =>")[1] || "").split("\n")[0];
+  ok(/x\.knives_n != null/.test(kc) && /x\.knife_reader/.test(kc) && /x\.base/.test(kc) && /\[0-9a-f\]\{7,40\}/.test(kc), "card shows knives_n / knife_reader / base only when given");
+  ok(/\$\{esc\(rcpKnifeCard\(x\)\)\}/.test(ws) && /排了收據' \+ h12 \+ \(p\.host[^\n]*\+ rcpKnifeCard\(p\)/.test(ws), "receipt row and requested event show the three fields, escaped");
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

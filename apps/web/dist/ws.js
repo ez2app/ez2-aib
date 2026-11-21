@@ -1140,7 +1140,7 @@
   function actText(x) {
     const p = x.p, h12 = p.head ? ' · 頭 ' + String(p.head).slice(0, 12) : '', why = Array.isArray(p.reasons) && p.reasons.length ? ':' + p.reasons.map((w) => rcpReason(String(w))).join('、') : '';
     switch (x.type) {
-      case 'seat.receipt_requested': return { c: '', h: '🧾 排了收據' + h12 + (p.host ? ' · ' + p.host : '') };
+      case 'seat.receipt_requested': return { c: '', h: '🧾 排了收據' + h12 + (p.host ? ' · ' + p.host : '') + rcpKnifeCard(p) };
       case 'seat.receipt_started': return { c: '', h: '🧾 收據開始跑' + h12 + (p.host ? ' · ' + p.host : '') };
       case 'seat.receipt_done': return p.green ? { c: 'ok', h: '🧾 收據綠' + h12 } : p.state === 'passed_in_sandbox' ? { c: '', h: '🧾 收據沙盒內通過(略過 21 支,不算綠)' + h12 } : p.state === 'lost' ? { c: 'bad', h: '🧾 收據沒跑完:測試機失聯' + h12 } : p.state === 'done' ? { c: '', h: '🧾 收據跑完(窄,不算綠)' + h12 } : { c: 'bad', h: '🧾 收據紅' + h12 + why };
       case 'seat.receipt_withdrawn': return { c: '', h: '🧾 收據撤了' + h12 };
@@ -3805,13 +3805,17 @@
     bad_head: '頭碼不對(要 40 碼)', bad_scope: '只能選窄或整套', bad_tests: '窄收據要 1 到 8 項「crate:測試檔」(例 aibd:seats_tree)', seat_id_invalid: '席號不對',
     receipt_not_allowed: '這台沒開網頁跑收據,或這一席不是受信任席', head_not_seat_head: '這個頭碼不是這一席現在的頭(它可能又提交了;重新整理再按)',
     receipt_built_in_page_only: '只有這台內建的頁面能跑收據', receipt_in_flight: '這一席已經有收據在跑,等它跑完或撤掉再排',
+    // f1fae 20:3x(aibd 片 6a5f2e0e44):測試機的收據閘從頭讀到的刀跟指紋卡上的不同 / 這頭沒刀 / 刀表做不出 ⇒ 一律 knives_refused
+    knives_refused: '測試機那邊從這個頭讀到的刀,跟你按指紋時卡上寫的不一樣(或這頭沒有刀、刀表做不出來);沒有跑。重新整理再排一次',
     no_host: '現在沒有可用的測試機,沒有排', already_done: '這份已經跑完,不能撤', no_such_run: '找不到這份收據', bad_run_id: '收據號不對',
   };
   // 7ebca 62153be32a(21:52):多 asking(正在問測試機,10 分沒下文變 lost)與 lost(測試機失聯);receipt_list {seat_id} 給這一席的列(在途全給、結束的最近 10 份)
   const RCP_STATE = { asking: '正在問測試機', waiting_owner: '等主人同意', running: '在跑', done: '跑完', red: '紅', withdrawn: '已撤', lost: '測試機失聯', passed_in_sandbox: '沙盒內通過(固定略過 21 支,其餘全過;不算綠)' };
   // 7ebca af6717037f(11-21 00:35):passed_in_sandbox 是自己的一種結果,不畫綠(green 仍是 false、reasons 空)
-  const RCP_REASON = { lost: '測試機失聯(問了 10 分鐘沒下文,或跑到一半斷了)', owner_refused: '主人沒同意', seal_missing: '收據沒有封條', 'rc_nonzero:restored': '刀跑完復原的那一步失敗' };
-  const rcpReason = (w) => RCP_REASON[w] || w;
+  const RCP_REASON = { lost: '測試機失聯(問了 10 分鐘沒下文,或跑到一半斷了)', owner_refused: '主人沒同意', seal_missing: '收據沒有封條', 'rc_nonzero:restored': '刀跑完復原的那一步失敗', knives_refused: '測試機讀到的刀跟卡上不同(或沒刀 / 刀表做不出),沒有跑' };
+  const rcpReason = (w) => RCP_REASON[w] || (/^knives_refused:/.test(w) ? RCP_REASON.knives_refused + '(' + w.slice(15) + ')' : w);
+  // 頁卡三欄(f1fae 6a5f2e0e44):knives_n 刀幾把、knife_reader 讀表版本(例 knife-table/1)、base 比對的底頭碼;沒給就不寫
+  const rcpKnifeCard = (x) => (x.knives_n != null ? ' · 卡上刀 ' + (Number(x.knives_n) | 0) + ' 把' : '') + (x.knife_reader ? ' · 讀表 ' + String(x.knife_reader).slice(0, 24) : '') + (/^[0-9a-f]{7,40}$/.test(String(x.base || '')) ? ' · 底 ' + String(x.base).slice(0, 9) : '');
   const rcpLive = (x) => x && (x.state === 'asking' || x.state === 'waiting_owner' || x.state === 'running');
   async function rcpList(id) {
     S.rcpListed[id] = true;
@@ -3833,7 +3837,7 @@
     for (const x of L.slice(0, 3)) {
       const t = x.tests_total || {}, k = x.knives || {}, why = Array.isArray(x.reasons) ? x.reasons : [];
       const badge = x.state === 'done' && x.green ? '<b class="rcg">綠</b>' : x.state === 'passed_in_sandbox' ? '<b class="rcs">沙盒過</b>' : x.state === 'red' || (x.state === 'done' && !x.green && !x.narrow) ? '<b class="rcr">紅</b>' : '';
-      h += `<div class="rcpr" data-rcprun="${esc(x.run_id)}">${badge}收據 ${x.narrow || x.scope === 'narrow' ? '窄' : '整套'} · 頭 ${esc(String(x.head || '').slice(0, 12))} · ${esc(RCP_STATE[x.state] || String(x.state || ''))}${x.host ? ' · ' + esc(x.host) : ''}${x.sandbox && x.state !== 'passed_in_sandbox' ? ' · 沙盒內跑' : ''}${t.suites != null ? ` · 測試 ${t.passed | 0} 過 / ${t.failed | 0} 失敗${t.ignored ? ' / ' + (t.ignored | 0) + ' 略過' : ''}` : ''}${k.expected != null ? ` · 刀 ${k.bites | 0}/${k.expected | 0}${k.misses ? '(' + (k.misses | 0) + ' 沒咬)' : ''}` : ''}${why.length ? ` · <span class="rcw" title="${esc(why.join(' '))}">${why.map((w) => esc(rcpReason(String(w)))).join('、')}</span>` : ''}${rcpLive(x) ? `<button type="button" class="k" data-rcpread="${esc(x.run_id)}">更新</button><button type="button" class="k" data-rcpwd="${esc(x.run_id)}">撤</button>` : ''}</div>`;
+      h += `<div class="rcpr" data-rcprun="${esc(x.run_id)}">${badge}收據 ${x.narrow || x.scope === 'narrow' ? '窄' : '整套'} · 頭 ${esc(String(x.head || '').slice(0, 12))} · ${esc(RCP_STATE[x.state] || String(x.state || ''))}${x.host ? ' · ' + esc(x.host) : ''}${esc(rcpKnifeCard(x))}${x.sandbox && x.state !== 'passed_in_sandbox' ? ' · 沙盒內跑' : ''}${t.suites != null ? ` · 測試 ${t.passed | 0} 過 / ${t.failed | 0} 失敗${t.ignored ? ' / ' + (t.ignored | 0) + ' 略過' : ''}` : ''}${k.expected != null ? ` · 刀 ${k.bites | 0}/${k.expected | 0}${k.misses ? '(' + (k.misses | 0) + ' 沒咬)' : ''}` : ''}${why.length ? ` · <span class="rcw" title="${esc(why.join(' '))}">${why.map((w) => esc(rcpReason(String(w)))).join('、')}</span>` : ''}${rcpLive(x) ? `<button type="button" class="k" data-rcpread="${esc(x.run_id)}">更新</button><button type="button" class="k" data-rcpwd="${esc(x.run_id)}">撤</button>` : ''}</div>`;
     }
     return h;
   }
