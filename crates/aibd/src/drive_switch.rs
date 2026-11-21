@@ -254,7 +254,7 @@ pub async fn toggle(st: AppState, body: Value, by: String) -> Response {
 pub fn status_of(s: &Switch, owner_check: bool) -> Value {
     json!({
         "on": s.to == "on",
-        "state": s.to,
+        "switch": s.to,
         "by": s.by,
         "why": s.why,
         "at": s.at,
