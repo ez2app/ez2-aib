@@ -325,7 +325,7 @@ pub async fn show(st: AppState, body: Value) -> Response {
             "grants": grants.iter().map(|g| json!({
                 "role_uid": g.role_uid,
                 "role_rank": g.role_rank.map(Rank::word),
-                "listed": listed.iter().any(|u| *u == g.role_uid),
+                "listed": listed.contains(&g.role_uid),
                 "granted_at": g.granted_at,
             })).collect::<Vec<_>>(),
         }))
