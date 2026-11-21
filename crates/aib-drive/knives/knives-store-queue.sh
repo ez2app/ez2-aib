@@ -37,8 +37,12 @@ tw() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --ex
 tw '        if !self.web.contains(seat) {' '        if self.web.is_empty() || !self.web.contains(seat) || !seat.is_empty() {' \
    a_web_seats_work_order_is_a_plan_line_for_aibd_and_never_a_ledger_letter
 # TW2 a hand-run act prints plan lines nobody reads and writes them as sent
-tw '        if !self.by_aibd {' '        if !self.by_aibd && self.web.is_empty() {' \
+tw '        let Some(mark) = self.by_aibd.as_deref() else {' '        let Some(mark) = self.by_aibd.as_deref().or(Some("1")) else {' \
    a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing
 # TW3 a nudge is handed to aibd (its system_send takes a work order only: refused there, lost)
 tw '        if action != "dispatch" {' '        if action.is_empty() {' \
+   a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing
+# TW4 (5d33a REVIEW-driverust3 L1) any value of AIB_DRIVE_BY_AIBD is aibd's mark (the old `1`)
+tw "    (v.len() == 32 && v.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))" \
+   '    (!v.is_empty())' \
    a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing

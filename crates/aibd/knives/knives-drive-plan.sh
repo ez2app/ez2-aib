@@ -49,3 +49,8 @@ python3 -I scripts/knife.py crates/aib-store/src/seat_moves.rs \
 # word for the switch is taken (the program at bin is any same-account seat's to replace)
 dw '    if switch != "on" {' '    if switch == "never" {' \
    plan_lines_are_dropped_unless_aibd_reads_the_switch_on
+# DP6 (5d33a REVIEW-driverust3 L1) a plan line with another round's mark is taken (a key with
+# a newline in it, printed by drive, makes a line that looks like a plan)
+dp '            .filter(|(m, _)| *m == round.mark.as_bytes())' \
+   '            .filter(|(m, _)| m.len() == round.mark.len())' \
+   only_a_listed_web_seats_work_order_in_the_exact_shape_is_a_plan

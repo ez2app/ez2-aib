@@ -253,11 +253,14 @@ pub trait Sender {
     }
 }
 
-/// S79-rust 3b: what aib-drive prints on stdout for aibd to send to a web seat (one line, then
-/// one JSON object `{to, text, send_key, action}`); aibd's drive wake reads it, nothing else does.
+/// S79-rust 3b: what aib-drive prints on stdout for aibd to send to a web seat (one line: this,
+/// the round's mark, a space, then one JSON object `{to, text, send_key, action}`); aibd's
+/// drive wake reads it, nothing else does.
 pub const PLAN_PREFIX: &str = "AIBD-SEND ";
-/// Set to `1` by aibd on the act round it runs and reads (drive_wake): only then is there
-/// someone to hand a web seat's letter to.
+/// Set by aibd on the act round it runs and reads (drive_wake) to that round's mark, 32
+/// lowercase hex aibd made for it ([`round_mark`]): only then is there someone to hand a web
+/// seat's letter to, and a plan line carries the mark, so no other line on stdout (one with a
+/// key from a file an AI writes, 5d33a REVIEW-driverust3 L1) passes for one.
 pub const BY_AIBD_ENV: &str = "AIB_DRIVE_BY_AIBD";
 /// The seat codes aibd has as web seats now (moved from 1.x), comma-separated; set by aibd.
 pub const WEB_SEATS_ENV: &str = "AIB_DRIVE_WEB_SEATS";
@@ -268,6 +271,13 @@ pub const NO_AIBD: &str = "web seat: no aibd to hand it to";
 pub const WEB_ONLY_DISPATCH: &str = "web seat: only a work order is handed to aibd";
 /// The stage a letter handed to aibd is written with (final: aibd keys it by send_key).
 pub const HANDED: &str = "handed";
+
+/// The round's mark from [`BY_AIBD_ENV`]: 32 lowercase hex, anything else is no aibd.
+pub fn round_mark(v: Option<&str>) -> Option<String> {
+    let v = v?;
+    (v.len() == 32 && v.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .then(|| v.to_owned())
+}
 
 /// The web seats from aibd's list ([`WEB_SEATS_ENV`]): five-hex codes only, others dropped.
 pub fn web_seats(list: Option<&str>) -> BTreeSet<String> {
@@ -285,7 +295,8 @@ pub fn web_seats(list: Option<&str>) -> BTreeSet<String> {
 /// decided there. Every other seat goes to `inner`.
 pub struct ToWeb<'a> {
     pub web: BTreeSet<String>,
-    pub by_aibd: bool,
+    /// The round's mark when aibd reads this round ([`round_mark`]).
+    pub by_aibd: Option<String>,
     pub inner: &'a dyn Sender,
     pub out: std::cell::RefCell<Box<dyn std::io::Write + 'a>>,
 }
@@ -311,13 +322,13 @@ impl Sender for ToWeb<'_> {
         if action != "dispatch" {
             return Err(SendError::NotSent(WEB_ONLY_DISPATCH.into()));
         }
-        if !self.by_aibd {
+        let Some(mark) = self.by_aibd.as_deref() else {
             return Err(SendError::NotSent(NO_AIBD.into()));
-        }
+        };
         let plan = serde_json::json!({"to": seat, "text": text, "send_key": key, "action": action});
         let mut out = self.out.borrow_mut();
         // a plan line that may be half out is a send that may have gone (aibd keys by send_key)
-        writeln!(out, "{PLAN_PREFIX}{plan}")
+        writeln!(out, "{PLAN_PREFIX}{mark} {plan}")
             .and_then(|()| out.flush())
             .map_err(|e| SendError::Unknown(format!("plan line: {}", e.kind())))?;
         Ok((HANDED.to_owned(), key.to_owned()))
@@ -844,10 +855,12 @@ mod to_web_tests {
         }
     }
 
+    const MARK: &str = "0123456789abcdef0123456789abcdef";
+
     fn to_web<'a>(inner: &'a Inner, by_aibd: bool, buf: &Buf) -> ToWeb<'a> {
         ToWeb {
             web: web_seats(Some("7ebca, abcde,NOPE1,x")),
-            by_aibd,
+            by_aibd: by_aibd.then(|| MARK.to_owned()),
             inner,
             out: RefCell::new(Box::new(buf.clone())),
         }
@@ -864,7 +877,11 @@ mod to_web_tests {
         );
         assert!(inner.0.borrow().is_empty(), "reason: web_seat_in_ledger");
         let out = String::from_utf8(buf.0.borrow().clone()).unwrap();
-        let line = out.strip_prefix(PLAN_PREFIX).expect("reason: no_plan_line");
+        let line = out
+            .strip_prefix(PLAN_PREFIX)
+            .and_then(|l| l.strip_prefix(MARK))
+            .and_then(|l| l.strip_prefix(' '))
+            .expect("reason: no_plan_line");
         assert!(line.ends_with('\n') && line.lines().count() == 1, "{out:?}");
         let v: Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(v["to"], "7ebca");
@@ -898,5 +915,15 @@ mod to_web_tests {
             ["7ebca", "abcde"]
         );
         assert!(web_seats(None).is_empty());
+        // only aibd's 32-hex mark is aibd (L1: the old `1`, upper case, short are not)
+        assert_eq!(round_mark(Some(MARK)).as_deref(), Some(MARK));
+        for bad in [
+            "1",
+            "0123456789ABCDEF0123456789abcdef",
+            "0123456789abcdef",
+            "",
+        ] {
+            assert_eq!(round_mark(Some(bad)), None, "reason: mark_taken {bad:?}");
+        }
     }
 }

@@ -2248,7 +2248,9 @@ pub fn cli_act(raw: &[String]) -> u8 {
             web: crate::source::web_seats(
                 std::env::var(crate::source::WEB_SEATS_ENV).ok().as_deref(),
             ),
-            by_aibd: std::env::var(crate::source::BY_AIBD_ENV).as_deref() == Ok("1"),
+            by_aibd: crate::source::round_mark(
+                std::env::var(crate::source::BY_AIBD_ENV).ok().as_deref(),
+            ),
             inner: &crate::source::StoreDm {
                 root: dir.parent().map(Path::to_path_buf),
             },

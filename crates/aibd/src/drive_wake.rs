@@ -30,7 +30,6 @@
 //!   With every act switch off (the default) the round sends nothing and is only journaled.
 //!   Its limit is [`ACT_LIMIT`]; its failures are logged on their own count.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -126,19 +125,19 @@ pub fn refresh_once(bin: &Path, limit: Duration) -> Wake {
 /// and its work orders for web seats ([`crate::drive_plan`]) go to the executor: also from a
 /// round that failed or was killed, since drive wrote each printed one as handed.
 pub fn act_once(bin: &Path, limit: Duration) -> Wake {
-    let web = crate::drive_plan::web_now();
+    let round = crate::drive_plan::web_now();
     let (w, out) = run_out(
         bin,
         &act_args(),
         limit,
         &crate::timers::DRIVE_ACT_CHILD_WAIT,
-        web.as_ref(),
+        round.as_ref(),
     );
-    if let Some(web) = web {
+    if let Some(round) = round {
         // 5d33a REVIEW-driverust3 M1: the switch is aibd's own read, after the round, not the
         // child's word for it (the program at bin is any same-account seat's to replace)
         let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
-        let r = plans_if_on(&out, &web, switch);
+        let r = plans_if_on(&out, &round, switch);
         if r.refused > 0 {
             tracing::warn!(refused = r.refused, "drive act: plan lines refused");
         }
@@ -151,8 +150,12 @@ pub fn act_once(bin: &Path, limit: Duration) -> Wake {
 
 /// The plans in a round's stdout, only while the dispatch switch is `on` (as aibd reads it):
 /// otherwise every plan line is refused, whatever the child printed.
-pub fn plans_if_on(out: &[u8], web: &BTreeSet<String>, switch: &str) -> crate::drive_plan::Read {
-    let mut r = crate::drive_plan::parse(out, web);
+pub fn plans_if_on(
+    out: &[u8],
+    round: &crate::drive_plan::Round,
+    switch: &str,
+) -> crate::drive_plan::Read {
+    let mut r = crate::drive_plan::parse(out, round);
     if switch != "on" {
         r.refused += r.plans.len();
         r.plans.clear();
@@ -177,7 +180,11 @@ fn child_command(bin: &Path, args: &[&str]) -> Command {
 
 /// [`child_command`], and for an act round aibd reads (`web` given, S79-rust 3b): the web
 /// seats and [`crate::drive_plan::BY_AIBD_ENV`] set, stdout a pipe.
-fn child_command_for(bin: &Path, args: &[&str], web: Option<&BTreeSet<String>>) -> Command {
+fn child_command_for(
+    bin: &Path,
+    args: &[&str],
+    round: Option<&crate::drive_plan::Round>,
+) -> Command {
     let mut cmd = Command::new(bin);
     // D7a: the dispatch switch as aibd reads it (aib-drive's act::AIBD_SWITCH_ENV)
     let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
@@ -186,9 +193,14 @@ fn child_command_for(bin: &Path, args: &[&str], web: Option<&BTreeSet<String>>) 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(web) = web {
-        let list = web.iter().map(String::as_str).collect::<Vec<_>>().join(",");
-        cmd.env(crate::drive_plan::BY_AIBD_ENV, "1")
+    if let Some(round) = round {
+        let list = round
+            .web
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
+        cmd.env(crate::drive_plan::BY_AIBD_ENV, &round.mark)
             .env(crate::drive_plan::WEB_SEATS_ENV, list)
             .stdout(Stdio::piped());
     }
@@ -207,16 +219,16 @@ fn run_once(
     run_out(bin, args, limit, wait, None).0
 }
 
-/// [`run_once`], and with `web` given its stdout too (at most [`crate::drive_plan::OUT_MAX`]
+/// [`run_once`], and with a `round` given its stdout too (at most [`crate::drive_plan::OUT_MAX`]
 /// bytes kept; the rest is read and dropped, so a child never blocks on a full pipe).
 fn run_out(
     bin: &Path,
     args: &[&str],
     limit: Duration,
     wait: &'static crate::timers::Timer,
-    web: Option<&BTreeSet<String>>,
+    round: Option<&crate::drive_plan::Round>,
 ) -> (Wake, Vec<u8>) {
-    let Ok(mut child) = child_command_for(bin, args, web).spawn() else {
+    let Ok(mut child) = child_command_for(bin, args, round).spawn() else {
         return (Wake::Failed, Vec::new());
     };
     let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -409,10 +421,14 @@ mod tests {
     /// all refused; only `on` hands them on.
     #[test]
     fn plan_lines_are_dropped_unless_aibd_reads_the_switch_on() {
-        let web: BTreeSet<String> = ["7ebca".to_owned()].into_iter().collect();
+        let web = crate::drive_plan::Round {
+            web: ["7ebca".to_owned()].into_iter().collect(),
+            mark: "0123456789abcdef0123456789abcdef".to_owned(),
+        };
         let out = format!(
-            "{}{}\n",
+            "{}{} {}\n",
             crate::drive_plan::PREFIX,
+            web.mark,
             serde_json::json!({"to": "7ebca", "text": "派工: N-1 → 7ebca", "send_key": "k:1", "action": "dispatch"})
         );
         for sw in ["off", "paused", ""] {
@@ -481,7 +497,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let web: BTreeSet<String> = ["7ebca", "abcde"].iter().map(|s| (*s).to_owned()).collect();
+        let web = crate::drive_plan::Round {
+            web: ["7ebca", "abcde"].iter().map(|s| (*s).to_owned()).collect(),
+            mark: "0123456789abcdef0123456789abcdef".to_owned(),
+        };
         let (w, out) = run_out(
             &bin,
             &act_args(),
@@ -492,7 +511,7 @@ mod tests {
         assert_eq!(w, Wake::Failed);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "x\nAIBD-SEND 1|7ebca,abcde\n",
+            "x\nAIBD-SEND 0123456789abcdef0123456789abcdef|7ebca,abcde\n",
             "reason: plan_out_lost"
         );
         let (_, out) = run_out(

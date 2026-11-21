@@ -11,7 +11,8 @@ use std::sync::OnceLock;
 
 /// The line prefix aib-drive prints (aib-drive `source::PLAN_PREFIX`).
 pub const PREFIX: &str = "AIBD-SEND ";
-/// What aibd tells aib-drive: this round is aibd's, a plan line has a reader.
+/// What aibd tells aib-drive: this round is aibd's, a plan line has a reader, and the round's
+/// mark a plan line carries ([`Round`]).
 pub const BY_AIBD_ENV: &str = "AIB_DRIVE_BY_AIBD";
 /// The web seats aibd has now, comma-separated (aib-drive `source::WEB_SEATS_ENV`).
 pub const WEB_SEATS_ENV: &str = "AIB_DRIVE_WEB_SEATS";
@@ -23,6 +24,25 @@ pub const ROUND_MAX: usize = 8;
 pub const TEXT_MAX: usize = 64 * 1024;
 /// A plan's send_key at most this long (seat_send's SEND_KEY_MAX).
 pub const KEY_MAX: usize = 128;
+
+/// A round's mark is this long (16 random bytes as lowercase hex).
+pub const MARK_LEN: usize = 32;
+
+/// One act round aibd reads: the web seats it tells drive and the mark it made for this round
+/// only (5d33a REVIEW-driverust3 L1: drive's other stdout lines print keys from files an AI
+/// writes, a newline in one could make a line that looks like a plan; it cannot know the mark).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Round {
+    pub web: BTreeSet<String>,
+    pub mark: String,
+}
+
+/// A new round's mark, `None` when the system gives no random bytes.
+pub fn new_mark() -> Option<String> {
+    let mut b = [0u8; MARK_LEN / 2];
+    getrandom::fill(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
 
 /// One work order for a web seat, as drive planned it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,19 +67,27 @@ fn five_hex(s: &str) -> bool {
     s.len() == 5 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The plans in `out` (an act round's stdout) for seats in `web`. Only a line that is the
-/// prefix and one JSON object with exactly `to`, `text`, `send_key` and `action` counts, the
+/// The plans in `out` (an act round's stdout) for seats in the round's web. Only a line that is
+/// the prefix, the round's mark, a space and one JSON object with exactly `to`, `text`, `send_key` and `action` counts, the
 /// action a dispatch, the seat one aibd listed; any other plan line is refused, any other
 /// line is not a plan.
-pub fn parse(out: &[u8], web: &BTreeSet<String>) -> Read {
+pub fn parse(out: &[u8], round: &Round) -> Read {
+    let web = &round.web;
     let mut r = Read::default();
     let mut keys = BTreeSet::new();
     for line in out.split(|b| *b == b'\n') {
         let Some(rest) = line.strip_prefix(PREFIX.as_bytes()) else {
             continue;
         };
-        let ok = serde_json::from_slice::<Value>(rest)
-            .ok()
+        let body = rest
+            .iter()
+            .position(|b| *b == b' ')
+            .map(|i| (&rest[..i], &rest[i + 1..]))
+            .filter(|(m, _)| *m == round.mark.as_bytes())
+            .filter(|_| round.mark.len() == MARK_LEN)
+            .map(|(_, b)| b);
+        let ok = body
+            .and_then(|b| serde_json::from_slice::<Value>(b).ok())
             .and_then(|v| v.as_object().cloned())
             .filter(|o| {
                 o.len() == 4
@@ -114,12 +142,16 @@ pub fn install(web: WebSeats, sink: Sink) -> bool {
     w && SINK.set(sink).is_ok()
 }
 
-/// The web seats to tell drive, or `None` while nothing reads a plan (no executor installed):
-/// then drive is not told any, and every seat gets its 1.x letter as before 3b.
-pub fn web_now() -> Option<BTreeSet<String>> {
+/// The round to tell drive (web seats and a new mark), or `None` while nothing reads a plan
+/// (no executor installed) or no mark can be made: then drive is not told any, and every seat
+/// gets its 1.x letter as before 3b.
+pub fn web_now() -> Option<Round> {
     SINK.get()?;
     let list = WEB.get()?;
-    Some(list().into_iter().filter(|s| five_hex(s)).collect())
+    Some(Round {
+        web: list().into_iter().filter(|s| five_hex(s)).collect(),
+        mark: new_mark()?,
+    })
 }
 
 /// Hand a round's plans to the executor (none installed: dropped, said once by the caller).
@@ -137,12 +169,17 @@ pub fn hand(plans: Vec<Plan>) -> bool {
 mod tests {
     use super::*;
 
-    fn web() -> BTreeSet<String> {
-        ["7ebca", "abcde"].iter().map(|s| (*s).to_owned()).collect()
+    const MARK: &str = "0123456789abcdef0123456789abcdef";
+
+    fn web() -> Round {
+        Round {
+            web: ["7ebca", "abcde"].iter().map(|s| (*s).to_owned()).collect(),
+            mark: MARK.to_owned(),
+        }
     }
 
     fn line(v: Value) -> String {
-        format!("{PREFIX}{v}\n")
+        format!("{PREFIX}{MARK} {v}\n")
     }
 
     #[test]
@@ -173,6 +210,10 @@ mod tests {
         // the same key twice in one round is one plan
         out += &line(good);
         out += "AIBD-SEND not json\n";
+        // L1: a good plan with another mark or none (a key printed with a newline in it)
+        let good = serde_json::json!({"to": "abcde", "text": "派工: N-9 → abcde", "send_key": "k:9", "action": "dispatch"});
+        out += &format!("{PREFIX}fedcba9876543210fedcba9876543210 {good}\n");
+        out += &format!("{PREFIX}{good}\n");
         let r = parse(out.as_bytes(), &web());
         assert_eq!(
             r.plans,
@@ -183,7 +224,8 @@ mod tests {
             }],
             "reason: wrong_plans"
         );
-        assert_eq!(r.refused, 8, "reason: refused_count");
+        assert_eq!(r.refused, 10, "reason: refused_count");
+        assert_eq!(new_mark().map(|m| m.len()), Some(MARK_LEN));
     }
 
     #[test]
