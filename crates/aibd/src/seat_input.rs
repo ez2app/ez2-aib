@@ -58,6 +58,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
+    crate::gh_token::SET,
     crate::seats::PAGE_OPEN,
     RESTART,
     crate::default_model::KIND,
@@ -528,6 +529,20 @@ pub async fn act(
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::pr_open::act(st, body, by).await;
+        }
+        // DESIGN-gh-token-card (Andy 09:2x): a repository's GitHub token is pasted on the
+        // built-in page in this pairing only and kept with the owner's fingerprint
+        Some(crate::gh_token::SET) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a token is kept from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::gh_token::act(st, body, by).await;
         }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;

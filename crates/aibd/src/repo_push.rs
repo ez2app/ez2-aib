@@ -246,6 +246,19 @@ pub fn net_command(
     agent: Option<std::ffi::OsString>,
     args: &[&str],
 ) -> Command {
+    net_command_with(kind, scratch, hooks, agent, None, args)
+}
+
+/// [`net_command`] whose https goes with aibd's one-shot helper (`cred`: its `-c` pairs,
+/// [`crate::git_cred::config`]) instead of the platform's helper (DESIGN-gh-token-card L1).
+pub fn net_command_with(
+    kind: Kind,
+    scratch: &Path,
+    hooks: &Path,
+    agent: Option<std::ffi::OsString>,
+    cred: Option<&[String]>,
+    args: &[&str],
+) -> Command {
     let home = hooks.parent().unwrap_or(hooks);
     let mut c = Command::new(GIT);
     c.env_clear()
@@ -270,6 +283,10 @@ pub fn net_command(
             if let Some(sock) = agent {
                 c.env("SSH_AUTH_SOCK", sock);
             }
+        }
+        Kind::Https if cred.is_some() => {
+            c.args(["-c", "protocol.https.allow=always"])
+                .args(cred.unwrap_or_default());
         }
         Kind::Https => {
             let helper = if cfg!(windows) {
@@ -298,16 +315,44 @@ pub fn net_command(
     c
 }
 
-fn net(kind: Kind, scratch: &Path, hooks: &Path, args: &[&str]) -> (Option<i32>, String) {
-    let cmd = net_command(
-        kind,
-        scratch,
-        hooks,
-        std::env::var_os("SSH_AUTH_SOCK"),
-        args,
-    );
+fn net(
+    kind: Kind,
+    scratch: &Path,
+    hooks: &Path,
+    cred: Option<&crate::gh_token::Cred>,
+    args: &[&str],
+) -> (Option<i32>, String) {
+    let agent = std::env::var_os("SSH_AUTH_SOCK");
+    let config = cred.map(|c| c.config.as_slice());
+    let cmd = net_command_with(kind, scratch, hooks, agent, config, args);
+    // the credential goes down a pipe git's helper reads once, already written and closed
+    #[cfg(target_os = "macos")]
+    let (cmd, _given) = given(cmd, cred);
     let (rc, out) = crate::gh_view::run_timed(cmd, &crate::timers::REPO_PUSH_WAIT, None);
     (rc, String::from_utf8_lossy(&out).into_owned())
+}
+
+/// `cmd` with `cred`'s credential written into a pipe whose read end its child gets as
+/// [`crate::git_cred::FD`] (and no other descriptor above 2); the read end is kept open until
+/// the spawn by the caller holding it.
+#[cfg(target_os = "macos")]
+fn given(
+    mut cmd: Command,
+    cred: Option<&crate::gh_token::Cred>,
+) -> (Command, Option<std::io::PipeReader>) {
+    use std::os::fd::AsRawFd as _;
+    let Some(c) = cred else {
+        return (cmd, None);
+    };
+    let Ok((r, mut w)) = std::io::pipe() else {
+        return (cmd, None);
+    };
+    if std::io::Write::write_all(&mut w, &c.secret).is_err() {
+        return (cmd, None);
+    }
+    drop(w);
+    aib_sys::stdio_only::stdio_and(&mut cmd, r.as_raw_fd(), crate::git_cred::FD);
+    (cmd, Some(r))
 }
 
 /// The `.github` tree of a commit in `scratch` (empty: it has none).
@@ -376,6 +421,7 @@ pub fn push(
     hooks: &Path,
     approved: &Target,
     leak: Option<&Path>,
+    cred: Option<&crate::gh_token::Cred>,
 ) -> Result<Pushed, Refused> {
     // read again: the repo still registered so, the branch still at that head
     let now = target(data_dir, &approved.repo, &approved.branch, hooks)?;
@@ -432,6 +478,7 @@ pub fn push(
         kind,
         &scratch.0,
         hooks,
+        cred,
         &[
             "fetch",
             "-q",
@@ -452,6 +499,7 @@ pub fn push(
         kind,
         &scratch.0,
         hooks,
+        cred,
         &[
             "push",
             "--porcelain",
@@ -558,6 +606,25 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
     };
     let ask = push_ask(&t, by.clone());
     let Some(ticket) = req.ticket else {
+        // pv8 9: no token, or one GitHub refuses for this repository, is said before any window
+        let remote = t.remote.clone();
+        let ready = tokio::task::spawn_blocking(move || crate::gh_token::before_push(&remote))
+            .await
+            .unwrap_or(Ok(()));
+        if let Err((status, why)) = ready {
+            let mut r = refuse(&no(status, why));
+            if why == "gh_token_missing" {
+                if let Some(slug) = crate::pr_open::slug_of(&t.remote) {
+                    r = (
+                        status,
+                        Json(json!({"code": "conflict", "reason": why, "token_for": slug,
+                            "request_id": crate::guard::request_id()})),
+                    )
+                        .into_response();
+                }
+            }
+            return r;
+        }
         return crate::repos::asked(&ask);
     };
     if !crate::owner_ok::approved_for(&ticket, &ask) {
@@ -570,7 +637,14 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
         if !crate::bridge_cfg::load(&data).repo_push {
             return Err(no(StatusCode::FORBIDDEN, "repo_push_off"));
         }
-        push(&data, &hooks, &approved, leak_program().as_deref())
+        let cred = crate::gh_token::push_cred(&approved.remote).map_err(|(s, w)| no(s, w))?;
+        push(
+            &data,
+            &hooks,
+            &approved,
+            leak_program().as_deref(),
+            cred.as_ref(),
+        )
     })
     .await
     .unwrap_or(Err(no(StatusCode::INTERNAL_SERVER_ERROR, "push_scratch")));
@@ -996,7 +1070,7 @@ mod tests {
             &w.repo.join(".git").join("hooks").join("pre-push"),
             &format!(": > '{}'", mark.display()),
         );
-        let p = push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).unwrap();
+        let p = push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).unwrap();
         assert_eq!(
             (p.branch.as_str(), p.sha.as_str()),
             (BRANCH, t.sha.as_str())
@@ -1037,7 +1111,7 @@ mod tests {
         g(&w.repo, &["commit", "-q", "-m", "three"]);
         g(&w.repo, &["checkout", "-q", "main"]);
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None),
             Err(Refused(StatusCode::CONFLICT, "push_changed")),
             "reason: moved_branch_pushed"
         );
@@ -1050,7 +1124,7 @@ mod tests {
         g(&other, &["init", "-q", "--bare", "."]);
         register(&w.data, &w.repo, other.to_str().unwrap());
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).map_err(|r| r.1),
             Err("push_changed"),
             "reason: pushed_to_a_changed_remote"
         );
@@ -1060,7 +1134,7 @@ mod tests {
         let t = target(&w.data, "demo", BRANCH, &w.hooks).unwrap();
         g(&w.repo, &["config", "core.sshCommand", "/bin/false"]);
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).map_err(|r| r.1),
             Err("push_repo_unsafe"),
             "reason: unsafe_repo_read_by_git"
         );
@@ -1084,7 +1158,7 @@ mod tests {
         g(&w.repo, &["update-ref", "refs/remotes/origin/main", BRANCH]);
         let t = target(&w.data, "demo", BRANCH, &w.hooks).unwrap();
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).map_err(|r| r.1),
             Err("push_touches_github"),
             "reason: github_change_pushed"
         );
@@ -1093,17 +1167,24 @@ mod tests {
         let w = world();
         let t = target(&w.data, "demo", BRANCH, &w.hooks).unwrap();
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_hit)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_hit), None).map_err(|r| r.1),
             Err("push_leak"),
             "reason: leak_pushed"
         );
         assert_eq!(
-            push(&w.data, &w.hooks, &t, None).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, None, None).map_err(|r| r.1),
             Err("push_leak_unavailable"),
             "reason: pushed_without_a_scan"
         );
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.data.join("no-such-scan"))).map_err(|r| r.1),
+            push(
+                &w.data,
+                &w.hooks,
+                &t,
+                Some(&w.data.join("no-such-scan")),
+                None
+            )
+            .map_err(|r| r.1),
             Err("push_leak_unavailable"),
             "reason: pushed_with_a_missing_scan"
         );
@@ -1128,7 +1209,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).map_err(|r| r.1),
             Err("push_not_fast_forward"),
             "reason: rewound_branch_forced"
         );
@@ -1148,7 +1229,7 @@ mod tests {
             .unwrap();
         assert!(o.status.success(), "precondition: main removed");
         assert_eq!(
-            push(&w.data, &w.hooks, &t, Some(&w.leak_ok)).map_err(|r| r.1),
+            push(&w.data, &w.hooks, &t, Some(&w.leak_ok), None).map_err(|r| r.1),
             Err("push_base_unknown"),
             "reason: pushed_without_a_base"
         );
