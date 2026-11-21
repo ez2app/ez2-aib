@@ -587,15 +587,17 @@
   function cinbCtx(s) {
     const A = S.cinbAns;
     if (!A || A.seat !== s.seat_id) return '';
-    return `<div class="cctx"><span>正在回 ${esc(A.who)} 的題目:${esc(A.line.slice(0, 60))}${A.demo ? '(示意,不會送出)' : ''}</span><button type="button" class="cx" data-cinbx="1">✕ 改回對話</button></div>`;
+    return `<div class="cctx"><span>${A.re ? `改寄給 ${esc(A.who)}:原信「${esc(A.line.slice(0, 60))}」(只帶得到第一行,請在下面補全文)` : `正在回 ${esc(A.who)} 的題目:${esc(A.line.slice(0, 60))}`}${A.demo ? '(示意,不會送出)' : ''}</span><button type="button" class="cx" data-cinbx="1">✕ 改回對話</button></div>`;
   }
   const cinbFind = (id) => { const s = seatById(S.mode); return s ? cinbRows(s).L.find((m) => m.id === id) : null; };
   // 答案寫回那封信:回給出題的席、放在那封信的串裡(message_send,跟單席寄信同一個 act);示意列不送
   async function cinbAnswer(text) {
     const A = S.cinbAns;
-    if (A.demo) { say('這是示意的題目,答案沒有送出(這台 AIB 還沒有待審 API);按「✕ 改回對話」再送一般對話', 'err'); return false; }
-    await act('message_send', { to_seat: A.from, body: '回你的題目「' + A.line.slice(0, 60) + '」:\n' + text, thread_id: A.tid || threadId(S.me, A.from), idem_key: idem() });
-    say('已把答案寫回 ' + A.who + ' 那封信', 'ok'); S.cinbAns = null; return true;
+    if (A.demo) { say(A.re ? '這是示意的信,沒有改寄(這台 AIB 還沒有待審 API);按「✕ 改回對話」再送一般對話' : '這是示意的題目,答案沒有送出(這台 AIB 還沒有待審 API);按「✕ 改回對話」再送一般對話', 'err'); return false; }
+    // 改寄(5d33a L1):寄給原收件席,不是出題 / 寄件席
+    const to = A.re ? A.to : A.from;
+    await act('message_send', { to_seat: to, body: A.re ? text : '回你的題目「' + A.line.slice(0, 60) + '」:\n' + text, thread_id: A.re ? threadId(S.me, to) : A.tid || threadId(S.me, A.from), idem_key: idem() });
+    say(A.re ? '已改寄給 ' + A.who : '已把答案寫回 ' + A.who + ' 那封信', 'ok'); S.cinbAns = null; return true;
   }
   // ---------- 總收件匣(第 1 期,唯讀;DESIGN-web-inbox-page-1a93b-1121 r2,5d33a 預讀 0/0/1/2)----------
   // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
@@ -4749,7 +4751,10 @@
     const cbt = x.closest('[data-cinbtog]'); if (cbt) { const id = cbt.dataset.cinbtog; S.cinbOpen = S.cinbOpen || {}; S.cinbOpen[id] = !S.cinbOpen[id]; return render(); }
     const cba = x.closest('[data-cinbans]'); if (cba) { const m = cinbFind(cba.dataset.cinbans); if (!m) return; S.cinbAns = { seat: S.mode, id: m.id, from: m.from_seat, tid: m.thread_id || null, who: /^human:/.test(String(m.from_seat || '')) ? '你' : '@' + seatName(seatById(cinbId(m.from_seat)) || { seat_id: cinbId(m.from_seat) }), line: String(m.first_line || ''), demo: !!m.demo }; render(); const i = document.getElementById('inp'); if (i) i.focus(); return; }
     if (x.closest('[data-cinbx]')) { S.cinbAns = null; return render(); }
-    const cbr = x.closest('[data-cinbre]'); if (cbr) { const m = cinbFind(cbr.dataset.cinbre); if (!m) return; S.drafts[S.mode] = String(m.first_line || ''); say('把沒送出的那封放進送出框了;看過再按「送出」寄給 @' + seatName(seatById(S.mode) || { seat_id: S.mode }), 'ok'); return render(); }
+    const cbr = x.closest('[data-cinbre]'); if (cbr) { const m = cinbFind(cbr.dataset.cinbre); if (!m) return; const to = String(m.to_seat || ''), id = cinbId(to);
+      // 5d33a L1:收件人是這席 ⇒ 放進這席送出框;收件人是別席 ⇒ 開一封給原收件席的信(橘條寫明),不寄回寄件席自己
+      if (!/^human:/.test(to) && id && id !== S.mode) { S.cinbAns = { seat: S.mode, id: m.id, re: true, to, who: '@' + seatName(seatById(id) || { seat_id: id }), line: String(m.first_line || ''), demo: !!m.demo }; S.drafts[S.mode] = String(m.first_line || ''); render(); const i = document.getElementById('inp'); if (i) i.focus(); return; }
+      S.drafts[S.mode] = String(m.first_line || ''); say('把沒送出的那封放進送出框了;看過再按「送出」寄給 @' + seatName(seatById(S.mode) || { seat_id: S.mode }), 'ok'); return render(); }
     const cbo = x.closest('[data-cinbread]'); if (cbo) { const m = cinbFind(cbo.dataset.cinbread); if (!m) return; if (m.demo) { say('示意列沒有全文', 'err'); return render(); } S.inbUi.col = inbCol(m); S.inbUi.open = null; inboxDlg(); const b = document.querySelector('[data-inbopen="' + CSS.escape(m.id) + '"]'); if (b) b.click(); return; }
     if (x.closest('[data-inbox]')) return inboxDlg();
     const eo = x.closest('[data-evopen]'); if (eo) return openEv(eo.dataset.evopen);

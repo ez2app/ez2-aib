@@ -468,10 +468,13 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/if \(A\.demo\) \{ say\([^\n]*return false; \}/.test(seg), 'reason: cinb_demo_answer_sent');
   // 在下面回答 ⇒ 橘色正在回條;送出寫回出題的席、那封信的串
   ok(/正在回 \$\{esc\(A\.who\)\} 的題目/.test(seg) && /data-cinbx="1">✕ 改回對話/.test(seg), 'reason: cinb_ctx_bar_missing');
-  ok(/act\('message_send', \{ to_seat: A\.from, [^\n]*thread_id: A\.tid \|\| threadId\(S\.me, A\.from\)/.test(seg), 'reason: cinb_answer_not_written_back');
+  ok(/act\('message_send', \{ to_seat: to, [^\n]*thread_id: A\.re \? threadId\(S\.me, to\) : A\.tid \|\| threadId\(S\.me, A\.from\)/.test(seg), 'reason: cinb_answer_not_written_back');
   ok(/if \(kind === 'seat' && S\.cinbAns && S\.cinbAns\.seat === S\.mode\) \{ if \(await cinbAnswer\(text\)\)/.test(ws), 'reason: cinb_send_ignores_answer_mode');
   // 回答模式送出後不可再當一般對話送給這席(6f1cb 實測抓到:示意答案還是以「已送出」寄出)
   ok(/S\.drafts\[S\.mode\] = ''; \}\n      else if \(kind === 'seat'\) \{ say\(await sendSeat\(S\.mode, text\)\);/.test(ws), 'reason: cinb_answer_also_sent_as_chat');
+  // 5d33a L1:改寄給原收件席(m.to_seat),不是寄回這席自己
+  ok(/const to = String\(m\.to_seat \|\| ''\), id = cinbId\(to\);/.test(ws) && /id !== S\.mode\) \{ S\.cinbAns = \{ seat: S\.mode, id: m\.id, re: true, to,/.test(ws), 'reason: cinb_resend_not_to_recipient');
+  ok(/const to = A\.re \? A\.to : A\.from;/.test(seg) && /act\('message_send', \{ to_seat: to,/.test(seg), 'reason: cinb_resend_sent_to_sender');
   // 掛在單席送出框正上方
   ok(/\$\{cinbStrip\(s\)\}\$\{cinbCtx\(s\)\}\$\{chatTools\(\)\}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @/.test(ws), 'reason: cinb_not_above_composer');
   // 色:急紅 / 等你決定橘 / 一般淡金 / 被擋灰
