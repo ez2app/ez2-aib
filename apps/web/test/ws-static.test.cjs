@@ -20,7 +20,7 @@ new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
 // dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
+const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'movewait', 'movemsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
@@ -45,6 +45,8 @@ for (const t of acts) {
   if (/^receipt_(request|read|withdraw|list)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('7ebca 4758a4702b'), 'branch-only act is marked: ' + t); continue; }
   // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
   if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
+  // 7ebca G5 信橋(feat/g5-bridge-7ebca-1121)才有;頁面條單獨跑時 aibd 還沒有,收到 unknown_act_type 就收起鈕。合進來後這行自然不走
+  if ((t === 'seat_move' || t === 'seat_unmove') && !rust.includes('"' + t + '"')) { ok(ws.includes('G5 信橋才有 seat_move'), 'branch-only act is marked: ' + t); continue; }
   if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   // 1a93b feat/aibd-page-acts-1a93b-1120(62e1bdbeb8)才有 seat_clear;頁面看 version.acts 沒有就灰掉寫「要新版 aibd」。合進來後拿掉這行
   if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
@@ -240,6 +242,19 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/\.inbcols\{display:grid;grid-template-columns:repeat\(4,/.test(css) && /@media \(max-width:1000px\)\{\.inbcols\{grid-template-columns:1fr\}\.inbcol\{display:none\}\.inbcol\.on\{display:block\}/.test(css), 'reason: inbox_wide_four_columns');
   ok(/L\.sort\(\(a, b\) => g\(a\) - g\(b\) \|\| \(Number\(b\.age_min\) \|\| 0\) - \(Number\(a\.age_min\) \|\| 0\)\)/.test(seg) && /\$\{seatInbox\(s\)\}/.test(ws), 'reason: seat_inbox_summary_order');
   ok(/function inbSent\(m\)/.test(seg) && /filter\(\(m\) => \/\^human:\/\.test/.test(seg), 'reason: inbox_sent_status');
+}
+
+// G5 信橋 搬舊席(7ebca DESIGN-g5-bridge r1 §1;5d33a 63af3c25):搬要按指紋、搬回不用;舊席碼照 aibd 的 code_ok
+{
+  const m = ws.match(/const MOVE_CODE = (\/[^\n]*\/);/);
+  ok(m, 'reason: move_code_check_moved');
+  const re = eval(m[1]);
+  for (const g of ['7ebca', '519d0', '00000']) ok(re.test(g), 'reason: good_code_refused ' + g);
+  for (const b of ['7EBCA', '7ebc', '7ebcaa', 'g0000', '', '7eb a']) ok(!re.test(b), 'reason: bad_code_taken ' + b);
+  ok(/await fingerAct\('seat_move', \{ old_code: code, seat_id: id \}/.test(ws), 'reason: move_without_finger');
+  ok(/await act\('seat_unmove', \{ old_code: code \}\)/.test(ws), 'reason: unmove_not_sent');
+  ok(/舊席收信要用 1\.x 指令重開/.test(ws), 'reason: unmove_hint_missing');
+  ok(/\$\{moveHtml\(s\)\}/.test(ws), 'reason: move_not_in_seat_head');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');

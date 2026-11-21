@@ -42,6 +42,7 @@
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
     inbox: null, inbPfx: '', inbUi: { col: 'unread', urg: false, seat: '', card: '', open: null, body: null }, // 總收件匣(1a93b DESIGN-web-inbox-page r2)
+    moved: {}, moveAsk: null, moveCode: '', moveF: null, moveMsg: null, moveOff: false, // 搬舊席(G5 信橋,7ebca DESIGN-g5-bridge r1 §1)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
@@ -1958,7 +1959,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), saidRows(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     { const wr = waitRow(s.seat_id, false); if (wr) rows.push(wr); else if (n && n.state === 'busy') rows.push({ h: '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -3436,6 +3437,53 @@
     }
     S.trustF = null; render();
   }
+  // G5 信橋(7ebca DESIGN-g5-bridge r1 §1;5d33a 63af3c25):把終端機舊席的信改送到這一席,要按指紋;搬回不用指紋
+  const MOVE_WHY = {
+    unknown_act_type: '這台的 aibd 還沒有搬舊席(G5 信橋才有 seat_move)', page_only: '只有這台內建的頁面能搬舊席',
+    body: '舊席碼是 5 碼小寫英數(0–9、a–f)', seat_not_found: '找不到這一席', seat_archived: '這一席已封存',
+    old_seat_not_found: '這台的舊信帳裡沒有這個舊席碼', old_code_moved: '這個舊席已經搬進另一席,先在那一席搬回',
+    seat_stands_for_another: '這一席已經收另一個舊席的信,先搬回', seat_move_changed: '按指紋之後狀況變了,請重按一次',
+    owner_check_unavailable: '這台問不到指紋,沒有搬', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有搬',
+    finger_denied: '指紋取消了,沒有搬', finger_expired: FINGER_GONE + ';沒有搬,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有搬',
+    store: 'aibd 寫不進搬席紀錄,請稍後再試',
+  };
+  const MOVE_CODE = /^[0-9a-f]{5}$/;
+  function moveHtml(s) {
+    if (S.moveOff) return '';
+    const id = s.seat_id, F = S.moveF && S.moveF.seat === id ? S.moveF : null;
+    if (F) return `<span class="trs" data-movewait>搬 @${esc(F.code)}:請在這台 Mac 按指紋 · 還有 ${F.left | 0} 秒 · ${FINGER_BEHIND}</span>`;
+    const m = S.moved[id];
+    if (m) return `<span class="trs on">收 @${esc(m)} 的信</span><button type="button" class="k" data-unmove="${esc(id)}" ${S.sending ? 'disabled' : ''} title="不用指紋;搬回後舊席收信要用 1.x 指令重開">搬回</button>`;
+    if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>按指紋搬</button><button type="button" class="k" data-moveno>取消</button>`;
+    return `<button type="button" class="k" data-move="${esc(id)}" title="把一個終端機舊席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
+  }
+  const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
+  async function seatMove(id, code) {
+    S.moveMsg = null;
+    if (!MOVE_CODE.test(code)) { S.moveMsg = { seat: id, bad: true, text: MOVE_WHY.body }; return render(); }
+    S.moveAsk = null; S.moveF = { seat: id, code, left: 120 }; render();
+    try {
+      const r = await fingerAct('seat_move', { old_code: code, seat_id: id }, (t, sec) => { if (S.moveF && S.moveF.seat === id) { S.moveF.left = sec; render(); } });
+      S.moved[id] = code;
+      const n = Number(r && r.forwarded) | 0;
+      S.moveMsg = { seat: id, text: (r && r.already ? '本來就收 @' + code + ' 的信' : '已搬:寄給 @' + code + ' 的信改送這一席') + (n ? ',舊帳裡沒結的 ' + n + ' 封一併轉過來' : '') + ';舊席那邊照步驟停收' };
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
+      if (rs === 'page_only' || rs === 'unknown_act_type') S.moveOff = true;
+      S.moveMsg = { seat: id, bad: true, text: moveWhy(e) };
+    }
+    S.moveF = null; render();
+  }
+  async function seatUnmove(id) {
+    const code = S.moved[id]; S.moveMsg = null;
+    if (!code) return render();
+    try {
+      await act('seat_unmove', { old_code: code });
+      delete S.moved[id];
+      S.moveMsg = { seat: id, text: '已搬回:寄給 @' + code + ' 的新信回到舊信帳;舊席收信要用 1.x 指令重開' };
+    } catch (e) { S.moveMsg = { seat: id, bad: true, text: moveWhy(e) }; }
+    render();
+  }
   async function fingerAct(type, body, wait, extra) {
     let r = await act(type, body);
     if (!(r && r.__status === 202 && r.ticket)) return r;
@@ -4038,6 +4086,10 @@
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
     const sbb = x.closest('[data-sendback]'); if (sbb && running(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按「交回本機原倉」' }; say(S.sbMsg.text, 'err'); return render(); }
     if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    const mvb = x.closest('[data-move]'); if (mvb) { S.moveAsk = mvb.dataset.move; S.moveCode = ''; S.moveMsg = null; render(); const ci = document.querySelector('[data-movecode]'); if (ci) ci.focus(); return; }
+    if (x.closest('[data-moveno]')) { S.moveAsk = null; render(); return; }
+    const mvg = x.closest('[data-movego]'); if (mvg && !S.moveF) { const ci = document.querySelector('[data-movecode]'); mvg.disabled = true; return seatMove(mvg.dataset.movego, String(ci ? ci.value : S.moveCode || '').trim()); }
+    const umv = x.closest('[data-unmove]'); if (umv) { umv.disabled = true; return seatUnmove(umv.dataset.unmove); }
     const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答
@@ -4287,6 +4339,7 @@
     if (e.target.dataset && e.target.dataset.addq && S.add) { S.add.pq = e.target.value; const l = document.getElementById('addpl'); if (l) l.innerHTML = personaRows(S.add); return; } // 只換清單,輸入框不重畫(不掉焦點)
     if (e.target.dataset && e.target.dataset.addf && S.add) { S.add[e.target.dataset.addf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.ansfor) { S.ansDraft[e.target.dataset.ansfor] = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.movecode !== undefined) { S.moveCode = e.target.value; return; } // 重畫時不掉字
     if (e.target.id === 'sq') {
       S.q = e.target.value; clearTimeout(SR.timer);
       if (!S.q.trim()) { SR.seq++; S.sr = null; render(); return; } // 清空就回原畫面
