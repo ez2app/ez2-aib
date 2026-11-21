@@ -20,8 +20,9 @@ use crate::trusted_hosts::{self, TrustedHost};
 pub const READ: &str = "cat /etc/ssh/ssh_host_ed25519_key.pub; id -un; sw_vers -productVersion";
 
 /// Add the line read from standard input to `~/.ssh/authorized_keys` once; prints `ADDED <n>`.
+/// The line must be a restricted one of aibd's key (5d33a PREREAD-addtesthost N2).
 pub const ADD: &str = r#"IFS= read -r L || exit 3
-case "$L" in restrict,command=*) ;; *) exit 3;; esac
+case "$L" in restrict,command=*" aibd-delegate") ;; *) exit 3;; esac
 umask 077
 mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" || exit 4
 F="$HOME/.ssh/authorized_keys"
@@ -31,18 +32,22 @@ grep -qxF -- "$L" "$F" || printf "%s\n" "$L" >> "$F" || exit 4
 chmod 600 "$F" || exit 4
 echo "ADDED $(grep -cxF -- "$L" "$F")""#;
 
-/// Take the line read from standard input out of `~/.ssh/authorized_keys`, every other line
-/// kept; prints `REMOVED <copies left>`.
-pub const REMOVE: &str = r#"IFS= read -r L || exit 3
-case "$L" in restrict,command=*) ;; *) exit 3;; esac
+/// Take out of `~/.ssh/authorized_keys` every line of aibd's key read from standard input
+/// (`ssh-ed25519 <base64>`) that carries the `aibd-delegate` mark, whatever its options say;
+/// every other line is kept, another key's marked line too (5d33a N2). Prints
+/// `REMOVED <such lines left>`: 0 is success.
+pub const REMOVE: &str = r#"IFS= read -r K || exit 3
+case "$K" in "ssh-ed25519 "*) ;; *) exit 3;; esac
+case "$K" in *" "*" "*) exit 3;; esac
 F="$HOME/.ssh/authorized_keys"
 [ -f "$F" ] || { echo "REMOVED 0"; exit 0; }
+M=" $K aibd-delegate"
 T="$F.aibd.$$"
-grep -vxF -- "$L" "$F" > "$T"
+grep -vF -- "$M" "$F" > "$T"
 r=$?
 [ "$r" -le 1 ] || { rm -f "$T"; exit 4; }
 chmod 600 "$T" && mv "$T" "$F" || { rm -f "$T"; exit 4; }
-echo "REMOVED $(grep -cxF -- "$L" "$F")""#;
+echo "REMOVED $(grep -cF -- "$M" "$F")""#;
 
 /// The one remote command for `script`: `/bin/sh -c '<script>'` (none of the scripts holds a
 /// single quote, so nothing is escaped).
@@ -58,28 +63,165 @@ fn pick_ok(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b))
 }
 
-/// The machine names of an ssh config: the words of its `Host` lines that name one machine,
-/// each once, in order.
-pub fn host_names(config: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// One `Host` pattern list matches `name` (ssh's `*` / `?` globs; a matching `!pattern` wins).
+fn host_matches(patterns: &[String], name: &str) -> bool {
+    fn glob(p: &[u8], s: &[u8]) -> bool {
+        match (p.first(), s.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => glob(&p[1..], s) || (!s.is_empty() && glob(p, &s[1..])),
+            (Some(b'?'), Some(_)) => glob(&p[1..], &s[1..]),
+            (Some(a), Some(b)) if a.eq_ignore_ascii_case(b) => glob(&p[1..], &s[1..]),
+            _ => false,
+        }
+    }
+    let mut yes = false;
+    for p in patterns {
+        if let Some(n) = p.strip_prefix('!') {
+            if glob(n.as_bytes(), name.as_bytes()) {
+                return false;
+            }
+        } else if glob(p.as_bytes(), name.as_bytes()) {
+            yes = true;
+        }
+    }
+    yes
+}
+
+/// The keys of the owner's ssh config this reads (5d33a PREREAD-addtesthost M1: the file is
+/// data, never handed to ssh; every other key is not read).
+const KEPT: [&str; 4] = ["hostname", "user", "port", "identityfile"];
+/// Keys that make a machine one this cannot reach plainly: each runs or routes through
+/// something else (5d33a M1), so the machine is not offered.
+const REFUSED: [&str; 4] = [
+    "proxycommand",
+    "proxyjump",
+    "knownhostscommand",
+    "localcommand",
+];
+
+/// One `Host` block: its patterns and its kept keys (lower case) with their values, in order.
+type Block = (Vec<String>, Vec<(String, String)>);
+
+/// A machine of the owner's ssh config, as aibd would reach it: every value spelled out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Machine {
+    pub name: String,
+    pub hostname: String,
+    pub port: u16,
+    pub user: String,
+    pub identity_file: String,
+}
+
+/// The machines of an ssh config, each `Host` name once in order, read as ssh reads its file
+/// (the first value of a key among the blocks matching the name wins), with `user` the login
+/// name when no block sets one and `home` for a leading `~/`. A name is offered with why it
+/// cannot be used instead when a matching block routes it elsewhere, a value has a `%` token or
+/// is missing, or the file has a `Match` or `Include` (what those apply to is not read here).
+pub fn machines(
+    config: &str,
+    user: &str,
+    home: &str,
+) -> Vec<(String, Result<Machine, &'static str>)> {
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut whole_file_refused = false;
     for line in config.lines() {
         let t = line.trim();
-        let mut w = t
-            .split(|c: char| c.is_whitespace() || c == '=')
-            .filter(|x| !x.is_empty());
-        if !w.next().is_some_and(|k| k.eq_ignore_ascii_case("host")) {
+        if t.is_empty() || t.starts_with('#') {
             continue;
         }
-        for name in w {
-            if name.starts_with('#') {
-                break;
-            }
-            if pick_ok(name) && !out.iter().any(|o| o == name) {
-                out.push(name.to_owned());
+        let (k, v) = match t.find(|c: char| c.is_whitespace() || c == '=') {
+            Some(i) => (
+                &t[..i],
+                t[i..].trim_start_matches(|c: char| c.is_whitespace() || c == '='),
+            ),
+            None => (t, ""),
+        };
+        let k = k.to_ascii_lowercase();
+        let v = v.split(" #").next().unwrap_or_default().trim();
+        match k.as_str() {
+            "host" => blocks.push((
+                v.split_whitespace().map(str::to_owned).collect(),
+                Vec::new(),
+            )),
+            "match" | "include" => whole_file_refused = true,
+            _ => {
+                if blocks.is_empty() {
+                    blocks.push((vec!["*".to_owned()], Vec::new()));
+                }
+                if let Some(b) = blocks.last_mut() {
+                    b.1.push((k, v.to_owned()));
+                }
             }
         }
     }
-    out
+    let mut names: Vec<String> = Vec::new();
+    for (pats, _) in &blocks {
+        for p in pats {
+            if pick_ok(p) && !names.iter().any(|n| n == p) {
+                names.push(p.clone());
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let got = machine_of(&blocks, &name, user, home, whole_file_refused);
+            (name, got)
+        })
+        .collect()
+}
+
+fn machine_of(
+    blocks: &[Block],
+    name: &str,
+    user: &str,
+    home: &str,
+    whole_file_refused: bool,
+) -> Result<Machine, &'static str> {
+    if whole_file_refused {
+        return Err("config_has_match_or_include");
+    }
+    let mut first: Vec<(&str, &str)> = Vec::new();
+    for (pats, keys) in blocks {
+        if !host_matches(pats, name) {
+            continue;
+        }
+        for (k, v) in keys {
+            if REFUSED.contains(&k.as_str()) && !v.eq_ignore_ascii_case("none") {
+                return Err("reached_through_something_else");
+            }
+            if KEPT.contains(&k.as_str()) && !first.iter().any(|(f, _)| f == k) {
+                first.push((k, v));
+            }
+        }
+    }
+    let get = |k: &str| first.iter().find(|(f, _)| *f == k).map(|(_, v)| *v);
+    let hostname = get("hostname").unwrap_or(name);
+    let port = match get("port") {
+        Some(p) => p.parse::<u16>().ok().filter(|p| *p > 0).ok_or("port")?,
+        None => 22,
+    };
+    let user = get("user").unwrap_or(user);
+    let identity_file = match get("identityfile") {
+        Some(f) => match f.strip_prefix("~/") {
+            Some(rest) => format!("{home}/{rest}"),
+            None => f.to_owned(),
+        },
+        None => return Err("no_identity_file"),
+    };
+    if [hostname, user, identity_file.as_str()]
+        .iter()
+        .any(|v| v.contains('%') || v.is_empty())
+    {
+        return Err("value_with_a_token");
+    }
+    Ok(Machine {
+        name: name.to_owned(),
+        hostname: hostname.to_owned(),
+        port,
+        user: user.to_owned(),
+        identity_file,
+    })
 }
 
 /// What [`READ`] said about a machine.
@@ -168,11 +310,53 @@ mod tests {
 
     #[test]
     fn only_the_names_of_single_machines_are_offered() {
-        let cfg = "Host *\n  User x\nHost andymini lin-macmini # two\nhost=pro13\n\
-                   Host !bad web-?? -oProxy\nHostName 192.0.2.9\nHost andymini\n  Match all\n";
-        assert_eq!(host_names(cfg), ["andymini", "lin-macmini", "pro13"]);
+        let cfg = "Host andymini lin-macmini # two\n  HostName 192.0.2.7\n  User owner\n  \
+                   IdentityFile ~/.ssh/id_rsa\nhost=pro13\n Port=2222\nHost !bad web-?? -oProxy\n\
+                   HostName 192.0.2.9\nHost jump-*\n ProxyJump gw\nHost jump-a\n\
+                   Host *\n  User fallback\n  IdentityFile ~/.ssh/id_ed25519\n  ProxyCommand none\n";
+        let m = machines(cfg, "me", "/Users/me");
+        let names: Vec<&str> = m.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["andymini", "lin-macmini", "pro13", "jump-a"]);
+        assert_eq!(
+            m[0].1,
+            Ok(Machine {
+                name: "andymini".into(),
+                hostname: "192.0.2.7".into(),
+                port: 22,
+                user: "owner".into(),
+                identity_file: "/Users/me/.ssh/id_rsa".into(),
+            })
+        );
+        // the first value wins: `Host *` fills only what the name's own block left out
+        let pro = m[2].1.as_ref().unwrap();
+        assert_eq!(
+            (pro.hostname.as_str(), pro.port, pro.user.as_str()),
+            ("pro13", 2222, "fallback")
+        );
+        assert_eq!(pro.identity_file, "/Users/me/.ssh/id_ed25519");
+        assert_eq!(
+            m[3].1,
+            Err("reached_through_something_else"),
+            "reason: proxy_offered"
+        );
+        let no_key = machines("Host lone\n HostName 192.0.2.8\n", "me", "/Users/me");
+        assert_eq!(no_key[0].1, Err("no_identity_file"));
+        let token = machines(
+            "Host t\n HostName %h.example\n IdentityFile ~/k\n",
+            "me",
+            "/h",
+        );
+        assert_eq!(token[0].1, Err("value_with_a_token"));
+        for refused in ["Include other\n", "Match exec \"x\"\n"] {
+            let m = machines(&format!("{refused}Host a\n IdentityFile ~/k\n"), "me", "/h");
+            assert_eq!(
+                m[0].1,
+                Err("config_has_match_or_include"),
+                "reason: {refused}"
+            );
+        }
         assert!(
-            host_names("HostName andymini\n").is_empty(),
+            machines("HostName andymini\n", "me", "/h").is_empty(),
             "reason: hostname_read_as_host"
         );
     }
@@ -301,11 +485,35 @@ mod tests {
             Some(3),
             "reason: any_line_added"
         );
-        assert_eq!(run(REMOVE, &input), (Some(0), "REMOVED 0".to_owned()));
+        let unmarked = format!("restrict,command=\"/x/gate\",from=\"192.0.2.7\" {KEY} other");
+        assert_eq!(
+            run(ADD, &format!("{unmarked}\n")).0,
+            Some(3),
+            "reason: unmarked_line_added"
+        );
+        // an older line of the same key (another gate path) and another key's marked line
+        let older =
+            format!("restrict,command=\"/old/gate\",from=\"192.0.2.7\" {KEY} aibd-delegate");
+        let other_key = "restrict,command=\"/x/gate\" ssh-ed25519 AAAAOTHERKEY aibd-delegate";
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(f, "{older}\n{other_key}").unwrap();
+        drop(f);
+        assert_eq!(
+            run(REMOVE, &format!("{KEY}\n")),
+            (Some(0), "REMOVED 0".to_owned())
+        );
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
-            "ssh-rsa AAAA other\n",
+            format!("ssh-rsa AAAA other\n{other_key}\n"),
             "reason: other_line_lost"
+        );
+        assert_eq!(
+            run(REMOVE, "ssh-ed25519 A B C\n").0,
+            Some(3),
+            "reason: any_key_taken"
         );
     }
 }

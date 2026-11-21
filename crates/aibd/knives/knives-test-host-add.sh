@@ -7,7 +7,7 @@ ta() { python3 -I scripts/knife.py crates/aibd/src/test_host_add.rs "$1" "$2" \
   --expect-fail "test_host_add::tests::$3" \
   -- cargo test -p aibd --locked --lib "test_host_add::tests::$3"; }
 # TA1 a pattern or an option is offered as a machine
-ta '            if pick_ok(name) && !out.iter().any(|o| o == name) {' '            if (pick_ok(name) || !name.is_empty()) && !out.iter().any(|o| o == name) { // knife' \
+ta '            if pick_ok(p) && !names.iter().any(|n| n == p) {' '            if (pick_ok(p) || !p.is_empty()) && !names.iter().any(|n| n == p) { // knife' \
    only_the_names_of_single_machines_are_offered
 # TA2 any host key type is taken
 ta '        (Some("ssh-ed25519"), Some(b)) => format!("ssh-ed25519 {b}"),' '        (Some(t), Some(b)) => format!("{t} {b}"), // knife' \
@@ -22,5 +22,17 @@ ta 'grep -qxF -- "$L" "$F" || printf "%s\n" "$L" >> "$F" || exit 4' 'printf "%s\
 ta 'if [ -s "$F" ] && [ -n "$(tail -c1 "$F")" ]; then printf "\n" >> "$F" || exit 4; fi' 'if false; then printf "\n" >> "$F" || exit 4; fi' \
    the_line_is_written_once_after_a_last_newline_and_taken_away_alone
 # TA6 the removal empties the file
-ta 'grep -vxF -- "$L" "$F" > "$T"' ': > "$T"' \
+ta 'grep -vF -- "$M" "$F" > "$T"' ': > "$T"' \
+   the_line_is_written_once_after_a_last_newline_and_taken_away_alone
+# RH1 a machine reached through a ProxyJump / ProxyCommand is offered
+ta '            if REFUSED.contains(&k.as_str()) && !v.eq_ignore_ascii_case("none") {' '            if REFUSED.contains(&k.as_str()) && v.is_empty() { // knife' \
+   only_the_names_of_single_machines_are_offered
+# RH1b a config with Match / Include is read as if it had none
+ta '            "match" | "include" => whole_file_refused = true,' '            "match" | "include" => whole_file_refused = whole_file_refused || k.is_empty(), // knife' \
+   only_the_names_of_single_machines_are_offered
+# RH4 the removal takes another key's marked line too
+ta 'M=" $K aibd-delegate"' 'M=" aibd-delegate"' \
+   the_line_is_written_once_after_a_last_newline_and_taken_away_alone
+# TA7 a line of the key without aibd's mark is added
+ta 'case "$L" in restrict,command=*" aibd-delegate") ;; *) exit 3;; esac' 'case "$L" in restrict,command=*) ;; *) exit 3;; esac' \
    the_line_is_written_once_after_a_last_newline_and_taken_away_alone
