@@ -10,7 +10,7 @@
 //!   file is refused. A git folder gets `/.aib/` in its `info/exclude`, so it is never
 //!   committed or sent back.
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The folder under the seat's folder the files go to.
 pub const DIR: &str = ".aib";
@@ -74,113 +74,208 @@ fn open_no_follow(p: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(p)
 }
 
-/// Write `files` (name, bytes) into `<cwd>/.aib/`, read-only, and keep `.aib` out of git. The
-/// paths written, relative to `cwd` (`.aib/<name>`).
-pub fn put(cwd: &Path, files: &[(String, Vec<u8>)]) -> Result<Vec<String>, &'static str> {
+/// What [`put`] wrote: the paths relative to the seat's folder (`.aib/<name>`), and whether
+/// `/.aib/` is in the folder's own git exclude (`false`: the folder is not a git clone of its
+/// own, a worktree's `.git` file is not followed, 5d33a REVIEW-seatcarry L2; the send back
+/// refuses `.aib/` either way, [`in_carry`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Carried {
+    pub paths: Vec<String>,
+    pub excluded: bool,
+}
+
+/// A path under [`DIR`] (as git names it): never sent back to a registered repo (5d33a
+/// REVIEW-seatcarry L2: the real fence is at the way out, whatever the seat commits).
+pub fn in_carry(path: &str) -> bool {
+    let low = path.to_ascii_lowercase();
+    low == DIR || low.starts_with(".aib/")
+}
+
+/// Write `files` (name, bytes) into `<cwd>/.aib/`, read-only, and keep `.aib` out of git.
+/// Unix: every step is taken from an open folder (`openat` … `O_NOFOLLOW`, `O_EXCL` scratch,
+/// `renameat` in that folder), so `.aib` changed into a link meanwhile cannot send the write
+/// elsewhere (5d33a REVIEW-seatcarry L1). Windows: `.aib` is looked at before and after.
+pub fn put(cwd: &Path, files: &[(String, Vec<u8>)]) -> Result<Carried, &'static str> {
     if files.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Carried {
+            paths: Vec::new(),
+            excluded: false,
+        });
     }
-    let dir = cwd.join(DIR);
-    match std::fs::symlink_metadata(&dir) {
-        Ok(m) if m.file_type().is_dir() => {}
-        Ok(_) => return Err("carry_refused"),
-        Err(_) => std::fs::create_dir(&dir).map_err(|_| "carry_refused")?,
-    }
+    let paths = write_all(cwd, files).map_err(|_| "carry_refused")?;
+    let excluded = exclude(cwd).unwrap_or(false);
+    Ok(Carried { paths, excluded })
+}
+
+#[cfg(unix)]
+fn write_all(cwd: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<String>> {
+    let root = at::open_dir(cwd)?;
+    let dir = at::dir(&root, DIR, true)?;
+    put_in(&dir, files)
+}
+
+/// The files written into the open `.aib` folder `dir` (unix).
+#[cfg(unix)]
+fn put_in(dir: &std::os::fd::OwnedFd, files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<String>> {
     let mut out = Vec::new();
     for (name, bytes) in files {
-        let place = dir.join(name);
-        if std::fs::symlink_metadata(&place).is_ok_and(|m| !m.file_type().is_file()) {
-            return Err("carry_refused");
-        }
-        let tmp = dir.join(format!(".{name}.tmp"));
-        let _ = std::fs::remove_file(&tmp);
-        std::fs::write(&tmp, bytes).map_err(|_| "carry_refused")?;
-        read_only(&tmp).map_err(|_| "carry_refused")?;
-        // a file of the same name from an earlier open is read-only too: it is replaced whole
-        if place.exists() {
-            let _ = writable(&place);
-            let _ = std::fs::remove_file(&place);
-        }
-        std::fs::rename(&tmp, &place).map_err(|_| "carry_refused")?;
+        at::write_new(dir, name, bytes, at::read_only_mode())?;
         out.push(format!("{DIR}/{name}"));
     }
-    exclude(cwd).map_err(|_| "carry_refused")?;
     Ok(out)
 }
 
-fn read_only(p: &Path) -> std::io::Result<()> {
-    let mut perm = std::fs::metadata(p)?.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        perm.set_mode(0o444);
+#[cfg(not(unix))]
+fn write_all(cwd: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<String>> {
+    let dir = cwd.join(DIR);
+    let plain = |d: &Path| std::fs::symlink_metadata(d).is_ok_and(|m| m.file_type().is_dir());
+    if std::fs::symlink_metadata(&dir).is_err() {
+        std::fs::create_dir(&dir)?;
     }
-    #[cfg(not(unix))]
-    perm.set_readonly(true);
-    std::fs::set_permissions(p, perm)
-}
-
-fn writable(p: &Path) -> std::io::Result<()> {
-    let mut perm = std::fs::metadata(p)?.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        perm.set_mode(0o644);
-    }
-    #[cfg(not(unix))]
-    #[allow(clippy::permissions_set_readonly_false)] // Windows: only the read-only flag
-    perm.set_readonly(false);
-    std::fs::set_permissions(p, perm)
-}
-
-/// The `info/exclude` of the git folder `cwd` is (its own `.git` folder, or a worktree's
-/// common one); `None` when `cwd` is not a git folder.
-pub fn exclude_file(cwd: &Path) -> Option<PathBuf> {
-    let dot = cwd.join(".git");
-    let m = std::fs::symlink_metadata(&dot).ok()?;
-    let git = if m.file_type().is_dir() {
-        dot
-    } else if m.file_type().is_file() {
-        let text = std::fs::read_to_string(&dot).ok()?;
-        let line = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
-        let g = PathBuf::from(line);
-        let g = if g.is_absolute() { g } else { cwd.join(g) };
-        match std::fs::read_to_string(g.join("commondir")) {
-            Ok(c) => {
-                let c = PathBuf::from(c.trim());
-                if c.is_absolute() {
-                    c
-                } else {
-                    g.join(c)
-                }
-            }
-            Err(_) => g,
+    let mut out = Vec::new();
+    for (name, bytes) in files {
+        // no openat on Windows: .aib is a plain folder (not a reparse point) before and after
+        if !plain(&dir) {
+            return Err(std::io::ErrorKind::InvalidInput.into());
         }
-    } else {
-        return None;
-    };
-    Some(git.join("info").join("exclude"))
+        let (tmp, place) = (dir.join(format!(".{name}.tmp")), dir.join(name));
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::write(&tmp, bytes)?;
+        let mut perm = std::fs::metadata(&tmp)?.permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&tmp, perm)?;
+        if let Ok(m) = std::fs::symlink_metadata(&place) {
+            let mut perm = m.permissions();
+            #[allow(clippy::permissions_set_readonly_false)] // Windows: only the read-only flag
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(&place, perm);
+            let _ = std::fs::remove_file(&place);
+        }
+        std::fs::rename(&tmp, &place)?;
+        if !plain(&dir) {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        out.push(format!("{DIR}/{name}"));
+    }
+    Ok(out)
 }
 
-/// Add [`EXCLUDE`] to `cwd`'s git exclude once; nothing when `cwd` is not a git folder.
-pub fn exclude(cwd: &Path) -> std::io::Result<()> {
-    let Some(f) = exclude_file(cwd) else {
-        return Ok(());
+/// Add [`EXCLUDE`] once to `<cwd>/.git/info/exclude` when `<cwd>/.git` is a folder of the
+/// seat's own (aibd's copies are whole clones); `false` without writing when it is not (a
+/// worktree's `.git` file names a place the seat wrote, never followed: 5d33a L2).
+#[cfg(unix)]
+pub fn exclude(cwd: &Path) -> std::io::Result<bool> {
+    let root = at::open_dir(cwd)?;
+    let Ok(git) = at::dir(&root, ".git", false) else {
+        return Ok(false);
     };
-    let now = std::fs::read_to_string(&f).unwrap_or_default();
+    let info = at::dir(&git, "info", true)?;
+    let now = at::read_plain(&info, "exclude")?.unwrap_or_default();
     if now.lines().any(|l| l.trim() == EXCLUDE) {
-        return Ok(());
+        return Ok(true);
     }
-    if let Some(d) = f.parent() {
-        std::fs::create_dir_all(d)?;
+    at::write_new(&info, "exclude", with_line(now).as_bytes(), at::file_mode())?;
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+pub fn exclude(cwd: &Path) -> std::io::Result<bool> {
+    let git = cwd.join(".git");
+    if !std::fs::symlink_metadata(&git).is_ok_and(|m| m.file_type().is_dir()) {
+        return Ok(false);
     }
-    let mut text = now;
+    let info = git.join("info");
+    std::fs::create_dir_all(&info)?;
+    let f = info.join("exclude");
+    let now = std::fs::read_to_string(&f).unwrap_or_default();
+    if !now.lines().any(|l| l.trim() == EXCLUDE) {
+        std::fs::write(&f, with_line(now))?;
+    }
+    Ok(true)
+}
+
+fn with_line(mut text: String) -> String {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
     text.push_str(EXCLUDE);
     text.push('\n');
-    std::fs::write(&f, text)
+    text
+}
+
+/// Folder-relative file work (unix): each name is one entry of an open folder, never a path.
+#[cfg(unix)]
+mod at {
+    use nix::errno::Errno;
+    use nix::fcntl::{openat, renameat, OFlag};
+    use nix::sys::stat::{mkdirat, Mode};
+    use nix::unistd::{unlinkat, UnlinkatFlags};
+    use std::io::{Read, Write};
+    use std::os::fd::OwnedFd;
+    use std::path::Path;
+
+    fn dir_flags() -> OFlag {
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
+    }
+
+    pub fn read_only_mode() -> Mode {
+        Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH
+    }
+
+    pub fn file_mode() -> Mode {
+        Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IROTH
+    }
+
+    /// The seat's folder itself (aibd chose it).
+    pub fn open_dir(p: &Path) -> std::io::Result<OwnedFd> {
+        Ok(nix::fcntl::open(
+            p,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?)
+    }
+
+    /// `name` in `parent` as a folder, not through a link; made first when `make`.
+    pub fn dir(parent: &OwnedFd, name: &str, make: bool) -> std::io::Result<OwnedFd> {
+        match openat(parent, name, dir_flags(), Mode::empty()) {
+            Err(Errno::ENOENT) if make => {
+                let m =
+                    Mode::S_IRWXU | Mode::S_IRGRP | Mode::S_IXGRP | Mode::S_IROTH | Mode::S_IXOTH;
+                mkdirat(parent, name, m)?;
+                Ok(openat(parent, name, dir_flags(), Mode::empty())?)
+            }
+            r => Ok(r?),
+        }
+    }
+
+    /// `name` in `dir` when it is there: a plain file, not through a link.
+    pub fn read_plain(dir: &OwnedFd, name: &str) -> std::io::Result<Option<String>> {
+        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        match openat(dir, name, flags, Mode::empty()) {
+            Err(Errno::ENOENT) => Ok(None),
+            Err(e) => Err(e.into()),
+            Ok(fd) => {
+                let mut text = String::new();
+                std::fs::File::from(fd)
+                    .take(super::MAX)
+                    .read_to_string(&mut text)?;
+                Ok(Some(text))
+            }
+        }
+    }
+
+    /// `bytes` as `name` in `dir`: a new scratch entry (`O_EXCL`, no link) renamed over it.
+    pub fn write_new(dir: &OwnedFd, name: &str, bytes: &[u8], mode: Mode) -> std::io::Result<()> {
+        let tmp = format!(".{name}.tmp");
+        let _ = unlinkat(dir, tmp.as_str(), UnlinkatFlags::NoRemoveDir);
+        let flags =
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let fd = openat(dir, tmp.as_str(), flags, mode)?;
+        let mut f = std::fs::File::from(fd);
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(renameat(dir, tmp.as_str(), dir, name)?)
+    }
 }
 
 /// The page's two names read now from [`crate::docs::root`]: `(name, bytes)` in order, or the
@@ -295,7 +390,11 @@ mod tests {
             ("MEMPACK-a9136-1121.md".to_owned(), b"two".to_vec()),
         ];
         let got = put(&cwd, &files).unwrap();
-        assert_eq!(got, [".aib/HANDOFF-a.md", ".aib/MEMPACK-a9136-1121.md"]);
+        assert_eq!(
+            got.paths,
+            [".aib/HANDOFF-a.md", ".aib/MEMPACK-a9136-1121.md"]
+        );
+        assert!(got.excluded, "reason: not_excluded");
         let h = cwd.join(".aib").join("HANDOFF-a.md");
         assert_eq!(std::fs::read(&h).unwrap(), b"one");
         assert!(
@@ -329,27 +428,58 @@ mod tests {
         }
     }
 
-    /// A worktree's `.git` file leads to the common folder's exclude.
+    /// 5d33a L2: a worktree's `.git` file is not followed (the seat wrote it); `.aib/` is refused
+    /// on the way back whatever the seat commits.
     #[test]
-    fn a_worktree_is_excluded_in_its_common_git_folder() {
+    fn a_git_file_is_not_followed_and_aib_never_goes_back() {
         let d = tempfile::tempdir().unwrap();
-        let common = d.path().join("repo").join(".git");
-        let wt = common.join("worktrees").join("w1");
-        std::fs::create_dir_all(&wt).unwrap();
-        std::fs::write(wt.join("commondir"), "../..\n").unwrap();
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
         let cwd = d.path().join("tree");
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::write(cwd.join(".git"), format!("gitdir: {}\n", wt.display())).unwrap();
-        assert_eq!(
-            exclude_file(&cwd).unwrap(),
-            wt.join("../..").join("info").join("exclude")
+        std::fs::write(
+            cwd.join(".git"),
+            format!("gitdir: {}\n", elsewhere.display()),
+        )
+        .unwrap();
+        let got = put(&cwd, &[("HANDOFF-a.md".to_owned(), b"h".to_vec())]).unwrap();
+        assert!(!got.excluded, "reason: git_file_followed");
+        assert!(
+            std::fs::read_dir(&elsewhere).unwrap().next().is_none(),
+            "reason: git_file_followed"
         );
-        exclude(&cwd).unwrap();
-        let ex = std::fs::read_to_string(common.join("info").join("exclude")).unwrap();
-        assert!(ex.lines().any(|l| l == EXCLUDE));
         let plain = d.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(exclude_file(&plain), None);
+        assert!(!exclude(&plain).unwrap());
+        for p in [".aib", ".aib/HANDOFF-a.md", ".AIB/x"] {
+            assert!(in_carry(p), "reason: carry_sent_back {p}");
+        }
+        for p in ["aib/x", ".aibx/y", "src/.aib/x"] {
+            assert!(!in_carry(p), "{p}");
+        }
+    }
+
+    /// SC10 (5d33a L1): the files go into the `.aib` folder opened at the start even when
+    /// `.aib` is changed into a link before the write.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_put_in_after_the_look_does_not_move_the_write() {
+        let d = tempfile::tempdir().unwrap();
+        let cwd = d.path().join("seat");
+        let other = d.path().join("elsewhere");
+        std::fs::create_dir_all(cwd.join(DIR)).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let root = at::open_dir(&cwd).unwrap();
+        let dir = at::dir(&root, DIR, false).unwrap();
+        std::fs::rename(cwd.join(DIR), cwd.join("was")).unwrap();
+        std::os::unix::fs::symlink(&other, cwd.join(DIR)).unwrap();
+        put_in(&dir, &[("HANDOFF-a.md".to_owned(), b"h".to_vec())]).unwrap();
+        assert_eq!(
+            std::fs::read(cwd.join("was").join("HANDOFF-a.md")).unwrap(),
+            b"h",
+            "reason: written_by_path"
+        );
+        assert!(std::fs::read_dir(&other).unwrap().next().is_none());
     }
 
     /// SC8: a memory pack goes with a handoff; nothing given, nothing read.

@@ -19,17 +19,25 @@ sc '        .custom_flags(nix::libc::O_NOFOLLOW)' '        .custom_flags(0) // k
 sc '    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX {' '    if bytes.capacity() == usize::MAX { // knife' \
    only_a_plain_small_file_of_the_pending_folder_is_read
 # SC6 the copy is writable
-sc '        perm.set_mode(0o444);' '        perm.set_mode(0o644); // knife' \
+sc '        Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH' '        Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IROTH // knife' \
    the_files_go_read_only_into_the_seats_folder_out_of_git
 # SC7 .aib is not kept out of git
-sc '    exclude(cwd).map_err(|_| "carry_refused")?;' '    let _ = cwd; // knife' \
+sc '    let excluded = exclude(cwd).unwrap_or(false);' '    let excluded = false; // knife' \
    the_files_go_read_only_into_the_seats_folder_out_of_git
 # SC8 .aib that is a link is written through
-sc '        Ok(m) if m.file_type().is_dir() => {}' '        Ok(m) if m.file_type().is_dir() || m.file_type().is_symlink() => {} // knife' \
+sc '        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC' '        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC // knife' \
    the_files_go_read_only_into_the_seats_folder_out_of_git
 # SC9 a memory pack without its handoff is taken
 sc '            Err(("mempack", "a memory pack goes with a handoff"))' '            Ok(Vec::new()) // knife' \
    a_memory_pack_comes_with_its_handoff
+# SC10 (5d33a L1) the write goes by path, so a link put in after the look moves it
+sc '        at::write_new(dir, name, bytes, at::read_only_mode())?;' '        let _ = dir; std::fs::write(Path::new(DIR).join(name), bytes)?; // knife' \
+   a_link_put_in_after_the_look_does_not_move_the_write
+# SC11 (5d33a L2) a commit bringing .aib/ is sent back
+python3 -I scripts/knife.py crates/aibd/src/send_back.rs \
+   '        || crate::seat_carry::in_carry(path)' '        || (crate::seat_carry::in_carry(path) && false) // knife' \
+   --expect-fail settings_a_workflow_a_submodule_file_and_a_link_are_refused_by_name \
+   -- cargo test -p aibd --locked --lib settings_a_workflow_a_submodule_file_and_a_link_are_refused_by_name
 # MV1-MV5 aibd ctl seat move finds the move from the seat code alone (SPEC-seat-open-oneline-519d0-1121)
 mv() { python3 -I scripts/knife.py crates/aibd/src/seat_move.rs "$1" "$2" --expect-fail "seat_move::tests::$3" \
         -- cargo test -p aibd --locked --lib "seat_move::tests::$3"; }

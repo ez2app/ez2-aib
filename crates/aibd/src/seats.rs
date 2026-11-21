@@ -2261,7 +2261,7 @@ async fn open_checked(
     };
     // the handoff and memory pack go into the folder before the seat is written and starts
     let carried = if req.carry.is_empty() {
-        Vec::new()
+        None
     } else {
         let (into, files) = (cwd.clone(), std::mem::take(&mut req.carry));
         match tokio::task::spawn_blocking(move || {
@@ -2269,7 +2269,7 @@ async fn open_checked(
         })
         .await
         {
-            Ok(Ok(c)) => c,
+            Ok(Ok(c)) => Some(c),
             _ => {
                 return Refusal(
                     "carry",
@@ -2401,8 +2401,9 @@ async fn open_checked(
                 Ok(session) => response["session"] = session,
                 Err(e) => response["session_error"] = e,
             }
-            if !carried.is_empty() {
-                response["carried"] = serde_json::json!(carried);
+            if let Some(c) = &carried {
+                response["carried"] = serde_json::json!(c.paths);
+                response["carried_excluded"] = serde_json::json!(c.excluded);
             }
             if let Some(k) = key {
                 let store = st.store.clone();
