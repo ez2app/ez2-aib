@@ -193,11 +193,13 @@ fn prepare(conn: &mut Connection) -> Result<()> {
             tx.pragma_update(None, "user_version", MESSAGES_SCHEMA)?;
             tx.commit()?;
             crate::threads::add_tables(conn)?;
-            crate::seat_moves::add_tables(conn)
+            crate::seat_moves::add_tables(conn)?;
+            crate::ranks::add_tables(conn)
         }
         MESSAGES_SCHEMA => {
             crate::threads::add_tables(conn)?;
-            crate::seat_moves::add_tables(conn)
+            crate::seat_moves::add_tables(conn)?;
+            crate::ranks::add_tables(conn)
         }
         newer => Err(StoreError::UnknownMigration(newer)),
     }
