@@ -168,18 +168,33 @@ pub fn waiting(
     json!({"counts": counts, "letters": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(), "more": more})
 }
 
-/// Whether aibd's own record has the letter `aibd_message_id` urgent, marked by Andy, 519d0 or
-/// the system (7ebca's level column; 5d33a: a seat cannot mark urgent in the first stage).
-/// When it is wired (5d33a REVIEW-inboxsummary N1, knife IB7): that row must be addressed to
-/// `legacy:<code>` and record `letter_id` as its 1.x letter, or an id copied from another
-/// letter would make this one urgent. False until that column exists.
+/// Whether aibd's own record has the letter `aibd_message_id` urgent (待審 1.5 期, 7ebca
+/// e41c75d354 `crate::urgent`): all three, or an id copied from another letter would make this
+/// one urgent (5d33a REVIEW-inboxsummary N1 / N3, knives IB7 / IB8):
+/// - the row is addressed to this ledger seat (`seat:legacy:<code>`);
+/// - it records `letter_id` (the letter's file name id) as the 1.x letter it wrote
+///   (`session_id` = `legacy:<id>`, as seat_send settles a ledger letter);
+/// - [`crate::urgent::is_urgent`]: seat_send marked it urgent, and it did not come in from a
+///   ledger.
 pub fn aibd_urgent(
-    _db: &aib_store::MessageDb,
-    _aibd_message_id: &str,
-    _code: &str,
-    _letter_id: &str,
+    db: &aib_store::MessageDb,
+    aibd_message_id: &str,
+    code: &str,
+    letter_id: &str,
 ) -> bool {
-    false
+    db.get(aibd_message_id)
+        .ok()
+        .flatten()
+        .is_some_and(|row| urgent_row(&row, code, letter_id))
+}
+
+/// [`aibd_urgent`] on a row read.
+pub fn urgent_row(row: &aib_store::MessageRow, code: &str, letter_id: &str) -> bool {
+    let legacy = crate::seat_send::LEGACY_TO;
+    row.to_key == format!("seat:{legacy}{code}")
+        && row.item.get("session_id").and_then(Value::as_str)
+            == Some(format!("{legacy}{letter_id}").as_str())
+        && crate::urgent::is_urgent(row)
 }
 
 /// Whether the 1.x letter `id` was handed to this web seat's inbox: dm_import's row (key
@@ -689,6 +704,66 @@ mod tests {
         assert_eq!(rows[1]["claimed_urgent"], json!(true));
         assert_eq!(rows[2]["claimed_urgent"], json!(false));
         assert_eq!(v["counts"]["urgent"], json!(0));
+    }
+
+    /// IB7 / IB8 (5d33a REVIEW-inboxsummary N1 / N3; 7ebca e41c75d354): a letter is urgent
+    /// only when aibd's row is to this ledger seat, records this very letter, and is urgent
+    /// (not one that came in from a ledger).
+    #[test]
+    fn aibd_makes_a_letter_urgent_only_by_its_own_row() {
+        let row = |to: &str, session: &str, level: &str, imported: bool| {
+            let mut item = serde_json::Map::new();
+            item.insert("session_id".into(), json!(session));
+            item.insert("level".into(), json!(level));
+            if imported {
+                item.insert("imported".into(), json!(true));
+            }
+            aib_store::MessageRow {
+                message_id: "m_1".into(),
+                thread_id: String::new(),
+                from_key: "seat:seat_1".into(),
+                to_key: to.into(),
+                created: String::new(),
+                created_unix: 0,
+                updated: String::new(),
+                rev: 1,
+                item,
+                body: None,
+                body_sha256: String::new(),
+                len: 0,
+                idem_owner: None,
+                idem_key: None,
+                journaled: false,
+            }
+        };
+        let to = format!("seat:legacy:{CODE}");
+        let letter = "q_00000000000000e1";
+        let mine = format!("legacy:{letter}");
+        assert!(urgent_row(&row(&to, &mine, "urgent", false), CODE, letter));
+        assert!(
+            !urgent_row(
+                &row("seat:legacy:519d0", &mine, "urgent", false),
+                CODE,
+                letter
+            ),
+            "reason: other_seat_row_counted"
+        );
+        assert!(
+            !urgent_row(
+                &row(&to, "legacy:q_00000000000000e2", "urgent", false),
+                CODE,
+                letter
+            ),
+            "reason: other_letter_row_counted"
+        );
+        assert!(
+            !urgent_row(&row(&to, &mine, "normal", false), CODE, letter),
+            "reason: plain_counted"
+        );
+        assert!(
+            !urgent_row(&row(&to, &mine, "urgent", true), CODE, letter),
+            "reason: imported_counted"
+        );
     }
 
     /// IB3 / IB4 / IB5 (5d33a 題 1): several at once, each at its own rev; one failing leaves

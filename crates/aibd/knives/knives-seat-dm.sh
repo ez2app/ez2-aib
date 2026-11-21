@@ -56,3 +56,12 @@ dm '    if in_web(id) {' '    if in_web(id) && id.is_empty() { // knife' \
 # G3k (5d33a REVIEW-g3 be9077a6 L1) a mirror row on a thread sends the letter to message_done
 dm '    to_key.strip_prefix("seat:") == Some(seat_id)' '    !to_key.is_empty() || seat_id.is_empty() // knife' \
    only_this_seats_own_row_sends_a_letter_to_the_web_inbox
+# IB7 (5d33a REVIEW-inboxsummary N1) another seat's row makes the letter urgent
+dm '    row.to_key == format!("seat:{legacy}{code}")' '    !code.is_empty()' \
+   aibd_makes_a_letter_urgent_only_by_its_own_row
+# IB8 (N3) a row recording another letter makes this one urgent
+dm '            == Some(format!("{legacy}{letter_id}").as_str())' '            != Some("")' \
+   aibd_makes_a_letter_urgent_only_by_its_own_row
+# IB9 a plain or imported row makes the letter urgent
+dm '        && crate::urgent::is_urgent(row)' '        && !row.item.is_empty()' \
+   aibd_makes_a_letter_urgent_only_by_its_own_row
