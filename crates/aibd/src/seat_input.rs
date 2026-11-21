@@ -50,6 +50,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::seat_move::MOVE,
+    crate::seat_move::UNMOVE,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
@@ -417,6 +419,24 @@ pub async fn act(
                 crate::seat_trust::trust(st, body, by).await
             } else {
                 crate::seat_trust::untrust(st, body, by).await
+            };
+        }
+        // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
+        // built-in page in this pairing only, with the owner's fingerprint; going back needs none
+        Some(k @ (crate::seat_move::MOVE | crate::seat_move::UNMOVE)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat is moved from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::seat_move::MOVE {
+                crate::seat_move::moved(st, body, by).await
+            } else {
+                crate::seat_move::unmoved(st, body, by).await
             };
         }
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a

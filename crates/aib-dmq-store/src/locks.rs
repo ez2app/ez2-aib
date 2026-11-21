@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use aib_dmq::lock::{Enter, Held, Level, OrderError, DELIVER_LOCK, TRANSITION_LOCK};
 
-use crate::fsx::{create_private, lock_ex, LockWait};
+use crate::fsx::{lock_ex, LockWait, SeatDir};
 
 /// The Windows stand-in for locking the seat folder: created once, never replaced or
 /// deleted (deleting it while held would let a second writer lock a new file).
@@ -76,26 +76,32 @@ impl Drop for SeatLock {
     }
 }
 
-fn target(dir: &Path, level: Level) -> PathBuf {
+fn open_target(dir: &SeatDir, level: Level) -> std::io::Result<File> {
     match level {
-        Level::Deliver => dir.join(DELIVER_LOCK),
-        Level::Transition => dir.join(TRANSITION_LOCK),
-        Level::Directory if cfg!(unix) => dir.to_path_buf(),
-        Level::Directory => dir.join(DIR_LOCK_FILE),
+        Level::Deliver => dir.open_private(DELIVER_LOCK),
+        Level::Transition => dir.open_private(TRANSITION_LOCK),
+        Level::Directory => dir.lock_handle(DIR_LOCK_FILE),
     }
 }
 
-fn open_target(path: &Path, level: Level) -> std::io::Result<File> {
-    if level == Level::Directory && cfg!(unix) {
-        File::open(path)
-    } else {
-        create_private(path, false)
-    }
-}
-
-/// Take `level` on `seat` (whose folder is `dir`), waiting up to `timeout`.
+/// Take `level` on `seat` (whose folder is `dir`), waiting up to `timeout`. The folder is
+/// opened here without following a link; callers holding a [`SeatDir`] use [`lock_in`].
 pub fn lock(
     dir: &Path,
+    seat: &str,
+    level: Level,
+    timeout: Duration,
+) -> Result<SeatLock, LockError> {
+    let d = SeatDir::at(dir, false).map_err(|e| LockError::Failed {
+        path: dir.to_path_buf(),
+        why: e.to_string(),
+    })?;
+    lock_in(&d, seat, level, timeout)
+}
+
+/// [`lock`] in a seat folder already held open.
+pub fn lock_in(
+    dir: &SeatDir,
     seat: &str,
     level: Level,
     timeout: Duration,
@@ -113,8 +119,8 @@ pub fn lock(
         return Ok(g);
     }
     // from here on, dropping `g` leaves the order stack again
-    let path = target(dir, level);
-    let f = open_target(&path, level).map_err(|e| LockError::Failed {
+    let path = dir.path().to_path_buf();
+    let f = open_target(dir, level).map_err(|e| LockError::Failed {
         path: path.clone(),
         why: e.to_string(),
     })?;

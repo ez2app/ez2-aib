@@ -197,6 +197,10 @@ pub fn letter(
     m
 }
 
+/// `sender_source` of a web seat's letter (a record: what tells aibd's own letters from others
+/// is `aibd_message_id` found in its own table, 5d33a PREREAD-g5-bridge N1).
+pub const BRIDGE_SOURCE: &str = "aibd_bridge";
+
 /// Each (page, seat) pair's send times in the last minute.
 type Windows = Mutex<HashMap<(String, String), VecDeque<Instant>>>;
 
@@ -331,6 +335,30 @@ pub struct Sent {
     pub relay: bool,
 }
 
+/// Who a letter is from.
+#[derive(Debug, Clone, Copy)]
+pub enum Sender<'a> {
+    /// The person at the built-in page: the label aibd made, `page:<8 hex>`.
+    Person { label: &'a str, human_id: &'a str },
+    /// A web seat (G5 信橋, DESIGN-g5-bridge-7ebca-1121 r1 §3): the 1.x code it moved from as
+    /// the owner's fingerprint wrote it ([`aib_store::seat_moves`]; never a field or a file),
+    /// else none; its own five-letter code; aibd's row id for the letter.
+    Seat {
+        old_code: Option<&'a str>,
+        web_code: &'a str,
+        message_id: &'a str,
+    },
+}
+
+/// What the 1.x header says of a web seat: its old code when it has one, and that it came
+/// through the bridge (5d33a PREREAD-g5-bridge Q2: the receiving seat can tell).
+pub fn seat_label(old_code: Option<&str>, web_code: &str) -> String {
+    match old_code {
+        Some(c) => format!("@{c}(經信橋)"),
+        None => format!("網頁席 {web_code}(經信橋)"),
+    }
+}
+
 /// Everything after the page checks: the seat checked, the text checked, the letter written.
 pub fn send(
     state_root: &Path,
@@ -339,6 +367,23 @@ pub fn send(
     text: &str,
     sender_label: &str,
     human_id: &str,
+    db: Option<&aib_store::MessageDb>,
+) -> Result<Sent, Refusal> {
+    let from = Sender::Person {
+        label: sender_label,
+        human_id,
+    };
+    send_as(state_root, cabin, seat, text, &from, db)
+}
+
+/// [`send`] for any [`Sender`]. A web seat's letter carries no reply hint: the 1.x seat answers
+/// the sender's code as it answers any seat.
+pub fn send_as(
+    state_root: &Path,
+    cabin: &str,
+    seat: &str,
+    text: &str,
+    from: &Sender<'_>,
     db: Option<&aib_store::MessageDb>,
 ) -> Result<Sent, Refusal> {
     if !seat_ok(seat) {
@@ -361,10 +406,13 @@ pub fn send(
     // how the seat answers so the page sees it (dm_import::reply_of); inside the relay file for a
     // long letter (the pointer line must stay the whole letter for 1.x to read it)
     let hub_code = crate::bridge_cfg::hub_of(crate::bridge_cfg::now().hub_seat, &live);
-    let text = format!(
-        "{text}{}",
-        crate::dm_import::reply_hint(seat, &id, cabin, hub_code.as_deref())
-    );
+    let text = match from {
+        Sender::Person { .. } => format!(
+            "{text}{}",
+            crate::dm_import::reply_hint(seat, &id, cabin, hub_code.as_deref())
+        ),
+        Sender::Seat { .. } => text.to_owned(),
+    };
     let text = text.as_str();
     let (msg, relay) = if text.len() > RELAY_AT {
         let dir = state_root.join("pending");
@@ -382,10 +430,49 @@ pub fn send(
     };
     let hub = format!("aihub-{cabin}");
     // a9136 02:12: from the hub code when one is set, so `aib dm <cabin>/<hub>` answers it
-    let mut item = letter(&id, seat, &msg, sender_label, human_id, &hub, now);
-    if let Some(h) = &hub_code {
-        item.insert("sender_seat".into(), json!(h));
-    }
+    let item = match from {
+        Sender::Person { label, human_id } => {
+            let mut item = letter(&id, seat, &msg, label, human_id, &hub, now);
+            if let Some(h) = &hub_code {
+                item.insert("sender_seat".into(), json!(h));
+            }
+            item
+        }
+        Sender::Seat {
+            old_code,
+            web_code,
+            message_id,
+        } => {
+            let mut item = letter(
+                &id,
+                seat,
+                &msg,
+                &seat_label(*old_code, web_code),
+                "",
+                &hub,
+                now,
+            );
+            // a seat, named by the move the owner approved; without one it claims nothing
+            for (k, v) in [
+                (
+                    "sender_kind",
+                    json!(if old_code.is_some() {
+                        "seat"
+                    } else {
+                        "unknown"
+                    }),
+                ),
+                ("sender_seat", json!(old_code)),
+                ("sender_origin", Value::Null),
+                ("human_id", Value::Null),
+                ("sender_source", json!(BRIDGE_SOURCE)),
+                ("aibd_message_id", json!(message_id)),
+            ] {
+                item.insert(k.into(), v);
+            }
+            item
+        }
+    };
     let store = aib_dmq_store::Store::new(state_root, state_root);
     store
         .write_item(seat, &item)
@@ -681,6 +768,67 @@ mod tests {
     }
 
     /// The letter as 1.x reads it, then delivered by its drainer and mirrored back.
+    /// G5 信橋 r1 §3: a web seat's letter names only the code the owner moved, says it came
+    /// through the bridge, and carries aibd's row id; no reply hint, no person.
+    #[test]
+    fn a_web_seats_letter_names_only_its_moved_code() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let seats = root.join("instances").join("cab1").join("seats");
+        std::fs::create_dir_all(&seats).unwrap();
+        std::fs::write(
+            seats.join("w1.json"),
+            json!({"session_uuid": "x-4e6ba9d519d0"}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("state").join("dm-queue").join("519d0")).unwrap();
+        let read = |id: &str| -> Value {
+            serde_json::from_slice(
+                &std::fs::read(root.join("state/dm-queue/519d0").join(format!("{id}.json")))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let who = Sender::Seat {
+            old_code: Some("7ebca"),
+            web_code: "abcde",
+            message_id: "q_row1",
+        };
+        let s = send_as(root, "cab1", "519d0", "請看", &who, None).unwrap();
+        let item = read(&s.id);
+        assert_eq!(item["sender_seat"], "7ebca", "reason: moved_code_lost");
+        assert_eq!(item["sender_kind"], "seat");
+        assert_eq!(
+            item["sender_label"], "@7ebca(經信橋)",
+            "reason: bridge_not_said"
+        );
+        assert_eq!(item["sender_source"], BRIDGE_SOURCE);
+        assert_eq!(item["aibd_message_id"], "q_row1");
+        assert_eq!(item["human_id"], Value::Null, "reason: seat_as_person");
+        assert_eq!(item["msg"], "請看", "reason: reply_hint_added");
+        let who = Sender::Seat {
+            old_code: None,
+            web_code: "abcde",
+            message_id: "q_row2",
+        };
+        let item = read(&send_as(root, "cab1", "519d0", "x", &who, None).unwrap().id);
+        assert_eq!(
+            item["sender_seat"],
+            Value::Null,
+            "reason: unmoved_claims_seat"
+        );
+        assert_eq!(item["sender_kind"], "unknown");
+        let order: Value = serde_json::from_slice(
+            &std::fs::read(root.join("state/dm-queue/519d0/order.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            order["ids"].as_array().map(Vec::len),
+            Some(2),
+            "reason: not_in_order"
+        );
+    }
+
     #[test]
     fn a_letter_is_queued_in_the_ledger_and_shows_in_the_conversation() {
         let d = tempfile::tempdir().unwrap();
