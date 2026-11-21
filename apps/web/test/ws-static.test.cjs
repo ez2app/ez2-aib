@@ -309,4 +309,21 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/matchAll\(\/@\(\[0-9a-f\]\{5\}\)\\b\/g\)\) if \(who\.size < 2\)/.test(ws), 'reason: heat_pair_from_card_seat_first');
 }
 
+// §24 連按兩次 Enter 送出 + 回覆一鍵複製(519d0 SPEC-chat-enter-copy r0)
+{
+  // 勾選框在每個送出鈕下(單席 / 舊席寄信 / 共同對話 / 專案項目)
+  ok((ws.match(/<span class="gocol"><button type="button" class="go" data-send=/g) || []).length === 4 && /\$\{enter2Box\(\)\}<\/span>/.test(ws), 'reason: enter2_box_missing');
+  ok(/localStorage\.getItem\(E2K\) === '1'/.test(ws) && /catch \(e\) \{ return false; \}/.test(ws), 'reason: enter2_storage_unguarded');
+  // 選字的 Enter 不算
+  ok(/e\.key === 'Enter' && !e\.isComposing && e\.keyCode !== 229/.test(ws), 'reason: ime_enter_counts');
+  // 0.5 秒內第二下送出、去掉換行;Shift 永遠換行;Cmd / Ctrl 永遠送出;空白不送
+  ok(/now - E2\.at <= 500/.test(ws) && /t\.value\.slice\(0, i - 1\) \+ t\.value\.slice\(i\)/.test(ws) && /!e\.shiftKey && enter2On\(\)/.test(ws) && /if \(e\.metaKey \|\| e\.ctrlKey\) \{ e\.preventDefault\(\); E2\.at = 0; go\(\); \}/.test(ws) && /if \(t\.value\.trim\(\)\) go\(\)/.test(ws), 'reason: double_enter_rules');
+  // 複製鈕:三種完成的訊息都有;等候列(產生中)沒有
+  ok((ws.match(/\$\{copyBtn\(/g) || []).length === 3, 'reason: copy_button_not_on_replies');
+  const run = ws.slice(ws.indexOf('function waitRow('), ws.indexOf('function saidRows('));
+  ok(run.length > 100 && !/copyBtn/.test(run), 'reason: copy_button_on_pending_row');
+  // 複製原文(不是排好的 HTML)、1.5 秒、被拒改選取
+  ok(/COPYT\.set\(String\(key\), txt\)/.test(ws) && /navigator\.clipboard\.writeText\(txt\)/.test(ws) && /until: Date\.now\(\) \+ 1500/.test(ws) && /已選取,按 ⌘C/.test(ws) && /r\.selectNodeContents\(body\)/.test(ws), 'reason: copy_rules');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

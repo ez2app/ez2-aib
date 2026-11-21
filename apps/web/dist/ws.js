@@ -2072,7 +2072,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
+      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -2098,7 +2098,7 @@
     const rows = sharedTo(s.seat_id).concat((Array.isArray(s.mirror) ? s.mirror : []).map((m) => ({ t: m.created, h: `<div class="out"><div class="body">${esc(String(m.body || ''))}</div><div class="tm">${esc(hhmm(m.created))}${m.to ? ' · 寄給 @' + esc(String(m.to).replace(/^seat:/, '')) : ''}</div></div>` }))).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc(['舊式席', modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${n && n.item ? `<span class="turn">${esc(String(n.item).slice(0, 40))}</span>` : ''}${steps}${s.mirror ? '' : '<span class="pvdemo" title="鏡像還沒接上:這一席的信與輸出還讀不到">示意</span>'}</div>
       ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這一席在終端機裡跑;它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳,它在終端機收)">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
+      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳,它在終端機收)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 五顆快捷鈕 = 送一句固定的話給這一席(舊版對話面板的五顆;今晚只送字,沒有另外的介面)
   const QUICK = [
@@ -2258,7 +2258,7 @@
       const body = typeof txt === 'string' ? esc(txt) : `<span class="st">(${esc(m.len != null ? m.len : '?')} 字)</span>`;
       const who = mine ? to.map((x) => `<span class="at">@</span>${logo(sOf(x), 'sm')}`).join('') : logo(sOf(m));
       const seen = mine ? `<div class="seen">${to.map((x) => `${logo(sOf(x), 'sm')}<span class="st ${x.state === 'failed' ? 'bad' : stOf(x) === '已讀' || stOf(x) === '已回' ? 'ok' : ''}">${esc(stOf(x))}</span>`).join(' ')}</div>` : '';
-      return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
+      return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}${copyBtn('m:' + (m.message_id || m.created), txt)}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
     }).concat(itemRows(), pairRows(), tickRows(), runRows(), actRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
   }
   // 席與席之間的一對一信:寄件席 → 收件席,跟真人的話分開一個樣子
@@ -2290,7 +2290,7 @@
         const wait = !bad && !ans && /^(delivered|read|done)$/.test(String(c.status || '')) ? '<span class="st wait">等回答</span>' : '';
         return `<span class="at">@</span>${logo(sOf(c.seat), 'sm')}<span class="st ${bad || fail ? 'bad' : t === '已讀' || t === '已回' ? 'ok' : ''}">${esc(t)}</span>${wait}`;
       }).join(' ');
-      return { t: String(p.created || ''), h: `<div class="msg it ${mine ? 'me' : ''}${AUTO_CLS[autoOf(p)] || ''}" data-pid="${esc(pidOf(p))}">${p._shared ? '' : `<div class="ith" data-node="${esc(p._node)}" title="打開這一項的對話">📌 ${esc(String(p._title).slice(0, 40))}</div>`}<div class="who">${who}${autoTag(p)}</div><div class="body">${body}</div>${mine || !p._shared ? '' : workLine(p.from_seat, p.created)}${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}</div>` };
+      return { t: String(p.created || ''), h: `<div class="msg it ${mine ? 'me' : ''}${AUTO_CLS[autoOf(p)] || ''}" data-pid="${esc(pidOf(p))}">${p._shared ? '' : `<div class="ith" data-node="${esc(p._node)}" title="打開這一項的對話">📌 ${esc(String(p._title).slice(0, 40))}</div>`}<div class="who">${who}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}</div><div class="body">${body}</div>${mine || !p._shared ? '' : workLine(p.from_seat, p.created)}${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}</div>` };
     });
   }
   // 0eed7 VERIFY-humanthread L1:內文提到的 @ 也會送 ⇒ 輸入框下面即時列「會送給誰」,送出前看得到
@@ -2313,7 +2313,7 @@
     return `${headHtml()}
       <div class="tl" id="tl">${rows || '<div class="empty">還沒有對話。打 @ 選一席,寫一句送出。</div>'}</div>
       ${atpop}${askBar()}
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button></div>${toLine('shared')}
+      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
 
@@ -2460,6 +2460,41 @@
     const older = S.postsNext ? `<button type="button" class="more older" data-older="1" ${S.olderBusy ? 'disabled' : ''}>${S.olderBusy ? '讀取中…' : `載入更早的(已載入 ${S.posts.length} 則)`}</button>` : '';
     return older + postRowsOf(shown) + (hid ? `<div class="st hidn">另有 ${hid} 則在沒勾的狀態裡,點上面的狀態看</div>` : '');
   }
+  // ---------- 對話框:連按兩次 Enter 送出 + 回覆一鍵複製(519d0 SPEC-chat-enter-copy r0,Andy 12:4x)----------
+  const E2K = 'aib.ws.enter2';
+  const enter2On = () => { try { return localStorage.getItem(E2K) === '1'; } catch (e) { return false; } };
+  const enter2Box = () => `<label class="e2"><input type="checkbox" class="e2c" data-enter2="1"${enter2On() ? ' checked' : ''}>連按兩次 Enter 送出</label>`;
+  const E2 = { at: 0 };
+  // 原文(Markdown 原字)按訊息 id 存,按鈕只帶 id;同一則重畫沿用同一格
+  const COPYT = new Map();
+  function copyBtn(key, txt) {
+    if (typeof txt !== 'string' || !txt.trim()) return '';
+    COPYT.set(String(key), txt); if (COPYT.size > 600) COPYT.delete(COPYT.keys().next().value);
+    return `<button type="button" class="cpy" data-copy="${esc(String(key))}" title="複製原文">${esc(copyWord(String(key)))}</button>`;
+  }
+  // 按完的字記在表裡(整頁每秒可能重畫,記在按鈕上會被洗掉)
+  const COPYST = {};
+  const copyWord = (key) => { const o = COPYST[key]; return o && Date.now() < o.until ? o.w : '複製'; };
+  async function doCopy(b) {
+    const key = b.dataset.copy, txt = COPYT.get(key); if (typeof txt !== 'string') return;
+    const back = (w) => { COPYST[key] = { w, until: Date.now() + 1500 }; for (const n of document.querySelectorAll('[data-copy]')) if (n.dataset.copy === key) { n.textContent = w; n.classList.add('on'); } setTimeout(() => { delete COPYST[key]; for (const n of document.querySelectorAll('[data-copy]')) if (n.dataset.copy === key) { n.textContent = '複製'; n.classList.remove('on'); } }, 1500); };
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard');
+      // 權限框沒人按會一直等 ⇒ 1 秒沒回當成被拒
+      await Promise.race([navigator.clipboard.writeText(txt), new Promise((ok, no) => setTimeout(() => no(new Error('clipboard_timeout')), 1000))]); back('已複製');
+    } catch (e) {
+      // 剪貼簿被拒 ⇒ 選取整則:畫面上選起那則(看得到選了什麼),另放一個頁外文字框裝原文、選好並取得焦點,
+      // 重畫把那則換掉也不影響 ⌘C;按過複製、離開焦點或 30 秒後收掉
+      const body = b.closest('.msg') && b.closest('.msg').querySelector('.body');
+      const ta = document.createElement('textarea'); ta.className = 'cpyta'; ta.value = txt; ta.setAttribute('aria-hidden', 'true'); ta.readOnly = true; document.body.appendChild(ta);
+      const drop = () => { if (ta.isConnected) ta.remove(); }; ta.addEventListener('copy', () => setTimeout(drop, 0)); ta.addEventListener('blur', drop); setTimeout(drop, 30000);
+      ta.focus(); ta.select();
+      let ok = false; try { ok = document.execCommand && document.execCommand('copy'); } catch (err) { ok = false; }
+      if (ok) { drop(); back('已複製'); return; }
+      if (body) { try { const r = document.createRange(); r.selectNodeContents(body); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); ta.focus(); ta.select(); } catch (err) { /* 選不起來:頁外框還在 */ } }
+      back(/Mac|iPhone|iPad/.test(navigator.platform || '') ? '已選取,按 ⌘C' : '已選取,按 Ctrl+C');
+    }
+  }
   function postRowsOf(POSTS) {
     const RAW = { queued: '排著', claimed: '送出中', delivered: '已送到', read: '已讀', done: '已處理', archived: '已處理' };
     const sOf = (k) => { const id = String(k || '').replace(/^seat:/, ''); return seatById(id) || { seat_id: id, provider: 'claude' }; };
@@ -2477,7 +2512,7 @@
       }).join(' ');
       const rb = (p.read_by || []).filter((k) => /^seat:/.test(k)).map((k) => logo(sOf(k), 'sm')).join('');
       const im = impTag(p);
-      return `<div class="msg ${mine ? 'me' : ''}${im ? ' imp' : ''}${AUTO_CLS[autoOf(p)] || ''}${S.hlPid && S.hlPid === pidOf(p) ? ' hl' : ''}" data-pid="${esc(pidOf(p))}"><div class="who">${im && /seat:import$/.test(String(p.from_seat || p.from_key || '')) ? '<span class="lg sm imp" title="寄件人不明(匯入)">匯</span>' : who}${im}${autoTag(p)}</div><div class="body">${body}</div>${docLink(p)}${im ? dmFoot(p) : ''}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
+      return `<div class="msg ${mine ? 'me' : ''}${im ? ' imp' : ''}${AUTO_CLS[autoOf(p)] || ''}${S.hlPid && S.hlPid === pidOf(p) ? ' hl' : ''}" data-pid="${esc(pidOf(p))}"><div class="who">${im && /seat:import$/.test(String(p.from_seat || p.from_key || '')) ? '<span class="lg sm imp" title="寄件人不明(匯入)">匯</span>' : who}${im}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}</div><div class="body">${body}</div>${docLink(p)}${im ? dmFoot(p) : ''}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
     });
     return dayFold(POSTS, rows, S.nt && S.nt.thread_id);
   }
@@ -2496,7 +2531,7 @@
       ${M ? `<div class="mem">${M}</div>` : ''}
       <div class="tl" id="tl">${postRows() || '<div class="empty">這一項還沒有對話。寫一句送出;要誰接手就 @ 誰。</div>'}</div>
       ${atpop}
-      ${askBar()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button></div>${toLine('node')}
+      ${askBar()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   async function sendNode(text) {
@@ -4418,6 +4453,8 @@
       if (x.closest('[data-addgo]')) return doAdd();
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
+    const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
+    const e2 = x.closest('[data-enter2]'); if (e2) { try { localStorage.setItem(E2K, e2.checked ? '1' : '0'); } catch (err) { /* 存不了:這次有效 */ } E2.at = 0; return; }
     if (x.closest('[data-repair]')) { dropToken(); S.paired = false; S.pair = { view: 'code' }; return render(); }
   }
   el.addEventListener('click', onMainClick);
@@ -4475,7 +4512,18 @@
     if (e.key === 'Escape' && S.add && !S.add.busy) { S.add = null; render(); return; }
     if (e.target.id === 'sq' && e.key === 'Escape') { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; render(); return; }
     if (e.target.dataset && e.target.dataset.ansfor && e.key === 'Enter' && !e.isComposing) { e.preventDefault(); const b = (e.target.closest('.ans') || el).querySelector('[data-answer]'); if (b) b.click(); return; }
-    if (e.target.id === 'inp' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doSend(S.mode === 'shared' || S.mode === 'node' ? S.mode : 'seat'); }
+    if (e.target.id === 'inp' && e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+      const go = () => { const b = e.target.closest('.send') && e.target.closest('.send').querySelector('[data-send]'); if (b && !b.disabled) b.click(); };
+      if (e.metaKey || e.ctrlKey) { e.preventDefault(); E2.at = 0; go(); } // Cmd / Ctrl+Enter 永遠送出
+      else if (!e.shiftKey && enter2On()) { // 勾了:第一下照常換行;0.5 秒內第二下 = 去掉剛才的換行再送
+        const t = e.target, now = Date.now();
+        if (now - E2.at <= 500 && t.selectionStart === t.selectionEnd && t.value.slice(0, t.selectionStart).endsWith('\n')) {
+          e.preventDefault(); E2.at = 0; const i = t.selectionStart; t.value = t.value.slice(0, i - 1) + t.value.slice(i);
+          t.dispatchEvent(new Event('input', { bubbles: true }));
+          if (t.value.trim()) go();
+        } else E2.at = now;
+      }
+    }
     if (e.key === 'Enter' && e.target.matches('.lg[data-seat]')) setMode(e.target.dataset.seat); // 鍵盤:Enter = 雙擊
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-evopen]')) { e.preventDefault(); e.target.click(); }
   });

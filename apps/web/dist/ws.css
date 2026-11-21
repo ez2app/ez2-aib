@@ -1123,3 +1123,11 @@ label.rvr{cursor:pointer}
 .heatr .htr{width:12px;text-align:center;color:#555;flex:none}.heatr .htr.up{color:#f0923c}.heatr .htr.dn{color:#6f9be8}
 .heatr .hsn{width:34px;text-align:right;color:#8a8a94;font-size:11px;flex:none}
 .heatl.gray .heatr{opacity:.5}
+/* 連按兩次 Enter 送出 + 複製鈕(519d0 SPEC-chat-enter-copy r0) */
+.gocol{display:flex;flex-direction:column;gap:4px;align-items:stretch}
+.gocol .go{flex:1}
+.e2{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim);white-space:nowrap;cursor:pointer;user-select:none}
+.e2 .e2c{margin:0;accent-color:var(--gold)}
+.msg .who .cpy{margin-left:auto;border:1px solid var(--line2);background:none;color:var(--dim);border-radius:6px;padding:0 6px;font-size:11px;line-height:18px;cursor:pointer;opacity:.7}
+.msg .who .cpy:hover,.msg .who .cpy.on{opacity:1;color:var(--gold);border-color:var(--gold)}
+.cpyta{position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0}
