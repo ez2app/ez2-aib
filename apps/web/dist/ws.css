@@ -1067,7 +1067,7 @@ label.rvr{cursor:pointer}
 .wk.in.mine{justify-content:flex-end;opacity:.85}
 /* 總收件匣(1a93b DESIGN-web-inbox-page r2) */
 .ib.inbb.urg{border-color:var(--red);color:var(--red)}
-.inbd{width:min(860px,94vw)}
+
 .inbtabs,.inbf{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
 .inbtabs .inbtab.on,.inbf .inbs.on{background:var(--gold);color:var(--gold-ink);font-weight:700}
 .inbf .inbc{flex:1;min-width:120px;width:auto}
@@ -1088,3 +1088,23 @@ label.rvr{cursor:pointer}
 .inbbody{padding:6px 10px 10px}
 .inbnote{font-size:12px;color:var(--gold2);margin-bottom:4px}
 .inbbody pre{white-space:pre-wrap;word-break:break-word;margin:0}
+.inbvia{font-size:11px;border:1px dashed var(--mute);border-radius:5px;padding:0 5px;color:var(--mute)}
+.inbstat{margin-left:auto;font-size:12px;color:var(--mute);align-self:center}
+.inbstat b{color:var(--text)}
+/* 寬螢幕四欄並排、窄螢幕分頁(519d0 12:20,同 MOCK-web-inbox) */
+.cdlg.inbd{width:min(1400px,calc(100vw - 32px))}
+.inbcols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.inbcol{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;min-width:0}
+.inbch{font-weight:700;margin:0 2px 6px}
+.inbcol .inbl{max-height:55vh}
+.inbtabs .inbtab{display:none}
+@media (max-width:1000px){.inbcols{grid-template-columns:1fr}.inbcol{display:none}.inbcol.on{display:block}.inbch{display:none}.inbtabs .inbtab{display:inline-block}}
+.inbsent{margin-top:12px}
+.inbsh{cursor:pointer;font-weight:700}
+.inbsr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 2px;border-bottom:1px solid var(--line);font-size:13px}
+/* 單席窗待處理摘要 */
+.sinb{margin:6px 0;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--panel)}
+.sinbh{cursor:pointer;font-weight:700;font-size:13px}
+.sir{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;font-size:13px;border-top:1px solid var(--line)}
+.sir .sig{font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line)}
+.sir.g0 .sig{background:var(--red);color:#fff;border-color:var(--red)}
