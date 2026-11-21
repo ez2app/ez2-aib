@@ -731,7 +731,7 @@ async fn a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused() 
         )
         .await;
     assert_eq!(plan.code, 200, "{}", plan.json);
-    let want = dir.path().join("seat-work");
+    let want = aibd::folders::folder(dir.path(), "seat-work");
     assert!(
         plan.json["plan"]["cwd"]
             .as_str()

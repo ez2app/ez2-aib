@@ -189,7 +189,7 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
     .await;
     assert_eq!(r.code, 400, "{}", r.body);
     assert_eq!(r.json["reason"], "codex_work_own_folder", "{}", r.body);
-    let work = dir.path().join("data").join("seat-work");
+    let work = aibd::folders::folder(&dir.path().join("data"), "seat-work");
     let trees: Vec<String> = std::fs::read_dir(&work)
         .map(|it| {
             it.filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -208,10 +208,7 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
         .await;
     assert_eq!(r.code, 201, "{}", r.body);
     let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
-    let home = dir
-        .path()
-        .join("data")
-        .join("seat-work")
+    let home = aibd::folders::folder(&dir.path().join("data"), "seat-work")
         .join(&seat)
         .canonicalize()
         .unwrap();
