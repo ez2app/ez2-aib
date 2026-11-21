@@ -493,4 +493,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/\$\{esc\(rcpKnifeCard\(x\)\)\}/.test(ws) && /排了收據' \+ h12 \+ \(p\.host[^\n]*\+ rcpKnifeCard\(p\)/.test(ws), "receipt row and requested event show the three fields, escaped");
 }
 
+// §31 搬進舊席列出帶著的派工信(0eed7 VERIFY-integ3 r1 M4)
+{
+  const mm = (ws.split("async function moveMine(")[1] || "").split("\n  }\n")[0];
+  ok(/Array\.isArray\(r\.letters\)/.test(mm) && /\/api\/v1\/inbox\?scope=all/.test(mm), "uses aibd letters when given, else rereads the inbox");
+  ok(/cinbId\(m\.to_seat\) !== id/.test(mm) && /m\.done_at \|\| m\.superseded_by/.test(mm), "only open letters to this seat, other seats not listed");
+  ok(/m\.dm_to && String\(m\.dm_to\) !== code/.test(mm) && /\[0-9a-z_-\]\*/.test(mm), "checks the old code and the arrow target");
+  ok(/MOVE_DISP = \/\^\\s\*派工/.test(ws), "only letters whose first line is 派工:");
+  const mh = (ws.split("function moveMineHtml(M)")[1] || "").split("\n  }\n")[0];
+  ok(/這些是你的/.test(mh) && /esc\(m\.line/.test(mh) && /esc\(m\.id/.test(mh) && /還沒給信的清單/.test(mh), "says these are yours, escaped, and says when AIB gives no list");
+  ok(/data-movemsg>\$\{esc\(S\.moveMsg\.text\)\}\$\{moveMineHtml\(S\.moveMsg\)\}/.test(ws), "shown under the move message");
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

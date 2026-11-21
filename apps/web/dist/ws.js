@@ -2212,7 +2212,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), saidRows(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     { const wr = waitRow(s.seat_id, false); if (wr) rows.push(wr); else if (n && n.state === 'busy') rows.push({ h: '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}${moveMineHtml(S.moveMsg)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       ${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
@@ -4043,6 +4043,31 @@
     return `<button type="button" class="k" data-move="${esc(id)}" title="把一個舊式席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
   }
   const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
+  // 0eed7 VERIFY-integ3 r1 M4:搬進成功那句列出這席帶著的開著的派工信(第一行「派工:」),寫「這些是你的」,別席的不列。
+  // 來源:aibd 回 letters [{id, first_line}] 就用它;沒有 ⇒ 重讀待審框(GET /api/v1/inbox),挑收件席 = 這席、沒結、沒被取代、
+  // 第一行「派工:」、箭頭後指名的席(有寫)是舊席碼或這席;列上有 dm_to / forwarded_to 時再核是不是從這個舊席碼轉來的
+  const MOVE_DISP = /^\s*派工\s*[:：]/;
+  async function moveMine(id, code, r) {
+    const pick = (L) => L.map((m) => ({ id: String(m.id || m.letter_id || ''), line: String(m.first_line || '').trim() })).filter((m) => m.id && MOVE_DISP.test(m.line));
+    if (r && Array.isArray(r.letters)) return { src: 'aibd', L: pick(r.letters) };
+    const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null), R = ib && (ib.rows || ib.items);
+    if (!Array.isArray(R)) return { src: 'none', L: [] };
+    const me = [id, seatName(seatById(id) || { seat_id: id })];
+    return { src: 'inbox', L: pick(R.filter((m) => {
+      if (cinbId(m.to_seat) !== id || m.done_at || m.superseded_by || m.blocked) return false;
+      if (m.dm_to && String(m.dm_to) !== code && !m.forwarded_to) return false;
+      if (m.forwarded_to && cinbId(m.forwarded_to) !== id) return false;
+      const t = /→\s*@?([0-9a-z][0-9a-z_-]*)/i.exec(String(m.first_line || ''));
+      return !t || t[1] === code || me.some((x) => String(x).toLowerCase() === t[1].toLowerCase());
+    })) };
+  }
+  function moveMineHtml(M) {
+    if (!M.mine) return '';
+    const { src, L } = M.mine;
+    if (src === 'none') return M.n ? '<div class="mvl"><small>這台 AIB 還沒給信的清單,看不到轉來的是哪幾封;到待審區看</small></div>' : '';
+    if (!L.length) return '<div class="mvl"><small>沒有帶著派工信(第一行「派工:」的)</small></div>';
+    return '<div class="mvl"><b>這些是你的(' + L.length + ' 封派工)</b>' + L.slice(0, 8).map((m) => '<div class="mvi"><code>' + esc(m.id.slice(0, 14)) + '</code> ' + esc(m.line.slice(0, 90)) + '</div>').join('') + (L.length > 8 ? '<small>還有 ' + (L.length - 8) + ' 封,到待審區看全部</small>' : '') + '</div>';
+  }
   async function seatMove(id, code) {
     S.moveMsg = null;
     if (!MOVE_CODE.test(code)) { S.moveMsg = { seat: id, bad: true, text: MOVE_WHY.body }; return render(); }
@@ -4051,7 +4076,9 @@
       const r = await fingerAct('seat_move', { old_code: code, seat_id: id }, (t, sec) => { if (S.moveF && S.moveF.seat === id) { S.moveF.left = sec; render(); } });
       S.moved[id] = code;
       const n = Number(r && r.forwarded) | 0;
-      S.moveMsg = { seat: id, text: (r && r.already ? '本來就收 @' + code + ' 的信' : '已搬:寄給 @' + code + ' 的信改送這一席') + (n ? ',舊帳裡沒結的 ' + n + ' 封一併轉過來' : '') + ';舊席那邊照步驟停收' };
+      S.moveMsg = { seat: id, n, text: (r && r.already ? '本來就收 @' + code + ' 的信' : '已搬:寄給 @' + code + ' 的信改送這一席') + (n ? ',舊帳裡沒結的 ' + n + ' 封一併轉過來' : '') + ';舊席那邊照步驟停收' };
+      S.moveF = null; render();
+      S.moveMsg.mine = await moveMine(id, code, r);
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
       if (rs === 'page_only' || rs === 'unknown_act_type') S.moveOff = true;

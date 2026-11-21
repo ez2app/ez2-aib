@@ -1243,3 +1243,9 @@ label.rvr{cursor:pointer}
 .cctx{display:flex;align-items:center;gap:8px;font-size:13px;background:#2a1d10;border:1px solid #5a3a16;color:#f6c48b;border-radius:8px;padding:4px 10px;margin:6px 0 4px}
 .cctx .cx{margin-left:auto;background:none;border:0;color:var(--dim);font:inherit;font-size:12px;cursor:pointer}
 @media (max-width:600px){.cbar{flex-wrap:wrap}.cbar .cr{margin-left:0;width:100%}.cit{flex-wrap:wrap}.cit .ct{white-space:normal}}
+/* 搬進舊席:帶著的派工信(0eed7 M4) */
+.mvl{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.mvl b{font-weight:600}
+.mvi{font-size:12px;color:var(--text);overflow-wrap:anywhere}
+.mvi code{color:var(--dim);margin-right:4px}
+.mvl small{color:var(--dim)}
