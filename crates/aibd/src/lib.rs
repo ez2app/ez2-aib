@@ -55,6 +55,7 @@ pub mod preview;
 pub mod preview_swap;
 pub mod preview_tree;
 pub mod preview_up;
+pub mod provider_login;
 pub mod receipt_bundle;
 pub mod receipt_check;
 pub mod receipt_link;

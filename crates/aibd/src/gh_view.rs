@@ -216,7 +216,7 @@ const LOOK_WITHOUT_REAPING: bool = true;
 /// platform can, it is seen without being reaped (5d33a REVIEW-ghview L3): while gh is an
 /// unreaped child its pid, which is its group's number, cannot be given to another process,
 /// so the group kill at the limit never reaches a stranger.
-fn ended_unreaped(child: &mut std::process::Child) -> Option<Option<i32>> {
+pub(crate) fn ended_unreaped(child: &mut std::process::Child) -> Option<Option<i32>> {
     if !LOOK_WITHOUT_REAPING {
         return plain_wait(child);
     }

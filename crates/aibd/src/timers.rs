@@ -308,6 +308,31 @@ pub static PREVIEW_STOP_WAIT: Timer = Timer::operation(
 );
 
 /// The ctl preview swap waits for the preview's seats to write their handoff.
+/// 重新登入: how long the login program has to print its sign-in address.
+pub static PROVIDER_LOGIN_URL_WAIT: Timer = Timer::operation(
+    "provider.login_url_wait",
+    ms(200),
+    secs(20),
+    "only while a page's provider_relogin starts the login program: look for the address it prints, kill its group at 20 s (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
+/// 重新登入: how long the person has to sign in in the browser.
+pub static PROVIDER_LOGIN_WAIT: Timer = Timer::operation(
+    "provider.login_wait",
+    ms(500),
+    // ten minutes written as a product: knives-09-wake.sh anchors on the plain 600 one
+    secs(10 * 60),
+    "only while a login round runs: look whether the login program ended, kill its group at 10 min (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
+/// 重新登入: the status asked after the login ended.
+pub static PROVIDER_LOGIN_STATUS_WAIT: Timer = Timer::operation(
+    "provider.login_status_wait",
+    ms(200),
+    secs(20),
+    "only after a login round's program ended: run its status once, kill it at 20 s (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
 pub static PREVIEW_HANDOFF_WAIT: Timer = Timer::operation(
     "preview.handoff_wait",
     secs(5),
@@ -382,6 +407,9 @@ pub static ALL: &[&Timer] = &[
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
     &PREVIEW_HANDOFF_WAIT,
+    &PROVIDER_LOGIN_URL_WAIT,
+    &PROVIDER_LOGIN_WAIT,
+    &PROVIDER_LOGIN_STATUS_WAIT,
     &DM_MIRROR,
     &SEAT_TICK,
     &RECEIPT_POLL,
