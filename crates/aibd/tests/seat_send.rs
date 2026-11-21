@@ -469,7 +469,12 @@ async fn a_seat_closes_a_post_that_named_it_in_a_shared_conversation() {
     )
     .await;
     assert_eq!(r.code, 200, "reason: shared_thread_read_refused {}", r.body);
-    assert_eq!(r.json["read"], 1, "reason: not_read {}", r.body);
+    // 519d0: the state, not how many this call marked (the turn's own read may come first)
+    assert_eq!(
+        r.json["message"]["status"], "read",
+        "reason: not_read {}",
+        r.body
+    );
     let rev = r.json["message"]["revision"].as_i64().unwrap();
     let lib = aib_store::MessageDb::open(&dir.path().join("data").join("messages.sqlite")).unwrap();
     assert_ne!(
