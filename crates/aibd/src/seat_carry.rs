@@ -205,7 +205,7 @@ fn with_line(mut text: String) -> String {
 
 /// Folder-relative file work (unix): each name is one entry of an open folder, never a path.
 #[cfg(unix)]
-mod at {
+pub(crate) mod at {
     use nix::errno::Errno;
     use nix::fcntl::{openat, renameat, OFlag};
     use nix::sys::stat::{mkdirat, Mode};
@@ -262,6 +262,26 @@ mod at {
                 Ok(Some(text))
             }
         }
+    }
+
+    /// What `name` in `dir` is, not through a link: `None` when it is not there, `Some(true)` for
+    /// a plain file, `Some(false)` for anything else (a link, a folder).
+    pub fn plain_file(dir: &OwnedFd, name: &str) -> std::io::Result<Option<bool>> {
+        use nix::fcntl::AtFlags;
+        match nix::sys::stat::fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Err(Errno::ENOENT) => Ok(None),
+            Err(e) => Err(e.into()),
+            Ok(st) => Ok(Some(
+                nix::sys::stat::SFlag::from_bits_truncate(st.st_mode)
+                    & nix::sys::stat::SFlag::S_IFMT
+                    == nix::sys::stat::SFlag::S_IFREG,
+            )),
+        }
+    }
+
+    /// `from` renamed to `to`, both in `dir`.
+    pub fn rename(dir: &OwnedFd, from: &str, to: &str) -> std::io::Result<()> {
+        Ok(renameat(dir, from, dir, to)?)
     }
 
     /// `bytes` as `name` in `dir`: a new scratch entry (`O_EXCL`, no link) renamed over it.

@@ -1268,6 +1268,19 @@ fn mcp_tools() -> Value {
             },
         },
         {
+            "name": "pending_write",
+            "description": "Write one of your own files into the shared pending folder: the name is <KIND><your seat code>-….md with KIND one of HANDOFF-, MEMPACK-, REVIEW-, PREREAD-, OPINION-, DESIGN- (letters, digits, . _ - only; at most 120 characters), the text at most 512 KB. Writing over a REVIEW- or PREREAD- keeps the earlier one. You cannot write another seat's file or any other kind.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "e.g. MEMPACK-<your code>-1121.md"},
+                    "text": {"type": "string"},
+                },
+                "required": ["file", "text"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "seat_handoff",
             "description": "Say your handoff note is written: give the absolute path of the .md you wrote. The page then shows the person it is written and where. aibd does not read the file.",
             "inputSchema": {
@@ -1542,6 +1555,23 @@ fn pending_read(c: &Client, args: &Value) -> Result<String, String> {
     Ok(r["text"].as_str().unwrap_or_default().to_owned())
 }
 
+/// `pending_write`: aibd's answer as one line.
+fn pending_write(c: &Client, args: &Value) -> Result<String, String> {
+    let file = args["file"].as_str().ok_or("pending_write needs file")?;
+    let text = args["text"].as_str().ok_or("pending_write needs text")?;
+    let r = c.request(
+        "POST",
+        "/api/v1/act",
+        Some(json!({"type": aibd::seat_pending::WRITE, "file": file, "text": text})),
+    )?;
+    Ok(format!(
+        "寫好了:{}({} B,sha256 {})",
+        r["file"].as_str().unwrap_or(file),
+        r["bytes"].as_u64().unwrap_or(0),
+        r["sha256"].as_str().unwrap_or("?")
+    ))
+}
+
 fn seat_handoff(c: &Client, args: &Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("seat_handoff needs path")?;
     let mut body = json!({"type": aibd::seat_now::HANDOFF, "path": path});
@@ -1772,6 +1802,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("seat_receipt") => seat_receipt(c, args),
                 Some("pending_list") => pending_list(c, args),
                 Some("pending_read") => pending_read(c, args),
+                Some("pending_write") => pending_write(c, args),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -3290,6 +3321,7 @@ mod tests {
                 "seat_now_all",
                 "pending_list",
                 "pending_read",
+                "pending_write",
                 "seat_handoff"
             ],
             "reason: extra_tool"
