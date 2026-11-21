@@ -47,7 +47,7 @@ for (const t of acts) {
   if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
   // 7ebca G5 信橋(feat/g5-bridge-7ebca-1121)才有;頁面條單獨跑時 aibd 還沒有,收到 unknown_act_type 就收起鈕。合進來後這行自然不走
   if ((t === 'seat_move' || t === 'seat_unmove') && !rust.includes('"' + t + '"')) { ok(ws.includes('G5 信橋才有 seat_move'), 'branch-only act is marked: ' + t); continue; }
-  if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
+  if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('AIB 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   // 1a93b feat/aibd-page-acts-1a93b-1120(62e1bdbeb8)才有 seat_clear;頁面看 version.acts 沒有就灰掉寫「要新版 aibd」。合進來後拿掉這行
   if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
   // b4297 feat/add-test-host-b4297-1121(62fd9f9690)才有 test_host_*;頁面看 version.acts 沒有就不畫。合進來後拿掉這行
@@ -293,7 +293,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 四語都改名、都有圖例
   ok((cp.match(/tab_contacts: '📥 /g) || []).length === 4 && (cp.match(/ib_lg_urg:/g) || []).length === 4, 'reason: copy_not_four_languages');
   // 被擋寫人話、代號只放滑過提示(519d0 13:1x:截圖 legacy_off 原代號露在卡上)
-  ok(/IB_BLOCK = \{[^}]*legacy_off: '/.test(app) && /title="\$\{esc\('aibd 代號 '/.test(app), 'reason: blocked_code_not_human_words');
+  ok(/IB_BLOCK = \{[^}]*legacy_off: '/.test(app) && /title="\$\{esc\('AIB 代號 '/.test(app), 'reason: blocked_code_not_human_words');
   // 7ebca 13:2x:level_by 是角色 uid ⇒ 查角色名
   ok(/IB_LVBY\[m\.level_by\] \|\| roleName\(String\(m\.level_by\)\)/.test(app) && /INB_LVBY\[m\.level_by\] \|\| roleLabel\(String\(m\.level_by\)\)/.test(ws), 'reason: level_by_role_uid_not_named');
   // 用戶資料夾頁 403 ⇒ 退回聯絡中心
@@ -380,6 +380,33 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/act\('seat_input', media\.length \? \{ seat_id: seatId, text, media \}/.test(ws) && /CT\.att\.map\(\(a\) => a\.id\)\.slice\(0, 4\)/.test(ws) && /if \(media\.length\) CT\.att = \[\];/.test(ws), 'reason: attach_media_rules');
   ok((ws.match(/\bmedia\b(?=[,} ])/g) || []).length > 0 && !/act\('(thread_send|message_send)'[^)]*media/.test(ws), 'reason: media_on_unsupported_act');
   ok(/\.anndlg\{position:fixed/.test(css) && /\.fvq\{[^}]*background:#0c0c10/.test(css), 'reason: chat_tools_css');
+}
+
+// Andy 11-21:所有對外顯示都叫 AIB / aib,不叫 aibd;指令、環境變數、crate 名、檔名、程式比對用的字照舊。
+// 規則:不在註解行的 aibd / AIBD,前後不是英數 _ : . ' \ -,也不是「aibd ctl」指令或 Codex 裡「叫 aibd 的工具伺服器」(那是真名)⇒ 紅
+{
+  const dist = path.join(root, 'apps/web/dist');
+  const bad = [];
+  const pat2 = /['`](aibd|AIBD)(?=[ \u3000-\u9fff\uff00-\uffef])|(?<=[ \u3000-\u9fff\uff00-\uffef])(aibd|AIBD)['`]/g;
+  const pat = /(?<![A-Za-z0-9_:.'\\-])(?<!叫 )(aibd|AIBD)(?![A-Za-z0-9_:.'-]| ctl| 的工具伺服器)/g;
+  for (const f of fs.readdirSync(dist).filter((x) => /\.(js|html|css)$/.test(x))) {
+    fs.readFileSync(path.join(dist, f), 'utf8').split('\n').forEach((l, i) => {
+      const t = l.trimStart();
+      if (/^(\/\/|\*|\/\*|<!--)/.test(t)) return;
+      const cut = l.indexOf(' // ');
+      const code = cut < 0 ? l : l.slice(0, cut);
+      // 字串開頭或結尾的 aibd('aibd 回了'、'連不上 aibd'):上面為了放過 'aibd' 程式比對,前後是引號就不看,這裡補(1a93b 合併時抓到 34 處)
+      for (const m of code.matchAll(pat2)) bad.push(f + ':' + (i + 1) + ' …' + code.slice(Math.max(0, m.index - 20), m.index + 24) + '…');
+      for (const m of code.matchAll(pat)) bad.push(f + ':' + (i + 1) + ' …' + code.slice(Math.max(0, m.index - 20), m.index + 24) + '…');
+    });
+  }
+  ok(bad.length === 0, 'reason: page_says_aibd (對外要寫 AIB)\n' + bad.slice(0, 20).join('\n'));
+  // 規則本身:擋得到、放得過
+  const probe = (s) => s.match(pat) !== null;
+  ok(probe("'連不上 aibd(重試中)'") && probe('Cannot reach aibd') && probe('<small>aibd</small>'), 'reason: brand_rule_misses');
+  const probe2 = (x) => x.match(pat2) !== null;
+  ok(probe2("'aibd 回了 '") && probe2("'連不上 aibd'") && !probe2("'aibd'") && !probe2("x === 'aibd'"), 'reason: brand_rule_misses_quoted_edges');
+  ok(!probe('aibd ctl web') && !probe('AIBD_BRAIN_ROOT') && !probe("'aibd'") && !probe('aibd:seats_tree') && !probe('tree_not_in_aibd') && !probe('aibd.yml') && !probe('叫 aibd 的工具伺服器'), 'reason: brand_rule_too_wide');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');

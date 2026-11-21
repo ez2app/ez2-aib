@@ -249,11 +249,11 @@
       const h = { Accept: 'text/plain' }; const t = token(); if (t) h.Authorization = 'Bearer ' + t;
       const q = file ? 'file=' + encodeURIComponent(file) : 'thread_id=' + encodeURIComponent(tid) + '&message_id=' + encodeURIComponent(id) + '&n=' + (Number(n) || 0);
       const r = await fetch('/api/v1/doc?' + q, { headers: h, cache: 'no-store', credentials: 'omit' });
-      if (!r.ok && file && r.status === 400) { bad = '這版 aibd 還不能照檔名開文件:' + file; throw 0; }
+      if (!r.ok && file && r.status === 400) { bad = '這版 AIB 還不能照檔名開文件:' + file; throw 0; }
       // 7ebca dfb4e1b9d:只認現在開著的帳本卡指的那份,其他 404 doc_not_found
       if (!r.ok && file && r.status === 404) { bad = '這張卡已經不在了(處理掉或檔已移走),讀不到:' + file; throw 0; }
       if (r.ok) text = await r.text(); else { let j = {}; try { j = await r.json(); } catch (e) { /* 不是 json */ } bad = r.status === 404 ? '這份文件讀不到(可能還沒有這個介面,或檔已不在)' : r.status === 403 ? (j.code === 'doc_refused' || j.code === 'doc_kind_not_listed' ? '這份文件不能打開(不在可開的文件種類裡,或是連結檔)' : '這個配對不能讀文件' + (j.code ? '(' + j.code + ')' : '')) : '讀不到(' + r.status + ')'; }
-    } catch (e) { if (!bad) bad = '連不上 aibd'; }
+    } catch (e) { if (!bad) bad = '連不上 AIB'; }
     let d = document.getElementById('docdlg');
     if (!d) { d = document.createElement('dialog'); d.id = 'docdlg'; d.className = 'cdlg'; document.body.appendChild(d); d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-dclose]')) d.close(); }); }
     d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="kid">📄</span><span>${esc(label || '')}</span><button type="button" class="x" data-dclose="1" aria-label="關閉" autofocus>✕</button></div></div><div class="db">${bad ? `<div class="none">${esc(bad)}</div>` : `<pre class="doct">${esc(text)}</pre>`}</div><div class="df"><span></span><span>按 Esc 或點外面關閉</span></div></div>`;
@@ -484,9 +484,9 @@
   function updRecHtml(L, max) {
     const shown = L.slice(0, max), more = L.length - shown.length;
     const one = (r) => {
-      const who = r.auto ? '<span>aibd 自動換</span>' : r.how === 'start' ? '<span>開預覽</span>' : r.by ? (seatById(r.by) ? logo(seatById(r.by), 'sm') + ' ' : '') + '<span>' + esc(r.by) + '</span>' : '<span class="na">誰換的還沒記</span>';
+      const who = r.auto ? '<span>AIB 自動換</span>' : r.how === 'start' ? '<span>開預覽</span>' : r.by ? (seatById(r.by) ? logo(seatById(r.by), 'sm') + ' ' : '') + '<span>' + esc(r.by) + '</span>' : '<span class="na">誰換的還沒記</span>';
       const ch = (r.changes || []).map((c) => `<li><span>${esc(c.text || '')}</span>${c.seat ? `<span class="pvby">@${esc(c.seat)}</span>` : ''}${c.card ? `<span class="ecd">${esc(c.card)}</span>` : ''}</li>`).join('');
-      return `<div class="pgur"><div class="pgu1">${r.from ? `<code>${esc(String(r.from).slice(0, 9))}</code> → ` : ''}<code>${esc(String(r.to).slice(0, 9))}</code><span class="pgw2">${esc(r.at ? evTime(r.at) : '')}</span><span class="upt ${r.how === 'manual' ? 'u5' : r.how === 'start' ? 'u1' : 'u2'} sm">${r.how === 'manual' ? '手動' : r.how === 'start' ? '開啟' : '自動'}</span>${who}${r.demo ? '<span class="pvdemo" title="aibd 還沒給這次更新的紀錄;版本與改了什麼是真的,其他欄還沒有">示意</span>' : ''}</div>${r.state === 'conflict' || r.state === 'build_failed' ? `<div class="pgerr">${r.state === 'conflict' ? '合不進去' : '編不過'}${r.error ? ':' + esc(typeof r.error === 'string' ? r.error : [r.error.node, r.error.head && String(r.error.head).slice(0, 9), r.error.file, r.error.line || r.error.message].filter(Boolean).join(' · ')) : ''}</div>` : ch ? `<ul class="pguc">${ch}</ul>` : '<div class="na">這次改了什麼還沒寫</div>'}</div>`;
+      return `<div class="pgur"><div class="pgu1">${r.from ? `<code>${esc(String(r.from).slice(0, 9))}</code> → ` : ''}<code>${esc(String(r.to).slice(0, 9))}</code><span class="pgw2">${esc(r.at ? evTime(r.at) : '')}</span><span class="upt ${r.how === 'manual' ? 'u5' : r.how === 'start' ? 'u1' : 'u2'} sm">${r.how === 'manual' ? '手動' : r.how === 'start' ? '開啟' : '自動'}</span>${who}${r.demo ? '<span class="pvdemo" title="AIB 還沒給這次更新的紀錄;版本與改了什麼是真的,其他欄還沒有">示意</span>' : ''}</div>${r.state === 'conflict' || r.state === 'build_failed' ? `<div class="pgerr">${r.state === 'conflict' ? '合不進去' : '編不過'}${r.error ? ':' + esc(typeof r.error === 'string' ? r.error : [r.error.node, r.error.head && String(r.error.head).slice(0, 9), r.error.file, r.error.line || r.error.message].filter(Boolean).join(' · ')) : ''}</div>` : ch ? `<ul class="pguc">${ch}</ul>` : '<div class="na">這次改了什麼還沒寫</div>'}</div>`;
     };
     return shown.map(one).join('') + (more > 0 ? `<button type="button" class="more pgmore" data-pgmore="1">再看 ${more} 次 ▾</button>` : '');
   }
@@ -510,7 +510,7 @@
   // c7(7b81e 11-20):預覽頁不送 preview_active。以前這裡在預覽裡每分鐘(有操作就)送一次,預覽自己的 aibd 一律拒
   // (preview_in_preview,403),Andy 的預覽紀錄每分鐘一筆被拒;這個訊號只有母體的清單用得上,改由 aibd 那邊接(a9136,N-pv-agree-drive 乙)。
   setInterval(() => { if (S.pvNew && pvNag() !== !!document.querySelector('.pvbar.nag')) render(); }, 30000);
-  (async () => { try { const r = await fetch('/api/v1/health', { cache: 'no-store', credentials: 'omit' }); if (r.ok) { const j = await r.json(); if (j && j.preview === true) { S.pvZone = true; if (typeof j.preview_name === 'string') S.pvName = j.preview_name.slice(0, 40); if (typeof j.preview_id === 'string') S.pvId = j.preview_id.slice(0, 64); pvSeeVersion(j); if (j.preview_update && j.preview_update.kind !== 'fix') { const U = j.preview_update; S.pvNew = String(U.version || '新版').slice(0, 40); S.pvBehind = Number(U.behind) || 0; if (U.nag_secs > 0) S.pvNagSecs = Number(U.nag_secs); S.pvNewAt = U.since ? Date.parse(U.since) || Date.now() : Date.now(); } render(); } } } catch (e) { /* 舊 aibd 沒這欄 */ } })();
+  (async () => { try { const r = await fetch('/api/v1/health', { cache: 'no-store', credentials: 'omit' }); if (r.ok) { const j = await r.json(); if (j && j.preview === true) { S.pvZone = true; if (typeof j.preview_name === 'string') S.pvName = j.preview_name.slice(0, 40); if (typeof j.preview_id === 'string') S.pvId = j.preview_id.slice(0, 64); pvSeeVersion(j); if (j.preview_update && j.preview_update.kind !== 'fix') { const U = j.preview_update; S.pvNew = String(U.version || '新版').slice(0, 40); S.pvBehind = Number(U.behind) || 0; if (U.nag_secs > 0) S.pvNagSecs = Number(U.nag_secs); S.pvNewAt = U.since ? Date.parse(U.since) || Date.now() : Date.now(); } render(); } } } catch (e) { /* 舊 AIB 沒這欄 */ } })();
   const inPreview = () => !!S.pvZone || !!(S.version && (S.version.preview === true || S.version.channel === 'preview'));
   // 519d0 11-19 12:09(Andy 今天按了三次指紋):預覽換過版後,這一頁的配對變成延續的(只能看);
   // 在預覽裡不必重新配對,回母體按「打開」拿一張新開門票就好,不用指紋
@@ -529,7 +529,7 @@
     const ver = x.head || x.version || '';
     return `<div class="pvr ${x.running ? 'run' : ''}" data-pvid="${esc(x.id)}">
       <div class="pvr1"><b class="pvn" title="${esc(x.name || '')}">${esc(x.name || '預覽')}</b>${x.card ? `<span class="ecd">${esc(x.card)}</span>` : ''}
-        ${x.sample ? '<span class="pvdemo" title="清單是空的時 aibd 給的示意列,不能起">示意</span>' : ''}<label class="pvsw ${x.nostart ? 'off' : ''}" title="${x.nostart ? '示意列不能起' : x.running ? '關掉這一個預覽' : '開這一個預覽(會先彈說明)'}"><input type="checkbox" class="pvswi" data-pvsw="${esc(x.id)}" ${x.running ? 'checked' : ''} ${x.nostart ? 'disabled' : ''}><span></span></label></div>
+        ${x.sample ? '<span class="pvdemo" title="清單是空的時 AIB 給的示意列,不能起">示意</span>' : ''}<label class="pvsw ${x.nostart ? 'off' : ''}" title="${x.nostart ? '示意列不能起' : x.running ? '關掉這一個預覽' : '開這一個預覽(會先彈說明)'}"><input type="checkbox" class="pvswi" data-pvsw="${esc(x.id)}" ${x.running ? 'checked' : ''} ${x.nostart ? 'disabled' : ''}><span></span></label></div>
       ${x.what ? `<div class="pvw">${esc(x.what)}</div>` : ''}
       <div class="pvm">${who ? logo(who, 'sm') : byPage ? '<span class="pvby" title="' + esc(x.by) + '">這頁新增</span>' : x.by ? `<span class="pvby">@${esc(x.by)}</span>` : ''}${ver ? `<code title="這個預覽用的頭碼 / 版本">${esc(String(ver).slice(0, 12))}</code>` : ''}${x.newer ? `<span class="upt u4 sm">有新版未上${x.behind > 0 ? ' · 落後 ' + Number(x.behind) + ' 版' : ''}</span>` : ''}${x.newer && typeof x.seats_running === 'number' && x.seats_running > 0 ? `<span class="pvby" title="預覽裡沒有席在跑時,母體會自動換上新版(a9136 seats_running)">${Number(x.seats_running)} 席在跑,停了就自動換上</span>` : ''}${x.last_active_at ? `<span class="pvby" title="最後一次有人在這個預覽裡點 / 打字 / 捲動">有人看 ${esc(when(x.last_active_at))}</span>` : ''}${x.running && x.url ? `<a class="k" href="${esc(x.url)}" target="_blank" rel="noopener" data-pvopen="${esc(x.id)}">打開</a>` : ''}</div>
       <div class="pvsts" ${x.fixed && x.fixed.words ? `title="定版:${esc(String(x.fixed.words))}"` : ''}>${step}</div>
@@ -552,7 +552,7 @@
   // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
   const INB_COLS = [['unread', '未讀'], ['read_open', '讀了沒結'], ['waiting_you', '等你'], ['done', '已結']];
   // 7ebca 12:22:blocked.reason = aibd 列的 failed_code(1.x 寄前檢查的代號 aibd 不會出;配速類寄出當下就拒、不建列)
-  const INB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'aibd 內部出錯,沒送出' };
+  const INB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'AIB 內部出錯,沒送出' };
   // 5d33a r3 N3:標急的人只認三個固定值,其他字一律不顯示(防寄件端塞字)
   const INB_LVBY = { andy: '你', '519d0': '@519d0(統籌)', system: '系統' };
   function inbCol(m) { return m.done_at || m.superseded_by ? 'done' : m.held_human ? 'waiting_you' : m.read_at ? 'read_open' : 'unread'; }
@@ -563,11 +563,11 @@
   }
   function inbAge(m) { const a = Math.max(0, Math.round(Number(m.age_min))); return !Number.isFinite(a) ? '' : a < 1 ? '剛剛' : a < 60 ? a + ' 分前' : a < 1440 ? Math.floor(a / 60) + ' 小時前' : Math.floor(a / 1440) + ' 天前'; }
   function inbRow(m, col) {
-    const I = S.inbUi, lv = m.level === 'urgent' ? `<b class="inl urg" title="${esc(m.level_by ? '標急的是 ' + (INB_LVBY[m.level_by] || roleLabel(String(m.level_by))) : 'aibd 標的急件')}">急</b>` : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
+    const I = S.inbUi, lv = m.level === 'urgent' ? `<b class="inl urg" title="${esc(m.level_by ? '標急的是 ' + (INB_LVBY[m.level_by] || roleLabel(String(m.level_by))) : 'AIB 標的急件')}">急</b>` : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
     const a = Number(m.age_min) || 0, late = col === 'unread' || col === 'read_open' ? (a >= 30 ? ' red' : a >= 10 ? ' warn' : '') : '';
     const who = (k) => { if (/^human:/.test(String(m[k] || ''))) return '你'; const id = String(m[k] || '').replace(/^seat:(legacy:)?/, ''); const x = seatById(id); return x ? '@' + seatName(x) : id ? '@' + id : '?'; };
     const pf = m.done_evidence ? '證據:' + m.done_evidence : m.done_why ? '理由:' + m.done_why : '';
-    const ticks = m.blocked ? `<span class="inbbad">${esc(INB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</span>` : `<span class="ticks"><i class="${m.delivered_at ? 'on' : ''}" title="送到">✓</i><i class="${m.read_at ? 'on' : ''}" title="讀了">✓✓</i><i class="${m.done_at ? 'on' : ''}" title="${esc(pf || '結案')}">✓結</i></span>`;
+    const ticks = m.blocked ? `<span class="inbbad">${esc(INB_BLOCK[m.blocked.reason] || 'AIB 回了 ' + String(m.blocked.reason || '?'))}</span>` : `<span class="ticks"><i class="${m.delivered_at ? 'on' : ''}" title="送到">✓</i><i class="${m.read_at ? 'on' : ''}" title="讀了">✓✓</i><i class="${m.done_at ? 'on' : ''}" title="${esc(pf || '結案')}">✓結</i></span>`;
     const sup = m.superseded_by ? `<small class="inbsup">被同一寄件人的新信取代(${esc(String(m.superseded_by))})</small>` : '';
     const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? '<small class="inbvia" title="從終端機那邊的舊信帳轉來,不能標急">經舊信帳</small>' : '';
     const dup = Number(m.dup_count) > 1 ? `<small class="inbdup">同一封 ×${Number(m.dup_count) | 0}</small>` : '';
@@ -579,10 +579,10 @@
   const INB_WAIT = { seat_in_turn: '它正在做事', seat_not_running: '它沒在跑', seat_queued: '它還在排隊等開席', seat_input_busy: '它正在收別的字', seat_starting: '它正在開機' };
   function inbSent(m) {
     const to = String(m.to_seat || '').replace(/^seat:(legacy:)?/, ''), tn = '@' + seatName(seatById(to) || { seat_id: to });
-    const st = m.blocked ? '沒送出:' + (INB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))
+    const st = m.blocked ? '沒送出:' + (INB_BLOCK[m.blocked.reason] || 'AIB 回了 ' + String(m.blocked.reason || '?'))
       : m.forwarded_to ? '收件席已搬到網頁,已轉給 @' + seatName(seatById(String(m.forwarded_to).replace(/^seat:/, '')) || { seat_id: String(m.forwarded_to) })
       : m.done_at ? '結案' + (m.done_evidence ? ':' + m.done_evidence : m.done_why ? ':' + m.done_why : '')
-      : m.read_at ? '讀了還沒結' : m.waits_for ? '排隊中:' + (INB_WAIT[m.waits_for] || 'aibd 回了 ' + String(m.waits_for)) + ',等好了 aibd 就送'
+      : m.read_at ? '讀了還沒結' : m.waits_for ? '排隊中:' + (INB_WAIT[m.waits_for] || 'AIB 回了 ' + String(m.waits_for)) + ',等好了 AIB 就送'
       : m.delivered_at ? (m.to_busy ? '已送到,它正在做事,這一輪做完會看到' : '已送到,還沒讀') : '還沒送到';
     return `<div class="inbsr"><span class="ticks"><i class="${m.delivered_at ? 'on' : ''}">✓</i><i class="${m.read_at ? 'on' : ''}">✓✓</i><i class="${m.done_at ? 'on' : ''}">✓結</i></span><span class="inbw">→ ${esc(tn)}</span><span class="inbt">${esc(String(m.first_line || '').slice(0, 60))}</span><small class="${m.blocked ? 'inbbad' : 'inbw'}">${esc(st)}</small></div>`;
   }
@@ -658,7 +658,7 @@
         const po = e.target.closest('[data-pvopen]');
         if (po) {
           e.preventDefault(); const x = byId(po.dataset.pvopen); let u = (x && x.url) || '';
-          try { const r = await act('preview_open', { id: po.dataset.pvopen, idempotency_key: idem() }); if (r && typeof r.url === 'string' && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+\//.test(r.url)) u = r.url; } catch (er) { /* 舊 aibd 沒有 preview_open:進去再打碼 */ }
+          try { const r = await act('preview_open', { id: po.dataset.pvopen, idempotency_key: idem() }); if (r && typeof r.url === 'string' && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+\//.test(r.url)) u = r.url; } catch (er) { /* 舊 AIB 沒有 preview_open:進去再打碼 */ }
           if (u) window.open(u, '_blank', 'noopener');
           return;
         }
@@ -687,7 +687,7 @@
       });
     }
     const L = S.pvs || [];
-    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">預覽清單</span><span class="kid">${L.length} 個</span>${S.pvsDemo ? '<span class="pvdemo" title="清單還是空的:這兩筆是 aibd 給的示意列,不能起">示意</span>' : ''}<button type="button" class="dx" data-pvlx="1" aria-label="關閉">✕</button></div></div>
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">預覽清單</span><span class="kid">${L.length} 個</span>${S.pvsDemo ? '<span class="pvdemo" title="清單還是空的:這兩筆是 AIB 給的示意列,不能起">示意</span>' : ''}<button type="button" class="dx" data-pvlx="1" aria-label="關閉">✕</button></div></div>
       <div class="db"><div class="pvrs">${L.map(pvRow).join('') || '<div class="empty">還沒有預覽</div>'}</div></div>
       ${S.pvAdding ? `<div class="pvform pvaddf"><input class="apq" data-pvaf="name" placeholder="名稱(必填)" maxlength="60"><input class="apq" data-pvaf="what" placeholder="在開發什麼" maxlength="120"><input class="apq" data-pvaf="card" placeholder="卡號(可空)" maxlength="40"><button type="button" class="k g" data-pvaddgo="1">新增</button></div>` : ''}
       <div class="df"><span>${(S.pvsOff || []).length ? '已下架 ' + S.pvsOff.length + ' 個(資料留著)' : ''}</span><span><button type="button" class="k" data-pvadd="1">${S.pvAdding ? '收起' : '新增一個預覽'}</button></span></div></div>`;
@@ -843,7 +843,7 @@
           // 5d33a CHECK-pv-up M1 / a9136 a92eb5c5:先讀這次要合的頭,彈同意(這些頭會在這台合併、編譯並執行),同意才送
           const q = await soft(get('/api/v1/preview_up?node=' + encodeURIComponent(nid))).catch((er) => { dsay(errText(er), 'err'); return null; });
           go.disabled = false;
-          if (!q || !Array.isArray(q.heads) || !q.heads_sha256) { dsay('aibd 沒給這次要合的頭清單,不能同意;先不送', 'err'); return; }
+          if (!q || !Array.isArray(q.heads) || !q.heads_sha256) { dsay('AIB 沒給這次要合的頭清單,不能同意;先不送', 'err'); return; }
           return upConsent(d, nid, q.heads, q.heads_sha256);
         }
         if (e.target.closest('[data-upno]')) { const c = d.querySelector('.upc'); if (c) c.remove(); return; }
@@ -861,7 +861,7 @@
             const b = er.body || {};
             if (er.code === 'heads_changed' && Array.isArray(b.heads) && b.heads_sha256) { dsay('剛剛有人改了頭,請再看一次', 'err'); return upConsent(d, nid, b.heads, b.heads_sha256, true); }
             if (er.code === 'preview_busy') dsay('這個預覽正在' + upWord(b.state || 'merging') + ',等它好了再按', 'err');
-            else if (er.code === 'preview_repo_unset') dsay('這台 aibd 沒設預覽要用的倉庫,上不了(要維運設定)', 'err');
+            else if (er.code === 'preview_repo_unset') dsay('這台 AIB 沒設預覽要用的倉庫,上不了(要維運設定)', 'err');
             else if (er.code === 'preview_blocked') dsay('擋住了:' + (Array.isArray(b.blocked_by) ? b.blocked_by.join('、') : '樹還沒就緒'), 'err'); else dsay(errText(er), 'err');
           }
           return upOpen(nid);
@@ -875,7 +875,7 @@
     const foot = bad.length
       ? `<div class="upblk"><b>${bad.length} 個支點不足,不進預覽</b><ul>${bad.map((x) => `<li><a data-card="${esc(x.id)}">${esc(x.title)}</a>:${esc(x.why || '不足')}${x.who ? ' · 負責 @' + esc(x.who) : ''}</li>`).join('')}</ul></div>`
       : `<div class="upok">全部支點都已在預覽或足以支持${stub.length ? `(其中 ${stub.length} 個是替身,會自動列進「可看、還不能用」)` : ''}</div>`;
-    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">上預覽</span><b class="pvdn">${esc(n.title || id)}</b><span class="kid">${esc(id)}</span>${upTagHtml(st, !!T.demo || upIsDemo(id))}${T.demo ? '<span class="pvdemo" title="aibd 還沒有相依與燈號;這是從專案樹算的替身">示意</span>' : ''}<button type="button" class="dx" data-upx="1" aria-label="關閉">✕</button></div></div>
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">上預覽</span><b class="pvdn">${esc(n.title || id)}</b><span class="kid">${esc(id)}</span>${upTagHtml(st, !!T.demo || upIsDemo(id))}${T.demo ? '<span class="pvdemo" title="AIB 還沒有相依與燈號;這是從專案樹算的替身">示意</span>' : ''}<button type="button" class="dx" data-upx="1" aria-label="關閉">✕</button></div></div>
       <div class="db"><div class="dsec">相依的樹(每個支點一顆燈)</div>${upTreeHtml(T)}${foot}</div>
       <div class="df"><span>按在功能層 = 整棵子樹;按在子項目 = 帶出它往上要靠的支點</span><span>${live ? '<button type="button" class="k g" data-upx="1">開預覽</button>' : `${bad.length ? `<span class="upwhy">有 ${bad.length} 個支點不足,先補齊才能上</span>` : ''}<button type="button" class="k g" data-upgo="${esc(id)}" ${bad.length || /中$/.test(st) ? 'disabled' : ''} title="${bad.length ? '擋在:' + esc(bad.map((x) => x.title).join('、')) : ''}">${/中$/.test(st) ? esc(st) + '…' : '上預覽'}</button>`}</span></div></div>`;
     upHint(d);
@@ -933,12 +933,12 @@
   const TH_WHY = {
     reached_through_something_else: '這台要經跳板,不支援', config_has_match_or_include: 'ssh 設定有 Match / Include,讀不準,不支援',
     no_identity_file: '這台的 ssh 設定看不懂', identity_file_not_absolute: '這台的 ssh 設定看不懂', value_with_a_token: '這台的 ssh 設定看不懂', port: '這台的 ssh 設定看不懂',
-    aibd_own_key: '這台設定用的是 aibd 自己的鑰匙',
+    aibd_own_key: '這台設定用的是 AIB 自己的鑰匙',
   };
   const TH_ERR = {
     no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
     write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
-    page_only: '只有這台 aibd 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
+    page_only: '只有這台 AIB 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
   };
   async function thLoad() {
     if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
@@ -1177,23 +1177,23 @@
     no_tick: '這一席本來就沒有設定時送',
     seat_tick_built_in_page_only: '只有內建頁、這一輪配對的分頁能設定時送',
     // a9136 b1efc3b571(11-21 01:11):設 / 恢復要本人指紋(兩步:202 ticket → 按指紋 → 帶 ticket 再送)
-    owner_check_unavailable: '設定時送要本人指紋,這台的 aibd 還沒接上指紋;先不能設',
+    owner_check_unavailable: '設定時送要本人指紋,這台的 AIB 還沒接上指紋;先不能設',
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過);再按一次',
     // a9136 64a09bb2af 片 2:那句可以改從 <data>/ticks/ 的檔來(二選一)
     file_name: '檔名只能小寫英文、數字、- 和 _,結尾 .txt',
-    file_missing: 'aibd 的 ticks 資料夾裡沒有這個檔',
+    file_missing: 'AIB 的 ticks 資料夾裡沒有這個檔',
     file_bad: '這個檔讀不了(太大或不是文字)',
     text_or_file: '要送的那句和檔案只能選一個',
   };
   const TICK_FILE_RE = /^[a-z0-9_-]{1,60}\.txt$/;
   const tsHm = (u) => (Number.isFinite(Number(u)) && Number(u) > 0 ? hhmm(new Date(Number(u) * 1000).toISOString()) : '');
   // 每席那顆的說明:來源、上次 / 下次、卡住
-  const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,aibd 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.until) > 0 ? '核准到 ' + new Date(Number(t.until) * 1000).toLocaleDateString() : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
+  const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,AIB 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.until) > 0 ? '核准到 ' + new Date(Number(t.until) * 1000).toLocaleDateString() : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
   const tickWhy = (e) => { const k = e && (e.reason || e.code); return TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e); };
   // b1efc3b571 的 seat_tick_list 每筆多 approved / changed_since_approved:沒經指紋設的舊筆、或字跟核准那版不同(aibd 不送)⇒ 標出來,改 = 重新核准
   // a9136 54b400fdef(11-21 01:30):每筆多 not_sent(現在不會送的原因;會送 = null)與 until(核准到期 unix 秒);not_sent 不是 null 就給「重新核准」
   const tickNeedsOk = (t) => !!t && ((t.not_sent !== undefined && t.not_sent !== null) || t.approved === false || t.changed_since_approved === true);
-  const tickOkWhy = (t) => (t && t.not_sent ? (TICK_SKIP[t.not_sent] || '現在不會送(' + t.not_sent + ')') + (/重新核准/.test(TICK_SKIP[t.not_sent] || '') ? '' : ';按「重新核准」再按一次指紋') : t && t.changed_since_approved === true ? '字跟本人核准那版不同,aibd 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
+  const tickOkWhy = (t) => (t && t.not_sent ? (TICK_SKIP[t.not_sent] || '現在不會送(' + t.not_sent + ')') + (/重新核准/.test(TICK_SKIP[t.not_sent] || '') ? '' : ';按「重新核准」再按一次指紋') : t && t.changed_since_approved === true ? '字跟本人核准那版不同,AIB 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
   const tickWait = (T) => (ticket, sec) => { if (S.tickEdit === T) { T.msg = '請在這台 Mac 跳出的指紋視窗按下(設定時送要本人核准)· 還有 ' + sec + ' 秒'; render(); } };
   // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
   const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
@@ -1243,7 +1243,7 @@
   function tickBar() {
     const T = S.tickEdit, s = T && seatById(T.seat); if (!T) return '';
     const has = S.ticks && S.ticks.get(T.seat);
-    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:${T.src === 'file' ? `<input class="tkin" type="text" maxlength="64" data-tickf="file" value="${esc(T.file || '')}" placeholder="檔名.txt(放在 aibd 的 ticks 資料夾)" aria-label="檔名" autocomplete="off" spellcheck="false">` : `<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off">`}<button type="button" class="k" data-ticksrc="1">${T.src === 'file' ? '改成直接打字' : '改成從檔案'}</button></div>${T.src === 'file' ? '<div class="tkn bad">從檔案來的那句現在還沒有簽章,aibd 設得了但一律不送(等簽章上線)</div>' : ''}${has && tickInfo(has) ? `<div class="tkn">${esc(tickInfo(has))}</div>` : ''}<div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
+    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:${T.src === 'file' ? `<input class="tkin" type="text" maxlength="64" data-tickf="file" value="${esc(T.file || '')}" placeholder="檔名.txt(放在 AIB 的 ticks 資料夾)" aria-label="檔名" autocomplete="off" spellcheck="false">` : `<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off">`}<button type="button" class="k" data-ticksrc="1">${T.src === 'file' ? '改成直接打字' : '改成從檔案'}</button></div>${T.src === 'file' ? '<div class="tkn bad">從檔案來的那句現在還沒有簽章,AIB 設得了但一律不送(等簽章上線)</div>' : ''}${has && tickInfo(has) ? `<div class="tkn">${esc(tickInfo(has))}</div>` : ''}<div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
   }
   const tickStop = () => (S.tickOff || !S.ticks || (!S.ticks.size && !S.tickPaused) ? '' : S.tickPaused
     ? `<button type="button" class="ib tkstop on" data-tickpause="0" title="自動送全部暫停中(設定都留著);按這裡恢復">⏸ 自動送已暫停 · 恢復</button>`
@@ -1292,8 +1292,8 @@
   // 1a93b 62e1bdbeb8(DESIGN-seat-clear r1):aibd 有 seat_clear ⇒ 交接單是 aibd 記的、30 分內才亮;按了先確認(席碼與路徑並排),再送
   const HO_FRESH_MS = 30 * 60 * 1000;
   function hoClearBtn(s, st) {
-    if (hasAct('seat_clear') !== true) return '<button type="button" class="k" disabled title="這一版 aibd 還沒有清空重開的動作">清空(要新版 aibd)</button>';
-    const why = !st.done ? '還沒有交接單' : st.by !== 'aibd' ? '交接單要由席用 seat_handoff 報給 aibd,清空才用得到' : Date.now() - new Date(st.wrote).getTime() > HO_FRESH_MS ? '交接單寫好超過 30 分鐘,請它再寫一次' : '';
+    if (hasAct('seat_clear') !== true) return '<button type="button" class="k" disabled title="這一版 AIB 還沒有清空重開的動作">清空(要新版 AIB)</button>';
+    const why = !st.done ? '還沒有交接單' : st.by !== 'aibd' ? '交接單要由席用 seat_handoff 報給 AIB,清空才用得到' : Date.now() - new Date(st.wrote).getTime() > HO_FRESH_MS ? '交接單寫好超過 30 分鐘,請它再寫一次' : '';
     if (why) return `<button type="button" class="k" disabled title="${esc(why)}">清空並開新的一段</button><small class="dim">${esc(why)}</small>`;
     return `<button type="button" class="k" data-hoclear="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="停掉這一段,用新的對話開同一席,第一句叫它讀交接單;舊對話留著">清空並開新的一段</button>`;
   }
@@ -1370,14 +1370,14 @@
   // 那片只收受信任席自己的權杖(seat_input.rs:seat_token),頁面憑證還沒有路 ⇒ 頁面叫會被拒;收到就收起並寫缺口。aibd 每席 10 秒只准問一次 ⇒ 一次只問一樣
   const GH_WHY = {
     trusted_seats_off: '這台沒開受信任席,看 PR 的開關跟著關', gh_view_user_page: '使用者資料夾頁在服務時不能看',
-    gh_view_what: '只能看 PR、檢查格、run', gh_view_number: '號碼不對', gh_view_repo: '這台 aibd 的倉設定不是 owner/name',
+    gh_view_what: '只能看 PR、檢查格、run', gh_view_number: '號碼不對', gh_view_repo: '這台 AIB 的倉設定不是 owner/name',
     gh_view_seat_rate: '每 10 秒只准問一次,等一下再按', gh_view_rate: '這台一分鐘內問太多次(席和頁面合計 30 次),等一下再按', gh_view_no_answer: 'gh 20 秒沒回',
     // 1a93b 8b12d76d7(DESIGN-page-gh-view r1):頁面自己的入口與開關
     page_gh_view_off: '這台沒開「頁面看 PR」(bridge.json 的 page_gh_view)',
   };
   // 5d33a PREREAD-pageghview N1:只有 https 且 host 剛好是 github.com 才畫成連結(不用前綴比對;PR 標題等外部字一律當字)
   const ghSafeUrl = (u) => { try { const x = new URL(String(u || '')); return x.protocol === 'https:' && x.hostname === 'github.com' && !x.username && !x.password ? x.href : ''; } catch (e) { return ''; } };
-  const GH_PAGE_GAP = '這一版 aibd 的頁面還不能看 PR(要有頁面版 gh_view 的新版 aibd)';
+  const GH_PAGE_GAP = '這一版 AIB 的頁面還不能看 PR(要有頁面版 gh_view 的新版 AIB)';
   function ghBox() {
     const G = S.gh || {};
     if (!G.off && hasAct('gh_view') === false) G.off = GH_PAGE_GAP;
@@ -1418,11 +1418,11 @@
   function ghList(G) {
     const L = ghKnown(G), q = String(G.num || '').trim();
     const rows = L.map((x) => `<button type="button" class="ghrow" data-ghpick="${esc(x.n)}"${q && x.n.indexOf(q) !== 0 ? ' hidden' : ''}><i class="ghd ${x.dot || ''}"></i><b>#${esc(x.n)}</b><span>${esc(Array.from(x.t).slice(0, 20).join(''))}</span></button>`).join('');
-    return `<div class="ghdd" data-ghdd>${rows || '<div class="ghe">還沒有在途 PR 清單(aibd 沒給 list;看過的、事件提到的會列在這)</div>'}<div class="ghlg"><i class="ghd pok"></i>可合 <i class="ghd po"></i>等審 <i class="ghd pr"></i>檢查紅 <i class="ghd pg"></i>草稿</div></div>`;
+    return `<div class="ghdd" data-ghdd>${rows || '<div class="ghe">還沒有在途 PR 清單(AIB 沒給 list;看過的、事件提到的會列在這)</div>'}<div class="ghlg"><i class="ghd pok"></i>可合 <i class="ghd po"></i>等審 <i class="ghd pr"></i>檢查紅 <i class="ghd pg"></i>草稿</div></div>`;
   }
   async function ghListLoad() {
     const G = (S.gh = S.gh || {}); if (G.listTried) return; G.listTried = true;
-    try { const r = await act('gh_view', { what: 'list' }); if (r && Array.isArray(r.json)) { G.list = r.json; render(); } } catch (e) { /* 舊 aibd 只認 pr / checks / run:用這頁知道的 */ }
+    try { const r = await act('gh_view', { what: 'list' }); if (r && Array.isArray(r.json)) { G.list = r.json; render(); } } catch (e) { /* 舊版只認 pr / checks / run:用這頁知道的 */ }
   }
   async function ghAsk(what, number) {
     const G = (S.gh = S.gh || {});
@@ -1450,7 +1450,7 @@
   function repoTag(s) {
     const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
     if (rc) return `<span class="rpt cp" title="這一席改的是「${esc(String(rc.repo || ''))}」的副本;你的原倉要按「交回本機原倉」才會多一條分支,main 不動">原倉副本 · ${esc(String(rc.repo || ''))}</span>`;
-    if (s.mode === 'work') return '<span class="rpt" title="這一席開在 aibd 給它的新資料夾,不是你登記的倉">自己的新資料夾</span>';
+    if (s.mode === 'work') return '<span class="rpt" title="這一席開在 AIB 給它的新資料夾,不是你登記的倉">自己的新資料夾</span>';
     return '';
   }
   function treeTag(s) {
@@ -1477,7 +1477,7 @@
     const out = [];
     for (const id in S.aslots ? {} : S.mergeStop || {}) {
       const f = S.mergeStop[id], s = seatById(id) || S.seats.find((y) => String(y.seat_id).replace(/^seat_/, '').startsWith(id)) || { seat_id: id, name: id };
-      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatShort(s), seat: s.seat_id, text: '@' + seatShort(s) + ' 的合回停下:作者那份 git 設定有 aibd 不跑的東西' + (f.why ? '(' + unsafeWhy(f.why) + ')' : ''), st: '沒有合、什麼都沒動。下一步:請作者那一席把這項設定拿掉(或它本來就不該在那),拿掉後再按「合回」;不想動設定就改用「同一份檔案」開審查席' + (f.why ? ' · 原文 ' + f.why : ''), key: 'mu:' + id + ':' + f.at });
+      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatShort(s), seat: s.seat_id, text: '@' + seatShort(s) + ' 的合回停下:作者那份 git 設定有 AIB 不跑的東西' + (f.why ? '(' + unsafeWhy(f.why) + ')' : ''), st: '沒有合、什麼都沒動。下一步:請作者那一席把這項設定拿掉(或它本來就不該在那),拿掉後再按「合回」;不想動設定就改用「同一份檔案」開審查席' + (f.why ? ' · 原文 ' + f.why : ''), key: 'mu:' + id + ':' + f.at });
     }
     for (const code in S.wtKept) {
       const f = S.wtKept[code];
@@ -2443,7 +2443,7 @@
     const rt = replyOf(p);
     const r = rt ? `<button type="button" class="rpl" data-jump="${esc(rt)}" title="跳到觸發這次回答的那一則">回覆 ↑</button>` : '';
     if (a === 'turn_failed') { const why = (p && (p.failed || (p.item && p.item.failed))) || ''; return `<span class="autot bad" title="${esc(typeof why === 'string' ? why : '')}">沒做成</span>${r}`; }
-    return `<span class="autot" title="這一席回合結束時,aibd 用它的身份把最後回答貼回這一串">自動帶回</span>${r}`;
+    return `<span class="autot" title="這一席回合結束時,AIB 用它的身份把最後回答貼回這一串">自動帶回</span>${r}`;
   }
   // 519d0 NOTE-import-regroup r1 §9:長串照日期收合,預設展開最近兩天;舊的那幾天一行「日期 · N 則」,點了展開
   const DAY_FOLD_MIN = 30;
@@ -2533,7 +2533,7 @@
   function chatTools() {
     const miss = ['send_history_list', 'fav_add', 'screen_capture'].filter((t) => !ctHas(t));
     const hist = CT.histOpen ? ctHistHtml() : '';
-    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(aibd),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">aibd 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.att.length ? `<div class="atts">${CT.att.map((a, k) => `<span class="atc"><img class="atimg" src="${esc(a.thumb)}" alt="">圖 ${k + 1}<button type="button" class="ghx" data-attx="${k}" aria-label="拿掉這張">×</button></span>`).join('')}<span class="cth">送出時一起交給這一席(最多 4 張)</span></div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
+    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(AIB),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">AIB 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.att.length ? `<div class="atts">${CT.att.map((a, k) => `<span class="atc"><img class="atimg" src="${esc(a.thumb)}" alt="">圖 ${k + 1}<button type="button" class="ghx" data-attx="${k}" aria-label="拿掉這張">×</button></span>`).join('')}<span class="cth">送出時一起交給這一席(最多 4 張)</span></div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
   }
   // ---- 送出紀錄 100 則(↑ 叫回;同上一則不存;權杖樣字串不存)----
   async function ctHistLoad() {
@@ -2599,7 +2599,7 @@
     if (!CT.favOpen) return '';
     const L = favList();
     const rows = L.slice(0, 50).map((f, i) => `<div class="fvr"><div class="fvm"><b>${esc(f.from ? f.from.replace(/^seat:/, '@').replace(/^human:.*/, '你') : '')}</b>${esc(hhmm(f.at))}${f.tag ? ' · ' + esc(f.tag) : ''}</div><div class="fvt" title="${esc(f.text)}">${esc(String(f.text).slice(0, 160))}</div><div class="fvb"><button type="button" class="k sm2" data-fvput="${i}">貼回輸入框</button><button type="button" class="k sm2" data-fvjump="${i}">跳到原對話</button><button type="button" class="k sm2" data-fav="${esc(f.key || f.ref && f.ref.key || '')}" data-fvid="${esc(f.id || '')}">☆ 取消</button></div></div>`).join('');
-    return `<div class="evbox fvbox"><div class="bh"><span class="ek kfav">收藏</span> <span class="st">${(CT.favs || []).length} 則</span><button type="button" class="ghx" data-ct="fav" aria-label="收起">×</button></div><input class="apq fvq" data-fvq type="search" placeholder="搜尋收藏…" value="${esc(CT.favQ)}">${rows || '<div class="empty">還沒有收藏;每則對話右上的 ☆ 可以收</div>'}<div class="cthf">${ctHas('fav_add') ? '收藏存在 aibd,換電腦、換瀏覽器都在' : 'aibd 還沒有收藏:只在這一頁有效'}</div></div>`;
+    return `<div class="evbox fvbox"><div class="bh"><span class="ek kfav">收藏</span> <span class="st">${(CT.favs || []).length} 則</span><button type="button" class="ghx" data-ct="fav" aria-label="收起">×</button></div><input class="apq fvq" data-fvq type="search" placeholder="搜尋收藏…" value="${esc(CT.favQ)}">${rows || '<div class="empty">還沒有收藏;每則對話右上的 ☆ 可以收</div>'}<div class="cthf">${ctHas('fav_add') ? '收藏存在 AIB,換電腦、換瀏覽器都在' : 'AIB 還沒有收藏:只在這一頁有效'}</div></div>`;
   }
   // ---- 取色 ----
   const hex2 = (n) => n.toString(16).padStart(2, '0').toUpperCase();
@@ -2619,7 +2619,7 @@
   function ctPickHtml() {
     const P = CT.pick;
     const val = P.hex ? ['hex', 'rgb', 'hsl'].map((k) => `<button type="button" class="pkv" data-pkcopy="${esc(P[k])}">${esc(P[k])}</button>`).join('') : `<div class="cthf">${esc(P.msg || '')}</div>`;
-    return `<div class="pkbox" data-pkbox><div class="pkh">取色 · ${'EyeDropper' in window ? '吸管可點螢幕任何地方' : '這個瀏覽器沒有吸管:在截圖上點'}<button type="button" class="ghx" data-pkx="1" aria-label="關">×</button></div>${P.hex ? `<i class="pksw" data-bg="${esc(P.hex)}"></i>` : ''}<div class="pkvs">${val}</div><div class="pkrec">${CT.colors.map((c) => `<button type="button" class="pkc" data-pkput="${esc(c)}" title="${esc(c)} 放進輸入框" data-bg="${esc(c)}"></button>`).join('')}</div><div class="cthf">最近 12 色 ·${ctHas('color_push') ? ' 記在 aibd' : ' 只在這一頁'} · 點色塊放進輸入框</div></div>`;
+    return `<div class="pkbox" data-pkbox><div class="pkh">取色 · ${'EyeDropper' in window ? '吸管可點螢幕任何地方' : '這個瀏覽器沒有吸管:在截圖上點'}<button type="button" class="ghx" data-pkx="1" aria-label="關">×</button></div>${P.hex ? `<i class="pksw" data-bg="${esc(P.hex)}"></i>` : ''}<div class="pkvs">${val}</div><div class="pkrec">${CT.colors.map((c) => `<button type="button" class="pkc" data-pkput="${esc(c)}" title="${esc(c)} 放進輸入框" data-bg="${esc(c)}"></button>`).join('')}</div><div class="cthf">最近 12 色 ·${ctHas('color_push') ? ' 記在 AIB' : ' 只在這一頁'} · 點色塊放進輸入框</div></div>`;
   }
   async function ctColorsLoad() { if (CT.colorsTried || !ctHas('color_list')) return; CT.colorsTried = true; try { const r = await act('color_list', {}); if (r && Array.isArray(r.colors)) { CT.colors = r.colors.map((c) => String(c).toUpperCase()).slice(0, 12); render(); } } catch (e) { /* 只在本頁 */ } }
   async function ctPick() {
@@ -2630,15 +2630,15 @@
   // ---- 圖:截圖 / 貼上 / 拖入 / 選檔 ⇒ 標註窗 ----
   const b64Blob = (b64, mime) => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: mime }); };
   async function ctShot() {
-    if (!ctHas('screen_capture')) { CT.note = 'aibd 還沒有截圖:先用 ⌘⇧4(Mac)或 Win+Shift+S(Windows)截好,在輸入框貼上就會開標註窗'; return render(); }
+    if (!ctHas('screen_capture')) { CT.note = 'AIB 還沒有截圖:先用 ⌘⇧4(Mac)或 Win+Shift+S(Windows)截好,在輸入框貼上就會開標註窗'; return render(); }
     CT.note = '截圖中…'; render();
     try {
-      const r = await act('screen_capture', {}); if (!r || !r.media_id) throw new Error('aibd 沒回圖');
-      const g = await act('media_get', { media_id: r.media_id }); if (!g || typeof g.data_base64 !== 'string') throw new Error('aibd 沒回圖');
+      const r = await act('screen_capture', {}); if (!r || !r.media_id) throw new Error('AIB 沒回圖');
+      const g = await act('media_get', { media_id: r.media_id }); if (!g || typeof g.data_base64 !== 'string') throw new Error('AIB 沒回圖');
       CT.note = ''; render(); annOpen(b64Blob(g.data_base64, g.mime || 'image/png'), true);
     } catch (e) {
       const code = e && (e.code || e.reason);
-      CT.note = code === 'screen_permission_needed' ? 'Mac 要先在「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 aibd(你自己按),再按一次 📸' : code === 'capture_rate' ? '截太快了:一分鐘最多 6 張' : code === 'screen_capture_unsupported' ? '這台的 aibd 不能截圖' : '截圖失敗:' + errText(e);
+      CT.note = code === 'screen_permission_needed' ? 'Mac 要先在「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 AIB(你自己按),再按一次 📸' : code === 'capture_rate' ? '截太快了:一分鐘最多 6 張' : code === 'screen_capture_unsupported' ? '這台的 AIB 不能截圖' : '截圖失敗:' + errText(e);
       render();
     }
   }
@@ -2788,7 +2788,7 @@
   async function annWebp(btn) {
     const c = annCanvas(); btn.disabled = true; const w0 = btn.textContent; btn.textContent = '存檔中…';
     try {
-      if (!ctHas('media_webp') || !ctHas('media_put')) { c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png'); annSay('aibd 還沒有 webp 轉檔:先存成 png', true); return; }
+      if (!ctHas('media_webp') || !ctHas('media_put')) { c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png'); annSay('AIB 還沒有 webp 轉檔:先存成 png', true); return; }
       const p = await act('media_put', { png_base64: annB64(c) }); const w = await act('media_webp', { media_id: p.media_id });
       const g = await act('media_get', { media_id: w.media_id });
       saveBlob(b64Blob(g.data_base64, g.mime || 'image/webp'), g.download_name || shotName('webp')); annSay('已存成 webp(瀏覽器的「下載」夾)');
@@ -2800,7 +2800,7 @@
     const c = annCanvas(), btn = ANN.el.querySelector('[data-annok]'); btn.disabled = true; btn.textContent = '存圖中…';
     if (ctHas('media_put')) {
       try {
-        const r = await act('media_put', { png_base64: annB64(c) }); if (!r || !r.media_id) throw new Error('aibd 沒回圖');
+        const r = await act('media_put', { png_base64: annB64(c) }); if (!r || !r.media_id) throw new Error('AIB 沒回圖');
         if (CT.att.length >= 4) { btn.disabled = false; btn.textContent = '送進對話'; annSay('一次最多 4 張,先送出或拿掉一張', true); return; }
         const t = document.createElement('canvas'), k = Math.min(1, 96 / Math.max(c.width, c.height)); t.width = Math.max(1, Math.round(c.width * k)); t.height = Math.max(1, Math.round(c.height * k)); t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
         CT.att.push({ id: String(r.media_id), thumb: t.toDataURL('image/png') });
@@ -2808,7 +2808,7 @@
       } catch (e) { btn.disabled = false; btn.textContent = '送進對話'; annSay('存圖失敗:' + errText(e), true); return; }
     }
     c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png');
-    annClose(); CT.note = 'aibd 還收不了圖(沒有 media_put):已下載成 png,先自己拖給那一席'; render();
+    annClose(); CT.note = 'AIB 還收不了圖(沒有 media_put):已下載成 png,先自己拖給那一席'; render();
   }
   // aibd 頁 CSP style-src 'self':標籤裡寫內聯樣式屬性會被擋 ⇒ 畫完後用 CSSOM 上色,只收 #RRGGBB
   function ctPaint(root) { for (const n of (root || document).querySelectorAll('[data-bg]')) if (/^#[0-9a-f]{6}$/i.test(n.dataset.bg)) n.style.background = n.dataset.bg; }
@@ -2906,7 +2906,7 @@
   }
   // 事件的狀態欄:aibd 給的代號一律轉成介面用字(519d0 22:32;Andy 看到 seat_busy);沒對照的照原字、記一筆在 S.unkState
   // 7ebca 00:2x 六個 needs 代號 + a9136 CODES-aibd-states-a9136-1119.md 全表(沒列到的仍灰色斜體顯示原字)
-  const STATE_TEXT = { owner_lost: '負責席已不在(關了或換艙),等統籌改派', owner_off_roster: '負責席不在名冊上,等統籌改派', no_owner: '找不到負責席', no_free_reviewer: '沒有空的審查席', seat_size_none: '負責席這輪額度不夠,派不出去', seat_busy: '負責席或審查席在忙,派不出去', busy: '忙碌中', seat_idle: '閒著', idle: '閒著', queued: '排隊中', seat_queued: '排隊中', pending: '準備中', running: '在跑', seat_running: '在跑', stopped: '已停', seat_stopped: '已停', stop_unconfirmed: '停了、還沒確認結束', failed: '開不起來', seat_failed: '開不起來', reply: '等回應', waiting: '等回應', seat_waiting: '等回應', decide: '等你決定', quiet: '說忙、沒動', seat_quiet: '說忙、沒動', done: '做完了', rejoin_failed: '接回失敗', offline: '連不上', two_ways: '兩個做法', usage_high: '用量偏高', login_needed: '要登入', none: '不用等人,席自己能做', needs_human: '要真人出手', delivered: '已送達', partial: '部分完成', clear: '沒事', exited: '已正常結束', killed: '被強制結束', interrupted: 'aibd 重啟時被中斷', cancelled: '被取消', issued: '碼已發、還沒兌換', awaiting_confirmation: '等短碼確認', confirmed: '已確認', revoked: '已撤銷', expired: '已過期', conflict: '合不進去', build_failed: '編不過', ready: '可用', observed_clean: '看得到的都停了', lineage_unavailable: '追不到子程序', root_unrecorded: '沒記到最上層程序', candidates_incomplete: '可疑程序沒查完', candidates_unreadable: '有可疑程序讀不到', candidates_unreadable_older: '讀不到的都比這席更早開', root_identity_lost: '最上層程序身份對不上', stop_failed: '停的動作失敗', unclassified: '其他原因' };
+  const STATE_TEXT = { owner_lost: '負責席已不在(關了或換艙),等統籌改派', owner_off_roster: '負責席不在名冊上,等統籌改派', no_owner: '找不到負責席', no_free_reviewer: '沒有空的審查席', seat_size_none: '負責席這輪額度不夠,派不出去', seat_busy: '負責席或審查席在忙,派不出去', busy: '忙碌中', seat_idle: '閒著', idle: '閒著', queued: '排隊中', seat_queued: '排隊中', pending: '準備中', running: '在跑', seat_running: '在跑', stopped: '已停', seat_stopped: '已停', stop_unconfirmed: '停了、還沒確認結束', failed: '開不起來', seat_failed: '開不起來', reply: '等回應', waiting: '等回應', seat_waiting: '等回應', decide: '等你決定', quiet: '說忙、沒動', seat_quiet: '說忙、沒動', done: '做完了', rejoin_failed: '接回失敗', offline: '連不上', two_ways: '兩個做法', usage_high: '用量偏高', login_needed: '要登入', none: '不用等人,席自己能做', needs_human: '要真人出手', delivered: '已送達', partial: '部分完成', clear: '沒事', exited: '已正常結束', killed: '被強制結束', interrupted: 'AIB 重啟時被中斷', cancelled: '被取消', issued: '碼已發、還沒兌換', awaiting_confirmation: '等短碼確認', confirmed: '已確認', revoked: '已撤銷', expired: '已過期', conflict: '合不進去', build_failed: '編不過', ready: '可用', observed_clean: '看得到的都停了', lineage_unavailable: '追不到子程序', root_unrecorded: '沒記到最上層程序', candidates_incomplete: '可疑程序沒查完', candidates_unreadable: '有可疑程序讀不到', candidates_unreadable_older: '讀不到的都比這席更早開', root_identity_lost: '最上層程序身份對不上', stop_failed: '停的動作失敗', unclassified: '其他原因' };
   // Andy 00:1x:沒對照的代號在頁面上用灰色斜體顯示原字,方便抓漏
   function stateHtml(v) { const t = stateText(v); if (!t) return ''; return t === String(v).trim() && /^[a-z][a-z0-9_.]*$/.test(t) ? `<i class="unk" title="這個狀態代號還沒有中文對照">${esc(t)}</i>` : esc(t); }
   function stateText(v) {
@@ -3185,8 +3185,8 @@
     if (c === 'carried_pair_read_and_safe_only') return '帶過來的配對只能看,要在這台的內建頁按';
     // 遇事不決定稿 ideas-2 §2:同意 / 不同意 / 看過都要指紋;這版 aibd 還沒接指紋 ⇒ 503,卡留著
     if (c === 'needs_fingerprint') return '請在這台按指紋;按完再點一次';
-    if (c === 'owner_check_unavailable') return '要先按指紋確認是你本人,這版 aibd 還沒接上指紋;這張卡留著,接好再按';
-    if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) return '這版 aibd 還不能按,等新版';
+    if (c === 'owner_check_unavailable') return '要先按指紋確認是你本人,這版 AIB 還沒接上指紋;這張卡留著,接好再按';
+    if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) return '這版 AIB 還不能按,等新版';
     return '';
   }
   // 要你決定(seat.asked):鈕字頁面寫死四語(7ebca:卡上不帶字)
@@ -3285,7 +3285,7 @@
     try {
       const r = await act('idea_answer', { card_id: card, answer });
       // 7ebca 68b1f4db8:指紋沒接 ⇒ 200 verified:false,卡留著,只記「頁面按過、未證實」
-      if (r && r.verified === false) { C.actMsg = '頁面按過、未證實(' + (answer === 'agree' ? '同意' : '不同意') + ');要按指紋確認是你本人才算,這版 aibd 還沒接上指紋,卡留著'; }
+      if (r && r.verified === false) { C.actMsg = '頁面按過、未證實(' + (answer === 'agree' ? '同意' : '不同意') + ');要按指紋確認是你本人才算,這版 AIB 還沒接上指紋,卡留著'; }
       else { C.ideaDone = answer; C.actMsg = ''; }
     } catch (e) {
       const c = e && e.body && e.body.code;
@@ -3305,7 +3305,7 @@
       const unv = r && r.verified === false;
       for (const k of ids) { seen[k] = unv ? 'unv' : true; delete pick[k]; }
       const n = (r && Number(r.count)) || ids.length, h = r && typeof r.hash === 'string' ? r.hash : '';
-      C.actMsg = (unv ? '頁面按過、未證實:' : '看過:') + n + ' 條' + (h ? '(清單雜湊 ' + h + ')' : '') + (unv ? ';要按指紋確認是你本人才算,這版 aibd 還沒接上指紋' : '');
+      C.actMsg = (unv ? '頁面按過、未證實:' : '看過:') + n + ' 條' + (h ? '(清單雜湊 ' + h + ')' : '') + (unv ? ';要按指紋確認是你本人才算,這版 AIB 還沒接上指紋' : '');
     } catch (e) {
       const c = e && e.body && e.body.code;
       if (c === 'line_not_waiting') { C.actBad = true; C.actMsg = '勾的裡面有已經不在清單上的,重開這張卡再勾'; }
@@ -3322,7 +3322,7 @@
       const x = (S.aslots || []).find((y) => y.card_id === card); if (x) x.pin = C.pin || undefined;
     } catch (e) {
       const c = e && e.code;
-      if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { C.pin = node || ''; C.pinDemo = true; C.pinMsg = '這版 aibd 還不能掛,先標在頁面上'; }
+      if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { C.pin = node || ''; C.pinDemo = true; C.pinMsg = '這版 AIB 還不能掛,先標在頁面上'; }
       else { C.pinBad = true; C.pinMsg = c === 'node_not_found' ? '找不到這個項目' : c === 'slot_built_in_page_only' ? '用戶資料夾有自己的頁時不能掛' : c === 'carried_pair_read_and_safe_only' ? '這個配對只能看,不能掛' : '沒掛上:' + errText(e); }
     }
     renderCard();
@@ -3355,7 +3355,7 @@
   function cardWriteHtml(n) {
     const W = S.card.w || {};
     const opts = ['', ...STATIONS, '作廢'].map((x) => { const ok = !x || PAGE_ST.includes(x); return `<option value="${esc(x)}" ${ok ? '' : 'disabled'} ${W.st === x ? 'selected' : ''}>${x ? esc(x) + (ok ? '' : '(要收據 / 審查,頁面不能換)') : '不換站'}</option>`; }).join('');
-    const res = W.res ? `<div class="cwr ${W.res.ok ? 'ok' : 'bad'}">${esc(W.res.text)}${W.res.demo ? '<span class="pvdemo" title="aibd 還沒有 node_set">示意</span>' : ''}</div>` : '';
+    const res = W.res ? `<div class="cwr ${W.res.ok ? 'ok' : 'bad'}">${esc(W.res.text)}${W.res.demo ? '<span class="pvdemo" title="AIB 還沒有 node_set">示意</span>' : ''}</div>` : '';
     return `<div class="dsec"><span>在這裡記一筆</span><span class="na">寫的人記成「頁面」</span></div><div class="cw"><textarea class="inp cwt" rows="2" maxlength="2000" placeholder="記一件事實(例:Andy 看過,要改 X)" data-cwt="1">${esc(W.text || '')}</textarea><div class="cwb"><select class="cws" data-cws="1" aria-label="換站">${opts}</select><button type="button" class="k g" data-cwgo="1" ${W.busy ? 'disabled' : ''}>${W.st ? '換站並記下' : '記下'}</button></div>${res}</div>`;
   }
   // 0eed7 REVIEW-integ2-ui L1(N-webonly-c5):aibd 認不得 node_set ⇒ 正式頁不畫這一區;預覽才畫(試按)。version.acts 有 node_set ⇒ 正式頁也畫
@@ -3364,7 +3364,7 @@
   // 開卡(519d0 22:25 第 1 點):送 7b81e 的 node_add {parent_id, title, owner?, why?} + idempotency_key(1a93b d756e6d3b3:不另開 card_add);認不得就收起
   function cardAddHtml(n) {
     const A = S.card.add || {};
-    const res = A.res ? `<div class="cwr ${A.res.ok ? 'ok' : 'bad'}">${esc(A.res.text)}${A.res.demo ? '<span class="pvdemo" title="aibd 還沒有 node_add">示意</span>' : ''}</div>` : '';
+    const res = A.res ? `<div class="cwr ${A.res.ok ? 'ok' : 'bad'}">${esc(A.res.text)}${A.res.demo ? '<span class="pvdemo" title="AIB 還沒有 node_add">示意</span>' : ''}</div>` : '';
     if (!A.open) return `<div class="cwb"><button type="button" class="k" data-cardadd="1" title="在「${esc(n.title || S.card.id)}」底下開一張新卡">在這底下開卡</button></div>${res}`;
     return `<div class="dsec"><span>開卡</span><span class="na">放在 ${esc(S.card.id)} 底下</span></div><div class="cw" data-cardaddform><input class="inp" data-caf="title" maxlength="120" placeholder="標題(必填)" value="${esc(A.title || '')}"><div class="cwb"><input class="inp" data-caf="seat" maxlength="12" placeholder="負責席(可空)" value="${esc(A.seat || '')}"><input class="inp" data-caf="why" maxlength="400" placeholder="說明(可空)" value="${esc(A.why || '')}"><button type="button" class="k g" data-cardaddgo="1" ${A.busy ? 'disabled' : ''}>開</button><button type="button" class="k" data-cardaddno="1">不要</button></div>${res}</div>`;
   }
@@ -3381,8 +3381,8 @@
     } catch (er) {
       const code = er && er.code;
       if (er && er.status) A.key = ''; // 網路斷掉不清:再按用同一把鑰匙,aibd 已寫過就回第一次的答案
-      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { A.res = { ok: false, text: 'aibd 還沒有開卡的動作,這張沒有開;這一區先收起來', demo: true }; S.cardWriteOff = true; }
-      else if (code === 'node_not_found') A.res = { ok: false, text: '上一層卡在 aibd 裡找不到,沒有開' };
+      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { A.res = { ok: false, text: 'AIB 還沒有開卡的動作,這張沒有開;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      else if (code === 'node_not_found') A.res = { ok: false, text: '上一層卡在 AIB 裡找不到,沒有開' };
       else if (code === 'node_exists') A.res = { ok: false, text: '這個卡號已經有了,沒有開' };
       else if (code === 'idempotency_conflict') A.res = { ok: false, text: '上一次按的還在處理或內容不同,沒有開;重讀後再按' };
       else if (code === 'node_built_in_page_only') A.res = { ok: false, text: '只有內建頁能開卡' };
@@ -3402,7 +3402,7 @@
     W.busy = true; renderCard();
     try {
       const rev = Number(c.n && c.n.rev) | 0;
-      if (rev < 1) { W.res = { ok: false, text: '這張卡還沒從 aibd 讀到版本,先按 ↻ 重讀再寫' }; W.busy = false; return renderCard(); }
+      if (rev < 1) { W.res = { ok: false, text: '這張卡還沒從 AIB 讀到版本,先按 ↻ 重讀再寫' }; W.busy = false; return renderCard(); }
       const from = c.n && (c.n.status || c.n.station);
       const key = W.key || (W.key = idem());
       const r = await act('node_set', Object.assign({ node_id: c.id, if_rev: rev, fact: text, idempotency_key: key }, W.st ? { station: W.st } : {}));
@@ -3412,9 +3412,9 @@
     } catch (er) {
       const code = er && er.code;
       if (er && er.status) W.key = ''; // 同上
-      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { W.res = { ok: false, text: 'aibd 還沒有寫卡的動作,這筆沒有寫進去;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { W.res = { ok: false, text: 'AIB 還沒有寫卡的動作,這筆沒有寫進去;這一區先收起來', demo: true }; S.cardWriteOff = true; }
       else if (code === 'node_rev_changed') { W.res = { ok: false, text: '你讀的之後有人改過這張卡,這筆沒有寫;重讀了,看過再按一次' }; openCard(c.id, null, true); }
-      else if (code === 'node_not_found') W.res = { ok: false, text: '這張卡在 aibd 裡找不到,沒有寫' };
+      else if (code === 'node_not_found') W.res = { ok: false, text: '這張卡在 AIB 裡找不到,沒有寫' };
       else if (code === 'idempotency_conflict') W.res = { ok: false, text: '上一次按的還在處理或內容不同,這筆沒有寫;重讀後再按' };
       else if (code === 'node_built_in_page_only') W.res = { ok: false, text: '只有內建頁能寫卡' };
       else if (code === 'entry_refused') W.res = { ok: false, text: (er.body && er.body.why) || er.message };
@@ -3478,7 +3478,7 @@
     const evSec = ev ? `<div class="dsec">這則事件</div><div class="evd"><div class="evh"><span class="ek ${TAG_K[ev.tag] || 'k3'}">${esc(ev.tag || LV_TAG[ev.lv] || '')}</span><b>${esc(ev.text)}</b></div><div class="fg">${fld('什麼時候', ev.t ? when(ev.t) + ' · ' + DISP_TZL + ' ' + evTime(ev.t) : '')}${ev.seat ? fldH('哪一席', logo(seatById(ev.seat) || { seat_id: ev.seat, name: ev.seat }, 'sm') + ' ' + esc(ev.who || '')) : ev.who ? fld('誰', ev.who) : ''}${ev.kind === 'andy.review_list' ? '' : ev.kind === 'idea.consent' ? fld('做法', ev.rec) + fld('好處', ev.why) + fld('代價', ev.st) : fld('我們的建議', ev.rec) + (ev.st ? fldH('狀態', stateHtml(ev.st)) : fld('狀態', ''))}${fld('出處', ev.src)}${ev.ref ? fld('卡號', ev.ref) : ''}</div><div class="evact">${evBody(ev, true)}</div></div>` : '';
     if (S.card.only) {
       const html = `<div class="dw"><div class="dh u-todo"><div class="dh1"><span class="pill u-todo">${esc(ev ? ev.tag || LV_TAG[ev.lv] || '事件' : '事件')}</span><b class="evst" title="${esc(ev ? ev.text : '')}">${esc(shortTitle(ev ? ev.text : ''))}</b><button type="button" class="x" data-cclose="1" aria-label="關閉" autofocus>✕</button></div>
-          <div class="evpin"><span class="na">${S.card.pin ? (S.card.pinDemo ? '已選:' : '已掛到:') : '未對應專案項目'}</span>${S.card.pin ? `<a data-card="${esc(S.card.pin)}">${esc((S.tree && S.tree.get(S.card.pin) || {}).title || S.card.pin)}</a>${S.card.pinDemo ? '<span class="pvdemo" title="這版 aibd 還不能掛,只標在頁面上">示意</span>' : ''}` : ''}<button type="button" class="k" data-pinopen="1">${S.card.pin ? '換一項' : '掛到項目'}</button>${S.card.pin && !S.card.pinDemo ? '<button type="button" class="k" data-pinoff="1">拿掉</button>' : ''}${S.card.pinMsg ? `<span class="pinmsg ${S.card.pinBad ? 'bad' : ''}">${esc(S.card.pinMsg)}</span>` : ''}</div>
+          <div class="evpin"><span class="na">${S.card.pin ? (S.card.pinDemo ? '已選:' : '已掛到:') : '未對應專案項目'}</span>${S.card.pin ? `<a data-card="${esc(S.card.pin)}">${esc((S.tree && S.tree.get(S.card.pin) || {}).title || S.card.pin)}</a>${S.card.pinDemo ? '<span class="pvdemo" title="這版 AIB 還不能掛,只標在頁面上">示意</span>' : ''}` : ''}<button type="button" class="k" data-pinopen="1">${S.card.pin ? '換一項' : '掛到項目'}</button>${S.card.pin && !S.card.pinDemo ? '<button type="button" class="k" data-pinoff="1">拿掉</button>' : ''}${S.card.pinMsg ? `<span class="pinmsg ${S.card.pinBad ? 'bad' : ''}">${esc(S.card.pinMsg)}</span>` : ''}</div>
           ${S.card.pinOpen ? `<div class="pinbox"><input class="apq" data-pinq="1" placeholder="找專案項目(標題或卡號)" value="${esc(S.card.pinQ || '')}" maxlength="60"><div class="pinl">${pinList(S.card.pinQ)}</div></div>` : ''}</div>
         <div class="db">${evSec}</div><div class="df"><span></span><span>按 Esc 或點外面關閉</span></div></div>`;
       if (html !== dlgHtml) { dlg.innerHTML = html; dlgHtml = html; dlg.dataset.id = ''; }
@@ -3634,7 +3634,7 @@
   // + 新增(三張表共用一個小表單):name + 一句說明;aibd 沒這個 act ⇒ 標示意、不假裝建好
   const REG_KIND = { role: ['角色', 'role_add', 20, 80], persona: ['人格', 'persona_add', 40, 500], brain: ['第二大腦', 'brain_add', 40, 500] };
   function brainRootWhy(root) {
-    if (root === 'unset') return '還沒設定第二大腦位置。設定方法:在這台的 ~/.ez2-aib/vault-dir 寫上資料夾的完整路徑(或啟動 aibd 時帶 AIBD_BRAIN_ROOT),再重開這個視窗';
+    if (root === 'unset') return '還沒設定第二大腦位置。設定方法:在這台的 ~/.ez2-aib/vault-dir 寫上資料夾的完整路徑(或啟動 AIB 時帶 AIBD_BRAIN_ROOT),再重開這個視窗';
     if (root === 'unusable') return '第二大腦位置用不了,請檢查設定(要是完整路徑、是資料夾、讀得到裡面的筆記)';
     return '這個位置裡還沒有找到可用的資料夾';
   }
@@ -3667,7 +3667,7 @@
     } catch (e) {
       F.busy = false;
       const rs = e && (e.reason || (e.body && e.body.reason));
-      F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 aibd 還不能新增(示意)'
+      F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 AIB 還不能新增(示意)'
         : rs === 'owner_check_unavailable' ? '要本人指紋,這台還不能按'
         : e && e.status === 403 ? '只有內建頁、這一輪配對的分頁能新增' : '沒建成:' + errText(e);
     }
@@ -3708,7 +3708,7 @@
   function rcpBtn(s) {
     if (S.rcpOff) return '';
     const h = headOf(s);
-    return `<button type="button" class="k" data-rcpask="${esc(s.seat_id)}" ${h && !S.sending ? '' : 'disabled'} title="${esc(h ? '在測試機上跑這一席現在的頭 ' + h.slice(0, 12) + '(窄 = 指定幾個測試檔;整套 = 全部 + 刀)' : 'aibd 還沒給這一席的頭碼,還不能從頁面跑收據')}">跑收據</button>`;
+    return `<button type="button" class="k" data-rcpask="${esc(s.seat_id)}" ${h && !S.sending ? '' : 'disabled'} title="${esc(h ? '在測試機上跑這一席現在的頭 ' + h.slice(0, 12) + '(窄 = 指定幾個測試檔;整套 = 全部 + 刀)' : 'AIB 還沒給這一席的頭碼,還不能從頁面跑收據')}">跑收據</button>`;
   }
   function rcpBox(s) {
     if (!S.rcpOff && !S.rcpListed[s.seat_id]) { S.rcpListed[s.seat_id] = true; setTimeout(() => rcpList(s.seat_id), 0); }
@@ -3764,7 +3764,7 @@
   const SB_WHY = {
     seat_busy: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按一次「' + '交回本機原倉' + '」', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
     settings_touched: '動到 AI 設定檔、workflow、.gitmodules、.lfsconfig 或符號連結,不能從頁面送', objects_missing: '副本的物件不齊,沒有送',
-    too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
+    too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,AIB 不在那裡跑 git',
     send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次交回本機原倉',
     seat_id: '這一席不是登記倉的副本,不能交回原倉', send_back_built_in_page_only: '只有這台內建的頁面能交回原倉',
     owner_check_unavailable: '這台還不能按指紋,沒有送', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有送',
@@ -3782,7 +3782,7 @@
     const B = S.sb && S.sb.seat === s.seat_id ? S.sb : null, M = S.sbMsg && S.sbMsg.seat === s.seat_id ? S.sbMsg : null;
     if (B) {
       const p = B.plan || {}, L = Array.isArray(p.listed) ? p.listed : [];
-      const what = p.repo ? `送回「${esc(p.repo)}」,新分支 <b>${esc(p.branch || '')}</b>${p.head ? ' · 頭 ' + esc(String(p.head).slice(0, 12)) : ''}${p.commits != null ? ' · ' + (Number(p.commits) | 0) + ' 個提交' : ''}${p.files != null ? ' · ' + (Number(p.files) | 0) + ' 個檔' : ''}` : '正在問 aibd 要送什麼…';
+      const what = p.repo ? `送回「${esc(p.repo)}」,新分支 <b>${esc(p.branch || '')}</b>${p.head ? ' · 頭 ' + esc(String(p.head).slice(0, 12)) : ''}${p.commits != null ? ' · ' + (Number(p.commits) | 0) + ' 個提交' : ''}${p.files != null ? ' · ' + (Number(p.files) | 0) + ' 個檔' : ''}` : '正在問 AIB 要送什麼…';
       return `<div class="sbw" data-sendbackwait>${what}${L.length ? `<div class="sbl">要讓你看到的檔:${L.slice(0, 20).map((x) => '<code>' + esc(String(x)) + '</code>').join(' ')}</div>` : ''}<div>${SB_SAFE}只送已提交的。</div>${B.left != null ? `<div class="sbf">請在這台 Mac 按指紋 · 還有 ${B.left | 0} 秒 · ${FINGER_BEHIND}</div>` : ''}</div>`;
     }
     if (M) return `<div class="trm${M.bad ? ' bad big' : ''}" data-sendbackmsg role="${M.bad ? 'alert' : 'status'}">${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>${M.bad ? '' : pushBox(s)}`;
@@ -3808,21 +3808,21 @@
   // 開 PR 照 r4 補(7b81e 4de2bce5d2,519d0 22:30 內建頁叫 + 每次指紋):pr_open {repo, branch, title, body}(+ 同一份原字重送 ticket);200 {number, url, draft: true, base: main};
   // 現在每台都回 503 pr_open_unavailable(還沒有 GitHub 權杖,問指紋之前)⇒ 不當錯誤,鈕停用寫原因。aibd 回 unknown_act_type / repo_push_off / page_only ⇒ 收起那顆鈕、寫原因。只推 web/<碼>-<MMDD>-<n>
   const PUSH_WHY = {
-    unknown_act_type: '推上去要等後端(7b81e 的 repo_push 還沒進這台的 aibd)', branch_not_web: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
+    unknown_act_type: '推上去要等後端(7b81e 的 repo_push 還沒進這台的 AIB)', branch_not_web: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
     repo_push_off: '這台沒開從頁面推上去', page_only: '只有這台內建的頁面能推', push_fields: '頁面送的欄位不對(請回報頁面工程席)', push_branch: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
-    push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
+    push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,AIB 不在那裡跑 git',
     push_changed: '按指紋之後分支或遠端變了,請再按一次', push_touches_github: '這條分支改到 .github/,不能從頁面推', push_leak: '分支裡有看起來像金鑰或主機資訊的內容,沒有推', push_leak_unavailable: '這台沒辦法檢查有沒有洩漏,沒有推',
     push_not_fast_forward: '遠端那條分支跟這裡分岔了,不會強推', push_base_unknown: '抓不到遠端 main(多半沒網路或認證不過)', push_failed: '遠端拒絕或連不上,沒有推', push_no_answer: '120 秒沒推完,當作沒推',
     owner_check_unavailable: '這台還不能按指紋,沒有推', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有推',
     finger_denied: '指紋取消了,沒有推', finger_expired: FINGER_GONE + ';沒有推,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有推',
   };
   const PR_WHY = {
-    unknown_act_type: '開 PR 要等後端(7b81e 的 pr_open 還沒進這台的 aibd)', pr_open_unavailable: '這台還沒有開 PR 的權杖', pr_open_off: '這台沒開從頁面開 PR', page_only: '只有這台內建的頁面能開 PR',
+    unknown_act_type: '開 PR 要等後端(7b81e 的 pr_open 還沒進這台的 AIB)', pr_open_unavailable: '這台還沒有開 PR 的權杖', pr_open_off: '這台沒開從頁面開 PR', page_only: '只有這台內建的頁面能開 PR',
     pr_fields: '頁面送的欄位不對(請回報頁面工程席)', pr_title: '標題要一行、1 到 200 字', pr_body: '說明太長(最多 16 KB)', pr_no_github_repo: '這個倉的遠端不是 GitHub',
     pr_changed: '按指紋之後分支或遠端變了,請再按一次', pr_exists: '這條分支已經有 PR 了', pr_failed: 'GitHub 拒絕或連不上,沒有開',
     owner_check_unavailable: '這台還不能按指紋,沒有開', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有開',
     finger_denied: '指紋取消了,沒有開', finger_expired: FINGER_GONE + ';沒有開,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開',
-    push_branch: '只能從 web/<碼>-<MMDD>-<n> 這種分支開', push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
+    push_branch: '只能從 web/<碼>-<MMDD>-<n> 這種分支開', push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,AIB 不在那裡跑 git', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
   function pushBox(s) {
     const O = S.sbOk && S.sbOk.seat === s.seat_id ? S.sbOk : null;
     if (!O || !/^web\/[A-Za-z0-9]+-\d{4}-\d+$/.test(O.branch)) return '';
@@ -3868,11 +3868,11 @@
     S.prF = null; S.sending = false; render();
   }
   const TRUST_WHY = {
-    trusted_seats_off: '這台沒開受信任席(bridge.json 的 trusted_seats 要開)', unknown_act_type: '這台的 aibd 還沒有受信任席(aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust)', page_only: '只有這台內建的頁面能升受信任',
+    trusted_seats_off: '這台沒開受信任席(bridge.json 的 trusted_seats 要開)', unknown_act_type: '這台的 AIB 還沒有受信任席(AIB 7b81e feat/trust-t1 才有 seat_trust / seat_untrust)', page_only: '只有這台內建的頁面能升受信任',
     seat_not_found: '找不到這一席', seat_archived: '這一席已封存', seat_trust_mode: '只有安全席、做事席能升受信任',
     owner_check_unavailable: '這台問不到指紋,沒有升', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有升',
     finger_denied: '指紋取消了,沒有升', finger_expired: FINGER_GONE + ';沒有升,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有升',
-    seat_trust_changed: '按指紋之後這一席的模式、倉的遠端或測試機名單變了,請重按一次', seat_id: '席號不對', trust_store: 'aibd 寫不進受信任紀錄,請稍後再試',
+    seat_trust_changed: '按指紋之後這一席的模式、倉的遠端或測試機名單變了,請重按一次', seat_id: '席號不對', trust_store: 'AIB 寫不進受信任紀錄,請稍後再試',
   };
   const trustUntil = (s) => { const v = Number(s.trusted_until != null ? s.trusted_until : S.trust[s.seat_id]); return v > Date.now() / 1000 ? v : 0; };
   function trustHtml(s) {
@@ -3906,13 +3906,13 @@
   }
   // G5 信橋(7ebca DESIGN-g5-bridge r1 §1;5d33a 63af3c25):把終端機舊席的信改送到這一席,要按指紋;搬回不用指紋
   const MOVE_WHY = {
-    unknown_act_type: '這台的 aibd 還沒有搬舊席(G5 信橋才有 seat_move)', page_only: '只有這台內建的頁面能搬舊席',
+    unknown_act_type: '這台的 AIB 還沒有搬舊席(G5 信橋才有 seat_move)', page_only: '只有這台內建的頁面能搬舊席',
     body: '舊席碼是 5 碼小寫英數(0–9、a–f)', seat_not_found: '找不到這一席', seat_archived: '這一席已封存',
     old_seat_not_found: '這台的舊信帳裡沒有這個舊席碼', old_code_moved: '這個舊席已經搬進另一席,先在那一席搬回',
     seat_stands_for_another: '這一席已經收另一個舊席的信,先搬回', seat_move_changed: '按指紋之後狀況變了,請重按一次',
     owner_check_unavailable: '這台問不到指紋,沒有搬', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有搬',
     finger_denied: '指紋取消了,沒有搬', finger_expired: FINGER_GONE + ';沒有搬,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有搬',
-    store: 'aibd 寫不進搬席紀錄,請稍後再試',
+    store: 'AIB 寫不進搬席紀錄,請稍後再試',
   };
   const MOVE_CODE = /^[0-9a-f]{5}$/;
   function moveHtml(s) {
@@ -3980,17 +3980,17 @@
   const REPO_WHY = {
     name: '名字只能 1–40 個小寫英文、數字、減號(例 ez2-aib)',
     path: '路徑要是這台 Mac 上一個資料夾的完整路徑(以 / 開頭)',
-    path_inside_aibd: '這個資料夾在 aibd 自己的資料夾裡,不能登記',
+    path_inside_aibd: '這個資料夾在 AIB 自己的資料夾裡,不能登記',
     not_a_repo: '這個資料夾不是 git 倉',
     not_repo_top: '要填倉的最上層資料夾(有 .git 的那一層),不是裡面的子資料夾',
-    settings_symlink: '倉裡的專案設定檔有捷徑(連結),aibd 不收;拿掉再登記',
-    settings_not_file: '倉裡的專案設定不是一般檔案,aibd 不收',
-    settings_too_many: '倉裡的專案設定檔太多,aibd 不收',
-    settings_too_deep: '倉裡的專案設定資料夾太深,aibd 不收',
+    settings_symlink: '倉裡的專案設定檔有捷徑(連結),AIB 不收;拿掉再登記',
+    settings_not_file: '倉裡的專案設定不是一般檔案,AIB 不收',
+    settings_too_many: '倉裡的專案設定檔太多,AIB 不收',
+    settings_too_deep: '倉裡的專案設定資料夾太深,AIB 不收',
     project_settings_changed: '這個倉的專案設定在登記後改過;要重新登記(會再按一次指紋)',
-    repos_unwritable: 'aibd 寫不進倉的名單',
-    repos_unreadable: 'aibd 讀不到倉的名單',
-    owner_check_unavailable: '要本人指紋,這台的 aibd 還沒接上指紋;先不能登記',
+    repos_unwritable: 'AIB 寫不進倉的名單',
+    repos_unreadable: 'AIB 讀不到倉的名單',
+    owner_check_unavailable: '要本人指紋,這台的 AIB 還沒接上指紋;先不能登記',
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過)',
     finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);' + FINGER_GONE + ',要的話再按一次',
     finger_denied: '指紋視窗按了拒絕;要的話再按一次',
@@ -3999,9 +3999,9 @@
     pair_touch_busy: '已經有一個指紋視窗開著;先回那一個再按',
     pair_touch_cooling: '剛按了不同意,冷卻中;稍等一下再按',
     pair_touch_limited: '一小時內問指紋太多次;晚點再試',
-    preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
-    settings_unreadable: '讀不到倉裡的專案設定,aibd 不收',
-    hooks: 'aibd 準備不了自己的 git 設定資料夾;重開 aibd 再試',
+    preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 AIB 用',
+    settings_unreadable: '讀不到倉裡的專案設定,AIB 不收',
+    hooks: 'AIB 準備不了自己的 git 設定資料夾;重開 AIB 再試',
     repo_copies_full: '這個倉同時開的份數已到上限(最多 9 份);先收掉一席再開',
     disk_low: '這台磁碟剩不到 2 GiB,不再多開一份倉;先清出空間',
     base: '「從哪一顆開始」要填完整的 40 碼提交(小寫英數),或留空',
@@ -4017,7 +4017,7 @@
     const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')).filter(Boolean) : null;
     if (!R) return '';
     const F = A.repoF;
-    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' + (F.left != null ? ' · 還有 ' + F.left + ' 秒 · ' + FINGER_BEHIND : '') : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
+    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' + (F.left != null ? ' · 還有 ' + F.left + ' 秒 · ' + FINGER_BEHIND : '') : 'AIB 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
     const cur = A.repo && R.includes(A.repo) ? A.repo : '';
     return `<div class="asec"><span>在哪裡改</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,${A.mode === 'work' ? '開的時候不用按指紋(做事席照舊在沙盒裡)' : '開之前要按一次指紋'};不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${cur ? `<div class="anf"><input class="apq" data-addf="base" value="${esc(A.base || '')}" maxlength="40" placeholder="從哪一顆開始(選填,40 碼提交;空白 = 倉現在的頭)" aria-label="從哪一顆提交開始" autocomplete="off" spellcheck="false"></div>` : ''}${form}</div>`;
   }
@@ -4067,17 +4067,17 @@
     const NO = nodeOpts(); const node = A.node !== undefined ? A.node : S.sel || '';
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     const brand = PV.map((p) => `<button type="button" class="abr ${pv && p.key === pv.key ? 'on' : ''} ${p.open ? '' : 'off'}" data-addp="${esc(p.key)}" ${p.open ? '' : 'disabled aria-disabled="true"'}><span class="lg lgb ${p.b}">${ICON[p.b]}</span><b>${esc(p.name)}</b>${p.why ? `<i>${esc(p.why)}</i>` : ''}</button>`).join('');
-    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 aibd 還不能開'}</i></button>${inPreview() ? '' : `<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`}`; // 519d0 自測 L2:預覽一定拒 ⇒ 不出
+    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 AIB 還不能開'}</i></button>${inPreview() ? '' : `<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`}`; // 519d0 自測 L2:預覽一定拒 ⇒ 不出
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
-    const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 aibd 還沒給,先用內建六種</div>' : ''}${regForm('role')}`;
+    const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 AIB 還沒給,先用內建六種</div>' : ''}${regForm('role')}`;
     // Andy 11-19 11:3x「最下方有一個下拉但又很怪的東西」⇒ 跟人格 / 第二大腦同一種:找 + 清單,選了的寫在上面
     A.node = node;
     const where = A.role ? `${node ? `<div class="apsel"><b>${esc(nodeT || node)}</b></div>` : ''}<div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找專案項目(標題或編號)" aria-label="找專案項目" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div>` : '<div class="apn">先選角色才要掛到項目;「不掛」就只開席</div>';
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
     const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
-    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 aibd 還不會開它,等新版' };
+    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
     if (!pv) {
       const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
       // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
@@ -4088,7 +4088,7 @@
       <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button><button type="button" class="go" data-addpv="1">去預覽開席</button></div></div></div>`;
       return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="加一席">
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
-      <div class="aerr" role="alert">這台現在開不了任何 AI,所以不能加席。</div><ul class="anop">${why || '<li>aibd 沒列出任何品牌</li>'}</ul>
+      <div class="aerr" role="alert">這台現在開不了任何 AI,所以不能加席。</div><ul class="anop">${why || '<li>AIB 沒列出任何品牌</li>'}</ul>
       <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button></div></div></div>`;
     }
     return `<div class="dlgbg"><div class="adlg ${A.still ? 'still' : ''}" role="dialog" aria-label="加一席">
@@ -4132,8 +4132,8 @@
     if (c === 'invalid_request' && why === 'mempack') return '記憶包拷不進新席:檔名不對、不在 pending 那一層、太大、不是文字檔,或沒一起填交接單。席沒有開';
     if (c === 'invalid_request' && why === 'carry') return '新席資料夾裡的 .aib 不是一般資料夾或寫不進去,交接單沒拷進去。席沒有開';
     if (c === 'codex_work_own_folder' || why === 'codex_work_own_folder') return 'Codex 做事席只能用自己的新資料夾;「跟哪一席同一個資料夾」選「自己的資料夾」再開';
-    if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
-    if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 aibd 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
+    if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 AIB 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
+    if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 AIB 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
     if (why === 'with_seat' || c === 'with_seat') return '選的那一席不是資料夾的主人(它是借別席資料夾開的,或不是頁面開的做事席);改選最先開的那一席(通常是作者)';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
     // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
@@ -4141,8 +4141,8 @@
     // 0eed7 VERIFY-realentry 基準 M3:人格卡讀不到 ⇒ 503 persona_source_unavailable(預覽沒帶到卡時)
     if (c === 'persona_source_unavailable' || why === 'persona_source_unavailable') return '這台讀不到人格卡,開不了任何席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
     // b4297 ed8d14cf:403 看 code、400 看 reason
-    if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 aibd 不收這些欄位(' + why + ')';
-    return c === 'shared_folder_writers_full' ? '這個資料夾已經有兩席在寫,請開在自己的資料夾' : c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 aibd 還不能從頁面開席' : errText(e);
+    if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 AIB 不收這些欄位(' + why + ')';
+    return c === 'shared_folder_writers_full' ? '這個資料夾已經有兩席在寫,請開在自己的資料夾' : c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 AIB 還不能從頁面開席' : errText(e);
   }
   async function doAdd() {
     const A = S.add, PV = providers(), pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.open);
@@ -4176,7 +4176,7 @@
       const node = A.node !== undefined ? A.node : S.sel;
       if (A.role && node && seat.seat_id) {
         A.step = 2; render();
-        try { await act('assign_add', { node_id: node, seat_id: seat.seat_id, role: A.role }); } catch (e) { note = ';席開好了,但沒掛上角色(' + (e && e.code === 'assign_built_in_page_only' ? '用戶資料夾有自己的頁時不能指派' : e && e.code === 'role' ? '這版 aibd 指派只認內建六種,新建的角色還掛不上' : errText(e)) + ')'; } // b4297 e993bd244 實打:assign_add 拒 rol_* → 400 code role
+        try { await act('assign_add', { node_id: node, seat_id: seat.seat_id, role: A.role }); } catch (e) { note = ';席開好了,但沒掛上角色(' + (e && e.code === 'assign_built_in_page_only' ? '用戶資料夾有自己的頁時不能指派' : e && e.code === 'role' ? '這版 AIB 指派只認內建六種,新建的角色還掛不上' : errText(e)) + ')'; } // b4297 e993bd244 實打:assign_add 拒 rol_* → 400 code role
       }
       // 0eed7:提示寫名字(aibd 的 display / name),沒有才寫短碼
       const nm = seat.display || seat.name || seat.code || String(seat.seat_id || '').replace(/^seat_/, '').slice(0, 5) || '新席';
@@ -4309,12 +4309,12 @@
     const aa = S.archAsk && seatById(S.archAsk);
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
-    const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,aibd 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
+    const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,AIB 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
     const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
-      ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
+      ${S.newVer ? `<div class="banner newver" role="status">AIB 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
         ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
@@ -4335,7 +4335,7 @@
   function errText(e) {
     if (!e) return '出錯了';
     if (e.pageMsg) return e.pageMsg;
-    if (e.status === 0) return '連不上 aibd';
+    if (e.status === 0) return '連不上 AIB';
     if (e.code === 'user_page_safe_seats_only') return '用戶資料夾的頁只能對安全模式的席送字';
     // S89-pair-carry:換版延續來的配對只能讀、只能對安全模式的席送字(519d0 r16 裁定 3,b4297 eb0bf164)
     if (e.code === 'carried_pair_read_and_safe_only') return inPreview() ? PV_CARRIED : '這個配對是換版前延續來的,只能看和對安全模式的席送字;要開席或改指派請重新配對';
@@ -4443,7 +4443,7 @@
     return sendDirect(T, text);
   }
   async function sendDirect(T, text) {
-    if (!S.me) { say('讀不到你自己的聯絡人(這版 aibd 沒有聯絡中心),送不出', 'err'); return false; }
+    if (!S.me) { say('讀不到你自己的聯絡人(這版 AIB 沒有聯絡中心),送不出', 'err'); return false; }
     const res = await Promise.allSettled(T.map((s) => act('message_send', { to_seat: 'seat:' + s.seat_id, body: text, thread_id: threadId(S.me, 'seat:' + s.seat_id), idem_key: idem() })));
     for (const r of res) if (r.status === 'fulfilled' && r.value && r.value.message_id) S.sentText[r.value.message_id] = text;
     const bad = res.map((r, i) => (r.status === 'rejected' ? '@' + seatName(T[i]) + ' ' + errText(r.reason) : '')).filter(Boolean);
@@ -4453,9 +4453,9 @@
   }
   // 7ebca 49de928f1:網頁寫信給舊式席 = act legacy_send;信立刻出現在「import ↔ <碼>(信件匯入)」那串
   const LEGACY_ERR = {
-    legacy_off: 'aibd 沒有接上舊信件帳(AIBD_LEGACY_CABIN 沒設),這封沒寄出',
+    legacy_off: 'AIB 沒有接上舊信件帳(AIBD_LEGACY_CABIN 沒設),這封沒寄出',
     legacy_send_built_in_page_only: '只有內建頁能寄信給舊式席',
-    legacy_send_pair_this_run: '這一頁要在這次啟動的 aibd 上重新配對才能寄',
+    legacy_send_pair_this_run: '這一頁要在這次啟動的 AIB 上重新配對才能寄',
     seat_unknown: '席碼不對',
     seat_not_in_cabin: '這一席不在這個艙',
     legacy_send_rate: '寄太快了:每一席 1 分鐘最多 6 封,等一下再寄',
@@ -4468,7 +4468,7 @@
       return true;
     } catch (er) {
       const c = er && er.code, b = (er && er.body) || {};
-      if (c === 'unknown_act_type') say('aibd 還沒有寄信給舊式席的動作,這封沒寄出 · 示意', 'err');
+      if (c === 'unknown_act_type') say('AIB 還沒有寄信給舊式席的動作,這封沒寄出 · 示意', 'err');
       else if (c === 'lint_refused') say('信被檢查擋下:' + String(b.detail || b.why || er.message || '').slice(0, 200), 'err');
       else if (c && Object.hasOwn(LEGACY_ERR, c)) say(LEGACY_ERR[c], 'err');
       else say(errText(er), 'err');
@@ -4479,7 +4479,7 @@
     const i = document.getElementById('inp');
     const text = (i ? i.value.trim() : '') || (kind === 'seat' && CT.att.length ? '(附圖)' : '');
     if (!text || S.sending) return;
-    if (CT.att.length && kind !== 'seat') { CT.note = '附圖現在只能在單席對話送(共同對話、舊席寄信 aibd 還沒接);附件先留著'; render(); }
+    if (CT.att.length && kind !== 'seat') { CT.note = '附圖現在只能在單席對話送(共同對話、舊席寄信 AIB 還沒接);附件先留著'; render(); }
     S.sending = true; render();
     try {
       if (kind === 'seat') { say(await sendSeat(S.mode, text)); S.drafts[S.mode] = ''; }
@@ -4532,9 +4532,9 @@
         : c === 'pairing_code_expired' ? '這組碼過期了' + (CODE.gone ? ',請在終端機再打一次 aibd ctl web' : ',終端機會換一組新的,框裡會跟著換')
           : c === 'pairing_code_reused' ? '這組碼已經用過了,請在終端機再打一次 aibd ctl web 拿新碼'
             : c === 'pairing_code_wrong' || (c === 'pairing_failed' && r.status === 401) ? '碼打錯了,對一下終端機上的碼再送'
-              : r.status === 403 ? '被 aibd 擋下(' + (c || r.status) + ')' : '配對碼不對或已過期';
+              : r.status === 403 ? '被 AIB 擋下(' + (c || r.status) + ')' : '配對碼不對或已過期';
       if (c === 'pairing_code_expired') { CODE.exp = Date.now() - 1; CODE.off = false; codePoll(); }
-    } catch (er) { msg = '連不上 aibd'; }
+    } catch (er) { msg = '連不上 AIB'; }
     PAIRING.on = false; bootEnd(false);
     S.pair = { view: 'code', msg, code: /過期/.test(msg) ? '' : code }; render(); // 打錯 / 用過:留著打的字好改;過期:讓換來的新碼頂上
   });
@@ -4635,7 +4635,7 @@
         // 7ebca f3681b98c:404 slot_not_dismissed = 已經不在收起名單(還原過 / 回答過)⇒ 從清單拿掉就好
         const c = er && er.code;
         if (c === 'slot_not_dismissed') { S.dismissed.delete(card); if (S.dmc) S.dmc.delete(card); if (S.dmN) S.dmN--; say('這則已經不在收起的清單'); }
-        else say(c === 'slot_built_in_page_only' ? '用戶資料夾有自己的頁時不能移回' : c === 'carried_pair_read_and_safe_only' ? '換版接回的配對不能移回,重新配對一次' : er && (er.status === 404 || (er.status === 400 && /unknown|type/.test(String(c || er.reason || '')))) ? '這版 aibd 還不能還原;重啟常駐後會自己回來' : errText(er), 'err');
+        else say(c === 'slot_built_in_page_only' ? '用戶資料夾有自己的頁時不能移回' : c === 'carried_pair_read_and_safe_only' ? '換版接回的配對不能移回,重新配對一次' : er && (er.status === 404 || (er.status === 400 && /unknown|type/.test(String(c || er.reason || '')))) ? '這版 AIB 還不能還原;重啟常駐後會自己回來' : errText(er), 'err');
       }
       return tick(true);
     }
@@ -4660,7 +4660,7 @@
       try {
         tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await fingerAct('seat_tick_set', byFile ? { seat_id: T.seat, every_min: every, file: fileName } : { seat_id: T.seat, every_min: every, text }, tickWait(T)));
         const nm = seatShort(seatById(T.seat) || { seat_id: T.seat });
-        S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : byFile ? '@' + nm + ' 每 ' + every + ' 分從檔案 ' + fileName + ' 送(未簽章,aibd 暫不送)' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
+        S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : byFile ? '@' + nm + ' 每 ' + every + ' 分從檔案 ' + fileName + ' 送(未簽章,AIB 暫不送)' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
       } catch (e) { T.busy = false; T.msg = (clr ? '沒停成:' : '沒設成:') + tickWhy(e); }
       render(); return;
     }
@@ -4682,8 +4682,8 @@
       try { const r = await act('seat_merge_back', { seat_id: id, idem_key: idem() }); if (S.mergeStop) delete S.mergeStop[id]; say('@' + nm + ' 合回了' + (r && r.merged ? ' ' + r.merged + ' 個提交' : '') + (r && r.told ? ';已在串裡告訴主人' : '')); }
       catch (e) {
         const c = e && (e.code || (e.body && e.body.code)), b = (e && e.body) || {};
-        if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { S.mbOff = true; say('這版 aibd 還不能從頁面合回,等新版', 'err'); }
-        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;' + (b.card_id ? '右欄有一張卡給你決定怎麼處理' : '叫它先接上主人那一份、解完再合回') : c === 'author_busy' ? '主人' + (b.author ? ' @' + seatShort(seatById(b.author) || { seat_id: String(b.author), name: String(b.author) }) : '') + ' 正在回合中,等它這一輪做完再合回' : c === 'base_unsafe' ? '主人那一份的 git 設定有 aibd 不會跑的項目' + (b.why ? '(' + b.why + ')' : '') + ',先不能合回' : c === 'merge_left_half' ? '@' + nm + ' 合回停在一半、撤不回' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + ')' : '') + ';先別在主人那一份上動,右欄有一張卡' : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
+        if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { S.mbOff = true; say('這版 AIB 還不能從頁面合回,等新版', 'err'); }
+        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;' + (b.card_id ? '右欄有一張卡給你決定怎麼處理' : '叫它先接上主人那一份、解完再合回') : c === 'author_busy' ? '主人' + (b.author ? ' @' + seatShort(seatById(b.author) || { seat_id: String(b.author), name: String(b.author) }) : '') + ' 正在回合中,等它這一輪做完再合回' : c === 'base_unsafe' ? '主人那一份的 git 設定有 AIB 不會跑的項目' + (b.why ? '(' + b.why + ')' : '') + ',先不能合回' : c === 'merge_left_half' ? '@' + nm + ' 合回停在一半、撤不回' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + ')' : '') + ';先別在主人那一份上動,右欄有一張卡' : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
       }
       S.sending = false; render(); tick(true); return;
     }
@@ -4696,7 +4696,7 @@
       try { await act('seat_archive', { seat_id: id, idem_key: idem() }); say('已收掉 @' + nm); }
       catch (e) {
         const c = e && (e.code || (e.body && e.body.code));
-        say(c === 'seat_busy' ? '@' + nm + ' 還在跑,先停掉再收' : c === 'archive_built_in_page_only' ? '收掉席只能在 aibd 內建的頁面做' : actRefused(e) || '沒收掉:' + errText(e), 'err');
+        say(c === 'seat_busy' ? '@' + nm + ' 還在跑,先停掉再收' : c === 'archive_built_in_page_only' ? '收掉席只能在 AIB 內建的頁面做' : actRefused(e) || '沒收掉:' + errText(e), 'err');
       }
       S.sending = false; render(); tick(true); return;
     }
@@ -4714,10 +4714,10 @@
       }
       catch (er) {
         // a9136 00:00:拒絕的 JSON 是 {code, message, request_id};restart_refused 的原因在 message(8 個 snake_case 字)⇒ 換人話,認不得的照原字
-        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', codex_folder_settings: '資料夾裡有 Codex 自己的專案設定(.codex),Codex 席不在這種資料夾開', codex_mcp_unlisted: '讀不到這台 Codex 的工具伺服器清單,先不開', codex_mcp_unnamed: '這台 Codex 有一個工具伺服器的名字關不掉,先不開', codex_mcp_aibd_taken: '這台 Codex 已有一個叫 aibd 的工具伺服器,跟這一席自己的撞名', codex_version: '這台的 Codex 版本還沒驗過(只收 0.167 版)', stop_unconfirmed: '上一段還沒確認停乾淨', dgrs_input_off: RS.dgrs_needs_switch }; return W[r] || r || '接回條件不合'; };
+        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 AIB 的紀錄)', codex_folder_settings: '資料夾裡有 Codex 自己的專案設定(.codex),Codex 席不在這種資料夾開', codex_mcp_unlisted: '讀不到這台 Codex 的工具伺服器清單,先不開', codex_mcp_unnamed: '這台 Codex 有一個工具伺服器的名字關不掉,先不開', codex_mcp_aibd_taken: '這台 Codex 已有一個叫 aibd 的工具伺服器,跟這一席自己的撞名', codex_version: '這台的 Codex 版本還沒驗過(只收 0.167 版)', stop_unconfirmed: '上一段還沒確認停乾淨', dgrs_input_off: RS.dgrs_needs_switch }; return W[r] || r || '接回條件不合'; };
         // a9136 532b54da 的回應碼
         const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了', dgrs_input_off: '這台還沒開「能改程式」的開關,這一席重開不了' };
-        say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 aibd 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
+        say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 AIB 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
       }
       finally { S.sending = false; render(); tick(true); }
       return;
@@ -4738,8 +4738,8 @@
       try { await act('talk_resume', { card_id: rsm.dataset.resume }); say('席與席的信恢復了;這一艙的一小時重新算'); }
       catch (e) {
         const c = e && (e.code || e.reason), why = e && (e.reason || (e.body && e.body.reason));
-        if (e && e.status === 404) say('已經恢復了(別的分頁先按,或 aibd 重開過)');
-        else say(why === 'slot_built_in_page_only' || c === 'slot_built_in_page_only' ? '只有內建頁能按「繼續」' : why === 'carried_pair_read_and_safe_only' || c === 'carried_pair_read_and_safe_only' ? '這個配對是更新前延用的,只能看;重新配對後再按' : e && e.status === 400 && c === 'unknown_act_type' ? '這版 aibd 還不能從頁面恢復,等新版' : '沒恢復成:' + errText(e), 'err');
+        if (e && e.status === 404) say('已經恢復了(別的分頁先按,或 AIB 重開過)');
+        else say(why === 'slot_built_in_page_only' || c === 'slot_built_in_page_only' ? '只有內建頁能按「繼續」' : why === 'carried_pair_read_and_safe_only' || c === 'carried_pair_read_and_safe_only' ? '這個配對是更新前延用的,只能看;重新配對後再按' : e && e.status === 400 && c === 'unknown_act_type' ? '這版 AIB 還不能從頁面恢復,等新版' : '沒恢復成:' + errText(e), 'err');
       }
       S.sending = false; return tick(true);
     }
@@ -5100,7 +5100,7 @@
         if (BOOT.retry <= 6) setTimeout(() => { if (PROG.el && !PROG.done) tick(true); }, 1500 * BOOT.retry);
       }
       else if (e && e.status === 403) { S.banner = '沒有權限:' + ((e && e.code) || '?'); S.bannerKind = 'err'; }
-      else if (e && e.status === 0) { S.banner = '連不上 aibd(重試中)'; S.bannerKind = 'err'; }
+      else if (e && e.status === 0) { S.banner = '連不上 AIB(重試中)'; S.bannerKind = 'err'; }
       else { S.banner = '讀取出錯:' + ((e && (e.code || e.message)) || '?'); S.bannerKind = 'err'; }
     } finally { busy = false; if (!S.add) render(); if (again) { again = false; setTimeout(() => tick(true), 0); } } // 加一席的小視窗開著時不重畫(選單會被關掉)
   }
