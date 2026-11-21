@@ -104,6 +104,24 @@ pub fn next_due(rows: &[aib_store::MessageRow], now: i64) -> Option<i64> {
         .min()
 }
 
+/// What [`nudge`] does with a seat's open messages at `now`: look again in how many seconds
+/// (when something open is not due yet), and the ones named now (5d33a REVIEW-d3wake L2: the
+/// look-again is decided here, where a test sees it).
+pub fn plan(
+    rows: &[aib_store::MessageRow],
+    now: i64,
+) -> (Option<i64>, Vec<&aib_store::MessageRow>) {
+    (next_due(rows, now).map(|at| at - now), due(rows, now))
+}
+
+/// Every seat once when aibd starts (5d33a REVIEW-d3wake L1): a look-again waiting when aibd
+/// stopped is gone, and an idle seat that is not rejoined has no turn to bring it back.
+pub fn at_start(seats: &[String]) {
+    for s in seats {
+        crate::dm_import::wake(s);
+    }
+}
+
 /// The seats with a look-again waiting, and when (one each: a later one never replaces an
 /// earlier one, an earlier one does).
 fn pending() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
@@ -289,10 +307,11 @@ pub async fn nudge(st: AppState, seat: String) {
     let now = unix_now();
     // an idle seat has no turn end to look at it again: what is not due yet is looked at when
     // it comes due (DESIGN-drive-d3-wake 1)
-    if let Some(at) = next_due(&rows, now) {
-        recheck(&seat, at - now);
+    let (look_again, due_now) = plan(&rows, now);
+    if let Some(after) = look_again {
+        recheck(&seat, after);
     }
-    let rows: Vec<aib_store::MessageRow> = due(&rows, now).into_iter().cloned().collect();
+    let rows: Vec<aib_store::MessageRow> = due_now.into_iter().cloned().collect();
     if rows.is_empty() {
         return;
     }
@@ -777,6 +796,22 @@ mod tests {
             1,
             "reason: system_not_named"
         );
+    }
+
+    // 5d33a REVIEW-d3wake L2: the plan says when to look again, and names only what is due
+    #[test]
+    fn the_plan_looks_again_when_something_is_not_due_yet() {
+        let now = 10_000;
+        let rows = [
+            written("q_old", now - AFTER_SECS),
+            written("q_new", now - 30),
+        ];
+        let (again, due_now) = plan(&rows, now);
+        assert_eq!(again, Some(AFTER_SECS - 30), "reason: no_look_again");
+        let ids: Vec<&str> = due_now.iter().map(|r| r.message_id.as_str()).collect();
+        assert_eq!(ids, ["q_old"]);
+        let (again, _) = plan(&rows[..1], now);
+        assert_eq!(again, None, "reason: look_again_for_nothing");
     }
 
     // DESIGN-drive-d3-wake 1: one look-again per seat; an earlier one takes the place of a later

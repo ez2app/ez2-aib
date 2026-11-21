@@ -677,6 +677,32 @@ pub struct SystemSent {
 /// The longest `send_key`.
 pub const SEND_KEY_MAX: usize = 128;
 
+/// The row of a work order aibd writes as the system: from [`SYSTEM_FROM`], kind `system`,
+/// marked a work order (the system counts as Lead, 5d33a N2), keyed by the drive's `send_key`.
+pub fn system_row(
+    to: &str,
+    mode: Option<&str>,
+    text: &str,
+    sha: &str,
+    send_key: &str,
+) -> Option<aib_store::MessageRow> {
+    let mut row = queued_row("system", to, mode, text, sha)?;
+    row.from_key = SYSTEM_FROM.to_owned();
+    row.thread_id = crate::messages::thread_of(SYSTEM_FROM, &row.to_key);
+    for (k, v) in [
+        ("sender_seat", json!(SYSTEM_FROM)),
+        ("sender_kind", json!("system")),
+        ("thread", json!(row.thread_id)),
+        (crate::urgent::DISPATCH, json!(true)),
+        ("send_key", json!(send_key)),
+    ] {
+        row.item.insert(k.into(), v);
+    }
+    row.idem_owner = Some(SYSTEM_FROM.to_owned());
+    row.idem_key = Some(send_key.to_owned());
+    Some(row)
+}
+
 /// D4 (a9136): aibd writes the 自動推進's work order to a web seat as the system, marked a work
 /// order (the system counts as Lead; DECISION-council-driveweb r1). `send_key` is the drive's
 /// intent key: the same key again answers the first message and writes nothing (aibd restarted
@@ -725,22 +751,9 @@ pub async fn system_send(
     }
     let line = system_line(text).map_err(|e| e.code())?;
     let sha = hex(&Sha256::digest(text.as_bytes()));
-    let Some(mut row) = queued_row("system", to, tm.mode.as_deref(), text, &sha) else {
+    let Some(row) = system_row(to, tm.mode.as_deref(), text, &sha, send_key) else {
         return Err("internal");
     };
-    row.from_key = SYSTEM_FROM.to_owned();
-    row.thread_id = crate::messages::thread_of(SYSTEM_FROM, &row.to_key);
-    for (k, v) in [
-        ("sender_seat", json!(SYSTEM_FROM)),
-        ("sender_kind", json!("system")),
-        ("thread", json!(row.thread_id)),
-        (crate::urgent::DISPATCH, json!(true)),
-        ("send_key", json!(send_key)),
-    ] {
-        row.item.insert(k.into(), v);
-    }
-    row.idem_owner = Some(SYSTEM_FROM.to_owned());
-    row.idem_key = Some(send_key.to_owned());
     let message_id = row.message_id.clone();
     let hand = InHand::take(&message_id);
     let db = st.messages.clone();
@@ -1556,11 +1569,22 @@ mod tests {
     #[test]
     fn a_system_work_order_waits_to_be_written_and_reads_as_the_drives() {
         use serde_json::json;
-        let mut r =
-            super::queued_row("system", "s_ffffffffffffffff", None, "派工: x", "0").unwrap();
-        r.from_key = super::SYSTEM_FROM.to_owned();
-        r.item.insert("sender_kind".into(), json!("system"));
+        let r = super::system_row("s_ffffffffffffffff", None, "派工: x", "0", "k1").unwrap();
         assert!(super::by_system(&r));
+        assert!(
+            crate::urgent::is_dispatch(&r),
+            "reason: system_order_not_marked"
+        );
+        assert_eq!(r.idem_owner.as_deref(), Some(super::SYSTEM_FROM));
+        assert_eq!(
+            r.idem_key.as_deref(),
+            Some("k1"),
+            "reason: send_key_not_kept"
+        );
+        assert_eq!(
+            r.thread_id,
+            crate::messages::thread_of(super::SYSTEM_FROM, &r.to_key)
+        );
         assert!(
             super::waits_to_be_written(&r),
             "reason: system_order_never_written"

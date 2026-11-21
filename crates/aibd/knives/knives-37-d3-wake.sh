@@ -80,3 +80,17 @@ dw crates/aibd/src/mail_nudge.rs \
    '    matches!(text_of(r, "sender_kind"), Some("seat")) // knife' \
    a_work_order_from_the_system_is_named \
    '--lib mail_nudge::tests::a_work_order_from_the_system_is_named'
+# DW14 the plan never looks again (5d33a REVIEW-d3wake L2)
+dw crates/aibd/src/mail_nudge.rs \
+   '    (next_due(rows, now).map(|at| at - now), due(rows, now))' \
+   '    (next_due(rows, now).map(|at| at - now).filter(|_| false), due(rows, now)) // knife' \
+   the_plan_looks_again_when_something_is_not_due_yet \
+   '--lib mail_nudge::tests::the_plan_looks_again_when_something_is_not_due_yet'
+# DW15 the system's work order is not marked one (5d33a N2)
+ss '        (crate::urgent::DISPATCH, json!(true)),' \
+   '        (crate::urgent::DISPATCH, json!(false)), // knife' \
+   a_system_work_order_waits_to_be_written_and_reads_as_the_drives
+# DW16 the system's work order keeps no send_key (a restart sends it twice)
+ss '    row.idem_key = Some(send_key.to_owned());' \
+   '    row.idem_key = Some(send_key.to_owned()).filter(|_| false); // knife' \
+   a_system_work_order_waits_to_be_written_and_reads_as_the_drives
