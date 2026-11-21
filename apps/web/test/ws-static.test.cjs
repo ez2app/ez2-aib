@@ -508,4 +508,13 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/data-movemsg>\$\{esc\(S\.moveMsg\.text\)\}\$\{moveMineHtml\(S\.moveMsg\)\}/.test(ws), "shown under the move message");
 }
 
+// §32 自動推進面板讀 a9136 D7b 的 drive 物件(db36219e9f)
+{
+  const dl = (ws.split("function drvLists(st) {")[1] || "").split("\n  }\n")[0];
+  ok(/st\.drive === null \? null/.test(dl) && /none: true/.test(dl), "drive = null shows there is no drive ledger here");
+  ok(/x\.first_line/.test(dl) && /x\.at_ms != null/.test(dl) && /n\.why_now/.test(dl) && /b\.owner/.test(dl) && /d\.next_complete !== false/.test(dl), "reads next / dispatch / blockers in the D7b shape");
+  ok(/queued: '', handed: 'sent'/.test(ws) && /partial:/.test(dl) && /!r\.partial \|\| k === 0/.test(ws), "queued is not sent yet, handed is sent; read / taken / started stay unknown until AIB gives them");
+  ok(/這台沒有自動推進的帳/.test(ws) && /只列到一部分/.test(ws), "says when the list is partial or there is no ledger");
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

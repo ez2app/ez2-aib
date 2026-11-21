@@ -1904,8 +1904,25 @@
     const U = S.usage, rows = (U && U.usage) || []; const t0 = Date.parse(at || '') || 0;
     return rows.some((u) => u && u.seat_id === seatId && u.turn_started_at && Date.parse(u.turn_started_at) >= t0);
   }
+  // a9136 D7b db36219e9f:清單收在 drive 物件(沒有 1.x 根時 drive = null);全是 aib-drive 自己的檔、AI 寫得到 ⇒ 只顯示,頁面不拿來判斷。
+  // 舊形狀(頂層 next / dispatch / blockers)留作退路。stage 現在只有 queued(帳上)/ handed(交 AIB 寄網頁席)⇒ 已讀 / 接單 / 開工標「AIB 還沒給」
+  const DRV_STAGE_IN = { queued: '', handed: 'sent', sent: 'sent', read: 'read', taken: 'taken', started: 'started' };
+  function drvLists(st) {
+    if (!st) return null;
+    const d = st.drive && typeof st.drive === 'object' ? st.drive : st.drive === null ? null : st;
+    if (!d) return { none: true, next: [], dispatch: [], blockers: [] };
+    const arr = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : []);
+    return {
+      next: arr(d.next).map((n) => ({ tag: String(n.kind || n.layer || (n.rank != null ? '#' + n.rank : '')), what: String(n.what || n.item || ''), to: String(n.to || n.seat || ''), why: [n.why_now, n.needs, n.waited_min != null ? '等了 ' + (Number(n.waited_min) | 0) + ' 分' : ''].filter(Boolean).map(String).join(' · ') })),
+      dispatch: arr(d.dispatch).filter((x) => typeof x.to === 'string').map((x) => ({ to: x.to, text: String(x.first_line || x.item || x.text || ''), at: x.at_ms != null ? Number(x.at_ms) : x.at, st: DRV_STAGE_IN[String(x.stage || 'sent')] ?? 'sent', raw: String(x.stage || ''), partial: !/^(read|taken|started)$/.test(String(x.stage || '')) && d !== st })),
+      blockers: arr(d.blockers).map((b) => ({ what: String(b.what || b.subject || ''), who: String(b.owner || b.waits_for || ''), blocks: String(b.blocks || '') })),
+      complete: d.next_complete !== false, asOf: d.next_as_of,
+    };
+  }
   function drvRows() {
-    if (DRV.st && Array.isArray(DRV.st.dispatch)) return DRV.st.dispatch.filter((d) => d && typeof d.to === 'string').slice(0, 8).map((d) => ({ to: d.to, text: String(d.item || d.text || ''), at: d.at, st: String(d.stage || 'sent'), real: true }));
+    const D = drvLists(DRV.st);
+    if (D && D.dispatch.length) return D.dispatch.slice(0, 8).map((d) => Object.assign(d, { real: true }));
+    if (DRV.st) return [];
     return DRV.posts.map((p) => { const code = String(p.source.to || ''), x = seatByCode(code); return { to: code, text: String(p.body || '').split('\n').find((l) => l.trim()) || '', at: p.source.at || p.created, st: x && drvStarted(x.seat_id, p.source.at || p.created) ? 'started' : 'sent', real: false }; });
   }
   function driveHtml() {
@@ -1916,12 +1933,14 @@
     const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
     const tog = ['on', 'off', 'paused'].filter((to) => drvCan(st, to)).map((to) => `<button type="button" class="k" data-drvtog="${to}">${DRV_TO[to][0]}</button>`).join('');
     const form = DRV.open && drvCan(st, DRV.open) ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${DRV_TO[DRV.open][0]}(必填;會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">確定${DRV_TO[DRV.open][0]}</button><button type="button" class="k" data-drvx="1">取消</button>${DRV.open === 'on' ? '<span class="drvq">打開要 Andy 在這台按指紋</span>' : ''}</div>` : '';
-    const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real || k === 0 || z[0] === 'started', on = r.real ? k <= i : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
+    const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real ? !r.partial || k === 0 : k === 0 || z[0] === 'started', on = r.real ? i >= 0 && k <= i && known : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
     const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span><span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
-    const nx = st && Array.isArray(st.next) && st.next.length ? `<div class="drvs"><span class="drvh">下一步</span>${st.next.slice(0, 7).map((n) => `<div class="drvn"><i class="drvl">${esc(String(n.layer || ''))}</i>${esc(String(n.item || '').slice(0, 70))}${n.seat ? ' → @' + esc(String(n.seat)) : ''}</div>`).join('')}</div>` : '';
-    const bl = st && Array.isArray(st.blockers) && st.blockers.length ? `<div class="drvs"><span class="drvh">卡點</span>${st.blockers.slice(0, 5).map((b) => `<div class="drvn drvb">${esc(String(b.what || '').slice(0, 70))}${b.waits_for ? ' · 等 ' + esc(String(b.waits_for)) : ''}</div>`).join('')}</div>` : '';
+    const D = drvLists(st);
+    const nx = D && D.next.length ? `<div class="drvs"><span class="drvh">下一步${D.complete ? '' : '(只列到一部分)'}${D.asOf ? ' · ' + esc(hhmm(D.asOf)) : ''}</span>${D.next.slice(0, 7).map((n) => `<div class="drvn" title="${esc(n.why)}"><i class="drvl">${esc(n.tag.slice(0, 12))}</i>${esc(n.what.slice(0, 70))}${n.to ? ' → @' + esc(n.to.slice(0, 20)) : ''}</div>`).join('')}</div>` : '';
+    const bl = D && D.blockers.length ? `<div class="drvs"><span class="drvh">卡點</span>${D.blockers.slice(0, 5).map((b) => `<div class="drvn drvb" title="${esc(b.blocks ? '擋住:' + b.blocks : '')}">${esc(b.what.slice(0, 70))}${b.who ? ' · 等 ' + esc(b.who.slice(0, 20)) : ''}</div>`).join('')}</div>` : '';
+    const none = D && D.none ? '<div class="drvs"><span class="drvq">這台沒有自動推進的帳(沒有 1.x),下一步 / 派工 / 卡點都空</span></div>' : '';
     const foot = `<div class="drvfoot">${andy ? `等你決定 ${andy} 件(在最上面)` : '沒有等你決定的'}${st ? '' : ' · 這塊是用「自動推進的信」拼的:只有「送到」確定,「開工」看那席之後有沒有開始回合;已讀 / 接單 AIB 還沒給'}${DRV.note ? ' · ' + esc(DRV.note) : ''}</div>`;
-    return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
+    return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${none}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
   }
   // 打開派工要 Andy 指紋(a9136 19:18 更正):跟 seat_trust 同形狀 —— 第一次 202 {ticket, reason: owner_check_pending},
   // fingerAct 每秒問 ticket、核准後帶 ticket 原樣重送一次({to, why} 一字不差,參數綁在指紋上)才寫入;指紋不可用 403 owner_check_unavailable
