@@ -26,7 +26,7 @@ use aib_dmq::transition::Outcome;
 use aib_dmq::util::{py_isspace, py_strip, take_chars, truthy};
 use serde_json::{json, Map, Value};
 
-use crate::locks::{lock, LockError};
+use crate::locks::{lock_in, LockError};
 use crate::store::{Caller, ItemRead, Move, Store, StoreError};
 
 /// dm_queue.WAIT_MAX_CHARS.
@@ -323,11 +323,10 @@ enum Hold {
 
 /// Hold the seat's transition lock for a whole call (the moves inside re-enter it).
 fn hold(store: &Store, seat: &str) -> Result<Hold, StoreError> {
-    let dir = store.seat_dir(seat)?;
-    if !dir.is_dir() {
+    let Some(dir) = store.open_dir(seat)? else {
         return Ok(Hold::NoSeat);
-    }
-    match lock(
+    };
+    match lock_in(
         &dir,
         seat,
         Level::Transition,
