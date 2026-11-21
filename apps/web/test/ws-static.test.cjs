@@ -513,7 +513,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const dl = (ws.split("function drvLists(st) {")[1] || "").split("\n  }\n")[0];
   ok(/st\.drive === null \? null/.test(dl) && /none: true/.test(dl), "drive = null shows there is no drive ledger here");
   ok(/x\.first_line/.test(dl) && /x\.at_ms != null/.test(dl) && /n\.why_now/.test(dl) && /b\.owner/.test(dl) && /d\.next_complete !== false/.test(dl), "reads next / dispatch / blockers in the D7b shape");
-  ok(/queued: '', handed: 'sent'/.test(ws) && /partial:/.test(dl) && /!r\.partial \|\| k === 0/.test(ws), "queued is not sent yet, handed is sent; read / taken / started stay unknown until AIB gives them");
+  ok(/queued: '', handed: ''/.test(ws) && /partial:/.test(dl) && /const known = r\.real \? !r\.partial :/.test(ws) && /queued: '已排進信件帳', handed: '已交 AIB 寄'/.test(ws), "queued / handed are not 送到 (a9136 21:58): all four marks stay unknown, the row says 已排進信件帳 / 已交 AIB 寄");
   ok(/這台沒有自動推進的帳/.test(ws) && /只列到一部分/.test(ws), "says when the list is partial or there is no ledger");
 }
 

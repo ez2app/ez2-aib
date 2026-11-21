@@ -1905,8 +1905,10 @@
     return rows.some((u) => u && u.seat_id === seatId && u.turn_started_at && Date.parse(u.turn_started_at) >= t0);
   }
   // a9136 D7b db36219e9f:清單收在 drive 物件(沒有 1.x 根時 drive = null);全是 aib-drive 自己的檔、AI 寫得到 ⇒ 只顯示,頁面不拿來判斷。
-  // 舊形狀(頂層 next / dispatch / blockers)留作退路。stage 現在只有 queued(帳上)/ handed(交 AIB 寄網頁席)⇒ 已讀 / 接單 / 開工標「AIB 還沒給」
-  const DRV_STAGE_IN = { queued: '', handed: 'sent', sent: 'sent', read: 'read', taken: 'taken', started: 'started' };
+  // 舊形狀(頂層 next / dispatch / blockers)留作退路。stage 現在只有 queued / handed(見下)
+  // a9136 21:58:queued = 已寫進收件席的 1.x 信件帳、等 1.x 投遞;handed = 已交 aibd 寄網頁席、還可能被擋 ⇒ 兩個都不算「送到」,四格都標 AIB 還沒給,列上另寫這兩個字
+  const DRV_STAGE_IN = { queued: '', handed: '', sent: 'sent', read: 'read', taken: 'taken', started: 'started' };
+  const DRV_STAGE_WORD = { queued: '已排進信件帳', handed: '已交 AIB 寄' };
   function drvLists(st) {
     if (!st) return null;
     const d = st.drive && typeof st.drive === 'object' ? st.drive : st.drive === null ? null : st;
@@ -1933,8 +1935,8 @@
     const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
     const tog = ['on', 'off', 'paused'].filter((to) => drvCan(st, to)).map((to) => `<button type="button" class="k" data-drvtog="${to}">${DRV_TO[to][0]}</button>`).join('');
     const form = DRV.open && drvCan(st, DRV.open) ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${DRV_TO[DRV.open][0]}(必填;會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">確定${DRV_TO[DRV.open][0]}</button><button type="button" class="k" data-drvx="1">取消</button>${DRV.open === 'on' ? '<span class="drvq">打開要 Andy 在這台按指紋</span>' : ''}</div>` : '';
-    const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real ? !r.partial || k === 0 : k === 0 || z[0] === 'started', on = r.real ? i >= 0 && k <= i && known : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
-    const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span><span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
+    const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real ? !r.partial : k === 0 || z[0] === 'started', on = r.real ? i >= 0 && k <= i && known : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
+    const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span>${r.raw && DRV_STAGE_WORD[r.raw] ? `<small class="drvsw">${DRV_STAGE_WORD[r.raw]}</small>` : ''}<span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
     const D = drvLists(st);
     const nx = D && D.next.length ? `<div class="drvs"><span class="drvh">下一步${D.complete ? '' : '(只列到一部分)'}${D.asOf ? ' · ' + esc(hhmm(D.asOf)) : ''}</span>${D.next.slice(0, 7).map((n) => `<div class="drvn" title="${esc(n.why)}"><i class="drvl">${esc(n.tag.slice(0, 12))}</i>${esc(n.what.slice(0, 70))}${n.to ? ' → @' + esc(n.to.slice(0, 20)) : ''}</div>`).join('')}</div>` : '';
     const bl = D && D.blockers.length ? `<div class="drvs"><span class="drvh">卡點</span>${D.blockers.slice(0, 5).map((b) => `<div class="drvn drvb" title="${esc(b.blocks ? '擋住:' + b.blocks : '')}">${esc(b.what.slice(0, 70))}${b.who ? ' · 等 ' + esc(b.who.slice(0, 20)) : ''}</div>`).join('')}</div>` : '';
