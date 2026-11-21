@@ -71,6 +71,48 @@ pub fn item(
     m
 }
 
+/// R-30 and L1 over the whole text (aibd legacy_send, aib-drive): the first problem refuses
+/// the letter, nothing is fixed. `(code, why)`: `invalid_request`, `text_too_long`, `lint_refused`.
+pub fn check_text(text: &str, max: usize) -> Result<(), (&'static str, String)> {
+    if text.trim().is_empty() {
+        return Err(("invalid_request", "text is empty".into()));
+    }
+    if text.len() > max {
+        return Err(("text_too_long", format!("text is over {max} bytes")));
+    }
+    if let Some(f) = aib_dmq::lint::r30::lint(text).first() {
+        return Err((
+            "lint_refused",
+            format!(
+                "R-30: line {} column {} {} {} ({})",
+                f.line, f.col, f.codepoint, f.label, f.code
+            ),
+        ));
+    }
+    // 5d33a PREREAD-integws2 L1: a line is cut at \n only, so any other break (\r, \u{85},
+    // \u{2028}, \u{2029}) or control character would hide a header-shaped line from the check
+    if let Some(c) = text.chars().find(|c| {
+        (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
+    }) {
+        return Err((
+            "lint_refused",
+            format!("U+{:04X} is not allowed in a letter", c as u32),
+        ));
+    }
+    for (n, line) in text.split('\n').enumerate() {
+        if line.contains(" >> ")
+            || line.contains("長訊已落檔")
+            || aib_dmq::header::parse(line).is_some()
+        {
+            return Err((
+                "lint_refused",
+                format!("line {} looks like a letter's header", n + 1),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The 1.x pointer line a long letter is replaced by.
 pub fn pointer_line(bytes: usize, path: &Path) -> String {
     format!("長訊已落檔({bytes} 位元組),請讀:{}", path.display())

@@ -53,45 +53,10 @@ pub fn seat_ok(s: &str) -> bool {
     crate::seats::is_code(s)
 }
 
-/// R-30 and L1 over the whole text; the first problem refuses the letter.
+/// R-30 and L1 over the whole text; the first problem refuses the letter
+/// ([`aib_dmq_store::letter::check_text`], shared with aib-drive).
 pub fn check_text(text: &str) -> Result<(), Refusal> {
-    if text.trim().is_empty() {
-        return Err(("invalid_request", "text is empty".into()));
-    }
-    if text.len() > TEXT_MAX {
-        return Err(("text_too_long", format!("text is over {TEXT_MAX} bytes")));
-    }
-    if let Some(f) = aib_dmq::lint::r30::lint(text).first() {
-        return Err((
-            "lint_refused",
-            format!(
-                "R-30: line {} column {} {} {} ({})",
-                f.line, f.col, f.codepoint, f.label, f.code
-            ),
-        ));
-    }
-    // 5d33a PREREAD-integws2 L1: a line is cut at \n only, so any other break (\r, \u{85},
-    // \u{2028}, \u{2029}) or control character would hide a header-shaped line from the check
-    if let Some(c) = text.chars().find(|c| {
-        (c.is_control() && !matches!(c, '\n' | '\t')) || matches!(c, '\u{2028}' | '\u{2029}')
-    }) {
-        return Err((
-            "lint_refused",
-            format!("U+{:04X} is not allowed in a letter", c as u32),
-        ));
-    }
-    for (n, line) in text.split('\n').enumerate() {
-        if line.contains(" >> ")
-            || line.contains("長訊已落檔")
-            || aib_dmq::header::parse(line).is_some()
-        {
-            return Err((
-                "lint_refused",
-                format!("line {} looks like a letter's header", n + 1),
-            ));
-        }
-    }
-    Ok(())
+    aib_dmq_store::letter::check_text(text, TEXT_MAX)
 }
 
 /// The cabin's live seat codes: the 1.x seat files `instances/<cabin>/seats/*.json` (not

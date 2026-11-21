@@ -51,6 +51,7 @@ fn act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run() {
         .args(["act", "--auto"])
         .env("PATH", &path)
         .env("EZ2_AIB_STATE_ROOT", &d)
+        .env("AIB_DRIVE_AIBD_SWITCH", "on")
         .env_remove("EZ2_AIB_HOME")
         .env("AIB_DRIVE_REPO", "ez2app/ez2-aib")
         .output()

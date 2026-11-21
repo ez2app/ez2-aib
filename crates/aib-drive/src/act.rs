@@ -1158,7 +1158,8 @@ pub const NO_CABIN: &str = "no cabin in the seat facts";
 /// facts are incomplete would mark a live seat gone and tell its sender a wrong 「收件席不在」
 /// (5d33a 0a39f00a L1), so there it is retried as before.
 pub fn seat_gone(why: &str) -> bool {
-    why.starts_with("aib dm stage resolve,")
+    // S79-rust slice 3a: drive writes the ledger itself; no seat folder is the same "not there"
+    why.starts_with("aib dm stage resolve,") || why.ends_with(crate::source::NO_SEAT_FOLDER)
 }
 
 /// The journal line for a nudge whose seat is not there ([`seat_gone`]): never tried again,
@@ -1261,13 +1262,15 @@ pub fn send_round(
                     let a = addr
                         .as_deref()
                         .ok_or_else(|| crate::intents::SendError::NotSent(NO_CABIN.into()))?;
-                    sender.send(a, &text).map(|(stage, id)| {
-                        *answer.borrow_mut() = Some((stage.clone(), id.clone()));
-                        let mut r = serde_json::Map::new();
-                        r.insert("stage".into(), json!(stage));
-                        r.insert("dm_id".into(), json!(id));
-                        r
-                    })
+                    sender
+                        .send_keyed(a, &text, &key, &w.action)
+                        .map(|(stage, id)| {
+                            *answer.borrow_mut() = Some((stage.clone(), id.clone()));
+                            let mut r = serde_json::Map::new();
+                            r.insert("stage".into(), json!(stage));
+                            r.insert("dm_id".into(), json!(id));
+                            r
+                        })
                 },
             );
             let (stage, dm_id) = answer.into_inner().unzip();
@@ -1889,6 +1892,22 @@ pub fn read_switches(dir: &Path) -> Result<Switches, String> {
     }
 }
 
+/// The switch aibd hands an act round it starts (D7a): `on`, `off` or `paused`, from aibd's
+/// own switch file (an `on` without a signature aibd checks comes as `off`).
+pub const AIBD_SWITCH_ENV: &str = "AIB_DRIVE_AIBD_SWITCH";
+
+/// act.json under aibd's switch (D7a, DECISION-council-driveweb r1 §2): `paused` stops every
+/// send; `on` leaves act.json as it is; `off`, anything else or none (a round nobody started
+/// from aibd) stops dispatching. Like every local value this stops a slip, not a forgery.
+pub fn aibd_overlay(mut s: Switches, aibd: Option<&str>) -> Switches {
+    match aibd {
+        Some("paused") => s.paused = true,
+        Some("on") => {}
+        _ => s.dispatch = false,
+    }
+    s
+}
+
 /// Write act.json through a new file and a rename.
 pub fn write_switches(dir: &Path, s: Switches) -> Result<(), String> {
     let tmp = dir.join(format!("act.json.new-{}", std::process::id()));
@@ -2078,7 +2097,8 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
-    let sw = match read_switches(&dir) {
+    let aibd_switch = std::env::var(AIBD_SWITCH_ENV).ok();
+    let sw = match read_switches(&dir).map(|s| aibd_overlay(s, aibd_switch.as_deref())) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("aib-drive act: {e}");
@@ -2222,7 +2242,20 @@ pub fn cli_act(raw: &[String]) -> u8 {
         sw,
         &seats,
         &live,
-        &crate::source::AibDm::new(),
+        // S79-rust slice 3a: the letter goes into the ledger under the same root as drive/;
+        // 3b: a web seat's work order is handed to aibd on stdout instead
+        &crate::source::ToWeb {
+            web: crate::source::web_seats(
+                std::env::var(crate::source::WEB_SEATS_ENV).ok().as_deref(),
+            ),
+            by_aibd: crate::source::round_mark(
+                std::env::var(crate::source::BY_AIBD_ENV).ok().as_deref(),
+            ),
+            inner: &crate::source::StoreDm {
+                root: dir.parent().map(Path::to_path_buf),
+            },
+            out: std::cell::RefCell::new(Box::new(std::io::stdout())),
+        },
         now,
     );
     // S107-product slice 3: each dm tried and each one held by its switch, as events (a write
@@ -2270,7 +2303,7 @@ fn follow_round(dir: &Path, journal: &Path, hist: &History, now: i64) -> Result<
     let with_status = crate::track::follow_with_status(
         &ledger,
         now,
-        &crate::source::AibQueue::new(),
+        &crate::source::StoreQueue { root: root.clone() },
         &crate::track::FsSeatNow { root: root.clone() },
     );
     // S107-product slice 3: a status not written before, as a drive_send_after event
@@ -2987,6 +3020,35 @@ pub(crate) mod tests {
         for s in ["@1ced7(x)", "agent:offhub", "unattested:hub-lobby", " ", ""] {
             assert_eq!(name_of(&json!({"sender_label": s})), "", "{s}");
         }
+    }
+
+    /// D7a: aibd's switch over act.json — paused stops all, on keeps act.json, off or none
+    /// stops dispatching only.
+    #[test]
+    fn aibds_switch_decides_dispatch() {
+        let all = Switches {
+            paused: false,
+            nudge: true,
+            open_review: true,
+            dispatch: true,
+            notify_fix: true,
+            unblock_notify: true,
+        };
+        assert_eq!(aibd_overlay(all, Some("on")), all);
+        let off = aibd_overlay(all, Some("off"));
+        assert!(
+            !off.dispatch && off.nudge && !off.paused,
+            "reason: off_not_dispatch_only"
+        );
+        assert!(
+            !aibd_overlay(all, None).dispatch,
+            "reason: no_aibd_dispatches"
+        );
+        assert!(!aibd_overlay(all, Some("ON")).dispatch);
+        assert!(
+            aibd_overlay(all, Some("paused")).paused,
+            "reason: paused_not_paused"
+        );
     }
 
     #[test]

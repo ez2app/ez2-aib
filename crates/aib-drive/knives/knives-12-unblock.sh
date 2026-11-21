@@ -210,8 +210,4 @@ ua() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expe
 # UA1 (v-2 hook) act --auto no longer writes unblock.json each round
 ua '    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), true) {' '    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), false) { // knife' \
    act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run
-# S79-sender (56cda, a9136 f8053b39 H1): act's dm shell forwards its arguments as they are
-bash aib/tests/check-afw-dm-56cda-1116.sh
-# SDR6 the shell adds its own dm (act would run aib dm dm …, every dm broken)
-python3 -I scripts/knife.py aib/src/cockpit/auto_find_work_dm.sh '"$aib" "$@"' '"$aib" dm "$@"' \
-  --expect-fail check_afw_dm_forwards -- bash aib/tests/check-afw-dm-56cda-1116.sh
+# SDR6 retired (S79-rust slice 3a): auto_find_work_dm.sh is gone
