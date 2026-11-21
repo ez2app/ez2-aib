@@ -194,7 +194,15 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
 {
   ok(ws.includes("const SB_NAME = '交回本機原倉(新分支)'") && !ws.includes('>送回倉(建新分支)<'), 'reason: send_back_still_named_vaguely');
   ok(/main 沒動,也還沒上 GitHub/.test(ws), 'reason: send_back_done_without_main_untouched');
-  ok(/if \(sbb && running\(sbb\.dataset\.sendback\)\)/.test(ws), 'reason: running_seat_send_back_silent');
+  ok(/if \(sbb && sbHeld\(sbb\.dataset\.sendback\)\)/.test(ws), 'reason: busy_seat_send_back_silent');
+  // G4 跟上(5d33a REVIEW-g4a r3 N3):開著閒著的席頁面不擋;只看 aibd 的 sendable,不看 running()
+  ok(/const sbHeld = \(id\) => \{[^\n]*rc\.sendable === false; \};/.test(ws), 'reason: send_back_held_not_by_sendable');
+  {
+    const at = ws.indexOf('function sendBackHtml(s) {');
+    const body = ws.slice(at, ws.indexOf('\n  }\n', at));
+    ok(at > 0 && !/running\(/.test(body), 'reason: idle_open_seat_told_to_stop');
+  }
+  ok(!/先按這一席的「停止」,停好再按/.test(ws), 'reason: stop_still_asked_before_send_back');
   ok(/if \(S\.sbMsg && S\.sbMsg\.bad\) say\(S\.sbMsg\.text, 'err'\)/.test(ws), 'reason: send_back_error_only_in_seat_box');
   ok(/codex: '終端機打 codex login'/.test(ws) && !/例:claude 打 \/login/.test(ws), 'reason: codex_told_claude_login');
   ok(/data-addpv="1">去預覽開席</.test(ws), 'reason: mother_page_plus_no_preview_way');
