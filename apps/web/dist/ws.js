@@ -1921,21 +1921,16 @@
     const foot = `<div class="drvfoot">${andy ? `等你決定 ${andy} 件(在最上面)` : '沒有等你決定的'}${st ? '' : ' · 這塊是用「自動推進的信」拼的:只有「送到」確定,「開工」看那席之後有沒有開始回合;已讀 / 接單 AIB 還沒給'}${DRV.note ? ' · ' + esc(DRV.note) : ''}</div>`;
     return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
   }
-  // 打開派工要 Andy 指紋(a9136 19:2x):走頁面既有的指紋等待(202 + ticket 每秒問、最長 120 秒);
-  // aibd 若改回 needs_approval + approval_id(consent 卡),就寫「等 Andy 按指紋」並每 5 秒重讀狀態,最長 2 分鐘
+  // 打開派工要 Andy 指紋(a9136 19:18 更正):跟 seat_trust 同形狀 —— 第一次 202 {ticket, reason: owner_check_pending},
+  // fingerAct 每秒問 ticket、核准後帶 ticket 原樣重送一次({to, why} 一字不差,參數綁在指紋上)才寫入;指紋不可用 403 owner_check_unavailable
+  const DRV_ERR = { owner_check_unavailable: '這台現在叫不出指紋視窗;打開派工要 Andy 本人指紋,先不能開', owner_check_not_approved: '指紋沒按到', finger_denied: '指紋被拒,這次沒打開', finger_expired: '指紋視窗逾時,這次沒打開', finger_timeout: '等指紋逾時,這次沒打開' };
   async function driveToggle() {
     const st = DRV.st, to = DRV.open; if (!to || !drvCan(st, to)) return;
     const why = DRV.why.trim(); if (!why) { DRV.note = '要寫一句理由'; return render(); }
     try {
-      const r = await fingerAct('drive_toggle', { to, why }, (t, sec) => { DRV.note = '請在這台 Mac 跳出的指紋視窗按下(打開派工要 Andy 本人)· 還有 ' + sec + ' 秒'; render(); });
-      DRV.open = null; DRV.why = ''; DRV.note = '';
-      if (r && (r.needs_approval === true || r.approval_id)) {
-        DRV.note = '已送出,等 Andy 在這台按指紋' + (r.approval_id ? '(單號 ' + String(r.approval_id).slice(0, 12) + ')' : '') + ';按完這裡會自己變「開著」';
-        const until = Date.now() + 120000;
-        const poll = async () => { await driveLoad(true); if (drvState(DRV.st) === to) { DRV.note = ''; return render(); } if (Date.now() > until) { DRV.note = '等指紋逾時:這次沒打開,要的話再按一次'; return render(); } setTimeout(poll, 5000); };
-        setTimeout(poll, 5000);
-      } else await driveLoad(true);
-    } catch (e) { DRV.note = errText(e); }
+      await fingerAct('drive_toggle', { to, why }, (t, sec) => { DRV.note = '請在這台 Mac 跳出的指紋視窗按下(打開派工要 Andy 本人)· 還有 ' + sec + ' 秒'; render(); });
+      DRV.open = null; DRV.why = ''; DRV.note = ''; await driveLoad(true);
+    } catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); DRV.note = DRV_ERR[rs] || errText(e); }
     render();
   }
 
