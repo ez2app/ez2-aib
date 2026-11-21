@@ -177,6 +177,27 @@ mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
 
+    // #871: absolute on this platform (a Windows handoff writes C:\…; /Users/… is not absolute there)
+    #[cfg(not(windows))]
+    mod at {
+        pub const REPO: &str = "/Users/a/ez2-aib";
+        pub const OTHER: &str = "/other";
+        pub const R: &str = "/r";
+        pub const R_EZ2: &str = "/r/ez2";
+        pub const XY: &str = "/x/y";
+        /// the other platform's absolute shape: not absolute here
+        pub const FOREIGN: &str = r"C:\Users\a\ez2-aib";
+    }
+    #[cfg(windows)]
+    mod at {
+        pub const REPO: &str = r"C:\Users\a\ez2-aib";
+        pub const OTHER: &str = r"D:\other";
+        pub const R: &str = r"C:\r";
+        pub const R_EZ2: &str = r"C:\r\ez2";
+        pub const XY: &str = r"C:\x\y";
+        pub const FOREIGN: &str = "/Users/a/ez2-aib";
+    }
+
     /// MV1: the persona comes from the seat code's binding; a code is 5 hex.
     #[test]
     fn the_persona_is_the_seat_codes_binding() {
@@ -218,11 +239,12 @@ mod tests {
     /// MV3: the repo is the handoff's `倉庫:` line, absolute only.
     #[test]
     fn the_repo_is_the_handoffs_repo_line() {
-        assert_eq!(
-            repo_of("# x\n- 倉庫: /Users/a/ez2-aib\n- 倉庫: /other\n").as_deref(),
-            Some("/Users/a/ez2-aib")
-        );
-        assert_eq!(repo_of("倉庫\u{ff1a}/r\n").as_deref(), Some("/r"));
+        let two = format!("# x\n- 倉庫: {}\n- 倉庫: {}\n", at::REPO, at::OTHER);
+        assert_eq!(repo_of(&two).as_deref(), Some(at::REPO));
+        let full = format!("倉庫\u{ff1a}{}\n", at::R);
+        assert_eq!(repo_of(&full).as_deref(), Some(at::R));
+        let foreign = format!("- 倉庫: {}\n", at::FOREIGN);
+        assert_eq!(repo_of(&foreign), None, "reason: other_platforms_shape");
         assert_eq!(
             repo_of("- 倉庫: relative/path\n"),
             None,
@@ -243,20 +265,24 @@ mod tests {
             r#"{"6f1cb": {"persona_uid": "5s3bot"}}"#,
         )
         .unwrap();
-        std::fs::write(pend.join("HANDOFF-6f1cb-1121-1030.md"), "- 倉庫: /r/ez2\n").unwrap();
+        std::fs::write(
+            pend.join("HANDOFF-6f1cb-1121-1030.md"),
+            format!("- 倉庫: {}\n", at::R_EZ2),
+        )
+        .unwrap();
         std::fs::write(pend.join("MEMPACK-6f1cb-1121.md"), "m").unwrap();
         let p = plan("6f1cb", &id, &pend, None, None, None).unwrap();
         assert_eq!(p.persona_uid, "5s3bot");
         assert_eq!(p.handoff, "HANDOFF-6f1cb-1121-1030.md");
         assert_eq!(p.mempack.as_deref(), Some("MEMPACK-6f1cb-1121.md"));
-        assert_eq!(p.repo.as_deref(), Some("/r/ez2"));
+        assert_eq!(p.repo.as_deref(), Some(at::R_EZ2));
         assert_eq!(p.provider, "claude");
         let s = steps(&p);
         assert_eq!(s.len(), 6);
         assert!(s[3].contains("HANDOFF-6f1cb-1121-1030.md + MEMPACK-6f1cb-1121.md"));
         assert!(s[5].contains("舊席 6f1cb 不關"), "reason: old_seat_closed");
-        let r = plan("6f1cb", &id, &pend, None, None, Some("/x/y")).unwrap();
-        assert_eq!(r.repo.as_deref(), Some("/x/y"));
+        let r = plan("6f1cb", &id, &pend, None, None, Some(at::XY)).unwrap();
+        assert_eq!(r.repo.as_deref(), Some(at::XY));
         assert!(plan("6f1cb", &id, &pend, None, None, Some("rel")).is_err());
         assert!(plan("6f1cb", &id, &pend, Some("grok"), None, None).is_err());
         assert!(
