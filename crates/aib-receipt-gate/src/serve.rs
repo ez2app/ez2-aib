@@ -743,6 +743,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_fetch_that_hangs_is_stopped_at_its_limit() {
         let step = |program: &str, arg: &str| Step {
             argv: vec![program.into(), arg.into()],

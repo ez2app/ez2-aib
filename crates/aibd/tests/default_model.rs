@@ -11,13 +11,25 @@ mod harness;
 use harness::{seat_dir, Daemon};
 use serde_json::{json, Value};
 
-fn args_of(cwd: &std::path::Path) -> Vec<Vec<String>> {
-    std::fs::read_to_string(cwd.join("fake-provider-args.log"))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.split_once(' '))
-        .filter_map(|(_, list)| serde_json::from_str::<Vec<String>>(list).ok())
-        .collect()
+/// The fake provider's argument lists, once at least `n` whole lines are written (it writes
+/// after the open answers: read at once, the log can still be empty; 5d33a st2 41fcd024b
+/// default_not_used []). Gives what is there after 10 s.
+fn args_of(cwd: &std::path::Path, n: usize) -> Vec<Vec<String>> {
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        let log = std::fs::read_to_string(cwd.join("fake-provider-args.log")).unwrap_or_default();
+        got = log
+            .split_inclusive('\n')
+            .filter(|l| l.ends_with('\n'))
+            .filter_map(|l| l.trim_end().split_once(' '))
+            .filter_map(|(_, list)| serde_json::from_str::<Vec<String>>(list).ok())
+            .collect();
+        if got.len() >= n {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    got
 }
 
 fn model_in(args: &[String]) -> Option<&str> {
@@ -112,7 +124,7 @@ async fn a_seat_opened_with_no_model_runs_on_the_brands_default() {
     // a seat with no model runs on it, and keeps it
     let wa = seat_dir(dir.path(), "a");
     let (a, _) = d.open("safe", &wa).await;
-    let first = args_of(&wa);
+    let first = args_of(&wa, 1);
     assert_eq!(
         first.last().and_then(|x| model_in(x)),
         Some("sonnet"),
@@ -140,7 +152,7 @@ async fn a_seat_opened_with_no_model_runs_on_the_brands_default() {
     );
     let wb = seat_dir(dir.path(), "b");
     let _ = d.open("safe", &wb).await;
-    let second = args_of(&wb);
+    let second = args_of(&wb, 1);
     assert_eq!(
         second.last().and_then(|x| model_in(x)),
         None,
@@ -185,7 +197,7 @@ async fn a_seat_opened_with_no_model_runs_on_the_brands_default() {
             .await;
     }
     assert_eq!(r.code, 200, "reason: model_not_moved {}", r.body);
-    let again = args_of(&wa);
+    let again = args_of(&wa, first.len() + 1);
     let last = again.last().cloned().unwrap_or_default();
     assert_eq!(
         again.len(),

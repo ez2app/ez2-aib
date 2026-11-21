@@ -31,7 +31,7 @@ su '            let hour_ok = digits(h, 1..=2) && h.parse::<u8>().is_ok_and(|v| 
    the_reset_time_is_only_the_time_after_reset
 # SM5 the usage card does not say when it comes back
 su '        c.state = Some(format!("{t} 恢復;可換模型接著做"));' \
-   '        let _ = t; // knife' \
+   '        c.state = Some(format!("{t}")); // knife' \
    a_session_that_ended_for_its_usage_or_a_login_is_low_power
 # SM6 the model is not pinned
 st '                "UPDATE seat_meta SET model = ?2, model_pinned = 1, updated_at = ?3 WHERE seat_id = ?1",' \
