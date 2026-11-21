@@ -44,7 +44,7 @@ rv '        let _ = std::fs::remove_file(out);' '        let _ = out; // knife' 
 rv '            .create_new(true)' '            .create(true).truncate(true) // knife' \
    a_file_is_kept_only_whole_and_with_its_digest
 # RV4 a short stream is taken as whole
-rv '            if n == 0 {' '            if n == usize::MAX { // knife' \
+rv '            if n == 0 {' '            if n == 0 { break; } if false { // knife (ends at once, no endless read)' \
    a_file_is_kept_only_whole_and_with_its_digest
 # RV5 a knife of another crate is taken
 rv '        if *c != krate {' '        if *c != krate && c.is_empty() { // knife' \
