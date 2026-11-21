@@ -77,6 +77,7 @@ pub mod seat_now;
 pub mod seat_now_all;
 pub mod seat_pending;
 pub mod seat_plan_move;
+pub mod seat_rank;
 pub mod seat_send;
 pub mod seat_tick;
 pub mod seat_token;
