@@ -3207,7 +3207,7 @@
     S.sending = true; G.msg = ''; render();
     try {
       await fingerAct('repo_gh_token', { repo: O.repo, token }, (t, sec) => { if (S.ghTok === G) { G.left = sec; render(); } });
-      S.ghTok = null; S.prOff = null; S.pushMsg = { seat: id, text: '權杖存好了(只存在這台的鑰匙圈);可以再按一次「開 PR」' };
+      S.ghTok = null; S.prOff = null; S.pushMsg = { seat: id, text: '權杖存好了(只存在這台的鑰匙圈);可以再按一次「推上去」或「開 PR」' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
       G.left = null; G.msg = GHTOK_WHY[rs] || errText(e);
@@ -3225,8 +3225,11 @@
       S.pushMsg = { seat: id, text: '已推上去:' + String((r && r.branch) || O.branch) + (r && r.sha ? '(頭 ' + String(r.sha).slice(0, 12) + ')' : '') + (r && r.remote_host ? ' 到 ' + r.remote_host : '') + ';還沒開 PR' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
-      if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
-      else S.pushMsg = { seat: id, bad: true, text: pushWhy(PUSH_WHY, e) };
+      // pv8 第 9 格:這個倉沒有權杖 ⇒ aibd 在指紋窗前就說,這裡直接出權杖卡;權杖被 GitHub 拒 ⇒ 講哪裡不對
+      const slug = e && e.body && typeof e.body.token_for === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(e.body.token_for) ? e.body.token_for : '';
+      if (rs === 'gh_token_missing' && slug) S.ghTok = { seat: id, slug, left: null, msg: '這個倉還沒有 GitHub 權杖;存好之後再按一次「推上去」' };
+      else if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
+      else S.pushMsg = { seat: id, bad: true, text: /^gh_token_/.test(String(rs)) && GHTOK_WHY[rs] ? GHTOK_WHY[rs] : pushWhy(PUSH_WHY, e) };
     }
     S.pushF = null; render();
   }

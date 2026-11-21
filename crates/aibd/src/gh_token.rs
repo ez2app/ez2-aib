@@ -73,6 +73,86 @@ pub fn keep(k: &Keeper, slug: &str, token: &Token) -> Result<(), No> {
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "gh_token_store"))
 }
 
+/// A push's credential: git's `-c` pairs for the one-shot helper and what it reads; the
+/// credential is zeroed when this is dropped.
+pub struct Cred {
+    pub config: Vec<String>,
+    pub secret: Vec<u8>,
+}
+
+impl Drop for Cred {
+    fn drop(&mut self) {
+        self.secret.fill(0);
+        std::hint::black_box(&self.secret);
+    }
+}
+
+/// The GitHub repository whose token a push to `remote` goes with: only an https remote on
+/// GitHub, on a machine that keeps tokens; ssh goes with the account's own keys as before.
+fn token_slug<'k>(k: Option<&'k Keeper>, remote: &str) -> Option<(&'k Keeper, String)> {
+    if !remote.starts_with("https://") {
+        return None;
+    }
+    Some((k?, crate::pr_open::slug_of(remote)?))
+}
+
+/// Before a push's window (pv8 9; DESIGN-gh-token-card §4): an https GitHub remote with no
+/// token kept is said, and so is a token GitHub refuses for it (401, not the repository, no
+/// push); GitHub out of reach is not a no (5d33a PREREAD-ghtokencard 4), git says what it says.
+pub fn before_push(remote: &str) -> Result<(), No> {
+    before_push_with(KEEPER.get(), remote)
+}
+
+fn before_push_with(k: Option<&Keeper>, remote: &str) -> Result<(), No> {
+    let Some((k, slug)) = token_slug(k, remote) else {
+        return Ok(());
+    };
+    let token = kept(k, &slug)?;
+    match check(k, &slug, &token) {
+        Err((_, why)) if why == crate::pr_api::GH_UNREACHABLE => Ok(()),
+        other => other,
+    }
+}
+
+fn kept(k: &Keeper, slug: &str) -> Result<Token, No> {
+    let missing = (StatusCode::CONFLICT, "gh_token_missing");
+    let (service, account) = crate::pr_api::item_of(slug).ok_or(missing)?;
+    if !k.secrets.has(&service, &account) {
+        return Err(missing);
+    }
+    k.secrets.get(&service, &account).ok_or(missing)
+}
+
+/// The credential a push to `remote` runs with, read after the owner's fingerprint; none for a
+/// push that goes without one (see [`token_slug`]).
+pub fn push_cred(remote: &str) -> Result<Option<Cred>, No> {
+    let exe = std::env::current_exe()
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "gh_token_unavailable"))?;
+    push_cred_with(KEEPER.get(), remote, &exe)
+}
+
+fn push_cred_with(
+    k: Option<&Keeper>,
+    remote: &str,
+    exe: &std::path::Path,
+) -> Result<Option<Cred>, No> {
+    let Some((k, slug)) = token_slug(k, remote) else {
+        return Ok(None);
+    };
+    let token = kept(k, &slug)?;
+    let path = remote
+        .strip_prefix("https://")
+        .and_then(|r| r.split_once('/'))
+        .map(|(_, p)| p.trim_matches('/'))
+        .unwrap_or_default();
+    let config = crate::git_cred::config(exe, crate::pr_open::GITHUB, path)
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "gh_token_unavailable"))?;
+    Ok(Some(Cred {
+        config,
+        secret: crate::git_cred::secret(&token),
+    }))
+}
+
 /// The fingerprint this asks: the repository, its GitHub name and the token's hash.
 pub fn ask_of(repo: &str, slug: &str, token: &Token, by: String) -> crate::owner_ok::Ask {
     let params = json!({
@@ -164,6 +244,7 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
 mod tests {
     use super::*;
     use crate::pr_api::Request;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     const TOKEN: &[u8] = b"github_pat_TEST7b81e_abcdefXYZ";
@@ -176,8 +257,12 @@ mod tests {
             s.iter()
                 .any(|(a, b, _)| (a.as_str(), b.as_str()) == (service, account))
         }
-        fn get(&self, _: &str, _: &str) -> Option<Token> {
-            None
+        fn get(&self, service: &str, account: &str) -> Option<Token> {
+            let s = self.0.lock().unwrap();
+            let hit = s
+                .iter()
+                .find(|(a, b, _)| (a.as_str(), b.as_str()) == (service, account));
+            Token::new(hit?.2.clone())
         }
         fn set(&self, service: &str, account: &str, token: &Token) -> Result<(), &'static str> {
             let mut s = self.0.lock().unwrap();
@@ -207,6 +292,86 @@ mod tests {
 
     fn token() -> Token {
         Token::new(TOKEN.to_vec()).unwrap()
+    }
+
+    fn with(store: &Arc<Store>, answer: Result<(u16, Vec<u8>), &'static str>) -> Keeper {
+        Keeper {
+            secrets: store.clone(),
+            wire: Arc::new(Answers(Mutex::default(), answer)),
+        }
+    }
+
+    /// pv8 9 (DESIGN-gh-token-card §4; 5d33a 4): before the window, an https GitHub push with
+    /// no token, or one GitHub refuses for the repository, is said; out of reach goes on; ssh
+    /// and other hosts go as before. After it, the push carries its own one-shot helper.
+    #[test]
+    fn a_push_says_a_missing_or_refused_token_before_its_window_and_goes_with_its_own() {
+        const URL: &str = "https://github.com/ez2app/demo.git";
+        let store = Arc::new(Store::default());
+        let yes = json!({"permissions": {"push": true}})
+            .to_string()
+            .into_bytes();
+        let k = with(&store, Ok((200, yes)));
+        for other in [
+            "git@github.com:ez2app/demo.git",
+            "https://gitlab.com/ez2app/demo.git",
+        ] {
+            assert_eq!(
+                before_push_with(Some(&k), other),
+                Ok(()),
+                "reason: asked_for {other}"
+            );
+            assert!(
+                push_cred_with(Some(&k), other, Path::new("/a/aibd"))
+                    .unwrap()
+                    .is_none(),
+                "reason: helper_for {other}"
+            );
+        }
+        assert_eq!(
+            before_push_with(None, URL),
+            Ok(()),
+            "reason: no_keeper_refused"
+        );
+        let missing = Err((StatusCode::CONFLICT, "gh_token_missing"));
+        assert_eq!(
+            before_push_with(Some(&k), URL),
+            missing,
+            "reason: missing_not_said"
+        );
+        assert!(push_cred_with(Some(&k), URL, Path::new("/a/aibd")).is_err());
+        keep(&k, "ez2app/demo", &token()).unwrap();
+        assert_eq!(before_push_with(Some(&k), URL), Ok(()));
+        let no = with(&store, Ok((404, Vec::new())));
+        assert_eq!(
+            before_push_with(Some(&no), URL),
+            Err((StatusCode::CONFLICT, crate::pr_api::GH_NOT_SELECTED)),
+            "reason: refused_not_said"
+        );
+        let away = with(&store, Err("curl"));
+        assert_eq!(
+            before_push_with(Some(&away), URL),
+            Ok(()),
+            "reason: offline_blocks"
+        );
+        let c = push_cred_with(Some(&k), URL, Path::new("/a/aibd"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c.secret,
+            crate::git_cred::secret(&token()),
+            "reason: other_secret"
+        );
+        assert!(
+            c.config.iter().all(|a| !a.contains("TEST7b81e")),
+            "reason: token_in_argv {:?}",
+            c.config
+        );
+        assert!(
+            c.config[3].ends_with("--host github.com --path ez2app/demo.git"),
+            "reason: helper_for_another {:?}",
+            c.config
+        );
     }
 
     #[test]

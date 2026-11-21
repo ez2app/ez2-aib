@@ -25,6 +25,7 @@ pub mod drive_wake;
 pub mod events_push;
 pub mod gh_token;
 pub mod gh_view;
+pub mod git_cred;
 pub mod guard;
 pub mod hosts;
 pub mod idem;
