@@ -420,8 +420,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/k === 1 \? heatHtml\(\) \+ driveHtml\(\)/.test(ws), 'reason: drive_panel_not_below_heat');
   // 先問 aibd(drive_status),沒有才用「自動推進的信」拼,且標「拼的」
   ok(/if \(ctHas\('drive_status'\)\)/.test(seg) && /category=drive&limit=3/.test(seg) && /拼的/.test(seg), 'reason: drive_panel_source');
-  // 開關只在 aibd 說能切時給鈕;要理由;頁面不判權
-  ok(/st && st\.can_toggle === true \? `<button/.test(seg) && /if \(!st \|\| st\.can_toggle !== true\) return;/.test(seg) && /if \(!st\.on && !why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /打開要 Andy 在這台按指紋/.test(seg) && /act\('drive_toggle', \{ on: !st\.on, why \}\)/.test(seg), 'reason: drive_toggle_rules');
+  // 開關三態(a9136 PREREAD-drive-d7d5 §1):鈕只照 aibd 的 can_on / can_off / can_pause 出;三種都要理由;送 drive_toggle {to, why};打開提示指紋;對不上指紋帳紅字
+  ok(/st\['can_' \+ \(to === 'paused' \? 'pause' : to\)\] === true/.test(seg) && /if \(!to \|\| !drvCan\(st, to\)\) return;/.test(seg) && /if \(!why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /act\('drive_toggle', \{ to, why \}\)/.test(seg) && /打開要 Andy 在這台按指紋/.test(seg) && /未經指紋的開啟/.test(seg) && !/can_toggle/.test(seg.replace(/\/\/[^\n]*/g, '')), 'reason: drive_toggle_rules');
   // 拼的派工只有「送到」確定;已讀 / 接單 寫 AIB 還沒給
   ok(/:AIB 還沒給/.test(seg) && /\.drvd\.unk\{/.test(css), 'reason: drive_unknown_stage_not_marked');
   // 理由框打字不被重畫吃掉

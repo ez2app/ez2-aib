@@ -1826,8 +1826,13 @@
 
   // ---------- 自動推進面板(519d0 DEV-drive-web D6 / D7 畫面;1a93b OPINION-driveweb)----------
   // aibd 有 drive_status ⇒ 照它(開關、next 七層、派工四格、卡點);沒有 ⇒ 用「自動推進的信」分類串拼派工列(只有「送到」確定,
-  // 「開工」看收件席之後有沒有開始回合),整塊標「拼的」。開關只在 aibd 回 can_toggle 時給鈕、要寫理由(drive_toggle);頁面不判權。
-  const DRV = { st: null, posts: [], at: 0, busy: false, open: false, why: '', note: '' };
+  // 「開工」看收件席之後有沒有開始回合),整塊標「拼的」。開關照 a9136 PREREAD-drive-d7d5 §1:drive_toggle {to: on|off|paused, why},
+  // 鈕只照 aibd 給的 can_on / can_off / can_pause 出(打開要 Andy 指紋、停派工要主管、全停任何配對頁),三種都要寫理由(5d33a L1);頁面不判權。
+  const DRV = { st: null, posts: [], at: 0, busy: false, open: null, why: '', note: '' };
+  const DRV_TO = { on: ['打開派工', '開著', 'drvon'], off: ['停派工', '只停派工', 'drvoff'], paused: ['全停', '全停', 'drvoff'] };
+  // 三態放 switch(dispatch 是派工清單,不能撞名);舊形狀只有 on 布林
+  const drvState = (st) => (st && /^(on|off|paused)$/.test(String(st.switch)) ? String(st.switch) : st && st.on === true ? 'on' : st && st.on === false ? 'off' : '');
+  const drvCan = (st, to) => !!st && st['can_' + (to === 'paused' ? 'pause' : to)] === true && drvState(st) !== to;
   const DRV_STAGES = [['sent', '送到'], ['read', '已讀'], ['taken', '接單'], ['started', '開工']];
   const seatByCode = (c) => S.seats.find((x) => (x.code || String(x.seat_id).replace(/^seat_/, '').slice(0, 5)) === c) || null;
   async function driveLoad(force) {
@@ -1856,11 +1861,11 @@
   function driveHtml() {
     const st = DRV.st, rows = drvRows(), andy = dqItems().length;
     if (!st && !rows.length) return '';
-    const on = st ? (st.on === true ? '<b class="drvon">開著</b>' : st.on === false ? '<b class="drvoff">關著</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
+    const cur = drvState(st);
+    const on = st ? (cur ? `<b class="${DRV_TO[cur][2]}">${DRV_TO[cur][1]}</b>` : '') + (st.unapproved === true ? '<b class="drvbad">未經指紋的開啟</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
     const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
-    const tog = st && st.can_toggle === true ? `<button type="button" class="k" data-drvtog="1">${st.on ? '全停' : '打開'}</button>` : '';
-    const form = DRV.open && st && st.can_toggle === true ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="${st.on ? '為什麼全停(可空;會記下誰、何時)' : '為什麼打開(必填;會記下誰、何時、這句)'}" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">${st.on ? '確定全停' : '確定打開'}</button>${st.on ? '' : '<span class="drvq">打開要 Andy 在這台按指紋</span>'}<button type="button" class="k" data-drvx="1">取消</button></div>` : '';
-    // aibd 給的(real):照它的階段;拼的:只知道「送到」與「開工」,中間兩格一律寫 AIB 還沒給(開工了也不代表讀過、接過)
+    const tog = ['on', 'off', 'paused'].filter((to) => drvCan(st, to)).map((to) => `<button type="button" class="k" data-drvtog="${to}">${DRV_TO[to][0]}</button>`).join('');
+    const form = DRV.open && drvCan(st, DRV.open) ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${DRV_TO[DRV.open][0]}(必填;會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">確定${DRV_TO[DRV.open][0]}</button><button type="button" class="k" data-drvx="1">取消</button>${DRV.open === 'on' ? '<span class="drvq">打開要 Andy 在這台按指紋</span>' : ''}</div>` : '';
     const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real || k === 0 || z[0] === 'started', on = r.real ? k <= i : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
     const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span><span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
     const nx = st && Array.isArray(st.next) && st.next.length ? `<div class="drvs"><span class="drvh">下一步</span>${st.next.slice(0, 7).map((n) => `<div class="drvn"><i class="drvl">${esc(String(n.layer || ''))}</i>${esc(String(n.item || '').slice(0, 70))}${n.seat ? ' → @' + esc(String(n.seat)) : ''}</div>`).join('')}</div>` : '';
@@ -1869,10 +1874,9 @@
     return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
   }
   async function driveToggle() {
-    const st = DRV.st; if (!st || st.can_toggle !== true) return;
-    // 定稿 r1 D7:全停任何人可按、不要指紋(理由可空);打開要理由,指紋由 aibd 跳(頁面只提示)
-    const why = DRV.why.trim(); if (!st.on && !why) { DRV.note = '要寫一句理由'; return render(); }
-    try { const r = await act('drive_toggle', { on: !st.on, why }); DRV.open = false; DRV.why = ''; DRV.note = ''; if (r && typeof r === 'object' && 'on' in r) DRV.st = Object.assign({}, st, r); await driveLoad(true); }
+    const st = DRV.st, to = DRV.open; if (!to || !drvCan(st, to)) return;
+    const why = DRV.why.trim(); if (!why) { DRV.note = '要寫一句理由'; return render(); }
+    try { await act('drive_toggle', { to, why }); DRV.open = null; DRV.why = ''; DRV.note = ''; await driveLoad(true); }
     catch (e) { DRV.note = errText(e); }
     render();
   }
@@ -4850,8 +4854,8 @@
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
     const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
-    if (x.closest('[data-drvtog]')) { DRV.open = !DRV.open; DRV.note = ''; return render(); }
-    if (x.closest('[data-drvx]')) { DRV.open = false; DRV.why = ''; return render(); }
+    const dtg = x.closest('[data-drvtog]'); if (dtg) { DRV.open = DRV.open === dtg.dataset.drvtog ? null : dtg.dataset.drvtog; DRV.note = ''; return render(); }
+    if (x.closest('[data-drvx]')) { DRV.open = null; DRV.why = ''; return render(); }
     if (x.closest('[data-drvgo]')) return driveToggle();
     const atx = x.closest('[data-attx]'); if (atx) { CT.att.splice(Number(atx.dataset.attx), 1); return render(); }
     const ctb = x.closest('[data-ct]'); if (ctb) { const k = ctb.dataset.ct; CT.note = ''; if (k === 'shot') return ctShot(); if (k === 'pick') return ctPick(); if (k === 'file') return ctFile(); if (k === 'fav') { CT.favOpen = !CT.favOpen; if (CT.favOpen) ctFavLoad(); return render(); } }
