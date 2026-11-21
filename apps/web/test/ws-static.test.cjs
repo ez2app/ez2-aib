@@ -52,6 +52,8 @@ for (const t of acts) {
   if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
   // b4297 feat/add-test-host-b4297-1121(62fd9f9690)才有 test_host_*;頁面看 version.acts 沒有就不畫。合進來後拿掉這行
   if (/^test_host_(list|add|remove)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('b4297 CARD-add-test-host r0(62fd9f9690)') && ws.includes("hasAct('test_host_list') !== true"), 'branch-only act is marked: ' + t); continue; }
+  // a9136 寫中(IFACE-chat-tools-page-1a93b-1121):截圖 / 存圖 / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
+  if (/^(screen_shot|media_put|send_history_(add|del|clear)|favorite_(add|del|tag)|color_add)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('IFACE-chat-tools-page-1a93b-1121') && ws.includes('const ctHas = (t) => hasAct(t) === true;'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -340,6 +342,30 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/r\.hidden = !!q && r\.dataset\.ghpick\.indexOf\(q\) !== 0; return;/.test(ws) && /if \(ghf\) \{ const gi = document\.querySelector\('\[data-ghnum\]'\)/.test(ws), 'reason: pr_filter_loses_focus');
   // 標題前 20 字、走 esc
   ok(/esc\(Array\.from\(x\.t\)\.slice\(0, 20\)\.join\(''\)\)/.test(ws), 'reason: pr_title_not_escaped_or_cut');
+}
+
+// §26 對話工具:截圖 + 標註 / 取色 / 送出紀錄 / 收藏(519d0 SPEC-web-capture-history-fav r0)
+{
+  const css = read('apps/web/dist/ws.css');
+  ok((ws.match(/\$\{chatTools\(\)\}<div class="send"><textarea class="inp" id="inp"/g) || []).length === 4, 'reason: chat_tools_row_missing');
+  ok(/data-ct="shot"/.test(ws) && /data-ct="pick"/.test(ws) && /data-ct="file"/.test(ws) && /data-ct="fav"/.test(ws), 'reason: chat_tool_buttons');
+  // 送出紀錄:100 則、同上一則不存、權杖樣不存、游標在第一行才吃 ↑、送成功才記
+  ok(/CT\.hist\.length = Math\.min\(CT\.hist\.length, 100\)/.test(ws) && /CT\.hist\[0\]\.text === t\) return/.test(ws) && /SECRETISH\.test\(t\)\) return/.test(ws), 'reason: history_rules');
+  ok(/t\.value\.lastIndexOf\('\\n', t\.selectionStart - 1\) < 0/.test(ws), 'reason: history_up_not_first_line_only');
+  ok(/sendShared\(text\)\) S\.drafts\.shared = '';\n      ctHistAdd\(/.test(ws), 'reason: history_add_not_after_send');
+  // 存放只走 aibd;沒有 act 就只在本頁(不寫 localStorage)
+  const seg = ws.slice(ws.indexOf('// ---------- 對話工具'), ws.indexOf('  function postRowsOf(POSTS) {'));
+  ok(seg.length > 3000 && !/localStorage|sessionStorage|indexedDB/.test(seg), 'reason: chat_tools_use_browser_storage');
+  // 收藏 ☆ 跟複製並排(三種訊息)
+  ok((ws.match(/\$\{favBtn\(/g) || []).length === 3, 'reason: star_not_on_messages');
+  // 標註六樣 + ⌘Z / ⇧⌘Z + 從圖取色;CSP:不用 blob: 圖、不用 style 屬性上色
+  ok(/\['rect', '▭ 框'\], \['ellipse', '◯ 圈'\], \['arrow', '➚ 箭頭'\], \['zoom', '🔍 放大鏡'\], \['mosaic', '▦ 馬賽克'\], \['text', 'T 文字'\]/.test(ws), 'reason: annotate_six_tools');
+  ok(/annUndo\(e\.shiftKey\)/.test(ws) && /data-annpick/.test(ws), 'reason: annotate_undo_or_pick');
+  ok(!/createObjectURL/.test(seg) && /fr\.readAsDataURL\(blob\)/.test(seg), 'reason: image_via_blob_url_blocked_by_csp');
+  ok(!/style="background:\$\{/.test(ws) && /n\.style\.background = n\.dataset\.bg/.test(ws), 'reason: inline_style_blocked_by_csp');
+  // 取色:EyeDropper 有就用;HEX / RGB / HSL
+  ok(/'EyeDropper' in window/.test(seg) && /\['hex', 'rgb', 'hsl'\]/.test(seg), 'reason: color_pick');
+  ok(/\.anndlg\{position:fixed/.test(css) && /\.fvq\{[^}]*background:#0c0c10/.test(css), 'reason: chat_tools_css');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');

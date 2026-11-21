@@ -1817,7 +1817,7 @@
     const tabs = `<div class="etabs"><button type="button" class="et1 ${tab === 'all' ? 'on' : ''}" data-evtab="all">全部 <b>${tot}</b></button>${EV_CLS.map((k) => { const n = evCount(k, G); return `<button type="button" class="et1 ${String(tab) === String(k) ? 'on' : ''} ${n ? '' : 'z'}" data-evtab="${k}">${esc(EV_NAME[k])} <b>${n}</b></button>`; }).join('')}<button type="button" class="et1 dmt ${tab === 'dm' ? 'on' : ''} ${dmCount() ? '' : 'z'}" data-evtab="dm">暫不處理 <b>${dmCount()}</b></button></div>`;
     if (tab === 'dm' && !S.dmLoaded) { S.dmLoaded = true; loadDismissed(); }
     const body = tab === 'dm' ? dmHtml(true) : tab === 'all' ? (S.heatF ? evBox(1, G, false) + heatHtml() + heatOnly(G) : tot ? EV_CLS.map((k) => evBox(k, G, false) + (k === 1 ? heatHtml() : '')).join('') + dmHtml() : heatHtml() + '<div class="empty">沒有事件</div>' + dmHtml()) : evBox(Number(tab), G, true);
-    return `<div class="evbox"><div class="bh"><b>事件</b> <span class="st">${tot} 則</span></div>${tabs}<div class="slots">${body}</div></div>`;
+    return favBox() + `<div class="evbox"><div class="bh"><b>事件</b> <span class="st">${tot} 則</span></div>${tabs}<div class="slots">${body}</div></div>`;
   }
 
   // ---------- 頂端:等你決定(1a93b,519d0 ORDER-fastest-1120 第 5 條;取代本機頁 ANDY-NOW)----------
@@ -2099,7 +2099,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -2125,7 +2125,7 @@
     const rows = sharedTo(s.seat_id).concat((Array.isArray(s.mirror) ? s.mirror : []).map((m) => ({ t: m.created, h: `<div class="out"><div class="body">${esc(String(m.body || ''))}</div><div class="tm">${esc(hhmm(m.created))}${m.to ? ' · 寄給 @' + esc(String(m.to).replace(/^seat:/, '')) : ''}</div></div>` }))).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc(['舊式席', modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${n && n.item ? `<span class="turn">${esc(String(n.item).slice(0, 40))}</span>` : ''}${steps}${s.mirror ? '' : '<span class="pvdemo" title="鏡像還沒接上:這一席的信與輸出還讀不到">示意</span>'}</div>
       ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這一席在終端機裡跑;它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳,它在終端機收)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳,它在終端機收)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 五顆快捷鈕 = 送一句固定的話給這一席(舊版對話面板的五顆;今晚只送字,沒有另外的介面)
   const QUICK = [
@@ -2285,7 +2285,7 @@
       const body = typeof txt === 'string' ? esc(txt) : `<span class="st">(${esc(m.len != null ? m.len : '?')} 字)</span>`;
       const who = mine ? to.map((x) => `<span class="at">@</span>${logo(sOf(x), 'sm')}`).join('') : logo(sOf(m));
       const seen = mine ? `<div class="seen">${to.map((x) => `${logo(sOf(x), 'sm')}<span class="st ${x.state === 'failed' ? 'bad' : stOf(x) === '已讀' || stOf(x) === '已回' ? 'ok' : ''}">${esc(stOf(x))}</span>`).join(' ')}</div>` : '';
-      return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}${copyBtn('m:' + (m.message_id || m.created), txt)}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
+      return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}${copyBtn('m:' + (m.message_id || m.created), txt)}${favBtn('m:' + (m.message_id || m.created), txt, m.from_seat, m.created, { seat_id: m._seat, message_id: m.message_id })}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
     }).concat(itemRows(), pairRows(), tickRows(), runRows(), actRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
   }
   // 席與席之間的一對一信:寄件席 → 收件席,跟真人的話分開一個樣子
@@ -2317,7 +2317,7 @@
         const wait = !bad && !ans && /^(delivered|read|done)$/.test(String(c.status || '')) ? '<span class="st wait">等回答</span>' : '';
         return `<span class="at">@</span>${logo(sOf(c.seat), 'sm')}<span class="st ${bad || fail ? 'bad' : t === '已讀' || t === '已回' ? 'ok' : ''}">${esc(t)}</span>${wait}`;
       }).join(' ');
-      return { t: String(p.created || ''), h: `<div class="msg it ${mine ? 'me' : ''}${AUTO_CLS[autoOf(p)] || ''}" data-pid="${esc(pidOf(p))}">${p._shared ? '' : `<div class="ith" data-node="${esc(p._node)}" title="打開這一項的對話">📌 ${esc(String(p._title).slice(0, 40))}</div>`}<div class="who">${who}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}</div><div class="body">${body}</div>${mine || !p._shared ? '' : workLine(p.from_seat, p.created)}${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}</div>` };
+      return { t: String(p.created || ''), h: `<div class="msg it ${mine ? 'me' : ''}${AUTO_CLS[autoOf(p)] || ''}" data-pid="${esc(pidOf(p))}">${p._shared ? '' : `<div class="ith" data-node="${esc(p._node)}" title="打開這一項的對話">📌 ${esc(String(p._title).slice(0, 40))}</div>`}<div class="who">${who}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}${favBtn('p:' + pidOf(p), p.body, p.from_seat || (p.sender_kind === 'human' ? 'human:' : ''), p.created, { thread_id: p._tid || (S.nt && S.nt.thread_id) || '', message_id: pidOf(p) })}</div><div class="body">${body}</div>${mine || !p._shared ? '' : workLine(p.from_seat, p.created)}${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}</div>` };
     });
   }
   // 0eed7 VERIFY-humanthread L1:內文提到的 @ 也會送 ⇒ 輸入框下面即時列「會送給誰」,送出前看得到
@@ -2340,7 +2340,7 @@
     return `${headHtml()}
       <div class="tl" id="tl">${rows || '<div class="empty">還沒有對話。打 @ 選一席,寫一句送出。</div>'}</div>
       ${atpop}${askBar()}
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
 
@@ -2522,6 +2522,257 @@
       back(/Mac|iPhone|iPad/.test(navigator.platform || '') ? '已選取,按 ⌘C' : '已選取,按 Ctrl+C');
     }
   }
+  // ---------- 對話工具:📸 截圖 + 標註 / 🎨 取色 / ↑ 送出紀錄 / ☆ 收藏(519d0 SPEC-web-capture-history-fav r0,Andy 13:0x;介面 IFACE-chat-tools-page-1a93b-1121)----------
+  // 存放都在 aibd(換電腦、換瀏覽器都在);aibd 還沒有對應 act ⇒ 只在本頁有效(不寫瀏覽器儲存),工具列寫一句
+  const CT = { hist: null, histOpen: false, histSel: 0, favs: null, favOpen: false, favQ: '', colors: [], pick: null, note: '' };
+  const SECRETISH = /(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|[A-Za-z0-9+/_-]{40,})/;
+  const ctHas = (t) => hasAct(t) === true;
+  function chatTools() {
+    const miss = ['send_history_add', 'favorite_add', 'screen_shot'].filter((t) => !ctHas(t));
+    const hist = CT.histOpen ? ctHistHtml() : '';
+    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(aibd),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">aibd 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
+  }
+  // ---- 送出紀錄 100 則(↑ 叫回;同上一則不存;權杖樣字串不存)----
+  async function ctHistLoad() {
+    if (CT.hist) return CT.hist;
+    CT.hist = [];
+    if (ctHas('send_history_add')) { try { const r = await soft(get('/api/v1/send_history')); if (r && Array.isArray(r.items)) CT.hist = r.items.filter((x) => x && typeof x.text === 'string').slice(0, 100); } catch (e) { /* 讀不到:本頁先記 */ } }
+    return CT.hist;
+  }
+  async function ctHistAdd(text, to) {
+    const t = String(text || '').trim(); if (!t || SECRETISH.test(t)) return;
+    await ctHistLoad();
+    if (CT.hist[0] && CT.hist[0].text === t) return;
+    CT.hist.unshift({ id: '', text: t, to: String(to || ''), at: new Date().toISOString() }); CT.hist.length = Math.min(CT.hist.length, 100);
+    if (ctHas('send_history_add')) act('send_history_add', { text: t, to: String(to || '') }).then((r) => { if (r && r.id && CT.hist[0] && CT.hist[0].text === t) CT.hist[0].id = r.id; }).catch(() => {});
+  }
+  function ctHistHtml() {
+    const L = CT.hist || [];
+    const rows = L.slice(0, 30).map((x, i) => `<button type="button" class="cthr ${i === CT.histSel ? 'on' : ''}" data-cthist="${i}"><span class="cthx">${esc(String(x.text).split('\n')[0].slice(0, 120))}</span><em>${esc(hhmm(x.at))}${x.to ? ' · ' + esc(String(x.to).replace(/^seat:/, '@')) : ''}</em><span class="cthd" data-cthdel="${i}" role="button" tabindex="-1" title="刪這則">✕</span></button>`).join('');
+    return `<div class="cthist" data-cthbox><div class="cthh"><b>送出紀錄</b> ${L.length} / 100 · ↑↓ 選、Enter 放回、Esc 關<button type="button" class="k sm2" data-cthclear="1">清空</button></div>${rows || '<div class="empty">還沒有送出過</div>'}<div class="cthf">看起來像密碼或權杖的內容不會存</div></div>`;
+  }
+  function ctHistPut(i) {
+    const x = (CT.hist || [])[i]; const inp = document.getElementById('inp'); if (!x || !inp) return;
+    CT.draft = CT.draft == null ? inp.value : CT.draft; // 未送草稿留著:Esc 回去
+    inp.value = x.text; inp.dispatchEvent(new Event('input', { bubbles: true })); CT.histOpen = false; render();
+    const i2 = document.getElementById('inp'); if (i2) { i2.focus(); i2.setSelectionRange(i2.value.length, i2.value.length); }
+  }
+  // ---- 收藏 ----
+  const FAVM = new Map(); // 鍵 → {text, from, at, ref}
+  async function ctFavLoad() {
+    if (CT.favs) return CT.favs;
+    CT.favs = [];
+    if (ctHas('favorite_add')) { try { const r = await soft(get('/api/v1/favorites')); if (r && Array.isArray(r.items)) CT.favs = r.items.filter((x) => x && typeof x.text === 'string'); } catch (e) { /* 本頁先記 */ } }
+    render(); return CT.favs;
+  }
+  const favOf = (key) => (CT.favs || []).find((f) => f.key === key || (f.ref && f.ref.key === key));
+  function favBtn(key, txt, from, at, ref) {
+    if (typeof txt !== 'string' || !txt.trim()) return '';
+    FAVM.set(String(key), { text: txt, from: String(from || ''), at: String(at || ''), ref: Object.assign({ key: String(key) }, ref || {}) });
+    const on = !!favOf(String(key));
+    return `<button type="button" class="cpy fav ${on ? 'on' : ''}" data-fav="${esc(String(key))}" title="${on ? '取消收藏' : '收藏這則'}">${on ? '★' : '☆'}</button>`;
+  }
+  async function ctFavToggle(key) {
+    await ctFavLoad();
+    const f = favOf(key);
+    if (f) { CT.favs = CT.favs.filter((x) => x !== f); if (f.id && ctHas('favorite_add')) act('favorite_del', { id: f.id }).catch((e) => say(errText(e), 'err')); return render(); }
+    const m = FAVM.get(key); if (!m) return;
+    const nf = { id: '', key, text: m.text, from: m.from, at: m.at, ref: m.ref, tag: '' }; CT.favs.unshift(nf);
+    if (ctHas('favorite_add')) act('favorite_add', { text: m.text, from: m.from, at: m.at, ref: m.ref }).then((r) => { if (r && r.id) nf.id = r.id; }).catch((e) => say(errText(e), 'err'));
+    render();
+  }
+  const favList = () => { const q = CT.favQ.trim().toLowerCase(); return (CT.favs || []).filter((f) => !q || (f.text + ' ' + (f.tag || '') + ' ' + f.from).toLowerCase().includes(q)); };
+  function favBox() {
+    if (!CT.favOpen) return '';
+    const L = favList();
+    const rows = L.slice(0, 50).map((f, i) => `<div class="fvr"><div class="fvm"><b>${esc(f.from ? f.from.replace(/^seat:/, '@').replace(/^human:.*/, '你') : '')}</b>${esc(hhmm(f.at))}${f.tag ? ' · ' + esc(f.tag) : ''}</div><div class="fvt" title="${esc(f.text)}">${esc(String(f.text).slice(0, 160))}</div><div class="fvb"><button type="button" class="k sm2" data-fvput="${i}">貼回輸入框</button><button type="button" class="k sm2" data-fvjump="${i}">跳到原對話</button><button type="button" class="k sm2" data-fav="${esc(f.key || f.ref && f.ref.key || '')}" data-fvid="${esc(f.id || '')}">☆ 取消</button></div></div>`).join('');
+    return `<div class="evbox fvbox"><div class="bh"><span class="ek kfav">收藏</span> <span class="st">${(CT.favs || []).length} 則</span><button type="button" class="ghx" data-ct="fav" aria-label="收起">×</button></div><input class="apq fvq" data-fvq type="search" placeholder="搜尋收藏…" value="${esc(CT.favQ)}">${rows || '<div class="empty">還沒有收藏;每則對話右上的 ☆ 可以收</div>'}<div class="cthf">${ctHas('favorite_add') ? '收藏存在 aibd,換電腦、換瀏覽器都在' : 'aibd 還沒有收藏:只在這一頁有效'}</div></div>`;
+  }
+  // ---- 取色 ----
+  const hex2 = (n) => n.toString(16).padStart(2, '0').toUpperCase();
+  function ctColor(r, g, b) {
+    const R = r / 255, G = g / 255, B = b / 255, mx = Math.max(R, G, B), mn = Math.min(R, G, B), l = (mx + mn) / 2, d = mx - mn;
+    let h = 0, s = 0;
+    if (d) { s = d / (1 - Math.abs(2 * l - 1)); h = mx === R ? ((G - B) / d) % 6 : mx === G ? (B - R) / d + 2 : (R - G) / d + 4; h = Math.round(h * 60); if (h < 0) h += 360; }
+    return { hex: '#' + hex2(r) + hex2(g) + hex2(b), rgb: `rgb(${r} ${g} ${b})`, hsl: `hsl(${h} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)` };
+  }
+  function ctPicked(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '')); if (!m) return;
+    const n = parseInt(m[1], 16); CT.pick = ctColor(n >> 16, (n >> 8) & 255, n & 255);
+    CT.colors = [CT.pick.hex].concat(CT.colors.filter((c) => c !== CT.pick.hex)).slice(0, 12);
+    if (ctHas('color_add')) act('color_add', { hex: CT.pick.hex }).catch(() => {});
+    render();
+  }
+  function ctPickHtml() {
+    const P = CT.pick;
+    const val = P.hex ? ['hex', 'rgb', 'hsl'].map((k) => `<button type="button" class="pkv" data-pkcopy="${esc(P[k])}">${esc(P[k])}</button>`).join('') : `<div class="cthf">${esc(P.msg || '')}</div>`;
+    return `<div class="pkbox" data-pkbox><div class="pkh">取色 · ${'EyeDropper' in window ? '吸管可點螢幕任何地方' : '這個瀏覽器沒有吸管:在截圖上點'}<button type="button" class="ghx" data-pkx="1" aria-label="關">×</button></div>${P.hex ? `<i class="pksw" data-bg="${esc(P.hex)}"></i>` : ''}<div class="pkvs">${val}</div><div class="pkrec">${CT.colors.map((c) => `<button type="button" class="pkc" data-pkput="${esc(c)}" title="${esc(c)} 放進輸入框" data-bg="${esc(c)}"></button>`).join('')}</div><div class="cthf">最近 12 色 ·${ctHas('color_add') ? ' 記在 aibd' : ' 只在這一頁'} · 點色塊放進輸入框</div></div>`;
+  }
+  async function ctPick() {
+    if ('EyeDropper' in window) { try { const r = await new window.EyeDropper().open(); return ctPicked(r && r.sRGBHex); } catch (e) { return; } } // 取消(Esc)
+    CT.pick = { msg: '先按 📸 截圖或貼一張圖,在標註窗裡按「🎨 從圖上取色」再點圖' }; render();
+  }
+  // ---- 圖:截圖 / 貼上 / 拖入 / 選檔 ⇒ 標註窗 ----
+  async function ctShot() {
+    if (!ctHas('screen_shot')) { CT.note = 'aibd 還沒有截圖:先用 ⌘⇧4(Mac)或 Win+Shift+S(Windows)截好,在輸入框貼上就會開標註窗'; return render(); }
+    CT.note = '截圖中…'; render();
+    try {
+      const r = await act('screen_shot', {}); const m = r && r.media;
+      if (!m || !m.id) throw new Error('aibd 沒回圖');
+      const res = await fetch('/api/v1/media/' + encodeURIComponent(m.id), { headers: { Authorization: 'Bearer ' + token() }, credentials: 'omit', cache: 'no-store' });
+      if (!res.ok) throw new Error('讀圖 ' + res.status);
+      CT.note = ''; render(); annOpen(await res.blob(), true);
+    } catch (e) {
+      const code = e && (e.code || e.reason);
+      CT.note = code === 'screen_permission_needed' ? 'Mac 要先在「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 aibd(你自己按),再按一次 📸' : '截圖失敗:' + (errText ? errText(e) : String(e && e.message || e));
+      render();
+    }
+  }
+  function ctFile() {
+    const f = document.createElement('input'); f.type = 'file'; f.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    f.addEventListener('change', () => { if (f.files && f.files[0]) annOpen(f.files[0], false); }); f.click();
+  }
+  // 標註窗:常駐在 body(整頁重畫不動它)。第一步拖框裁切(或整張),之後六樣工具;所有筆畫記成清單,⌘Z / ⇧⌘Z 照清單重畫
+  const ANN = { el: null };
+  const ANN_TOOLS = [['rect', '▭ 框'], ['ellipse', '◯ 圈'], ['arrow', '➚ 箭頭'], ['zoom', '🔍 放大鏡'], ['mosaic', '▦ 馬賽克'], ['text', 'T 文字']];
+  const ANN_COLORS = ['#ff3b30', '#e2b34a', '#5fbf7a', '#5aa9ff', '#ffffff'];
+  function annOpen(blob, fromShot) {
+    if (!blob || !/^image\//.test(blob.type || 'image/png')) return;
+    if (blob.size > 12 * 1024 * 1024) { CT.note = '圖太大(超過 12 MB)'; return render(); }
+    // aibd 頁的 CSP 是 img-src 'self' data:(static_files.rs),blob: 網址載不進來 ⇒ 轉成 data: 網址
+    const fr = new FileReader(), img = new Image();
+    img.onload = () => annBuild(img, fromShot);
+    img.onerror = () => { CT.note = '讀不了這張圖'; render(); };
+    fr.onload = () => { img.src = String(fr.result || ''); };
+    fr.onerror = img.onerror;
+    fr.readAsDataURL(blob);
+  }
+  function annBuild(img, fromShot) {
+    annClose();
+    const d = document.createElement('div'); d.className = 'anndlg'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', '截圖標註');
+    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>⌘Z</button><button type="button" class="k" data-annredo="1" disabled>⇧⌘Z</button><button type="button" class="go annok" data-annok="1" disabled>放進對話</button></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
+    document.body.appendChild(d); ANN.el = d; ctPaint(d);
+    Object.assign(ANN, { img, crop: null, drag: null, ops: [], redo: [], tool: 'rect', col: ANN_COLORS[0], picking: false, work: null });
+    const cv = d.querySelector('[data-annv]');
+    ANN.cv = cv; annFit(); annDraw();
+    cv.addEventListener('pointerdown', annDown); cv.addEventListener('pointermove', annMove); cv.addEventListener('pointerup', annUp);
+    d.addEventListener('click', annClick); d.addEventListener('keydown', annKey);
+    addEventListener('resize', annResize);
+    d.tabIndex = -1; d.focus();
+  }
+  function annResize() { if (ANN.el) { annFit(); annDraw(); } }
+  function annClose() { if (ANN.el) { ANN.el.remove(); ANN.el = null; removeEventListener('resize', annResize); } }
+  // 畫面座標 ↔ 圖座標:裁切前看整張,裁切後只看那一塊
+  function annSrc() { return ANN.crop ? ANN.work : ANN.img; }
+  function annFit() {
+    const s = annSrc(), box = ANN.el.querySelector('.annc'), W = Math.max(200, box.clientWidth), H = Math.max(160, box.clientHeight);
+    const sw = s.width || s.naturalWidth, sh = s.height || s.naturalHeight, k = Math.min(W / sw, H / sh, 1);
+    ANN.k = k; ANN.cv.width = Math.round(sw * k); ANN.cv.height = Math.round(sh * k);
+  }
+  const annPt = (e) => { const b = ANN.cv.getBoundingClientRect(); return { x: (e.clientX - b.left) / ANN.k, y: (e.clientY - b.top) / ANN.k }; };
+  function annDown(e) {
+    const p = annPt(e);
+    if (ANN.picking) { const c = annPixel(p); ANN.picking = false; annBtns(); return ctPicked(c); }
+    if (ANN.crop && ANN.tool === 'text') return annText(p);
+    ANN.drag = { a: p, b: p }; ANN.cv.setPointerCapture(e.pointerId);
+  }
+  function annMove(e) { if (ANN.drag) { ANN.drag.b = annPt(e); annDraw(); } }
+  function annUp() {
+    const D = ANN.drag; ANN.drag = null; if (!D) return;
+    const r = { x: Math.min(D.a.x, D.b.x), y: Math.min(D.a.y, D.b.y), w: Math.abs(D.b.x - D.a.x), h: Math.abs(D.b.y - D.a.y) };
+    if (!ANN.crop) { if (r.w > 8 && r.h > 8) annCrop(r); else annDraw(); return; }
+    if (r.w < 3 && r.h < 3 && ANN.tool !== 'zoom') return annDraw();
+    ANN.ops.push({ t: ANN.tool, col: ANN.col, a: D.a, b: D.b, r }); ANN.redo = []; annDraw(); annBtns();
+  }
+  function annCrop(r) {
+    const s = ANN.img, c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(r.w)); c.height = Math.max(1, Math.round(r.h));
+    c.getContext('2d').drawImage(s, Math.round(r.x), Math.round(r.y), c.width, c.height, 0, 0, c.width, c.height);
+    ANN.crop = r; ANN.work = c; annFit(); annDraw(); annBtns();
+    const st = ANN.el.querySelector('[data-annst]'); if (st) st.textContent = `${c.width} × ${c.height} · 選工具在圖上拖 · ⌘Z 復原`;
+  }
+  function annBtns() {
+    const d = ANN.el; if (!d) return;
+    for (const b of d.querySelectorAll('[data-anntool]')) { b.disabled = !ANN.crop; b.classList.toggle('on', ANN.crop && b.dataset.anntool === ANN.tool); }
+    d.querySelector('[data-annpick]').disabled = false; d.querySelector('[data-annpick]').classList.toggle('on', ANN.picking);
+    d.querySelector('[data-annundo]').disabled = !ANN.ops.length; d.querySelector('[data-annredo]').disabled = !ANN.redo.length;
+    d.querySelector('[data-annok]').disabled = !ANN.crop; d.querySelector('[data-annall]').hidden = !!ANN.crop;
+  }
+  // 把清單畫到一張 2d 上(k = 縮放;匯出時 k = 1)
+  function annPaint(x, k) {
+    const s = annSrc(); x.drawImage(s, 0, 0, s.width * k, s.height * k);
+    for (const o of ANN.ops) {
+      const r = { x: o.r.x * k, y: o.r.y * k, w: o.r.w * k, h: o.r.h * k }, lw = Math.max(2, 3 * k);
+      x.save(); x.strokeStyle = o.col; x.fillStyle = o.col; x.lineWidth = lw; x.lineCap = 'round';
+      if (o.t === 'rect') x.strokeRect(r.x, r.y, r.w, r.h);
+      else if (o.t === 'ellipse') { x.beginPath(); x.ellipse(r.x + r.w / 2, r.y + r.h / 2, Math.max(1, r.w / 2), Math.max(1, r.h / 2), 0, 0, Math.PI * 2); x.stroke(); }
+      else if (o.t === 'arrow') { const ax = o.a.x * k, ay = o.a.y * k, bx = o.b.x * k, by = o.b.y * k, an = Math.atan2(by - ay, bx - ax), hl = Math.max(10, 16 * k); x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke(); x.beginPath(); x.moveTo(bx, by); x.lineTo(bx - hl * Math.cos(an - 0.45), by - hl * Math.sin(an - 0.45)); x.lineTo(bx - hl * Math.cos(an + 0.45), by - hl * Math.sin(an + 0.45)); x.closePath(); x.fill(); }
+      else if (o.t === 'mosaic') { const cell = Math.max(6, Math.round(12 * k)), sc = document.createElement('canvas'), sw = Math.max(1, Math.ceil(r.w / cell)), sh = Math.max(1, Math.ceil(r.h / cell)); sc.width = sw; sc.height = sh; sc.getContext('2d').drawImage(s, o.r.x, o.r.y, Math.max(1, o.r.w), Math.max(1, o.r.h), 0, 0, sw, sh); x.imageSmoothingEnabled = false; x.drawImage(sc, 0, 0, sw, sh, r.x, r.y, r.w, r.h); }
+      else if (o.t === 'zoom') { const R = Math.max(40, Math.max(r.w, r.h) / 2 || 60 * k), cx = o.a.x * k, cy = o.a.y * k, z = 2; x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.save(); x.clip(); x.drawImage(s, o.a.x - R / k / z, o.a.y - R / k / z, (2 * R) / k / z, (2 * R) / k / z, cx - R, cy - R, 2 * R, 2 * R); x.restore(); x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.stroke(); }
+      else if (o.t === 'text' && o.s) { const fz = Math.max(14, 22 * k); x.font = `700 ${fz}px -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif`; x.lineWidth = Math.max(3, 4 * k); x.strokeStyle = '#000a'; x.strokeText(o.s, o.a.x * k, o.a.y * k); x.fillText(o.s, o.a.x * k, o.a.y * k); }
+      x.restore();
+    }
+  }
+  function annDraw() {
+    const x = ANN.cv.getContext('2d'); x.clearRect(0, 0, ANN.cv.width, ANN.cv.height); annPaint(x, ANN.k);
+    const D = ANN.drag; if (!D) return;
+    const r = { x: Math.min(D.a.x, D.b.x) * ANN.k, y: Math.min(D.a.y, D.b.y) * ANN.k, w: Math.abs(D.b.x - D.a.x) * ANN.k, h: Math.abs(D.b.y - D.a.y) * ANN.k };
+    x.save(); x.setLineDash([6, 4]); x.strokeStyle = ANN.crop ? ANN.col : '#e2b34a'; x.lineWidth = 2;
+    if (!ANN.crop) { x.fillStyle = '#0009'; x.fillRect(0, 0, ANN.cv.width, r.y); x.fillRect(0, r.y + r.h, ANN.cv.width, ANN.cv.height - r.y - r.h); x.fillRect(0, r.y, r.x, r.h); x.fillRect(r.x + r.w, r.y, ANN.cv.width - r.x - r.w, r.h); x.fillStyle = '#e2b34a'; x.font = '12px sans-serif'; x.fillText(`${Math.round(r.w / ANN.k)} × ${Math.round(r.h / ANN.k)}`, r.x + 4, Math.max(12, r.y - 6)); }
+    x.strokeRect(r.x, r.y, r.w, r.h); x.restore();
+  }
+  function annPixel(p) {
+    const s = annSrc(), c = document.createElement('canvas'); c.width = 1; c.height = 1;
+    const g = c.getContext('2d'); g.drawImage(s, Math.max(0, Math.floor(p.x)), Math.max(0, Math.floor(p.y)), 1, 1, 0, 0, 1, 1);
+    const d = g.getImageData(0, 0, 1, 1).data; return '#' + hex2(d[0]) + hex2(d[1]) + hex2(d[2]);
+  }
+  function annText(p) {
+    const t = ANN.el.querySelector('[data-anntx]'), b = ANN.cv.getBoundingClientRect(), box = ANN.el.querySelector('.annc').getBoundingClientRect();
+    t.hidden = false; t.value = ''; t.style.left = (b.left - box.left + p.x * ANN.k) + 'px'; t.style.top = (b.top - box.top + p.y * ANN.k - 14) + 'px'; t._p = p; t.focus();
+  }
+  function annClick(e) {
+    const x = e.target;
+    if (x.closest('[data-annx]')) return annClose();
+    if (x.closest('[data-annall]')) return annCrop({ x: 0, y: 0, w: ANN.img.naturalWidth, h: ANN.img.naturalHeight });
+    const tl = x.closest('[data-anntool]'); if (tl) { ANN.tool = tl.dataset.anntool; ANN.picking = false; return annBtns(); }
+    const cl = x.closest('[data-anncol]'); if (cl) { ANN.col = cl.dataset.anncol; for (const n of ANN.el.querySelectorAll('[data-anncol]')) n.classList.toggle('on', n === cl); return; }
+    if (x.closest('[data-annpick]')) { ANN.picking = !ANN.picking; return annBtns(); }
+    if (x.closest('[data-annundo]')) return annUndo(false);
+    if (x.closest('[data-annredo]')) return annUndo(true);
+    if (x.closest('[data-annok]')) return annDone();
+  }
+  function annUndo(redo) { const A = redo ? ANN.redo : ANN.ops, B = redo ? ANN.ops : ANN.redo; if (A.length) { B.push(A.pop()); annDraw(); annBtns(); } }
+  function annKey(e) {
+    if (e.target.matches && e.target.matches('[data-anntx]')) {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); const t = e.target; if (t.value.trim()) { ANN.ops.push({ t: 'text', col: ANN.col, a: t._p, b: t._p, r: { x: t._p.x, y: t._p.y, w: 0, h: 0 }, s: t.value.trim() }); ANN.redo = []; } t.hidden = true; annDraw(); annBtns(); }
+      if (e.key === 'Escape') { e.target.hidden = true; e.stopPropagation(); }
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); return annClose(); }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); annUndo(e.shiftKey); }
+  }
+  async function annDone() {
+    const s = annSrc(), c = document.createElement('canvas'); c.width = s.width; c.height = s.height; annPaint(c.getContext('2d'), 1);
+    const url = c.toDataURL('image/png'), b64 = url.slice(url.indexOf(',') + 1);
+    const btn = ANN.el.querySelector('[data-annok]'); btn.disabled = true; btn.textContent = '存圖中…';
+    if (ctHas('media_put')) {
+      try {
+        const r = await act('media_put', { name: '截圖.png', png_b64: b64 }); const m = r && r.media;
+        if (!m || !m.path) throw new Error('aibd 沒回路徑');
+        annClose(); ctInsert(`〔附圖:${m.path}〕`); return;
+      } catch (e) { btn.disabled = false; btn.textContent = '放進對話'; CT.note = '存圖失敗:' + errText(e); return render(); }
+    }
+    // aibd 還收不了圖:給下載,讓人自己拖給席
+    const a = document.createElement('a'); a.href = url; const d0 = new Date(), p2 = (n) => String(n).padStart(2, '0'); a.download = `截圖-${d0.getFullYear()}${p2(d0.getMonth() + 1)}${p2(d0.getDate())}-${p2(d0.getHours())}${p2(d0.getMinutes())}-${Math.random().toString(36).slice(2, 6)}.png`; // 本機時間 + 4 碼(同舊版) a.click();
+    annClose(); CT.note = 'aibd 還收不了圖(沒有 media_put):已下載成 png,先自己拖給那一席'; render();
+  }
+  // aibd 頁 CSP style-src 'self':標籤裡的 style="…" 會被擋 ⇒ 畫完後用 CSSOM 上色,只收 #RRGGBB
+  function ctPaint(root) { for (const n of (root || document).querySelectorAll('[data-bg]')) if (/^#[0-9a-f]{6}$/i.test(n.dataset.bg)) n.style.background = n.dataset.bg; }
+  function ctInsert(s) {
+    const inp = document.getElementById('inp'); if (!inp) return;
+    const a = inp.selectionStart != null ? inp.selectionStart : inp.value.length;
+    inp.value = inp.value.slice(0, a) + s + inp.value.slice(a); inp.dispatchEvent(new Event('input', { bubbles: true })); inp.focus(); inp.setSelectionRange(a + s.length, a + s.length);
+  }
   function postRowsOf(POSTS) {
     const RAW = { queued: '排著', claimed: '送出中', delivered: '已送到', read: '已讀', done: '已處理', archived: '已處理' };
     const sOf = (k) => { const id = String(k || '').replace(/^seat:/, ''); return seatById(id) || { seat_id: id, provider: 'claude' }; };
@@ -2539,7 +2790,7 @@
       }).join(' ');
       const rb = (p.read_by || []).filter((k) => /^seat:/.test(k)).map((k) => logo(sOf(k), 'sm')).join('');
       const im = impTag(p);
-      return `<div class="msg ${mine ? 'me' : ''}${im ? ' imp' : ''}${AUTO_CLS[autoOf(p)] || ''}${S.hlPid && S.hlPid === pidOf(p) ? ' hl' : ''}" data-pid="${esc(pidOf(p))}"><div class="who">${im && /seat:import$/.test(String(p.from_seat || p.from_key || '')) ? '<span class="lg sm imp" title="寄件人不明(匯入)">匯</span>' : who}${im}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}</div><div class="body">${body}</div>${docLink(p)}${im ? dmFoot(p) : ''}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
+      return `<div class="msg ${mine ? 'me' : ''}${im ? ' imp' : ''}${AUTO_CLS[autoOf(p)] || ''}${S.hlPid && S.hlPid === pidOf(p) ? ' hl' : ''}" data-pid="${esc(pidOf(p))}"><div class="who">${im && /seat:import$/.test(String(p.from_seat || p.from_key || '')) ? '<span class="lg sm imp" title="寄件人不明(匯入)">匯</span>' : who}${im}${autoTag(p)}${copyBtn('p:' + pidOf(p), p.body)}${favBtn('p:' + pidOf(p), p.body, p.from_seat || (p.sender_kind === 'human' ? 'human:' : ''), p.created, { thread_id: p._tid || (S.nt && S.nt.thread_id) || '', message_id: pidOf(p) })}</div><div class="body">${body}</div>${docLink(p)}${im ? dmFoot(p) : ''}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
     });
     return dayFold(POSTS, rows, S.nt && S.nt.thread_id);
   }
@@ -2558,7 +2809,7 @@
       ${M ? `<div class="mem">${M}</div>` : ''}
       <div class="tl" id="tl">${postRows() || '<div class="empty">這一項還沒有對話。寫一句送出;要誰接手就 @ 誰。</div>'}</div>
       ${atpop}
-      ${askBar()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
+      ${askBar()}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   async function sendNode(text) {
@@ -4028,6 +4279,7 @@
     const t = document.getElementById('tl');
     if (t) t.scrollTop = !keepScroll || keepScroll.atEnd ? t.scrollHeight : keepScroll.top;
     heatMount(); // 即時熱度:常駐節點放回位子
+    ctPaint(el);
     if (ghf) { const gi = document.querySelector('[data-ghnum]'); if (gi) { gi.focus(); try { gi.setSelectionRange(ghf.a, ghf.b); } catch (e) { /* 數字框不給設 */ } } }
     if (focus) { const i = document.getElementById('inp'); if (i) { i.focus(); i.setSelectionRange(focus.a, focus.b); } }
     if (sqF) { const i = document.getElementById('sq'); if (i) { i.focus(); try { i.setSelectionRange(sqF.a, sqF.b); } catch (e) { /* type=search 某些瀏覽器不給 */ } } }
@@ -4186,6 +4438,7 @@
       else if (kind === 'legacy') { if (await sendLegacy(code, text)) S.drafts[S.mode] = ''; }
       else if (kind === 'node') { await sendNode(text); S.drafts.node = ''; }
       else if (await sendShared(text)) S.drafts.shared = '';
+      ctHistAdd(text, kind === 'seat' ? 'seat:' + S.mode : kind === 'legacy' ? 'seat:' + code : kind); CT.draft = null; // 送出紀錄 100 則(送失敗不會到這行)
     } catch (e) { say(errText(e), 'err'); }
     // 0eed7 量用量 N1:送完先把「送出」放開再去重讀(重讀在負載高時要好幾秒,之前這段時間鈕一直是灰的)
     S.sending = false; S.atOpen = false; render();
@@ -4485,6 +4738,16 @@
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
     const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
+    const ctb = x.closest('[data-ct]'); if (ctb) { const k = ctb.dataset.ct; CT.note = ''; if (k === 'shot') return ctShot(); if (k === 'pick') return ctPick(); if (k === 'file') return ctFile(); if (k === 'fav') { CT.favOpen = !CT.favOpen; if (CT.favOpen) ctFavLoad(); return render(); } }
+    const fvb = x.closest('[data-fav]'); if (fvb) { if (!fvb.dataset.fav && fvb.dataset.fvid) { CT.favs = (CT.favs || []).filter((f) => f.id !== fvb.dataset.fvid); act('favorite_del', { id: fvb.dataset.fvid }).catch(() => {}); return render(); } return ctFavToggle(fvb.dataset.fav); }
+    const fvp = x.closest('[data-fvput]'); if (fvp) { const f = favList()[Number(fvp.dataset.fvput)]; if (f) ctInsert(f.text); return; }
+    const fvj = x.closest('[data-fvjump]'); if (fvj) { const f = favList()[Number(fvj.dataset.fvjump)]; const pid = f && f.ref && f.ref.message_id; const n = pid && [...document.querySelectorAll('[data-pid]')].find((m) => m.dataset.pid === pid); if (n) { S.hlPid = pid; n.scrollIntoView({ block: 'center', behavior: 'smooth' }); n.classList.add('hl'); } else say('原對話不在現在這一頁:先切到那一席或那一串'); return; }
+    const hd = x.closest('[data-cthdel]'); if (hd) { e.stopPropagation(); const i = Number(hd.dataset.cthdel), h = (CT.hist || [])[i]; if (h) { CT.hist.splice(i, 1); if (h.id && ctHas('send_history_add')) act('send_history_del', { id: h.id }).catch(() => {}); } return render(); }
+    const hr2 = x.closest('[data-cthist]'); if (hr2) return ctHistPut(Number(hr2.dataset.cthist));
+    if (x.closest('[data-cthclear]')) { CT.hist = []; CT.histOpen = false; if (ctHas('send_history_add')) act('send_history_clear', {}).catch(() => {}); return render(); }
+    const pkc = x.closest('[data-pkcopy]'); if (pkc) { const v = pkc.dataset.pkcopy; (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(v) : Promise.reject()).then(() => { pkc.textContent = '已複製 ' + v; setTimeout(() => { pkc.textContent = v; }, 1500); }).catch(() => ctInsert(v)); return; }
+    const pkp = x.closest('[data-pkput]'); if (pkp) { ctInsert(pkp.dataset.pkput); return; }
+    if (x.closest('[data-pkx]')) { CT.pick = null; return render(); }
     const e2 = x.closest('[data-enter2]'); if (e2) { try { localStorage.setItem(E2K, e2.checked ? '1' : '0'); } catch (err) { /* 存不了:這次有效 */ } E2.at = 0; return; }
     if (x.closest('[data-repair]')) { dropToken(); S.paired = false; S.pair = { view: 'code' }; return render(); }
   }
@@ -4507,7 +4770,18 @@
     el.addEventListener('click', (e) => { if (ate && e.target.closest('[data-full]')) { ate = false; e.stopImmediatePropagation(); e.preventDefault(); } }, true);
   }
   el.addEventListener('change', (e) => { const f = e.target.dataset && e.target.dataset.addf; if (f && S.add) { S.add[f] = e.target.value; if (f === 'role' || f === 'node') render(); } });
+  el.addEventListener('paste', (e) => {
+    if (e.target.id !== 'inp' || !e.clipboardData) return;
+    const f = [...e.clipboardData.items].find((it) => it.kind === 'file' && /^image\//.test(it.type));
+    if (f) { e.preventDefault(); annOpen(f.getAsFile(), false); }
+  });
+  el.addEventListener('dragover', (e) => { if (e.target.id === 'inp' && e.dataTransfer && [...e.dataTransfer.items].some((it) => it.kind === 'file')) e.preventDefault(); });
+  el.addEventListener('drop', (e) => {
+    if (e.target.id !== 'inp' || !e.dataTransfer) return;
+    const f = [...e.dataTransfer.files].find((x) => /^image\//.test(x.type)); if (f) { e.preventDefault(); annOpen(f, false); }
+  });
   el.addEventListener('input', (e) => {
+    if (e.target.dataset && 'fvq' in e.target.dataset) { CT.favQ = e.target.value; const box = e.target.closest('.fvbox'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = favBox(); const nb = tmp.firstElementChild; for (const n of [...box.querySelectorAll('.fvr,.empty')]) n.remove(); const tail = box.querySelector('.cthf'); for (const n of [...nb.querySelectorAll('.fvr,.empty')]) box.insertBefore(n, tail); } return; }
     if (e.target.dataset && 'ghnum' in e.target.dataset) { const G = (S.gh = S.gh || {}), q = e.target.value.trim(); G.num = q; for (const r of document.querySelectorAll('[data-ghpick]')) r.hidden = !!q && r.dataset.ghpick.indexOf(q) !== 0; return; } // 打字即篩(不重畫,焦點不跳)
     if (e.target.dataset && e.target.dataset.addho && S.add) { S.add.ho = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addmp && S.add) { S.add.mp = e.target.value; return; }
@@ -4541,6 +4815,19 @@
     }
   });
   el.addEventListener('keydown', (e) => {
+    // ↑ 送出紀錄:游標在第一行才叫出;開著時 ↑↓ 選、Enter 放回、Esc 關(未送草稿留著)
+    if (e.target.id === 'inp' && !e.isComposing && e.keyCode !== 229 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const t = e.target;
+      if (CT.histOpen) {
+        const n = Math.min(30, (CT.hist || []).length);
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); if (n) { CT.histSel = (CT.histSel + (e.key === 'ArrowUp' ? 1 : n - 1)) % n; render(); } return; }
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); return ctHistPut(CT.histSel); }
+        if (e.key === 'Escape') { e.preventDefault(); CT.histOpen = false; return render(); }
+      } else if (e.key === 'ArrowUp' && !e.shiftKey && t.selectionStart === t.selectionEnd && t.value.lastIndexOf('\n', t.selectionStart - 1) < 0) {
+        e.preventDefault(); ctHistLoad().then(() => { CT.histOpen = true; CT.histSel = 0; render(); }); return;
+      } else if (e.key === 'Escape' && CT.draft != null) { e.preventDefault(); t.value = CT.draft; CT.draft = null; t.dispatchEvent(new Event('input', { bubbles: true })); return; }
+    }
+    if (e.key === 'Escape' && CT.pick) { CT.pick = null; render(); }
     if (e.key === 'Escape' && S.add && !S.add.busy) { S.add = null; render(); return; }
     if (e.target.id === 'sq' && e.key === 'Escape') { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; render(); return; }
     if (e.target.dataset && e.target.dataset.ansfor && e.key === 'Enter' && !e.isComposing) { e.preventDefault(); const b = (e.target.closest('.ans') || el).querySelector('[data-answer]'); if (b) b.click(); return; }
