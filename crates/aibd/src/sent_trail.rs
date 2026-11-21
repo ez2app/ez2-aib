@@ -570,9 +570,16 @@ mod tests {
         let pr = &all.iter().find(|(n, _)| n == "pr_open.rs").unwrap().1;
         let api = pr.split("pub trait PrApi").nth(1).unwrap();
         let api = &api[..api.find("\n}\n").unwrap()];
+        // besides open, only `ready` (7b81e pr_api: asks whether a token is there, reads no
+        // secret, changes nothing; integration head 86ed5359d1, receipt a9136-tk12-36f1a01d4)
+        let fns: Vec<&str> = api
+            .split("fn ")
+            .skip(1)
+            .filter_map(|r| r.split('(').next())
+            .collect();
         assert_eq!(
-            api.matches("fn ").count(),
-            1,
+            fns,
+            ["ready", "open"],
             "reason: the_github_client_does_more_than_open"
         );
         assert!(
