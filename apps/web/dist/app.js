@@ -124,6 +124,9 @@
   const IB_RANK = { urg: 0, ask: 1, say: 2, blk: 3 }, IB_FX = { urg: 'urg', ask: 'ask', say: 'gold', blk: 'hold' };
   // aibd 列的 failed_code(7ebca 12:22);同 ws.js INB_BLOCK,沒對到照寫代號
   const IB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'aibd 內部出錯,沒送出' };
+  // 7ebca 13:2x(e41c75d354):level_by 是角色 uid ⇒ 查 /api/v1/roles 的名字;查不到寫 uid(都走 esc)
+  const ROLES = {}; let rolesTried = false;
+  const roleName = (uid) => { if (!rolesTried) { rolesTried = true; AIB.roles().then((r) => { for (const x of (r && r.roles) || []) if (x && x.uid) ROLES[x.uid] = String(x.name || x.uid); render(); }).catch(() => {}); } return ROLES[uid] || uid; };
   const IB_LVBY = { andy: '你', '519d0': '@519d0', system: '系統' };
   const ibName = (k) => { const c = byKey(k); return c ? (S.me && c.key === S.me.key ? t('you') : c.name) : '@' + String(k).replace(/^(seat|human):/, ''); };
   const ibAv = (k) => { const c = byKey(k); return c ? emoji(c) : '🤖'; };
@@ -135,7 +138,7 @@
     const col = ibCol(m), k = ibKind(m), a = Number(m.age_min) || 0;
     const age = col < 3 ? (a > 30 ? ' old' : a > 10 ? ' y' : '') : '';
     const disp = /^派工\s*[::]/.test(String(m.first_line || ''));
-    const by = k === 'urg' ? (m.level_by_role ? String(m.level_by_role) : IB_LVBY[m.level_by] || '') : '';
+    const by = k === 'urg' ? (m.level_by ? IB_LVBY[m.level_by] || roleName(String(m.level_by)) : '') : '';
     const tag = `<span class="k ${disp && k === 'say' ? 'disp' : k}"${by ? ` title="${esc(t('ib_by', { r: by }))}"` : ''}>${esc(t(disp && k === 'say' ? 'ib_k_disp' : 'ib_k_' + k))}</span>`;
     const tk = `<span class="tk"><span class="${m.delivered_at ? 'on' : ''}">${esc(t('ib_t_sent'))}</span><span class="${m.read_at ? 'on' : ''}">${esc(t('ib_t_read'))}</span><span class="${m.done_at ? 'on' : ''}"${m.done_evidence || m.done_why ? ` title="${esc(m.done_evidence || m.done_why)}"` : ''}>${esc(t('ib_t_done'))}</span></span>`;
     const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? `<span class="via">${esc(t('ib_via'))}</span>` : '';

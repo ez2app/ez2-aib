@@ -47,6 +47,7 @@
     // 2b §3:{window, now, pairs:[{from,to,say,decide,shout,failed,last_at}], source?}
     // 待審區(519d0 SPEC-contacts-to-inbox r0;7ebca DESIGN-web-inbox-aibd §4):只給內建頁本次配對,用戶資料夾頁 403 ⇒ 照舊聯絡中心
     inbox: (cursor) => get('/api/v1/inbox' + qs({ scope: 'all', cursor })),
+    roles: () => get('/api/v1/roles'), // 角色 uid → 名字(急件誰標的)
     inboxOne: (id) => get('/api/v1/inbox/' + encodeURIComponent(id)),
     flows: (window_s) => get('/api/v1/flows' + qs({ window: window_s || 600 })),
     // 2b §4:{name, value:{size,speed,count,length,alpha}, revision}

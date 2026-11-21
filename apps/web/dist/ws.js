@@ -563,7 +563,7 @@
   }
   function inbAge(m) { const a = Math.max(0, Math.round(Number(m.age_min))); return !Number.isFinite(a) ? '' : a < 1 ? '剛剛' : a < 60 ? a + ' 分前' : a < 1440 ? Math.floor(a / 60) + ' 小時前' : Math.floor(a / 1440) + ' 天前'; }
   function inbRow(m, col) {
-    const I = S.inbUi, lv = m.level === 'urgent' ? `<b class="inl urg" title="${esc(INB_LVBY[m.level_by] ? '標急的是 ' + INB_LVBY[m.level_by] : 'aibd 標的急件')}">急</b>` : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
+    const I = S.inbUi, lv = m.level === 'urgent' ? `<b class="inl urg" title="${esc(m.level_by ? '標急的是 ' + (INB_LVBY[m.level_by] || roleLabel(String(m.level_by))) : 'aibd 標的急件')}">急</b>` : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
     const a = Number(m.age_min) || 0, late = col === 'unread' || col === 'read_open' ? (a >= 30 ? ' red' : a >= 10 ? ' warn' : '') : '';
     const who = (k) => { if (/^human:/.test(String(m[k] || ''))) return '你'; const id = String(m[k] || '').replace(/^seat:(legacy:)?/, ''); const x = seatById(id); return x ? '@' + seatName(x) : id ? '@' + id : '?'; };
     const pf = m.done_evidence ? '證據:' + m.done_evidence : m.done_why ? '理由:' + m.done_why : '';
