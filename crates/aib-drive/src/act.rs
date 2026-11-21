@@ -2239,7 +2239,10 @@ pub fn cli_act(raw: &[String]) -> u8 {
         sw,
         &seats,
         &live,
-        &crate::source::AibDm::new(),
+        // S79-rust slice 3a: the letter goes into the ledger under the same root as drive/
+        &crate::source::StoreDm {
+            root: dir.parent().map(Path::to_path_buf),
+        },
         now,
     );
     // S107-product slice 3: each dm tried and each one held by its switch, as events (a write

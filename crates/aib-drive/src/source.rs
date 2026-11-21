@@ -273,6 +273,115 @@ impl AibDm {
     }
 }
 
+/// [`Sender`] that writes the letter into the 1.x ledger itself (S79-rust slice 3a, 5d33a
+/// PREREAD-drive-rust 0/0/2/2, 519d0 18:41): aib-dmq-store's writer, the one aibd's page
+/// bridge uses (same folder lock, same bytes), no `aib dm` and no shell; the 1.x drainer
+/// delivers it like any queued letter. The text passes [`aib_dmq_store::letter::check_text`]
+/// (R-30, no header-shaped line) or nothing is written; one over [`DM_RELAY_AT`] bytes goes to
+/// a private `RELAY-drive-*` file in `<root>/pending` and the letter is the pointer line. The
+/// letter says it is the system's (`系統`, origin `aib-drive`: the header stays 系統@aib, the
+/// 代發 line is in the text, §15). Like every local file this marks, it does not prove.
+pub struct StoreDm {
+    /// The state root; none ⇒ every send is NotSent.
+    pub root: Option<PathBuf>,
+}
+
+/// Letters longer than this many bytes go to a relay file (dm-ctl's and legacy_send's 600).
+pub const DM_RELAY_AT: usize = 600;
+/// The longest text drive sends (legacy_send's 64 KiB).
+pub const DM_TEXT_MAX: usize = 64 * 1024;
+/// sender_origin of a letter drive wrote.
+pub const DM_ORIGIN: &str = "aib-drive";
+
+impl StoreDm {
+    /// The cabin's full name under `<root>/instances` for the short code in an address
+    /// (`dab9` ⇒ `20261113-035938-dab9`): exactly one folder named so, else none.
+    pub fn cabin_of(root: &Path, short: &str) -> Option<String> {
+        let tail = format!("-{short}");
+        let names: Vec<String> = std::fs::read_dir(root.join("instances"))
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n == short || n.ends_with(&tail))
+            .collect();
+        match names.as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A new `q_` + 16 hex id: the clock, the process, a counter and the letter, hashed.
+fn new_letter_id(addr: &str, text: &str) -> (String, String) {
+    use sha2::{Digest, Sha256};
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut h = Sha256::new();
+    h.update(format!("{nanos}\0{}\0{seq}\0{addr}\0", std::process::id()));
+    h.update(text.as_bytes());
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    (format!("q_{}", &hex[..16]), hex[16..32].to_owned())
+}
+
+impl Sender for StoreDm {
+    /// Refused address / text, no state root, no such cabin or seat folder, or a write that
+    /// did not start: NotSent. The item written but order.json not: Unknown (never sent again).
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
+        use crate::intents::SendError;
+        use aib_dmq_store::letter;
+        AibDm::args(addr, text).map_err(SendError::NotSent)?;
+        let Some(root) = &self.root else {
+            return Err(SendError::NotSent("no state root".into()));
+        };
+        letter::check_text(text, DM_TEXT_MAX)
+            .map_err(|(code, why)| SendError::NotSent(format!("{code}: {why}")))?;
+        let (short, seat) = addr.split_once('/').unwrap_or_default();
+        let cabin = Self::cabin_of(root, short)
+            .ok_or_else(|| SendError::NotSent(format!("cabin {short} not found")))?;
+        let store = aib_dmq_store::Store::new(root, root);
+        let has_folder = store.seat_dir(seat).is_ok_and(|d| d.is_dir());
+        if !has_folder {
+            return Err(SendError::NotSent(format!(
+                "{seat}: no folder in the ledger"
+            )));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let (id, tail) = new_letter_id(addr, text);
+        let (msg, _) = letter::relay(
+            &root.join("pending"),
+            "RELAY-drive",
+            seat,
+            now,
+            &tail,
+            text,
+            DM_RELAY_AT,
+        )
+        .map_err(|e| SendError::NotSent(format!("relay file: {}", e.kind())))?;
+        let hub = format!("aihub-{cabin}");
+        let mut item = letter::item(&id, seat, &msg, "系統", "", &hub, now);
+        for (k, v) in [
+            ("sender_kind", Value::from("system")),
+            ("sender_seat", Value::Null),
+            ("sender_origin", Value::from(DM_ORIGIN)),
+            ("human_id", Value::Null),
+            ("sender_source", Value::from(DM_ORIGIN)),
+        ] {
+            item.insert(k.into(), v);
+        }
+        match letter::enqueue(&store, seat, &item) {
+            Ok(()) => Ok(("queued".to_owned(), id)),
+            Err(letter::Enqueue::NotWritten(why)) => Err(SendError::NotSent(why)),
+            Err(letter::Enqueue::ItemOnly(why)) => Err(SendError::Unknown(why)),
+        }
+    }
+}
+
 impl Default for AibDm {
     fn default() -> Self {
         Self::new()
@@ -708,5 +817,140 @@ mod store_queue_tests {
             repo: DEFAULT_REPO.to_owned(),
         };
         assert_eq!(live.all("519d0").unwrap_err(), "no root");
+    }
+}
+
+#[cfg(test)]
+mod store_dm_tests {
+    use super::*;
+    use crate::intents::SendError;
+
+    fn world(tag: &str) -> crate::act::tests::Scratch {
+        let d = crate::act::tests::Scratch::new(tag);
+        std::fs::create_dir_all(d.path().join("instances/20261113-035938-dab9")).unwrap();
+        std::fs::create_dir_all(d.path().join("state/dm-queue/519d0")).unwrap();
+        d
+    }
+
+    /// SD1 (S79-rust slice 3a): a letter drive sends is queued in the ledger as the system's,
+    /// the 代發 line kept, the hub the cabin's full name; nothing outside is run.
+    #[test]
+    fn a_letter_is_queued_in_the_ledger_as_the_systems() {
+        let d = world("sd1");
+        let dm = StoreDm {
+            root: Some(d.path().to_path_buf()),
+        };
+        let text = "派工: S79 → 519d0\n— 代發:自動推進,開關 a9136 · 意圖 k";
+        let (stage, id) = dm.send("dab9/519d0", text).expect("sent");
+        assert_eq!(stage, "queued");
+        assert!(aib_dmq::evidence::is_item_id(&id), "{id}");
+        let q = StoreQueue {
+            root: d.path().to_path_buf(),
+        };
+        let rows = q.rows("519d0", Some("waiting")).unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(
+            (r["id"].as_str(), r["msg"].as_str()),
+            (Some(id.as_str()), Some(text))
+        );
+        assert_eq!(r["status"], "queued");
+        assert_eq!(r["sender_label"], "系統", "reason: not_the_system");
+        assert_eq!(r["sender_kind"], "system");
+        assert_eq!(r["sender_origin"], DM_ORIGIN);
+        assert_eq!(r["sender_seat"], Value::Null, "reason: claims_a_seat");
+        assert_eq!(
+            r["hub"], "aihub-20261113-035938-dab9",
+            "reason: short_cabin_as_hub"
+        );
+        let store = aib_dmq_store::Store::new(d.path(), d.path());
+        assert_eq!(
+            store.order_ids("519d0").unwrap(),
+            [id],
+            "reason: not_in_order"
+        );
+    }
+
+    /// SD2: a long letter goes to a private relay file and the letter is the pointer line.
+    #[test]
+    fn a_long_letter_is_a_pointer_to_its_relay_file() {
+        let d = world("sd2");
+        std::fs::create_dir_all(d.path().join("pending")).unwrap();
+        let dm = StoreDm {
+            root: Some(d.path().to_path_buf()),
+        };
+        let text = "派工: 長\n".to_owned() + &"字".repeat(300);
+        let (_, id) = dm.send("dab9/519d0", &text).expect("sent");
+        let store = aib_dmq_store::Store::new(d.path(), d.path());
+        let Ok(aib_dmq_store::ItemRead::Item { item, .. }) = store.read_item("519d0", &id) else {
+            panic!("no item");
+        };
+        let files: Vec<PathBuf> = std::fs::read_dir(d.path().join("pending"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        let [file] = files.as_slice() else {
+            panic!("reason: not_one_relay_file {files:?}");
+        };
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("RELAY-drive-519d0-"), "{name}");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), text);
+        assert_eq!(
+            item["msg"].as_str(),
+            Some(aib_dmq_store::letter::pointer_line(text.len(), file).as_str()),
+            "reason: not_the_pointer_line"
+        );
+    }
+
+    /// SD3: what cannot be written is NotSent and writes nothing: a header-shaped or R-30
+    /// line, no state root, a cabin or seat not there.
+    #[test]
+    fn what_cannot_be_written_is_not_sent_and_writes_nothing() {
+        let d = world("sd3");
+        let root = Some(d.path().to_path_buf());
+        let dm = StoreDm { root: root.clone() };
+        for bad in ["a >> b", "第 ① 件", "長訊已落檔(9 位元組),請讀:/x"] {
+            assert!(
+                matches!(dm.send("dab9/519d0", bad), Err(SendError::NotSent(_))),
+                "reason: lint_let_through {bad}"
+            );
+        }
+        assert!(matches!(
+            StoreDm { root: None }.send("dab9/519d0", "派工: x"),
+            Err(SendError::NotSent(_))
+        ));
+        assert!(
+            matches!(dm.send("beef/519d0", "派工: x"), Err(SendError::NotSent(_))),
+            "reason: unknown_cabin_sent"
+        );
+        assert!(
+            matches!(dm.send("dab9/abcde", "派工: x"), Err(SendError::NotSent(_))),
+            "reason: seat_folder_made"
+        );
+        assert!(!d.path().join("state/dm-queue/abcde").exists());
+        let store = aib_dmq_store::Store::new(d.path(), d.path());
+        assert!(store.order_ids("519d0").unwrap().is_empty());
+    }
+
+    /// The short cabin code names exactly one folder; two that end alike name none.
+    #[test]
+    fn the_cabin_is_found_from_its_short_code_only_when_one_matches() {
+        let d = world("sd4");
+        assert_eq!(
+            StoreDm::cabin_of(d.path(), "dab9").as_deref(),
+            Some("20261113-035938-dab9")
+        );
+        std::fs::create_dir_all(d.path().join("instances/20261201-000000-dab9")).unwrap();
+        assert_eq!(
+            StoreDm::cabin_of(d.path(), "dab9"),
+            None,
+            "reason: ambiguous_taken"
+        );
+        assert_eq!(
+            StoreDm::cabin_of(d.path(), "ab9"),
+            None,
+            "reason: partial_code"
+        );
     }
 }
