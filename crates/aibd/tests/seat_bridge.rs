@@ -156,7 +156,10 @@ async fn letters_cross_the_bridge_once_each_way() {
         std::fs::write(&p, l.to_string()).unwrap();
         files.push(p);
     }
-    let c = aibd::dm_import::pass(&files, dir.path(), &db, true).unwrap();
+    // the test's library handle is a second writer beside the daemon's: the daemon is not woken
+    // here (its redeliver would write the same rows at once; aibd itself has one writer)
+    let quiet = |_: &str| {};
+    let c = aibd::dm_import::pass_with(&files, dir.path(), &db, true, &quiet).unwrap();
     assert_eq!((c.new, c.updated), (3, 3), "reason: wrong_way {c:?}");
     let inbox = db.open_to(&format!("seat:{seat}"), 50).unwrap();
     let ours: Vec<_> = inbox
@@ -169,7 +172,7 @@ async fn letters_cross_the_bridge_once_each_way() {
         .as_deref()
         .unwrap()
         .starts_with(&format!("〔{}〕", aibd::dm_import::BRIDGE_DATA_LINE)));
-    let again = aibd::dm_import::pass(&files, dir.path(), &db, true).unwrap();
+    let again = aibd::dm_import::pass_with(&files, dir.path(), &db, true, &quiet).unwrap();
     assert_eq!(
         (again.new, again.updated),
         (0, 0),

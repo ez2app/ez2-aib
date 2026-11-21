@@ -161,6 +161,10 @@ pub fn lock_ex(f: &File, timeout: Duration) -> Result<(), LockWait> {
     }
 }
 
+/// How often an `O_CREAT` open that answered ENOENT is tried again (see `open_file`).
+#[cfg(unix)]
+const CREATE_TRIES: u32 = 20;
+
 /// One seat folder, held open (5d33a PREREAD-g5-bridge L1): on Unix the folder is opened once
 /// from its parent with `O_DIRECTORY | O_NOFOLLOW`, and every file in it is reached from that
 /// descriptor (`openat` with `O_NOFOLLOW`, an `O_EXCL` scratch file, `renameat` in the same
@@ -296,7 +300,16 @@ impl SeatDir {
         if create {
             f |= OFlag::O_CREAT;
         }
-        let fd = openat(&self.fd, name, at::file_flags(f), at::private())?;
+        // macOS: an O_CREAT open racing another thread's create of the same name can answer
+        // ENOENT (two_closers_race_one_wins / a_note_never_undoes_a_close, from 041fe1f47e on);
+        // the folder is held open and nothing removes the name, so try again a few times
+        let mut tries = 0;
+        let fd = loop {
+            match openat(&self.fd, name, at::file_flags(f), at::private()) {
+                Err(nix::errno::Errno::ENOENT) if create && tries < CREATE_TRIES => tries += 1,
+                r => break r?,
+            }
+        };
         let file = File::from(fd);
         if !file.metadata()?.is_file() {
             return Err(io::Error::other("not a plain file"));

@@ -206,3 +206,30 @@ fn a_held_folder_lock_holds_the_python_writer() {
     assert_eq!(items(&dir), 1);
     assert_eq!(s.order_ids(SEAT).expect("ids").len(), 1);
 }
+
+/// macOS: many threads opening one lock file to create it at once all get it (an O_CREAT open
+/// that races another's create can answer ENOENT; it is tried again). The race tests of
+/// store / recv met it one run in a few; this meets it every run.
+#[test]
+fn a_lock_file_created_by_many_threads_at_once_opens_for_all() {
+    use std::sync::{Arc, Barrier};
+    let d = tempfile::tempdir().unwrap();
+    for round in 0..200 {
+        let name = format!("s{round}");
+        let dir = Arc::new(aib_dmq_store::fsx::SeatDir::open(d.path(), &name, true).unwrap());
+        let gate = Arc::new(Barrier::new(16));
+        let hs: Vec<_> = (0..16)
+            .map(|_| {
+                let (dir, gate) = (Arc::clone(&dir), Arc::clone(&gate));
+                std::thread::spawn(move || {
+                    gate.wait();
+                    dir.open_private("transition.lock").map(|_| ())
+                })
+            })
+            .collect();
+        for h in hs {
+            let r = h.join().unwrap();
+            assert!(r.is_ok(), "reason: create_race round {round}: {r:?}");
+        }
+    }
+}

@@ -618,6 +618,10 @@ pub fn inbox_row(letter: &Value, seat_id: &str, state_root: &Path) -> Result<Mes
     ] {
         item.insert(k.into(), v);
     }
+    // the ledger fields too, as a mirrored post has them: a later pass sees nothing moved
+    for (k, v) in status_fields(letter) {
+        item.insert(k.into(), v);
+    }
     Ok(MessageRow {
         message_id: id,
         thread_id,
