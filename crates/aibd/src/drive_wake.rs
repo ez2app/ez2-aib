@@ -174,6 +174,7 @@ pub fn wake_round(bin: &Path) -> (Wake, Wake) {
 /// `bin args` with no input or output. On macOS the child leaves the background tier
 /// aibd's launchd job puts it in (aib-sys B1, 519d0 11-15 22:13): aib-slice's scan from a
 /// background refresh ran 3.3 times slower and was killed at aib-drive's 10-minute limit.
+#[cfg(all(test, target_os = "macos"))] // only the macOS priority probe calls it now
 fn child_command(bin: &Path, args: &[&str]) -> Command {
     child_command_for(bin, args, None)
 }

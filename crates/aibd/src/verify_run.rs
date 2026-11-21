@@ -470,7 +470,7 @@ pub fn pending_receipt(
         .lines()
         .filter_map(|l| l.strip_prefix("KNIVES-EXPECTED "))
         .filter_map(|n| n.trim().parse::<u64>().ok())
-        .last();
+        .next_back();
     let sealed = !v
         .reasons
         .iter()
