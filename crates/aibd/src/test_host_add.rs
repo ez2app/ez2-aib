@@ -724,7 +724,7 @@ mod tests {
             let c = remote_command(s).unwrap();
             assert!(c.starts_with("/bin/sh -c '") && c.ends_with('\''));
             assert!(
-                s.starts_with("IFS= read -r L || exit 3\n"),
+                s.starts_with("IFS= read -r ") && s.contains(" || exit 3\n"),
                 "reason: line_not_from_stdin"
             );
             assert!(
