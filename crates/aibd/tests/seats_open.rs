@@ -646,13 +646,6 @@ fn claude_policy() -> aibd::allowlist::SessionPolicy {
     }
 }
 
-#[cfg(unix)]
-async fn session_of(d: &Daemon, id: &str) -> serde_json::Value {
-    d.call("GET", &format!("/api/v1/sessions/{id}"), None, "")
-        .await
-        .json
-}
-
 /// B4-1b-2b K2 / K4: the open starts the seat's provider over pipes in the same request
 /// (the pipe argv, the program the policy lists), answers the running session, and a
 /// retry with the same key answers that one session again and starts no second one.
@@ -804,15 +797,27 @@ async fn a_queued_seat_session_starts_when_a_slot_frees() {
     assert!(stop.code < 300, "{}", stop.json);
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let s = loop {
-        let s = session_of(&d, &sid).await;
+        let r = d
+            .call("GET", &format!("/api/v1/sessions/{sid}"), None, "")
+            .await;
+        // 5d33a REVIEW-integ5 SO26: a session that is gone (404, no state) is no start
+        assert_eq!(r.code, 200, "reason: session_gone {}", r.json);
+        let s = r.json;
         if s["state"] != "pending" || std::time::Instant::now() > deadline {
             break s;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    assert_ne!(s["state"], "pending", "it left the queue: {s}");
+    assert!(
+        s["state"].is_string() && s["state"] != "pending",
+        "it left the queue: {s}"
+    );
     assert_ne!(
         s["state"], "failed",
+        "the gate did not refuse aibd's own env: {s}"
+    );
+    assert_ne!(
+        s["ended_by"], "policy_refused",
         "the gate did not refuse aibd's own env: {s}"
     );
     d.shutdown().await;
