@@ -25,13 +25,13 @@ ur crates/aibd/src/urgent.rs \
 # UR7 no hourly cap on urgent letters
 ur crates/aibd/src/urgent.rs \
    '    if in_hour >= HOUR_CAP {' \
-   '    if in_hour > usize::MAX - 1 { // knife' \
+   '    if in_hour == u64::MAX - 1 { // knife' \
    three_urgent_letters_an_hour_then_plain \
    '--lib urgent::tests::three_urgent_letters_an_hour_then_plain'
 # UR8 the hour window counts letters of any age
 ur crates/aibd/src/urgent.rs \
-   '                .is_some_and(|t| now_unix - t < 3600)' \
-   '                .is_some_and(|t| now_unix - t < i64::MAX) // knife' \
+   '        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, now_unix - 3600)' \
+   '        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, i64::MIN) // knife' \
    three_urgent_letters_an_hour_then_plain \
    '--lib urgent::tests::three_urgent_letters_an_hour_then_plain'
 # UR9 seat_send judges but never marks the row (the inbox does not say urgent)
@@ -46,3 +46,9 @@ ur crates/aibd/src/urgent.rs \
    '        Some(Value::String(_)) => Ok(true), // knife' \
    only_urgent_and_normal_are_levels \
    '--lib urgent::tests::only_urgent_and_normal_are_levels'
+# UR11 the cap counts a page of the sent box (a hundred plain letters hide the urgent ones)
+ur crates/aib-store/src/seat_moves.rs \
+   '            "SELECT COUNT(*) FROM messages WHERE from_key = ?1 AND created_unix > ?2' \
+   '            "SELECT COUNT(*) FROM (SELECT * FROM messages WHERE from_key = ?1 ORDER BY created_unix DESC LIMIT 100) WHERE from_key = ?1 AND created_unix > ?2 -- knife' \
+   three_urgent_letters_an_hour_then_plain \
+   '--lib urgent::tests::three_urgent_letters_an_hour_then_plain'

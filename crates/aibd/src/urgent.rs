@@ -17,7 +17,7 @@ use serde_json::Value;
 /// The one level above plain.
 pub const URGENT: &str = "urgent";
 /// Urgent letters one seat may send in an hour; more go as plain ones.
-pub const HOUR_CAP: usize = 3;
+pub const HOUR_CAP: u64 = 3;
 /// The seat's rank is below the urgent act's least rank.
 pub const RANK_TOO_LOW: &str = "rank_too_low";
 /// The seat sent [`HOUR_CAP`] urgent letters in the last hour.
@@ -47,19 +47,11 @@ pub fn judge(db: &MessageDb, seat_id: &str, now_unix: i64) -> Result<String, &'s
     if rank < ranks::perm_min(db, ranks::URGENT) {
         return Err(RANK_TOO_LOW);
     }
-    let sent = db
-        .sent_by(&format!("seat:{seat_id}"), aib_store::PAGE_MAX)
-        .unwrap_or_default();
-    let in_hour = sent
-        .iter()
-        .filter(|r| r.item.get("level").and_then(Value::as_str) == Some(URGENT))
-        .filter(|r| {
-            r.item
-                .get("sent_at")
-                .and_then(Value::as_i64)
-                .is_some_and(|t| now_unix - t < 3600)
-        })
-        .count();
+    // a count in SQL, not a page of the sent box (5d33a REVIEW-urgent N1); a failed count is
+    // taken as the cap reached (fails closed)
+    let in_hour = db
+        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, now_unix - 3600)
+        .unwrap_or(u64::MAX);
     if in_hour >= HOUR_CAP {
         return Err(HOUR_CAP_REACHED);
     }
@@ -96,6 +88,7 @@ mod tests {
             crate::seat_send::queued_row(seat, "s_ffffffffffffffff", Some("work"), "hi", "00")
                 .unwrap();
         row.item.insert("sent_at".into(), json!(at));
+        row.created_unix = at;
         if let Some(l) = level {
             row.item.insert("level".into(), json!(l));
         }
@@ -196,6 +189,15 @@ mod tests {
             judge(&db, seat, now),
             Err(HOUR_CAP_REACHED),
             "reason: cap_missing"
+        );
+        // a hundred plain letters after them do not hide them (N1: not a page of the sent box)
+        for _ in 0..aib_store::PAGE_MAX {
+            sent(&db, seat, None, now - 5);
+        }
+        assert_eq!(
+            judge(&db, seat, now),
+            Err(HOUR_CAP_REACHED),
+            "reason: cap_paged"
         );
         // another seat's urgent letters are not this seat's
         assert!(

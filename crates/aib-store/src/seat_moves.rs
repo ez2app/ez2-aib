@@ -172,6 +172,19 @@ impl MessageDb {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// How many letters `from_key` sent at `level` after `since_unix` (`created_unix`): a
+    /// count in SQL, not a page (待審 1.5 期 急件上限, 5d33a REVIEW-urgent N1).
+    pub fn sent_at_level_since(&self, from_key: &str, level: &str, since_unix: i64) -> Result<u64> {
+        let c = self.read()?;
+        let n: i64 = c.query_row(
+            "SELECT COUNT(*) FROM messages WHERE from_key = ?1 AND created_unix > ?2
+             AND json_extract(item, '$.level') = ?3",
+            params![from_key, since_unix, level],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
     /// Write `f` onto the row at `expect_rev` (as [`MessageDb::update`], with the receiver and
     /// the text too).
     pub fn forward(
