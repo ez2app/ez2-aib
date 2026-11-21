@@ -135,7 +135,10 @@ pub fn act_once(bin: &Path, limit: Duration) -> Wake {
         web.as_ref(),
     );
     if let Some(web) = web {
-        let r = crate::drive_plan::parse(&out, &web);
+        // 5d33a REVIEW-driverust3 M1: the switch is aibd's own read, after the round, not the
+        // child's word for it (the program at bin is any same-account seat's to replace)
+        let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
+        let r = plans_if_on(&out, &web, switch);
         if r.refused > 0 {
             tracing::warn!(refused = r.refused, "drive act: plan lines refused");
         }
@@ -144,6 +147,17 @@ pub fn act_once(bin: &Path, limit: Duration) -> Wake {
         }
     }
     w
+}
+
+/// The plans in a round's stdout, only while the dispatch switch is `on` (as aibd reads it):
+/// otherwise every plan line is refused, whatever the child printed.
+pub fn plans_if_on(out: &[u8], web: &BTreeSet<String>, switch: &str) -> crate::drive_plan::Read {
+    let mut r = crate::drive_plan::parse(out, web);
+    if switch != "on" {
+        r.refused += r.plans.len();
+        r.plans.clear();
+    }
+    r
 }
 
 /// One period of the wake thread: the wake, then one act round (an act round runs even
@@ -390,6 +404,24 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M1 (5d33a REVIEW-driverust3): a round's plan lines with the switch off or paused are
+    /// all refused; only `on` hands them on.
+    #[test]
+    fn plan_lines_are_dropped_unless_aibd_reads_the_switch_on() {
+        let web: BTreeSet<String> = ["7ebca".to_owned()].into_iter().collect();
+        let out = format!(
+            "{}{}\n",
+            crate::drive_plan::PREFIX,
+            serde_json::json!({"to": "7ebca", "text": "派工: N-1 → 7ebca", "send_key": "k:1", "action": "dispatch"})
+        );
+        for sw in ["off", "paused", ""] {
+            let r = plans_if_on(out.as_bytes(), &web, sw);
+            assert!(r.plans.is_empty(), "reason: sent_with_switch_{sw}");
+            assert_eq!(r.refused, 1, "reason: not_counted_{sw}");
+        }
+        assert_eq!(plans_if_on(out.as_bytes(), &web, "on").plans.len(), 1);
+    }
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

@@ -45,3 +45,7 @@ python3 -I scripts/knife.py crates/aib-store/src/seat_moves.rs \
   '            "SELECT DISTINCT old_code FROM seat_moves ORDER BY old_code",' \
   --expect-fail seat_moves::tests::the_moved_codes_are_the_live_moves_only \
   -- cargo test -p aib-store --locked --lib seat_moves::tests::the_moved_codes_are_the_live_moves_only
+# DW3 (5d33a REVIEW-driverust3 M1) plan lines are handed on with the switch off: the child's
+# word for the switch is taken (the program at bin is any same-account seat's to replace)
+dw '    if switch != "on" {' '    if switch == "never" {' \
+   plan_lines_are_dropped_unless_aibd_reads_the_switch_on
