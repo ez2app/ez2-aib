@@ -595,6 +595,7 @@ mod tests {
         let mut h = BTreeMap::new();
         let at = |s: &str| Handoff {
             path: "/h.md".into(),
+            sha256: None,
             at: s.into(),
         };
         h.insert("old".to_owned(), at("2026-11-21T00:00:00Z"));
