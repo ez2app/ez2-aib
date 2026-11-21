@@ -36,7 +36,7 @@ ps '        o.custom_flags(nix::libc::O_NOFOLLOW);' '        o.custom_flags(0); 
 ps '        .filter(|(_, x)| crate::revive::unix_of(&x.at).is_some_and(|t| t >= began))' '        .filter(|(_, x)| crate::revive::unix_of(&x.at).is_some_and(|t| t >= began - 3600)) // knife' \
    the_swap_waits_for_each_seats_handoff_and_names_who_did_not
 # PW11 a kept copy that is not the running build is kept
-pv '    if hash_file(&kept).as_deref() != Some(sha256) {' '    if hash_file(&kept).as_deref().is_none() { // knife' \
+pv '    if hash_file(&kept).as_deref() != Some(sha256) {' '    if hash_file(&kept).is_none() && !sha256.is_empty() { // knife' \
    a_swap_that_does_not_start_puts_the_old_build_back
 # PW12 a field other than sha256 is taken
 ps '    if o.keys().any(|k| k != "sha256") {' '    if o.keys().any(|k| k == "round") { // knife' \

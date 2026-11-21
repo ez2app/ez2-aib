@@ -580,9 +580,9 @@ mod tests {
     fn the_swap_waits_for_each_seats_handoff_and_names_who_did_not() {
         let s = Seen::of(&json!({"asked": ["a", "b"], "waiting": ["c"], "done": ["a"]}));
         assert!(!s.all_done(), "reason: swapped_before_the_handoffs");
+        assert_eq!(s.missing(), vec!["b".to_owned(), "c".to_owned()]);
         let s = Seen::of(&json!({"asked": ["a", "b"], "waiting": [], "done": ["a"]}));
         assert!(!s.all_done(), "reason: swapped_before_b_wrote_its_handoff");
-        assert_eq!(s.missing(), vec!["b".to_owned(), "c".to_owned()]);
         let s = Seen::of(&json!({"asked": ["a", "b"], "waiting": [], "done": ["a", "b"]}));
         assert!(s.all_done());
         assert!(s.missing().is_empty());
