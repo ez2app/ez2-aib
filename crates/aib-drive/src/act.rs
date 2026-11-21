@@ -1262,13 +1262,15 @@ pub fn send_round(
                     let a = addr
                         .as_deref()
                         .ok_or_else(|| crate::intents::SendError::NotSent(NO_CABIN.into()))?;
-                    sender.send(a, &text).map(|(stage, id)| {
-                        *answer.borrow_mut() = Some((stage.clone(), id.clone()));
-                        let mut r = serde_json::Map::new();
-                        r.insert("stage".into(), json!(stage));
-                        r.insert("dm_id".into(), json!(id));
-                        r
-                    })
+                    sender
+                        .send_keyed(a, &text, &key, &w.action)
+                        .map(|(stage, id)| {
+                            *answer.borrow_mut() = Some((stage.clone(), id.clone()));
+                            let mut r = serde_json::Map::new();
+                            r.insert("stage".into(), json!(stage));
+                            r.insert("dm_id".into(), json!(id));
+                            r
+                        })
                 },
             );
             let (stage, dm_id) = answer.into_inner().unzip();
@@ -2240,9 +2242,17 @@ pub fn cli_act(raw: &[String]) -> u8 {
         sw,
         &seats,
         &live,
-        // S79-rust slice 3a: the letter goes into the ledger under the same root as drive/
-        &crate::source::StoreDm {
-            root: dir.parent().map(Path::to_path_buf),
+        // S79-rust slice 3a: the letter goes into the ledger under the same root as drive/;
+        // 3b: a web seat's work order is handed to aibd on stdout instead
+        &crate::source::ToWeb {
+            web: crate::source::web_seats(
+                std::env::var(crate::source::WEB_SEATS_ENV).ok().as_deref(),
+            ),
+            by_aibd: std::env::var(crate::source::BY_AIBD_ENV).as_deref() == Ok("1"),
+            inner: &crate::source::StoreDm {
+                root: dir.parent().map(Path::to_path_buf),
+            },
+            out: std::cell::RefCell::new(Box::new(std::io::stdout())),
         },
         now,
     );

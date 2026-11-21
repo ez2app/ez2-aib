@@ -30,3 +30,15 @@ python3 -I scripts/knife.py crates/aib-drive/src/act.rs \
   '    why.starts_with("aib dm stage resolve,") || why.ends_with(crate::source::NO_SEAT_FOLDER) && why.is_empty()' \
   --expect-fail source::store_dm_tests::what_cannot_be_written_is_not_sent_and_writes_nothing \
   -- cargo test -p aib-drive --locked --lib source::store_dm_tests::what_cannot_be_written_is_not_sent_and_writes_nothing
+# S79-rust 3b: a web seat's work order goes to aibd as a plan line, never a 1.x ledger letter
+tw() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "source::to_web_tests::$3" \
+         -- cargo test -p aib-drive --locked --lib "source::to_web_tests::$3"; }
+# TW1 a web seat's letter goes into the 1.x ledger (a bridge row that never wakes it)
+tw '        if !self.web.contains(seat) {' '        if self.web.is_empty() || !self.web.contains(seat) || !seat.is_empty() {' \
+   a_web_seats_work_order_is_a_plan_line_for_aibd_and_never_a_ledger_letter
+# TW2 a hand-run act prints plan lines nobody reads and writes them as sent
+tw '        if !self.by_aibd {' '        if !self.by_aibd && self.web.is_empty() {' \
+   a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing
+# TW3 a nudge is handed to aibd (its system_send takes a work order only: refused there, lost)
+tw '        if action != "dispatch" {' '        if action.is_empty() {' \
+   a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing

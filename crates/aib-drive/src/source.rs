@@ -11,6 +11,7 @@
 
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -238,6 +239,89 @@ pub trait Sender {
     /// (`delivered`, `queued` or `sort-queued`) and the dm id. Err says whether
     /// it surely did not go out or may have (7b81e d3ad28dc M1).
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError>;
+
+    /// The same, knowing the intent key and the action (S79-rust 3b: a web seat's letter is
+    /// handed to aibd under its key). Every other sender sends as [`Sender::send`].
+    fn send_keyed(
+        &self,
+        addr: &str,
+        text: &str,
+        _key: &str,
+        _action: &str,
+    ) -> Result<(String, String), crate::intents::SendError> {
+        self.send(addr, text)
+    }
+}
+
+/// S79-rust 3b: what aib-drive prints on stdout for aibd to send to a web seat (one line, then
+/// one JSON object `{to, text, send_key, action}`); aibd's drive wake reads it, nothing else does.
+pub const PLAN_PREFIX: &str = "AIBD-SEND ";
+/// Set to `1` by aibd on the act round it runs and reads (drive_wake): only then is there
+/// someone to hand a web seat's letter to.
+pub const BY_AIBD_ENV: &str = "AIB_DRIVE_BY_AIBD";
+/// The seat codes aibd has as web seats now (moved from 1.x), comma-separated; set by aibd.
+pub const WEB_SEATS_ENV: &str = "AIB_DRIVE_WEB_SEATS";
+/// Why a web seat's letter did not go: no aibd runs this round (a hand-run `act --send`).
+pub const NO_AIBD: &str = "web seat: no aibd to hand it to";
+/// Why a web seat's letter did not go: only work orders go through aibd so far (its
+/// system_send takes a 「派工:」 letter only).
+pub const WEB_ONLY_DISPATCH: &str = "web seat: only a work order is handed to aibd";
+/// The stage a letter handed to aibd is written with (final: aibd keys it by send_key).
+pub const HANDED: &str = "handed";
+
+/// The web seats from aibd's list ([`WEB_SEATS_ENV`]): five-hex codes only, others dropped.
+pub fn web_seats(list: Option<&str>) -> BTreeSet<String> {
+    list.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| is_seat(s))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// [`Sender`] that hands a web seat's work order to aibd (S79-rust 3b, DECISION-council-driveweb
+/// r3): a web seat must not get a 1.x ledger letter (it would sit as a bridge row that never
+/// wakes it), so drive prints a plan line and aibd sends it as the system, origin and pacing
+/// decided there. Every other seat goes to `inner`.
+pub struct ToWeb<'a> {
+    pub web: BTreeSet<String>,
+    pub by_aibd: bool,
+    pub inner: &'a dyn Sender,
+    pub out: std::cell::RefCell<Box<dyn std::io::Write + 'a>>,
+}
+
+impl Sender for ToWeb<'_> {
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
+        self.inner.send(addr, text)
+    }
+
+    fn send_keyed(
+        &self,
+        addr: &str,
+        text: &str,
+        key: &str,
+        action: &str,
+    ) -> Result<(String, String), crate::intents::SendError> {
+        use crate::intents::SendError;
+        let seat = addr.rsplit_once('/').map_or(addr, |(_, s)| s);
+        if !self.web.contains(seat) {
+            return self.inner.send_keyed(addr, text, key, action);
+        }
+        dm_addr_ok(addr, text).map_err(SendError::NotSent)?;
+        if action != "dispatch" {
+            return Err(SendError::NotSent(WEB_ONLY_DISPATCH.into()));
+        }
+        if !self.by_aibd {
+            return Err(SendError::NotSent(NO_AIBD.into()));
+        }
+        let plan = serde_json::json!({"to": seat, "text": text, "send_key": key, "action": action});
+        let mut out = self.out.borrow_mut();
+        // a plan line that may be half out is a send that may have gone (aibd keys by send_key)
+        writeln!(out, "{PLAN_PREFIX}{plan}")
+            .and_then(|()| out.flush())
+            .map_err(|e| SendError::Unknown(format!("plan line: {}", e.kind())))?;
+        Ok((HANDED.to_owned(), key.to_owned()))
+    }
 }
 
 /// A letter's address is `<cabin>/<seat>` with a five-hex seat; a text that is empty or
@@ -729,5 +813,90 @@ mod store_dm_tests {
             None,
             "reason: partial_code"
         );
+    }
+}
+
+#[cfg(test)]
+mod to_web_tests {
+    use super::*;
+    use crate::intents::SendError;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A 1.x sender that only remembers who it was asked to send to.
+    struct Inner(RefCell<Vec<String>>);
+    impl Sender for Inner {
+        fn send(&self, addr: &str, _text: &str) -> Result<(String, String), SendError> {
+            self.0.borrow_mut().push(addr.to_owned());
+            Ok(("queued".into(), "q_0000000000000001".into()))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Buf(Rc<RefCell<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn to_web<'a>(inner: &'a Inner, by_aibd: bool, buf: &Buf) -> ToWeb<'a> {
+        ToWeb {
+            web: web_seats(Some("7ebca, abcde,NOPE1,x")),
+            by_aibd,
+            inner,
+            out: RefCell::new(Box::new(buf.clone())),
+        }
+    }
+
+    #[test]
+    fn a_web_seats_work_order_is_a_plan_line_for_aibd_and_never_a_ledger_letter() {
+        let (inner, buf) = (Inner(RefCell::default()), Buf::default());
+        let s = to_web(&inner, true, &buf);
+        let got = s.send_keyed("dab9/7ebca", "派工: N-1 → 7ebca\nx", "k:N-1", "dispatch");
+        assert_eq!(
+            got.expect("handed"),
+            (HANDED.to_owned(), "k:N-1".to_owned())
+        );
+        assert!(inner.0.borrow().is_empty(), "reason: web_seat_in_ledger");
+        let out = String::from_utf8(buf.0.borrow().clone()).unwrap();
+        let line = out.strip_prefix(PLAN_PREFIX).expect("reason: no_plan_line");
+        assert!(line.ends_with('\n') && line.lines().count() == 1, "{out:?}");
+        let v: Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(v["to"], "7ebca");
+        assert_eq!(v["send_key"], "k:N-1");
+        assert_eq!(v["action"], "dispatch");
+        assert_eq!(v["text"], "派工: N-1 → 7ebca\nx");
+        // a 1.x seat still gets its ledger letter
+        let got = s.send_keyed("dab9/519d0", "派工: N-2 → 519d0", "k:N-2", "dispatch");
+        assert_eq!(got.expect("sent").0, "queued");
+        assert_eq!(*inner.0.borrow(), ["dab9/519d0"]);
+    }
+
+    #[test]
+    fn a_web_seats_letter_with_no_aibd_or_not_a_work_order_is_not_sent_and_prints_nothing() {
+        let (inner, buf) = (Inner(RefCell::default()), Buf::default());
+        match to_web(&inner, false, &buf).send_keyed("dab9/abcde", "派工: x", "k", "dispatch") {
+            Err(SendError::NotSent(why)) => assert_eq!(why, NO_AIBD),
+            other => panic!("reason: sent_without_aibd {other:?}"),
+        }
+        match to_web(&inner, true, &buf).send_keyed("dab9/abcde", "提醒: x", "k", "nudge") {
+            Err(SendError::NotSent(why)) => assert_eq!(why, WEB_ONLY_DISPATCH),
+            other => panic!("reason: nudge_handed {other:?}"),
+        }
+        assert!(buf.0.borrow().is_empty(), "reason: plan_printed");
+        assert!(inner.0.borrow().is_empty(), "reason: web_seat_in_ledger");
+        // only five-hex codes are web seats
+        assert_eq!(
+            web_seats(Some("7ebca, abcde,NOPE1,x,"))
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["7ebca", "abcde"]
+        );
+        assert!(web_seats(None).is_empty());
     }
 }
