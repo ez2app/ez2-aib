@@ -1945,7 +1945,13 @@ mod tests {
         assert_eq!(by("s_b").view()["text"], "結束:要重新登入");
         assert_eq!(by("s_c").slot, 6, "reason: plain_exit_low_power");
         let all = serde_json::to_string(&c.iter().map(Card::view).collect::<Vec<_>>()).unwrap();
-        assert!(!all.contains("sk-secret"), "reason: output_shown");
+        // the raw lines never reach a card (the reset time is shown on purpose)
+        assert!(
+            !all.contains("sk-secret")
+                && !all.contains("usage limit reached")
+                && !all.contains("Invalid API key"),
+            "reason: output_shown"
+        );
         assert_eq!(end_reason(&["你的額度已用完"]), Some("額度"));
         // a failed turn's reason is read too (its card id is the event id)
         let tf = ev(
