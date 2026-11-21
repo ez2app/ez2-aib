@@ -143,6 +143,56 @@ impl MessageDb {
     }
 }
 
+/// One message handed on to another receiver (DESIGN-web-inbox-aibd-7ebca-1121 r1 B: a letter
+/// still open in a 1.x ledger when its code moves goes to the web seat, one row for one
+/// letter): its receiver, item and text, at `expect_rev`. The thread stays: the history is
+/// where it was.
+pub struct Forward<'a> {
+    pub to_key: &'a str,
+    pub item: serde_json::Map<String, serde_json::Value>,
+    pub body: &'a str,
+    pub body_sha256: &'a str,
+}
+
+impl MessageDb {
+    /// Write `f` onto the row at `expect_rev` (as [`MessageDb::update`], with the receiver and
+    /// the text too).
+    pub fn forward(
+        &self,
+        message_id: &str,
+        expect_rev: i64,
+        f: Forward<'_>,
+        updated: &str,
+    ) -> Result<crate::Updated> {
+        let (id, updated) = (message_id.to_string(), updated.to_string());
+        let (to, body, sha) = (
+            f.to_key.to_string(),
+            f.body.to_string(),
+            f.body_sha256.to_string(),
+        );
+        let item = serde_json::Value::Object(f.item).to_string();
+        let len = i64::try_from(body.len()).unwrap_or(i64::MAX);
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let Some(now) = crate::messages::get_in(&tx, &id)? else {
+                return Ok(crate::Updated::Missing);
+            };
+            if now.rev != expect_rev {
+                return Ok(crate::Updated::Stale(Box::new(now)));
+            }
+            tx.execute(
+                "UPDATE messages SET to_key = ?1, item = ?2, body = ?3, body_sha256 = ?4,
+                 len = ?5, rev = rev + 1, updated = ?6, journaled = 0 WHERE message_id = ?7",
+                params![to, item, body, sha, len, updated, id],
+            )?;
+            let after =
+                crate::messages::get_in(&tx, &id)?.ok_or(StoreError::Invalid("row vanished"))?;
+            tx.commit()?;
+            Ok(crate::Updated::Done(Box::new(after)))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

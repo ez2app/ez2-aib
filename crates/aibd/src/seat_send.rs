@@ -881,6 +881,13 @@ async fn settle(st: &AppState, message_id: &str, how: Settled<'_>) -> Option<i64
     }
 }
 
+/// Whether a seat of `mode` may write into a 1.x seat's ledger: work or dgrs only, whatever
+/// else (safe, none, a mode this build does not know) may not (5d33a REVIEW-g5bridge M1, L1:
+/// an allow list, as mode_takes_input).
+pub fn may_send_to_legacy(mode: Option<&str>) -> bool {
+    matches!(mode, Some("work" | "dgrs"))
+}
+
 /// A web seat's row for a letter written into the 1.x ledger is to `legacy:<code>` (its to key
 /// `seat:legacy:<code>`, as queued_row writes it).
 pub const LEGACY_TO: &str = "legacy:";
@@ -902,11 +909,11 @@ async fn to_ledger(
 ) -> Response {
     // 5d33a REVIEW-g5bridge M1: a 1.x seat holds every hand (as a dgrs seat does); a safe
     // seat reads what may carry an injection and writes into none of them
-    if fm.mode.as_deref() == Some("safe") {
+    if !may_send_to_legacy(fm.mode.as_deref()) {
         return refuse(
             StatusCode::FORBIDDEN,
-            "safe_cannot_send_to_legacy",
-            "a safe seat does not write into a 1.x seat's ledger",
+            "seat_mode_cannot_send_to_legacy",
+            "only a work or dgrs seat writes into a 1.x seat's ledger",
         );
     }
     if idem.is_some() {
@@ -1361,6 +1368,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// 5d33a REVIEW-g5bridge L1: only work and dgrs seats write into a 1.x ledger.
+    #[test]
+    fn only_work_and_dgrs_seats_write_into_a_ledger() {
+        assert!(may_send_to_legacy(Some("work")));
+        assert!(may_send_to_legacy(Some("dgrs")));
+        for m in [Some("safe"), None, Some(""), Some("Work"), Some("other")] {
+            assert!(!may_send_to_legacy(m), "reason: mode_let_through {m:?}");
+        }
+    }
 
     /// B1dm-S5: the row is written queued before anything is typed, from `seat:<a>` to
     /// `seat:<b>` in their thread; delivered / pending / refused say what happened after.

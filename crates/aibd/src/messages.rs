@@ -794,8 +794,31 @@ pub async fn done_as(st: AppState, me: String, with_body: bool, body: Value) -> 
         vec![after.clone()],
     )
     .await;
-    Json(json!({ "message": object(&after, &me, with_body), "journaled": journaled }))
-        .into_response()
+    // DESIGN-web-inbox-aibd-7ebca-1121 r1 C: a letter from a moved code's ledger is closed
+    // there too, one way; a failure is said, the close here stands
+    let ledger_closed = match crate::seat_move::ledger().and_then(|q| {
+        q.parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+    }) {
+        Some(root) => {
+            let (db, row) = (st.messages.clone(), after.clone());
+            tokio::task::spawn_blocking(move || crate::dm_import::close_back(&db, &root, &row))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+        }
+        None => None,
+    };
+    if ledger_closed == Some(false) {
+        tracing::warn!(message_id = %after.message_id, "dm mirror: the ledger copy was not closed");
+    }
+    let mut out = json!({ "message": object(&after, &me, with_body), "journaled": journaled });
+    if let Some(c) = ledger_closed {
+        out["ledger_closed"] = json!(c);
+    }
+    Json(out).into_response()
 }
 
 /// The seat side's acts (B1dm-S3c): what a seat token may do with its own messages.

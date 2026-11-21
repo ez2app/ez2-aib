@@ -54,7 +54,7 @@ async fn letters_cross_the_bridge_once_each_way() {
     )
     .await;
     assert_eq!(r.code, 403, "reason: safe_wrote_ledger {}", r.body);
-    assert_eq!(r.json["code"], "safe_cannot_send_to_legacy");
+    assert_eq!(r.json["code"], "seat_mode_cannot_send_to_legacy");
     let none = std::fs::read_dir(q.join("519d0")).unwrap().count();
     assert_eq!(none, 0, "reason: safe_letter_in_ledger");
     aibd::seat_token::tokens().revoke(&safe);

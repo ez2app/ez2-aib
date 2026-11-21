@@ -10,3 +10,27 @@ wk crates/aibd/src/dm_import.rs \
    '                    let _ = &seat_id; // knife' \
    a_letter_to_a_moved_code_lands_once_in_the_web_seats_inbox \
    '--lib dm_import::tests::a_letter_to_a_moved_code_lands_once_in_the_web_seats_inbox'
+# WK2 a move leaves a letter the mirror never posted in the old ledger
+wk crates/aibd/src/dm_import.rs \
+   '                if let Inserted::New = db.insert(row).map_err(|e| e.to_string())? {' \
+   '                if let Inserted::Existing(_) = db.insert(row).map_err(|e| e.to_string())? { // knife' \
+   a_move_brings_the_open_letters_along_once \
+   '--lib dm_import::tests::a_move_brings_the_open_letters_along_once'
+# WK3 a letter is handed on again (no loop guard)
+wk crates/aibd/src/dm_import.rs \
+   '                if had.item.get("forwarded_to").is_some_and(|v| !v.is_null()) || had.to_key == to {' \
+   '                if false { // knife' \
+   a_move_brings_the_open_letters_along_once \
+   '--lib dm_import::tests::a_move_brings_the_open_letters_along_once'
+# WK4 the ledger copy is closed without saying it came through the bridge
+wk crates/aibd/src/dm_import.rs \
+   '    let why = format!("{CLOSED_ON_WEB} {}(經信橋)", row.message_id);' \
+   '    let why = format!("{CLOSED_ON_WEB}"); // knife' \
+   closing_on_the_web_closes_the_ledger_copy \
+   '--lib dm_import::tests::closing_on_the_web_closes_the_ledger_copy'
+# WK5 the ledger copy is closed as a new actor kind (5d33a PREREAD-inboxaibd L1)
+wk crates/aibd/src/dm_import.rs \
+   '        &format!("seat:{code}"),' \
+   '        "aibd_bridge", // knife' \
+   closing_on_the_web_closes_the_ledger_copy \
+   '--lib dm_import::tests::closing_on_the_web_closes_the_ledger_copy'

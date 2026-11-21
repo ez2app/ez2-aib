@@ -254,14 +254,40 @@ pub async fn moved(st: AppState, body: Value, by: String) -> Response {
         }
         _ => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "store"),
     }
+    // DESIGN-web-inbox-aibd-7ebca-1121 r1 B: the letters still open in the old code's ledger
+    // folder go to the web seat now, each once
+    let forwarded = match ledger() {
+        Some(queue) => {
+            let (m, c, s) = (st.messages.clone(), code.clone(), sid.clone());
+            tokio::task::spawn_blocking(move || {
+                let root = queue
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .map(std::path::Path::to_path_buf)?;
+                crate::dm_import::forward_open(&m, &root, &queue, &c, &s).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    if !forwarded.is_empty() {
+        crate::dm_import::wake(&sid);
+    }
     crate::seats::side_event(
         &st,
         MOVE,
         "seat.moved",
-        json!({"old_code": code, "seat": sid, "by": by}),
+        json!({"old_code": code, "seat": sid, "by": by, "forwarded": forwarded.len()}),
     )
     .await;
-    Json(json!({"done": true, "old_code": code, "seat_id": sid, "steps": STEPS})).into_response()
+    Json(
+        json!({"done": true, "old_code": code, "seat_id": sid, "steps": STEPS,
+        "forwarded": forwarded.len()}),
+    )
+    .into_response()
 }
 
 /// `seat_unmove`, for the built-in page `by`: no fingerprint.
