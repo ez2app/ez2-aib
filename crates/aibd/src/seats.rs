@@ -384,7 +384,7 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
 /// sets its own status line through aibd, as itself (both routes already took the seat token).
 /// seat_tree (0eed7 RETRACT-T4 M1, 11-20): the reviewer reads the author's tree through aibd's
 /// tree read (aibd lets only the reviewer on a shared node in).
-pub const TALK_TOOLS: [&str; 15] = [
+pub const TALK_TOOLS: [&str; 13] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
@@ -399,10 +399,11 @@ pub const TALK_TOOLS: [&str; 15] = [
     "mcp__aibd__seat_tree",
     // 1a93b GAP §6: the seat says its handoff note is written (its own line only, like seat_now)
     "mcp__aibd__seat_handoff",
-    // PREREAD-seat-pending-read: a web seat reads the pending folder through aibd, read-only
-    "mcp__aibd__pending_list",
-    "mcp__aibd__pending_read",
 ];
+/// PREREAD-seat-pending-read: a web seat reads the pending folder through aibd, read-only. A
+/// work / dgrs seat's, never a safe seat's (5d33a REVIEW-seatpendingread L1: a safe seat reads
+/// nothing today; aibd refuses one too, [`crate::seat_pending::mode_may_read`]).
+pub const PENDING_TOOLS: [&str; 2] = ["mcp__aibd__pending_list", "mcp__aibd__pending_read"];
 /// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
 /// and reads its own runs. Only for a seat that writes code ([`receipt_tool_for`]; 5d33a L3: a
 /// safe seat has no commit of its own, the tool would only bring the owner's window up); aibd
@@ -523,6 +524,9 @@ pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
 /// [`talk_args`] with the gate switch given (tests; `gate` = [`now_gate_on`]).
 pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> {
     let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
+    if crate::seat_pending::mode_may_read(Some(mode)) {
+        allowed.extend(PENDING_TOOLS);
+    }
     if receipt_tool_for(mode) {
         allowed.push(RECEIPT_TOOL);
     }
@@ -2846,8 +2850,7 @@ mod tests {
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
              mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send,\
-             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,mcp__aibd__seat_handoff,\
-             mcp__aibd__pending_list,mcp__aibd__pending_read",
+             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,mcp__aibd__seat_handoff",
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once
@@ -2864,6 +2867,15 @@ mod tests {
         assert!(
             !a[3].contains("seat_receipt"),
             "reason: safe_seat_gets_receipt_tool"
+        );
+        assert!(
+            !a[3].contains("pending_"),
+            "reason: safe_seat_gets_pending_tools"
+        );
+        assert!(
+            w[3].contains(",mcp__aibd__pending_list,mcp__aibd__pending_read,"),
+            "reason: work_seat_lacks_pending_tools {}",
+            w[3]
         );
         assert!(
             w[3].contains(",mcp__aibd__seat_receipt,"),
