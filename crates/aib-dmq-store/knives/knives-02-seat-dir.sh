@@ -12,8 +12,8 @@ sd crates/aib-dmq-store/src/fsx.rs \
    a_seat_folder_that_is_a_link_takes_no_write
 # SD2 a file in the folder is reached by path again, so a link swapped in takes the write
 sd crates/aib-dmq-store/src/fsx.rs \
-   '        let fd = openat(&self.fd, name, at::file_flags(f), at::private())?;' \
-   '        let fd = openat(nix::fcntl::AT_FDCWD, &self.path.join(name), at::file_flags(f), at::private())?; // knife' \
+   '            match openat(&self.fd, name, at::file_flags(f), at::private()) {' \
+   '            match openat(nix::fcntl::AT_FDCWD, &self.path.join(name), at::file_flags(f), at::private()) { // knife' \
    a_folder_changed_into_a_link_after_opening_keeps_the_write_where_it_was_opened
 # SD3 the folder lock is a file of its own, so the Python writer is not kept out
 sd crates/aib-dmq-store/src/locks.rs \
@@ -25,3 +25,8 @@ sd crates/aib-dmq-store/src/fsx.rs \
    '            let p = open(parent, at::dir_flags(), Mode::empty())?;' \
    '            let p = open(parent, nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY, Mode::empty())?; // knife' \
    a_queue_folder_that_is_a_link_takes_no_write
+# SD5 an O_CREAT open that raced another thread's create and answered ENOENT is not tried again (macOS)
+sd crates/aib-dmq-store/src/fsx.rs \
+   'const CREATE_TRIES: u32 = 20;' \
+   'const CREATE_TRIES: u32 = 0; // knife' \
+   a_lock_file_created_by_many_threads_at_once_opens_for_all
