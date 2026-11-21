@@ -284,10 +284,13 @@ pub fn done(
     }
 }
 
-/// The old seat code aibd recorded when this web seat took a terminal seat's place
-/// (7ebca G5 `seat_moves`, not undone). None until that record exists: the act is refused.
-pub fn moved_code(_st: &AppState, _seat_id: &str) -> Option<String> {
-    None
+/// The old seat code aibd recorded when this web seat took a terminal seat's place (7ebca G5
+/// `seat_moves`, a live move only; written only by the fingerprint act). None: refused.
+pub fn moved_code(db: &aib_store::MessageDb, seat_id: &str) -> Option<String> {
+    db.moved_code(seat_id)
+        .ok()
+        .flatten()
+        .filter(|c| aib_dmq_store::store::seat_ok(c))
 }
 
 fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
@@ -321,7 +324,12 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "a safe seat does not read the mail ledger",
         );
     }
-    let Some(code) = moved_code(&st, seat_id) else {
+    let (db, sid) = (st.messages.clone(), seat_id.to_owned());
+    let code = tokio::task::spawn_blocking(move || moved_code(&db, &sid))
+        .await
+        .ok()
+        .flatten();
+    let Some(code) = code else {
         return refuse(
             StatusCode::FORBIDDEN,
             "dm_not_moved",
@@ -528,6 +536,32 @@ mod tests {
         );
         assert_eq!(r.0, StatusCode::OK, "{:?}", r.1);
         assert_eq!(status(&store, id2), "done");
+    }
+
+    /// G3i: the old code is the live move aibd recorded for this seat, and nothing else.
+    #[test]
+    fn the_old_code_is_the_recorded_live_move() {
+        let d = tempfile::tempdir().unwrap();
+        let db = aib_store::MessageDb::open(&d.path().join("messages.sqlite")).unwrap();
+        assert_eq!(
+            moved_code(&db, "seat_web1"),
+            None,
+            "reason: unmoved_seat_has_code"
+        );
+        db.seat_move("a9136", "seat_web1", "test", "2026-11-21T00:00:00Z")
+            .unwrap();
+        assert_eq!(moved_code(&db, "seat_web1").as_deref(), Some("a9136"));
+        assert_eq!(
+            moved_code(&db, "seat_web2"),
+            None,
+            "reason: other_seat_has_code"
+        );
+        db.seat_unmove("a9136", "2026-11-21T00:01:00Z").unwrap();
+        assert_eq!(
+            moved_code(&db, "seat_web1"),
+            None,
+            "reason: undone_move_kept"
+        );
     }
 
     /// G3f: the seat code is aibd's, never a field of the request.

@@ -24,3 +24,6 @@ dm '        "relay_text": relay.map(|t| format!("{}\n---\n{}", crate::seat_pendi
 # G3h waiting lists letters already done
 dm '            if !WAIT_STATUSES.contains(&status) {' '            if status.is_empty() { // knife' \
    the_waiting_letters_are_listed_in_order
+# G3i an undone or missing move still gives a code
+dm '        .filter(|c| aib_dmq_store::store::seat_ok(c))' '        .or(Some("a9136".to_owned())) // knife' \
+   the_old_code_is_the_recorded_live_move
