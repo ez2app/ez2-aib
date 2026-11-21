@@ -83,7 +83,7 @@ pub const ROLES: [&str; 2] = ["reviewer", "verifier"];
 pub fn is_act(body: &Value) -> bool {
     matches!(
         body.get("type").and_then(Value::as_str),
-        Some(RECEIPT | EVENTS | SEAT | BUNDLE)
+        Some(RECEIPT | EVENTS | SEAT | BUNDLE | crate::verify_preview::PREVIEW_GET)
     )
 }
 
@@ -543,6 +543,7 @@ pub async fn act(st: AppState, body: Value) -> Response {
         Some(EVENTS) => events(st, body).await,
         Some(SEAT) => seat(st, body).await,
         Some(BUNDLE) => bundle(st, body).await,
+        Some(crate::verify_preview::PREVIEW_GET) => crate::verify_preview::act(st, body).await,
         _ => refuse(StatusCode::BAD_REQUEST, "verify_unknown", "no such check"),
     }
 }
@@ -1115,7 +1116,13 @@ mod tests {
 
     #[test]
     fn a_check_is_named_or_not_taken() {
-        for k in [RECEIPT, EVENTS, SEAT, BUNDLE] {
+        for k in [
+            RECEIPT,
+            EVENTS,
+            SEAT,
+            BUNDLE,
+            crate::verify_preview::PREVIEW_GET,
+        ] {
             assert!(is_act(&json!({"type": k})));
         }
         for k in ["verify_sql", "verify_shell", "receipt_read", ""] {

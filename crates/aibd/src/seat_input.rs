@@ -79,6 +79,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::verify_run::EVENTS,
     crate::verify_run::SEAT,
     crate::verify_run::BUNDLE,
+    crate::verify_preview::PREVIEW_GET,
     crate::seat_tick::SET,
     crate::seat_tick::CLEAR,
     crate::seat_tick::LIST,
@@ -597,7 +598,8 @@ pub async fn act(
             crate::verify_run::RECEIPT
             | crate::verify_run::EVENTS
             | crate::verify_run::SEAT
-            | crate::verify_run::BUNDLE,
+            | crate::verify_run::BUNDLE
+            | crate::verify_preview::PREVIEW_GET,
         ) => {
             if held_as_user_page(&page).await || page.carried {
                 return refuse(
