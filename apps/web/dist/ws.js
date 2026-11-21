@@ -4070,7 +4070,7 @@
     if (!(r && r.__status === 202 && r.ticket)) return r;
     const first = r, more = extra ? extra(first) : {};
     // 519d0 19:2x:等到 aibd 單號實際到期(expires_at);沒給到期就等 10 分(原本寫死 2 分,轉信慢的窗會先過期)
-    const exp = Date.parse(String(r.expires_at || '')), ticket = String(r.ticket), until = Number.isFinite(exp) && exp > Date.now() ? exp : Date.now() + 600000;
+    const exp = Date.parse(String(r.expires_at || '')), ticket = String(r.ticket), until = Number.isFinite(exp) && exp > Date.now() ? Math.min(exp, Date.now() + 900000) : Date.now() + 600000; // 最多等 15 分(5d33a N2)
     // 7b81e IFACE-owner-touch r0(1a93b 11-20):每 1 秒問一次、到單號到期為止;每一輪把剩幾秒交給畫面倒數;unavailable 直接停
     const left = () => Math.max(0, Math.ceil((until - Date.now()) / 1000));
     if (wait) wait(ticket, left(), first);
