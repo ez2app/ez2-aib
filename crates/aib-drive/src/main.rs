@@ -15,7 +15,7 @@
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, GitCarry, Inputs};
-use aib_drive::source::{run_fixed, AibQueue};
+use aib_drive::source::{run_fixed, StoreQueue};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -473,22 +473,13 @@ fn own_compute(args: &[String]) -> Option<(String, aib_drive::own::OwnOut, Optio
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.as_array().cloned()),
-        None => {
-            let program = aib_drive::progpath::aib_program();
-            let mut all = Some(Vec::new());
-            for tab in ["waiting", "read"] {
-                let a = ["dm-queue", "list", "--seat", seat, "--tab", tab].map(str::to_owned);
-                let rows = run_fixed(&program, &a, aib_drive::source::CALL_TIMEOUT)
-                    .ok()
-                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o).ok())
-                    .and_then(|v| v.as_array().cloned());
-                match (all.as_mut(), rows) {
-                    (Some(acc), Some(r)) => acc.extend(r),
-                    _ => all = None,
-                }
-            }
-            all
-        }
+        // S79-rust slice 2: the waiting and read tabs read in process, no `aib dm-queue list`
+        None => root.as_ref().and_then(|r| {
+            let q = StoreQueue { root: r.clone() };
+            let mut all = q.rows(seat, Some("waiting")).ok()?;
+            all.extend(q.rows(seat, Some("read")).ok()?);
+            Some(all)
+        }),
     };
     // claimed by another seat: act's intents not addressed to this one (key ends :<seat>)
     let others = root
@@ -1900,7 +1891,7 @@ fn observe_main(argv: &[String]) {
     };
     let paths = Paths::under(&root);
     let gh = GhRead::new();
-    let queue = AibQueue::new();
+    let queue = StoreQueue { root: root.clone() };
     let roles = Roles {
         captain: a.captain.clone(),
         collector: a.collector.clone(),

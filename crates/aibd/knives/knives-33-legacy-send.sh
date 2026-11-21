@@ -10,6 +10,9 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 # knife-spec reads only $1..$9 of a function (no default-value form): one wrapper per test target
 ll() { python3 -I scripts/knife.py crates/aibd/src/legacy_send.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "$3"; }
+# S79-rust slice 3a: the text check lives in aib-dmq-store (shared with aib-drive); legacy_send's tests still guard it
+lc() { python3 -I scripts/knife.py crates/aib-dmq-store/src/letter.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "$3"; }
 lt() { python3 -I scripts/knife.py crates/aibd/src/legacy_send.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test legacy_send "$3"; }
 dl() { python3 -I scripts/knife.py crates/aibd/src/dm_import.rs "$1" "$2" --expect-fail "$3" \
@@ -23,7 +26,7 @@ lt 'let Some(cabin) = cfg.legacy_cabin.clone() else {' \
    'let Some(cabin) = cfg.legacy_cabin.clone().or(Some(String::new())) else {' \
    only_a_page_paired_this_run_with_the_switch_writes_a_letter
 # LS3
-ll 'if line.contains(" >> ")' \
+lc 'if line.contains(" >> ")' \
    'if line.contains(" >>> ")' \
    legacy_send::tests::r30_and_a_header_shaped_line_refuse_the_whole_letter
 # LS4
@@ -39,5 +42,5 @@ dl 'if side_of(letter) != "hub"' \
    'if side_of(letter) == "nobody"' \
    dm_import::tests::a_seats_answer_to_a_persons_letter_comes_back_in_its_thread
 # LS-BRK a break other than \n (\r, U+2028 …) hides a header-shaped line (5d33a PREREAD-integws2 L1)
-ll "        (c.is_control() && !matches!(c, '\\n' | '\\t')) || matches!(c, '\\u{2028}' | '\\u{2029}')" '        c.is_control() && false // knife' \
+lc "        (c.is_control() && !matches!(c, '\\n' | '\\t')) || matches!(c, '\\u{2028}' | '\\u{2029}')" '        c.is_control() && false // knife' \
    a_break_other_than_newline_cannot_hide_a_header_line

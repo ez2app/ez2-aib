@@ -42,6 +42,8 @@ impl World {
             .env("EZ2_AIB_HOME", &self.root)
             .env_remove("EZ2_AIB_STATE_ROOT")
             .env_remove("AIB_DRIVE_BY")
+            // D7a: these rounds test act.json alone, as aibd started them with its switch on
+            .env("AIB_DRIVE_AIBD_SWITCH", "on")
             .env("AIB_DRIVE_NOW_MS", now.to_string())
             .output()
             .expect("run aib-drive-act")

@@ -158,6 +158,17 @@ impl MessageDb {
         let c = self.read()?;
         Ok(live_seat(&c, old_code)?)
     }
+
+    /// Every 1.x code moved into a web seat now (live moves only), sorted (S79-rust 3b: the web
+    /// seats aibd tells aib-drive).
+    pub fn moved_codes(&self) -> Result<Vec<String>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT old_code FROM seat_moves WHERE unmoved_at IS NULL ORDER BY old_code",
+        )?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }
 
 /// One message handed on to another receiver (DESIGN-web-inbox-aibd-7ebca-1121 r1 B: a letter
@@ -290,6 +301,18 @@ mod tests {
             .query_row("SELECT count(*) FROM seat_moves", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// S79-rust 3b: the codes moved now, the one taken back not among them.
+    #[test]
+    fn the_moved_codes_are_the_live_moves_only() {
+        let (_d, m) = db();
+        assert!(m.moved_codes().unwrap().is_empty());
+        m.seat_move("7ebca", "s1", "owner", "t1").unwrap();
+        m.seat_move("519d0", "s2", "owner", "t1").unwrap();
+        m.seat_move("abcde", "s3", "owner", "t1").unwrap();
+        m.seat_unmove("abcde", "t2").unwrap();
+        assert_eq!(m.moved_codes().unwrap(), ["519d0", "7ebca"]);
     }
 
     #[test]
