@@ -50,6 +50,9 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::test_host_web::LIST,
+    crate::test_host_web::ADD,
+    crate::test_host_web::REMOVE,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
@@ -417,6 +420,28 @@ pub async fn act(
                 crate::seat_trust::trust(st, body, by).await
             } else {
                 crate::seat_trust::untrust(st, body, by).await
+            };
+        }
+        // 「加一台測試機」(DESIGN-add-test-host-b4297-1121): the built-in page in this pairing
+        // only; adding or taking one away then needs the owner's fingerprint
+        Some(
+            k @ (crate::test_host_web::LIST
+            | crate::test_host_web::ADD
+            | crate::test_host_web::REMOVE),
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "test machines are added from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::test_host_web::LIST => crate::test_host_web::list(st).await,
+                crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
+                _ => crate::test_host_web::remove(st, body, by).await,
             };
         }
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a

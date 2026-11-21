@@ -15,9 +15,19 @@
 
 use crate::trusted_hosts::{self, TrustedHost};
 
-/// Read on the test machine through the owner's login: its ed25519 host key, the login name and
-/// the macOS version (`sw_vers` is not there on anything but a Mac).
-pub const READ: &str = "cat /etc/ssh/ssh_host_ed25519_key.pub; id -un; sw_vers -productVersion";
+/// Read on the test machine through the owner's login, run by `/bin/sh` there (one line each):
+/// its ed25519 host key, the login name, the macOS version (`none`: no `sw_vers`, not a Mac),
+/// its home, the address it sees this computer at (what the line's `from=` holds), and whether
+/// the receipt gate is installed in that home.
+pub const READ: &str = r#"cat /etc/ssh/ssh_host_ed25519_key.pub
+id -un
+sw_vers -productVersion 2>/dev/null || echo none
+printf "%s\n" "$HOME"
+printf "%s\n" "${SSH_CLIENT%% *}"
+if [ -x "$HOME/.ez2-aib/bin/aib-receipt-gate" ]; then echo gate; else echo no_gate; fi"#;
+
+/// Where the receipt gate is in a test machine's home (the line's `command=`).
+pub const GATE_IN_HOME: &str = ".ez2-aib/bin/aib-receipt-gate";
 
 /// Add the line read from standard input to `~/.ssh/authorized_keys` once; prints `ADDED <n>`.
 /// The line must be a restricted one of aibd's key (5d33a PREREAD-addtesthost N2).
@@ -341,9 +351,15 @@ pub struct Read {
     pub hostkey: String,
     pub user: String,
     pub macos: String,
+    /// The receipt gate's path there (`<home>/` + [`GATE_IN_HOME`]); `None`: not installed (a
+    /// machine is added only with one, and taken away without).
+    pub gate: Option<String>,
+    /// The address the machine sees this computer at.
+    pub from: String,
 }
 
-/// [`READ`]'s three lines; anything else (no ed25519 key, not a Mac) is refused.
+/// [`READ`]'s six lines; anything else (no ed25519 key, not a Mac, a home that is not one plain
+/// path, an address that is not one) is refused.
 pub fn parse_read(out: &str) -> Result<Read, &'static str> {
     let mut l = out.lines().map(str::trim);
     let key = l.next().unwrap_or_default();
@@ -359,6 +375,25 @@ pub fn parse_read(out: &str) -> Result<Read, &'static str> {
     {
         return Err("not_a_mac");
     }
+    let home = l.next().unwrap_or_default();
+    let home_ok = home.len() > 1
+        && home.len() <= 200
+        && home.starts_with('/')
+        && home
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b));
+    if !home_ok {
+        return Err("home");
+    }
+    let from = l.next().unwrap_or_default().to_owned();
+    if from.parse::<std::net::IpAddr>().is_err() {
+        return Err("from_address");
+    }
+    let gate = match l.next() {
+        Some("gate") => Some(format!("{}/{GATE_IN_HOME}", home.trim_end_matches('/'))),
+        Some("no_gate") => None,
+        _ => return Err("read_said_less"),
+    };
     if l.next().is_some() {
         return Err("read_said_more");
     }
@@ -366,6 +401,8 @@ pub fn parse_read(out: &str) -> Result<Read, &'static str> {
         hostkey,
         user,
         macos,
+        gate,
+        from,
     })
 }
 
@@ -532,22 +569,52 @@ mod tests {
 
     #[test]
     fn the_read_gives_the_key_without_its_comment_and_refuses_a_machine_that_is_no_mac() {
-        let r = parse_read(&format!("{KEY} root@andymini\nowner\n15.6.1\n")).unwrap();
+        let tail = "/Users/owner\n192.0.2.1\ngate\n";
+        let r = parse_read(&format!("{KEY} root@andymini\nowner\n15.6.1\n{tail}")).unwrap();
         assert_eq!(r.hostkey, KEY, "reason: comment_kept");
         assert_eq!((r.user.as_str(), r.macos.as_str()), ("owner", "15.6.1"));
         assert_eq!(
-            parse_read("ssh-rsa AAAA x\nowner\n15.6\n"),
-            Err("no_ed25519_host_key")
+            r.gate.as_deref(),
+            Some("/Users/owner/.ez2-aib/bin/aib-receipt-gate")
         );
+        let none = format!("{KEY}\nowner\n15.6\n/Users/owner\n192.0.2.1\nno_gate\n");
         assert_eq!(
-            parse_read(&format!("{KEY}\nowner\nsh: sw_vers: not found\n")),
-            Err("not_a_mac")
+            parse_read(&none).unwrap().gate,
+            None,
+            "reason: no_gate_taken_as_gate"
         );
-        assert_eq!(parse_read(&format!("{KEY}\nowner\n\n")), Err("not_a_mac"));
-        assert_eq!(
-            parse_read(&format!("{KEY}\nowner\n15.6\nmore\n")),
-            Err("read_said_more")
-        );
+        assert_eq!(r.from, "192.0.2.1");
+        for (out, why) in [
+            (
+                format!("ssh-rsa AAAA x\nowner\n15.6\n{tail}"),
+                "no_ed25519_host_key",
+            ),
+            (format!("{KEY}\nowner\nnone\n{tail}"), "not_a_mac"),
+            (format!("{KEY}\nowner\n\n{tail}"), "not_a_mac"),
+            (
+                format!("{KEY}\nowner\n15.6\n/Users/o w\n192.0.2.1\ngate\n"),
+                "home",
+            ),
+            (
+                format!("{KEY}\nowner\n15.6\n/Users/o\"x\n192.0.2.1\ngate\n"),
+                "home",
+            ),
+            (
+                format!("{KEY}\nowner\n15.6\n/Users/owner\n\ngate\n"),
+                "from_address",
+            ),
+            (
+                format!("{KEY}\nowner\n15.6\n/Users/owner\n192.0.2.1\n"),
+                "read_said_less",
+            ),
+            (
+                format!("{KEY}\nowner\n15.6\n{tail}more\n"),
+                "read_said_more",
+            ),
+        ] {
+            assert_eq!(parse_read(&out), Err(why), "reason: {why}");
+        }
+        assert!(!READ.contains('\''), "reason: read_not_one_quoted_word");
     }
 
     #[test]
@@ -565,7 +632,6 @@ mod tests {
             );
         }
         assert_eq!(remote_command("echo 'x'"), None, "reason: quote_passed");
-        assert!(!READ.contains('\''));
     }
 
     #[test]
