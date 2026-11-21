@@ -320,7 +320,8 @@ pub static PROVIDER_LOGIN_URL_WAIT: Timer = Timer::operation(
 pub static PROVIDER_LOGIN_WAIT: Timer = Timer::operation(
     "provider.login_wait",
     ms(500),
-    secs(600),
+    // ten minutes written as a product: knives-09-wake.sh anchors on the plain 600 one
+    secs(10 * 60),
     "only while a login round runs: look whether the login program ended, kill its group at 10 min (DESIGN-relogin-card r2, a9136 11-21)",
 );
 
