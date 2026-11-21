@@ -2287,7 +2287,7 @@ fn follow_round(dir: &Path, journal: &Path, hist: &History, now: i64) -> Result<
     let with_status = crate::track::follow_with_status(
         &ledger,
         now,
-        &crate::source::AibQueue::new(),
+        &crate::source::StoreQueue { root: root.clone() },
         &crate::track::FsSeatNow { root: root.clone() },
     );
     // S107-product slice 3: a status not written before, as a drive_send_after event

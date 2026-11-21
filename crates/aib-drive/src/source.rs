@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aib_ghread::run_fixed_any;
@@ -49,6 +49,99 @@ impl AibQueue {
         ]
         .map(str::to_owned)
         .to_vec())
+    }
+}
+
+/// The dm queue read in process (S79-rust slice 2, 5d33a PREREAD-drive-rust 0/0/2/2): the
+/// seat folders under `<root>/state/dm-queue`, each item through aib-dmq-store's reader (the
+/// one aibd's bridge uses), no `aib dm-queue list` and so no Python. A row is the item with
+/// the keys `dm_queue._row` derives and aib-drive reads: `status` (empty ⇒ queued),
+/// `priority` (normalized), `read_at`, `msg`, `when`, `wait`. An item that does not read is
+/// left out, as the 1.x list leaves it out of the rows.
+pub struct StoreQueue {
+    pub root: PathBuf,
+}
+
+impl StoreQueue {
+    /// The state root the way aib-drive finds it: `EZ2_AIB_STATE_ROOT`, `EZ2_AIB_HOME`, else
+    /// `~/.ez2-aib` (the same order as the 1.x `seats_dir_lib.state_root`).
+    pub fn from_env() -> Result<Self, String> {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
+        let root = crate::observe::state_root(
+            std::env::var("EZ2_AIB_STATE_ROOT").ok().as_deref(),
+            std::env::var("EZ2_AIB_HOME").ok().as_deref(),
+            home.as_deref(),
+        )?;
+        Ok(Self { root })
+    }
+
+    /// `seat`'s rows on `tab` (`None`: every tab), in file-name order.
+    pub fn rows(&self, seat: &str, tab: Option<&str>) -> Result<Vec<Value>, String> {
+        if !is_seat(seat) {
+            return Err(format!("seat refused: {seat:?}"));
+        }
+        let store = aib_dmq_store::store::Store::new(&self.root, &self.root).without_git();
+        let dir = store
+            .seat_dir(seat)
+            .map_err(|e| format!("dm {seat}: {e}"))?;
+        let mut names: Vec<String> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                .filter_map(|n| n.strip_suffix(".json").map(str::to_owned))
+                .filter(|n| aib_dmq::evidence::is_item_id(n))
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("dm {seat}: {}", e.kind())),
+        };
+        names.sort();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let mut out = Vec::new();
+        for id in names {
+            let Ok(aib_dmq_store::store::ItemRead::Item { item, .. }) = store.read_item(seat, &id)
+            else {
+                continue;
+            };
+            let raw = Value::Object(item);
+            let status = raw["status"].as_str().filter(|s| !s.is_empty());
+            if tab.is_some_and(|t| t != aib_dmq::view::tab_of_status(status)) {
+                continue;
+            }
+            let mut row = raw.clone();
+            let when = aib_dmq::view::row_when(&raw, now);
+            let pri = aib_dmq::norm::priority(raw.get("priority"), "normal");
+            for (k, v) in [
+                ("status", Value::from(status.unwrap_or("queued"))),
+                ("priority", Value::from(pri)),
+                (
+                    "read_at",
+                    raw.get("read_at").cloned().unwrap_or(Value::Null),
+                ),
+                ("msg", Value::from(raw["msg"].as_str().unwrap_or_default())),
+                ("when", Value::from(when)),
+                ("wait", raw.get("wait").cloned().unwrap_or(Value::Null)),
+            ] {
+                row[k] = v;
+            }
+            out.push(row);
+        }
+        Ok(out)
+    }
+}
+
+impl Queue for StoreQueue {
+    fn waiting(&self, seat: &str) -> Result<Value, String> {
+        self.rows(seat, Some("waiting")).map(Value::Array)
+    }
+}
+
+impl DmLookup for StoreQueue {
+    fn all(&self, seat: &str) -> Result<Value, String> {
+        self.rows(seat, None).map(Value::Array)
     }
 }
 
@@ -265,9 +358,10 @@ pub fn repo_from(get: impl Fn(&str) -> Option<String>) -> String {
         .unwrap_or_else(|| DEFAULT_REPO.to_owned())
 }
 
-/// The live lookup of a send round: dms through `aib`, a PR through `gh api`.
+/// The live lookup of a send round: dms read in process ([`StoreQueue`]), a PR through
+/// `gh api`. No state root ⇒ every dm lookup fails (never "not queued").
 pub struct LiveLookup {
-    pub queue: AibQueue,
+    pub queue: Result<StoreQueue, String>,
     pub gh: aib_ghread::GhRead,
     /// `owner/name`.
     pub repo: String,
@@ -276,7 +370,7 @@ pub struct LiveLookup {
 impl LiveLookup {
     pub fn new() -> Self {
         LiveLookup {
-            queue: AibQueue::new(),
+            queue: StoreQueue::from_env(),
             gh: aib_ghread::GhRead::new(),
             repo: std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned()),
         }
@@ -291,7 +385,7 @@ impl Default for LiveLookup {
 
 impl DmLookup for LiveLookup {
     fn all(&self, seat: &str) -> Result<Value, String> {
-        self.queue.all(seat)
+        self.queue.as_ref().map_err(Clone::clone)?.all(seat)
     }
     /// `gh api repos/<repo>/pulls/<n>`.
     fn pr(&self, n: u64) -> Result<Value, String> {
@@ -541,5 +635,78 @@ mod sender_tests {
             let _ = std::fs::remove_dir_all(&dir);
             assert_eq!(got, Ok(("delivered".to_owned(), "q_ea19f2c5".to_owned())));
         }
+    }
+}
+
+#[cfg(test)]
+mod store_queue_tests {
+    use super::*;
+    use aib_dmq_store::letter;
+    use serde_json::json;
+
+    fn put(root: &Path, seat: &str, id: &str, edit: impl Fn(&mut serde_json::Map<String, Value>)) {
+        let store = aib_dmq_store::Store::new(root, root).without_git();
+        let mut it = letter::item(id, seat, "派工: X → 519d0", "l", "", "", 1_700_000_000);
+        edit(&mut it);
+        letter::enqueue(&store, seat, &it).expect("enqueue");
+    }
+
+    /// SQ1 (S79-rust slice 2): the queue read in process gives the rows drive reads, a tab
+    /// at a time, without the `aib` program.
+    #[test]
+    fn the_queue_read_in_process_gives_the_rows_drive_reads() {
+        let d = crate::act::tests::Scratch::new("sq1");
+        let root = d.path();
+        put(root, "519d0", "q_0000000000000001", |m| {
+            m.insert("priority".into(), json!(" URGENT "));
+            m.remove("read_at");
+        });
+        put(root, "519d0", "q_0000000000000002", |m| {
+            m.insert("status".into(), json!("read"));
+            m.insert("read_at".into(), json!(1_700_000_100));
+            m.insert("wait".into(), json!({"text": "等收據", "at": 1}));
+        });
+        put(root, "519d0", "q_0000000000000003", |m| {
+            m.insert("status".into(), json!(""));
+        });
+        let dir = root.join("state/dm-queue/519d0");
+        std::fs::write(dir.join("q_00000000000000ff.json"), b"{not json").expect("bad");
+        std::fs::write(dir.join("notes.json"), b"{}").expect("other");
+        let q = StoreQueue {
+            root: root.to_path_buf(),
+        };
+        let w = q.rows("519d0", Some("waiting")).expect("waiting");
+        let ids: Vec<&str> = w.iter().filter_map(|r| r["id"].as_str()).collect();
+        assert_eq!(ids, ["q_0000000000000001", "q_0000000000000003"]);
+        assert_eq!(
+            w[0]["priority"], "urgent",
+            "reason: priority_not_normalized"
+        );
+        assert_eq!(w[0]["read_at"], Value::Null, "reason: read_at_missing");
+        assert_eq!(w[1]["status"], "queued", "reason: empty_status_not_queued");
+        assert_eq!(w[0]["msg"], "派工: X → 519d0");
+        let all = q.all("519d0").expect("all");
+        let all = all.as_array().expect("list");
+        assert_eq!(all.len(), 3, "reason: bad_item_listed_or_tab_dropped");
+        assert_eq!(all[1]["status"], "read");
+        assert_eq!(all[1]["wait"]["text"], "等收據");
+        let busy = busy_seats(&q, &["519d0".to_owned()]).expect("busy");
+        assert!(busy.contains("519d0"), "reason: urgent_unread_not_busy");
+        assert_eq!(
+            q.rows("nobody", None).unwrap_err(),
+            "seat refused: \"nobody\""
+        );
+        assert!(q.rows("abcde", None).expect("no folder").is_empty());
+    }
+
+    /// SQ2: a dm lookup with no state root fails instead of reading as "not queued".
+    #[test]
+    fn no_state_root_is_an_error_not_an_empty_queue() {
+        let live = LiveLookup {
+            queue: Err("no root".to_owned()),
+            gh: aib_ghread::GhRead::new(),
+            repo: DEFAULT_REPO.to_owned(),
+        };
+        assert_eq!(live.all("519d0").unwrap_err(), "no root");
     }
 }
