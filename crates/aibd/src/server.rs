@@ -448,6 +448,14 @@ pub async fn run(
             crate::mail_nudge::nudge(redeliver_state.clone(), seat).await;
         }
     });
+    // 5d33a REVIEW-d3wake L1: every seat looked at once, a look-again lost with the stop
+    let start_store = state.store.clone();
+    tokio::spawn(async move {
+        if let Ok(Ok(metas)) = tokio::task::spawn_blocking(move || start_store.seat_metas()).await {
+            let ids: Vec<String> = metas.into_iter().map(|m| m.seat_id).collect();
+            crate::mail_nudge::at_start(&ids);
+        }
+    });
     // N-revive: seats running when aibd last stopped on purpose start again, conversation kept
     if rejoin {
         let st = state.clone();

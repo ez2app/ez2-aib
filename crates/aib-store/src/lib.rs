@@ -8,6 +8,7 @@ mod alive;
 mod idem;
 mod messages;
 mod migrate;
+pub mod ranks;
 mod seat_meta;
 pub mod seat_moves;
 mod seats;

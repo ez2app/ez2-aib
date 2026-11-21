@@ -8,16 +8,16 @@ set -eu
 mn() { python3 -I scripts/knife.py "crates/aibd/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aibd --locked --lib "$4"; }
 # MN1 a message is named a third time
-mn mail_nudge.rs '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER)' \
-   '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER + 1) // knife' \
+mn mail_nudge.rs '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER && nameable(r))' \
+   '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER + 1 && nameable(r)) // knife' \
    a_message_is_named_twice_and_then_left_to_the_card
 # MN2 a message just written is named at once
-mn mail_nudge.rs '            .is_some_and(|at| at <= now - AFTER_SECS)' \
+mn mail_nudge.rs '            .is_some_and(|at| at <= now - wait_of(r))' \
    '            .is_some_and(|at| at <= now + AFTER_SECS) // knife' \
    a_message_written_three_minutes_ago_and_still_open_is_due
 # MN3 the person's own words are named as a task
-mn mail_nudge.rs '        && text_of(r, "sender_kind") == Some("seat")' \
-   '        && text_of(r, "sender_kind").is_some() // knife' \
+mn mail_nudge.rs '    matches!(text_of(r, "sender_kind"), Some("seat" | "system"))' \
+   '    text_of(r, "sender_kind").is_some() // knife' \
    the_persons_words_and_a_call_in_a_conversation_are_not_named
 # MN4 a seat that takes no input, or is past its hour, is written anyway
 mn mail_nudge.rs '    if takes_input && under_hour {' '    if takes_input || under_hour { // knife' \

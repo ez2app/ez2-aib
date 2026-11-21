@@ -157,6 +157,23 @@ pub fn object(row: &MessageRow, me: &str, with_body: bool) -> Value {
             m.insert("body".into(), json!(b));
         }
     }
+    // 待審 1.5 期: an urgent letter says so and by which role (only seat_send writes these
+    // keys; a letter bridged in from a 1.x ledger is never urgent, whatever it carries)
+    // D3 (DECISION-council-driveweb r1): a work order aibd marked, shown apart from urgent
+    if crate::urgent::is_dispatch(row) {
+        if let Some(m) = o.as_object_mut() {
+            m.insert(crate::urgent::DISPATCH.into(), json!(true));
+        }
+    }
+    if crate::urgent::is_urgent(row) {
+        if let Some(m) = o.as_object_mut() {
+            m.insert("level".into(), json!(crate::urgent::URGENT));
+            m.insert(
+                "level_by".into(),
+                row.item.get("level_by").cloned().unwrap_or(Value::Null),
+            );
+        }
+    }
     if let (Some(item), Some(m)) = (imported_item(row, with_body), o.as_object_mut()) {
         m.insert("item".into(), item);
     }

@@ -43,12 +43,135 @@ pub fn nudged(r: &aib_store::MessageRow) -> i64 {
 /// open (whatever `nudged` says).
 fn open_past(r: &aib_store::MessageRow, now: i64) -> bool {
     matches!(text_of(r, "status"), Some("delivered" | "read"))
-        && text_of(r, "sender_kind") == Some("seat")
+        && named_kind(r)
         && r.item.get("post_id").is_none_or(Value::is_null)
         && r.item
             .get("delivered_at")
             .and_then(Value::as_i64)
-            .is_some_and(|at| at <= now - AFTER_SECS)
+            .is_some_and(|at| at <= now - wait_of(r))
+}
+
+/// A seat's message, or a work order aibd wrote as the system (D3); never the person's words.
+fn named_kind(r: &aib_store::MessageRow) -> bool {
+    matches!(text_of(r, "sender_kind"), Some("seat" | "system"))
+}
+
+/// How long a message is left before it is first named: an urgent one (its sender's rank let
+/// aibd mark it; a bridged letter never is) not at all, every other [`AFTER_SECS`]
+/// (DESIGN-drive-d3-wake 2). Once named, every message rests [`AFTER_SECS`] ([`rested`]).
+fn wait_of(r: &aib_store::MessageRow) -> i64 {
+    if at_once(r) && nudged(r) == 0 {
+        0
+    } else {
+        AFTER_SECS
+    }
+}
+
+/// An urgent message or a work order aibd marked: named the moment it is written, and a work
+/// order only that once (DECISION-council-driveweb r1 D3: still open after that, it is the
+/// card's, never a second wake).
+fn at_once(r: &aib_store::MessageRow) -> bool {
+    crate::urgent::is_urgent(r) || crate::urgent::is_dispatch(r)
+}
+
+/// Whether `r` is named (again): a work order named once is not.
+fn nameable(r: &aib_store::MessageRow) -> bool {
+    !(crate::urgent::is_dispatch(r) && nudged(r) >= 1)
+}
+
+/// When the earliest of a seat's open messages that is not due yet comes due (unix seconds,
+/// after `now`): what an idle seat is looked at again for (DESIGN-drive-d3-wake 1). `None`
+/// when nothing open is waiting to come due.
+pub fn next_due(rows: &[aib_store::MessageRow], now: i64) -> Option<i64> {
+    rows.iter()
+        .filter(|r| {
+            matches!(text_of(r, "status"), Some("delivered" | "read"))
+                && named_kind(r)
+                && r.item.get("post_id").is_none_or(Value::is_null)
+                && nudged(r) < PER_LETTER
+                && nameable(r)
+        })
+        .filter_map(|r| {
+            let written = r.item.get("delivered_at").and_then(Value::as_i64)? + wait_of(r);
+            let named = r
+                .item
+                .get("nudged_at")
+                .and_then(Value::as_i64)
+                .map_or(i64::MIN, |at| at + AFTER_SECS);
+            Some(written.max(named))
+        })
+        .filter(|at| *at > now)
+        .min()
+}
+
+/// What [`nudge`] does with a seat's open messages at `now`: look again in how many seconds
+/// (when something open is not due yet), and the ones named now (5d33a REVIEW-d3wake L2: the
+/// look-again is decided here, where a test sees it).
+pub fn plan(
+    rows: &[aib_store::MessageRow],
+    now: i64,
+) -> (Option<i64>, Vec<&aib_store::MessageRow>) {
+    (next_due(rows, now).map(|at| at - now), due(rows, now))
+}
+
+/// Every seat once when aibd starts (5d33a REVIEW-d3wake L1): a look-again waiting when aibd
+/// stopped is gone, and an idle seat that is not rejoined has no turn to bring it back.
+pub fn at_start(seats: &[String]) {
+    for s in seats {
+        crate::dm_import::wake(s);
+    }
+}
+
+/// The seats with a look-again waiting, and when (one each: a later one never replaces an
+/// earlier one, an earlier one does).
+fn pending() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
+    static P: std::sync::OnceLock<Mutex<HashMap<String, Instant>>> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether `seat` gets a new look-again at `at`: none waiting, or the one waiting is later. The
+/// entry is taken here.
+fn claim(seat: &str, at: Instant) -> bool {
+    let mut p = pending();
+    if p.get(seat).is_some_and(|t| *t <= at) {
+        return false;
+    }
+    p.insert(seat.to_owned(), at);
+    true
+}
+
+/// Whether the look-again for `seat` at `at` is still the one waiting (a newer earlier one took
+/// its place otherwise); the entry is cleared when it is.
+fn release(seat: &str, at: Instant) -> bool {
+    let mut p = pending();
+    if p.get(seat) == Some(&at) {
+        p.remove(seat);
+        true
+    } else {
+        false
+    }
+}
+
+/// Look at `seat` again in `after` seconds (1 to [`AFTER_SECS`]): on the registered operation
+/// timer [`crate::timers::MAIL_NUDGE_RECHECK`], then through the same wake a new message takes
+/// (redeliver, then [`nudge`]).
+pub fn recheck(seat: &str, after: i64) {
+    let secs = u64::try_from(after.clamp(1, AFTER_SECS)).unwrap_or(1);
+    let at = Instant::now() + Duration::from_secs(secs);
+    if !claim(seat, at) {
+        return;
+    }
+    let seat = seat.to_owned();
+    std::thread::spawn(move || {
+        let op = crate::timers::MAIL_NUDGE_RECHECK.begin(Some(at));
+        while op.tick() {}
+        drop(op);
+        if release(&seat, at) {
+            crate::dm_import::wake(&seat);
+        }
+    });
 }
 
 /// Whether `r` was last named at or before `now - AFTER_SECS` (or never). A reminder starts a
@@ -74,7 +197,7 @@ fn left_to_the_card(r: &aib_store::MessageRow, now: i64) -> bool {
 /// The rows of one seat's open messages a reminder names now, oldest first as given.
 pub fn due(rows: &[aib_store::MessageRow], now: i64) -> Vec<&aib_store::MessageRow> {
     rows.iter()
-        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER)
+        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER && nameable(r))
         .filter(|r| rested(r, now))
         .collect()
 }
@@ -182,7 +305,13 @@ pub async fn nudge(st: AppState, seat: String) {
         return;
     }
     let now = unix_now();
-    let rows: Vec<aib_store::MessageRow> = due(&rows, now).into_iter().cloned().collect();
+    // an idle seat has no turn end to look at it again: what is not due yet is looked at when
+    // it comes due (DESIGN-drive-d3-wake 1)
+    let (look_again, due_now) = plan(&rows, now);
+    if let Some(after) = look_again {
+        recheck(&seat, after);
+    }
+    let rows: Vec<aib_store::MessageRow> = due_now.into_iter().cloned().collect();
     if rows.is_empty() {
         return;
     }
@@ -526,5 +655,178 @@ mod tests {
         // read and still open: this card
         r.item.insert("status".into(), json!("read"));
         assert_eq!(cards(std::slice::from_ref(&r), now, now - 1_800).len(), 1);
+    }
+
+    // DESIGN-drive-d3-wake 1: an idle seat has no turn end; what is not due yet is looked at
+    // again when the earliest comes due
+    #[test]
+    fn an_idle_seats_message_is_looked_at_again_when_it_comes_due() {
+        let now = 10_000;
+        let named_once = row(
+            "q_named",
+            "seat_b",
+            &[
+                ("status", json!("read")),
+                ("delivered_at", json!(now - 900)),
+                ("nudged", json!(1)),
+                ("nudged_at", json!(now - 10)),
+            ],
+        );
+        let rows = [written("q_soon", now - 100), named_once.clone()];
+        assert_eq!(next_due(&rows, now), Some(now + 80), "reason: recheck_at");
+        assert_eq!(
+            next_due(&[named_once], now),
+            Some(now - 10 + AFTER_SECS),
+            "reason: recheck_named"
+        );
+        // already due, given up on, or closed: nothing to wait for
+        let rows = [
+            written("q_due", now - AFTER_SECS),
+            row(
+                "q_gone",
+                "seat_b",
+                &[
+                    ("status", json!("read")),
+                    ("delivered_at", json!(now - 10)),
+                    ("nudged", json!(PER_LETTER)),
+                ],
+            ),
+            row(
+                "q_done",
+                "seat_b",
+                &[("status", json!("done")), ("delivered_at", json!(now - 10))],
+            ),
+        ];
+        assert_eq!(next_due(&rows, now), None, "reason: recheck_for_nothing");
+    }
+
+    // DESIGN-drive-d3-wake 2: an urgent message is named at once, a bridged one never early
+    #[test]
+    fn an_urgent_message_is_named_at_once_and_a_bridged_one_waits() {
+        let now = 10_000;
+        let mut urgent = written("q_urgent", now);
+        urgent.item.insert("level".into(), json!("urgent"));
+        assert_eq!(
+            due(std::slice::from_ref(&urgent), now).len(),
+            1,
+            "reason: urgent_waits"
+        );
+        assert_eq!(next_due(std::slice::from_ref(&urgent), now), None);
+        // named once, it rests like any other
+        let mut again = urgent.clone();
+        again.item.insert("nudged".into(), json!(1));
+        again.item.insert("nudged_at".into(), json!(now));
+        assert!(
+            due(std::slice::from_ref(&again), now).is_empty(),
+            "reason: urgent_not_rested"
+        );
+        assert_eq!(
+            next_due(std::slice::from_ref(&again), now),
+            Some(now + AFTER_SECS)
+        );
+        let mut bridged = urgent.clone();
+        bridged.item.insert("imported".into(), json!(true));
+        assert!(
+            due(std::slice::from_ref(&bridged), now).is_empty(),
+            "reason: bridged_urgent_early"
+        );
+        assert_eq!(
+            next_due(std::slice::from_ref(&bridged), now),
+            Some(now + AFTER_SECS)
+        );
+    }
+
+    // DECISION-council-driveweb r1 D3: a work order aibd marked is named at once and only once
+    #[test]
+    fn a_work_order_is_named_at_once_and_only_once() {
+        let now = 10_000;
+        let mut order = written("q_order", now);
+        order
+            .item
+            .insert(crate::urgent::DISPATCH.into(), json!(true));
+        assert_eq!(
+            due(std::slice::from_ref(&order), now).len(),
+            1,
+            "reason: order_waits"
+        );
+        let mut named = order.clone();
+        named
+            .item
+            .insert("delivered_at".into(), json!(now - AFTER_SECS));
+        named.item.insert("nudged".into(), json!(1));
+        named
+            .item
+            .insert("nudged_at".into(), json!(now - AFTER_SECS));
+        assert!(
+            due(std::slice::from_ref(&named), now).is_empty(),
+            "reason: order_named_twice"
+        );
+        assert_eq!(
+            next_due(std::slice::from_ref(&named), now),
+            None,
+            "reason: order_rechecked"
+        );
+        assert!(left_to_the_card(&named, now), "reason: order_not_carded");
+        // the text alone, or a bridged one, is no work order
+        let plain = row(
+            "q_text",
+            "seat_b",
+            &[("status", json!("delivered")), ("delivered_at", json!(now))],
+        );
+        assert!(due(std::slice::from_ref(&plain), now).is_empty());
+        let mut bridged = order.clone();
+        bridged.item.insert("imported".into(), json!(true));
+        assert!(
+            due(std::slice::from_ref(&bridged), now).is_empty(),
+            "reason: bridged_order_early"
+        );
+    }
+
+    // D3 / D4: aibd's own work order (the system) is named like a seat's message
+    #[test]
+    fn a_work_order_from_the_system_is_named() {
+        let now = 10_000;
+        let mut order = written("q_sys", now);
+        order.item.insert("sender_kind".into(), json!("system"));
+        order
+            .item
+            .insert(crate::urgent::DISPATCH.into(), json!(true));
+        assert_eq!(
+            due(std::slice::from_ref(&order), now).len(),
+            1,
+            "reason: system_not_named"
+        );
+    }
+
+    // 5d33a REVIEW-d3wake L2: the plan says when to look again, and names only what is due
+    #[test]
+    fn the_plan_looks_again_when_something_is_not_due_yet() {
+        let now = 10_000;
+        let rows = [
+            written("q_old", now - AFTER_SECS),
+            written("q_new", now - 30),
+        ];
+        let (again, due_now) = plan(&rows, now);
+        assert_eq!(again, Some(AFTER_SECS - 30), "reason: no_look_again");
+        let ids: Vec<&str> = due_now.iter().map(|r| r.message_id.as_str()).collect();
+        assert_eq!(ids, ["q_old"]);
+        let (again, _) = plan(&rows[..1], now);
+        assert_eq!(again, None, "reason: look_again_for_nothing");
+    }
+
+    // DESIGN-drive-d3-wake 1: one look-again per seat; an earlier one takes the place of a later
+    #[test]
+    fn a_seat_has_one_look_again_waiting() {
+        let (seat, t) = ("seat_d3_once", Instant::now());
+        let s = |n: u64| t + Duration::from_secs(n);
+        assert!(claim(seat, s(10)));
+        assert!(!claim(seat, s(20)), "reason: second_look_again");
+        assert!(!claim(seat, s(10)), "reason: same_look_again_twice");
+        assert!(claim(seat, s(5)), "reason: earlier_not_taken");
+        assert!(!release(seat, s(10)), "reason: replaced_one_fires");
+        assert!(release(seat, s(5)));
+        assert!(pending().get(seat).is_none(), "reason: look_again_kept");
+        assert!(claim(seat, s(30)), "reason: none_after_release");
+        assert!(release(seat, s(30)));
     }
 }

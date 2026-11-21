@@ -40,8 +40,8 @@ rd '                crate::seat_input::dgrs_input_on(),' \
 pw() { python3 -I scripts/knife.py crates/aibd/src/seat_send.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test seat_send "$3"; }
 # TQ7 a post that names a seat is never written (a9136 thread_send rows)
-pw '        && (s("sender_kind") == Some("seat") || s("post_id").is_some())' \
-   '        && (s("sender_kind") == Some("seat")) // knife' \
+pw '        && (matches!(s("sender_kind"), Some("seat" | "system")) || s("post_id").is_some())' \
+   '        && (matches!(s("sender_kind"), Some("seat" | "system"))) // knife' \
    a_post_naming_a_seat_is_written_after_its_turn_as_the_persons
 # TQ8 the person's post is written as another seat's
 pw '            let from = if !by_person(r) {' \

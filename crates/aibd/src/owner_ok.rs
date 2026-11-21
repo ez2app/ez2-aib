@@ -119,6 +119,7 @@ pub const ACTIONS: [(&str, &str); 12] = [
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
     (crate::seat_move::OP, "把舊席搬進網頁席"),
+    (crate::seat_rank::OP, "改誰能標急的權級"),
     (crate::receipt_runner::OP, "到測試機跑一份收據"),
     (crate::test_host_add::OP_ADD, "加一台測試機"),
     (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
@@ -250,6 +251,26 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             piece(&v, "old_code").filter(|c| aib_store::seat_moves::code_ok(c))?,
             seat_code(&v)?
         ),
+        crate::seat_rank::OP => {
+            let rank = || v["rank"].as_str().and_then(crate::seat_rank::rank_words);
+            match v["what"].as_str()? {
+                "role" => format!("把角色 {} 的權級設為{}", piece(&v, "role_uid")?, rank()?),
+                "grant" => format!(
+                    "給席 {} 角色 {} 的權級",
+                    seat_code(&v)?,
+                    piece(&v, "role_uid")?
+                ),
+                "revoke" => format!(
+                    "收回席 {} 角色 {} 的權級",
+                    seat_code(&v)?,
+                    piece(&v, "role_uid")?
+                ),
+                "perm" if v["act"].as_str() == Some(aib_store::ranks::URGENT) => {
+                    format!("標急最低要{}", rank()?)
+                }
+                _ => return None,
+            }
+        }
         crate::gh_token::OP => format!(
             "把 GitHub 權杖存進這台,給 {} 推分支與開 PR 用",
             piece(&v, "slug")?
@@ -318,6 +339,7 @@ pub const WIRED: &[&str] = &[
     crate::repos::OP_OPEN,
     crate::seat_trust::OP, // seat.trust
     crate::seat_move::OP,  // seat.move (G5 信橋, 5d33a PREREAD-g5-bridge M1)
+    crate::seat_rank::OP,  // rank.set (誰能標急, 5d33a PREREAD-inboxaibd F r2)
     crate::repo_push::OP,
     crate::pr_open::OP,
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
@@ -1042,6 +1064,16 @@ mod tests {
                 crate::test_host_add::OP_REMOVE,
                 r#"{"hostname":"192.0.2.7","port":2222,"user":"owner","fingerprint":"SHA256:ab"}"#,
                 "從測試機 owner@192.0.2.7 埠 2222(主機鑰匙 SHA256:ab)收回 aibd 的收據鑰匙",
+            ),
+            (
+                crate::seat_rank::OP,
+                r#"{"what":"grant","seat_id":"seat_33ff9a0b1c2d3e4f","role_uid":"reviewer"}"#,
+                "給席 33ff9 角色 reviewer 的權級",
+            ),
+            (
+                crate::seat_rank::OP,
+                r#"{"what":"perm","act":"urgent","rank":"lead"}"#,
+                "標急最低要主管",
             ),
         ] {
             assert_eq!(
