@@ -491,3 +491,107 @@ async fn a_seat_closes_a_post_that_named_it_in_a_shared_conversation() {
     aibd::seat_token::tokens().revoke(&b);
     d.shutdown().await;
 }
+
+/// 待審 1.5 期 (DESIGN-web-inbox-aibd-7ebca-1121 r3 §F): a seat asks urgent; with no grant it
+/// goes plain and the answer says why; once the owner granted it a lead role it goes urgent and
+/// the receiver's inbox says so and by which role; a level that is not one is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_urgent_letter_needs_a_granted_lead_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let (a, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let (b, _) = d.open("safe", &seat_dir(dir.path(), "b")).await;
+    let (ta, tb) = (
+        aibd::seat_token::tokens().issue(&a).unwrap(),
+        aibd::seat_token::tokens().issue(&b).unwrap(),
+    );
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "急1", "level": "high"}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "reason: bad_level_taken {}", r.body);
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "急1", "level": "urgent"}),
+    )
+    .await;
+    assert!(r.code == 200 || r.code == 202, "{}", r.body);
+    assert_eq!(
+        r.json["level"], "normal",
+        "reason: ungranted_urgent {}",
+        r.body
+    );
+    assert_eq!(r.json["level_downgraded"], "rank_too_low", "{}", r.body);
+
+    // D3: a seat with no lead grant writes 「派工:」 and it is no work order
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "派工: 甲"}),
+    )
+    .await;
+    assert!(r.code == 200 || r.code == 202, "{}", r.body);
+
+    let db = aib_store::MessageDb::open(&dir.path().join("data").join("messages.sqlite")).unwrap();
+    let at = "2026-11-21T13:00:00+08:00";
+    db.role_rank_set("role_lead", aib_store::ranks::Rank::Lead, "test", at)
+        .unwrap();
+    db.rank_grant(&a, "role_lead", "test", at).unwrap();
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "急2", "level": "urgent"}),
+    )
+    .await;
+    assert!(
+        r.code == 200 || r.code == 202,
+        "reason: b may be in a turn {}",
+        r.body
+    );
+    assert_eq!(
+        r.json["level"], "urgent",
+        "reason: granted_not_urgent {}",
+        r.body
+    );
+    assert!(r.json.get("level_downgraded").is_none(), "{}", r.body);
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "派工: 乙"}),
+    )
+    .await;
+    assert!(r.code == 200 || r.code == 202, "{}", r.body);
+
+    let r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let ms = r.json["messages"].as_array().unwrap();
+    let by_body = |t: &str| {
+        ms.iter()
+            .find(|m| m["body"] == t)
+            .unwrap_or_else(|| panic!("{t} not in {}", r.body))
+            .clone()
+    };
+    assert!(
+        by_body("急1").get("level").is_none(),
+        "reason: plain_shown_urgent"
+    );
+    let m = by_body("急2");
+    assert_eq!(m["level"], "urgent", "reason: urgent_not_in_inbox");
+    assert_eq!(m["level_by"], "role_lead");
+    assert!(
+        by_body("派工: 甲").get("dispatch").is_none(),
+        "reason: ungranted_dispatch"
+    );
+    assert_eq!(
+        by_body("派工: 乙")["dispatch"],
+        true,
+        "reason: lead_dispatch_not_marked"
+    );
+
+    aibd::seat_token::tokens().revoke(&a);
+    aibd::seat_token::tokens().revoke(&b);
+    d.shutdown().await;
+}

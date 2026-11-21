@@ -54,6 +54,11 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::drive_switch::STATUS,
     crate::seat_move::MOVE,
     crate::seat_move::UNMOVE,
+    crate::test_host_web::LIST,
+    crate::test_host_web::ADD,
+    crate::test_host_web::REMOVE,
+    crate::seat_rank::SET,
+    crate::seat_rank::SHOW,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
@@ -463,6 +468,28 @@ pub async fn act(
                 crate::drive_switch::status(st).await
             };
         }
+        // 「加一台測試機」(DESIGN-add-test-host-b4297-1121): the built-in page in this pairing
+        // only; adding or taking one away then needs the owner's fingerprint
+        Some(
+            k @ (crate::test_host_web::LIST
+            | crate::test_host_web::ADD
+            | crate::test_host_web::REMOVE),
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "test machines are added from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::test_host_web::LIST => crate::test_host_web::list(st).await,
+                crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
+                _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
         // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
         // built-in page in this pairing only, with the owner's fingerprint; going back needs none
         Some(k @ (crate::seat_move::MOVE | crate::seat_move::UNMOVE)) => {
@@ -479,6 +506,25 @@ pub async fn act(
                 crate::seat_move::moved(st, body, by).await
             } else {
                 crate::seat_move::unmoved(st, body, by).await
+            };
+        }
+        // 誰能標急 (OPINION-role-rank-a9136-1121 r2; 5d33a PREREAD-inboxaibd F r2): ranks are
+        // set and read from the built-in page in this pairing only; every change asks the
+        // owner's fingerprint
+        Some(k @ (crate::seat_rank::SET | crate::seat_rank::SHOW)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "ranks are set from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::seat_rank::SET {
+                crate::seat_rank::set(st, body, by).await
+            } else {
+                crate::seat_rank::show(st, body).await
             };
         }
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a
