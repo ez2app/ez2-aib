@@ -64,3 +64,27 @@ br crates/aibd/src/seat_send.rs \
    '        row.idem_key = None; // knife' \
    letters_cross_the_bridge_once_each_way \
    '--test seat_bridge letters_cross_the_bridge_once_each_way'
+# BR11 going back leaves the handed-on letters in the web inbox (0eed7 VERIFY-integ3 M2)
+br crates/aibd/src/dm_import.rs \
+   '    for r in rows.iter().filter(|r| handed_from(r, old_code)) {' \
+   '    for r in rows.iter().filter(|r| handed_from(r, old_code) && false) { // knife' \
+   going_back_takes_the_handed_on_letters_out_of_the_web_inbox \
+   '--lib dm_import::tests::going_back_takes_the_handed_on_letters_out_of_the_web_inbox'
+# BR12 going back takes the web seat's own letters too
+br crates/aibd/src/dm_import.rs \
+   '    s("dm_to") == Some(old_code) && s("dm_id").is_some_and(|i| i.starts_with("q_"))' \
+   '    s("dm_to") == Some(old_code) || s("dm_id").is_none() // knife' \
+   going_back_takes_the_handed_on_letters_out_of_the_web_inbox \
+   '--lib dm_import::tests::going_back_takes_the_handed_on_letters_out_of_the_web_inbox'
+# BR13 the ledger reply footer is shown on the web (M3)
+br crates/aibd/src/dm_import.rs \
+   '        None => without_reply_hint(msg).to_owned(),' \
+   '        None => msg.to_owned(), // knife' \
+   the_ledger_reply_footer_is_cut_on_the_web \
+   '--lib dm_import::tests::the_ledger_reply_footer_is_cut_on_the_web'
+# BR14 any letter with the words in it loses its tail at them (M3)
+br crates/aibd/src/dm_import.rs \
+   "        Some(i) if msg.trim_end().ends_with(')') => msg[..i].trim_end()," \
+   "        Some(i) => msg[..i].trim_end(), // knife" \
+   the_ledger_reply_footer_is_cut_on_the_web \
+   '--lib dm_import::tests::the_ledger_reply_footer_is_cut_on_the_web'

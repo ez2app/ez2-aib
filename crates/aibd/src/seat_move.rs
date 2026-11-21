@@ -309,16 +309,28 @@ pub async fn unmoved(st: AppState, body: Value, by: String) -> Response {
         Ok(Ok(s)) => s,
         _ => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "store"),
     };
+    // 0eed7 VERIFY-integ3 M2: what the move handed to the web seat leaves its inbox
+    let mut taken_back = 0;
     if let Some(s) = &seat {
+        let (m, sid, c) = (st.messages.clone(), s.clone(), code.clone());
+        taken_back = tokio::task::spawn_blocking(move || crate::dm_import::take_back(&m, &sid, &c))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map_or(0, |v| v.len());
         crate::seats::side_event(
             &st,
             UNMOVE,
             "seat.unmoved",
-            json!({"old_code": code, "seat": s, "by": by}),
+            json!({"old_code": code, "seat": s, "by": by, "taken_back": taken_back}),
         )
         .await;
     }
-    Json(json!({"done": true, "old_code": code, "was_moved_into": seat})).into_response()
+    Json(
+        json!({"done": true, "old_code": code, "was_moved_into": seat,
+        "taken_back": taken_back}),
+    )
+    .into_response()
 }
 
 #[cfg(test)]

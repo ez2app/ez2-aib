@@ -562,7 +562,7 @@ pub fn bridge_body(letter: &Value, state_root: &Path) -> String {
             .filter(|m| m.len() <= RELAY_MAX)
             .and_then(|_| std::fs::read_to_string(&p).ok())
             .unwrap_or_else(|| format!("{msg}\n〔原文已不在〕")),
-        None => msg.to_owned(),
+        None => without_reply_hint(msg).to_owned(),
     };
     let label = clean(text(letter, "sender_label"));
     let body = mask_email(&clean(&whole));
@@ -735,6 +735,54 @@ pub fn forward_open(
     }
     Ok(out)
 }
+
+/// 0eed7 VERIFY-integ3 M2 (cutover §4-2, webinbox §5 one copy): going back, the ledger's
+/// letters the move handed to web seat `seat_id` leave its inbox (`archived`, `returned_to`
+/// the code): the ledger copy, still open, is the one; nothing is closed in the ledger. The ids
+/// taken back.
+pub fn take_back(db: &MessageDb, seat_id: &str, old_code: &str) -> Result<Vec<String>, String> {
+    let rows = db
+        .open_to(&format!("seat:{seat_id}"), aib_store::PAGE_MAX)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows.iter().filter(|r| handed_from(r, old_code)) {
+        let mut item = r.item.clone();
+        for (k, v) in [
+            ("status", json!("archived")),
+            ("returned_to", json!(format!("legacy:{old_code}"))),
+            ("returned_at", json!(crate::sessions::now_rfc3339())),
+        ] {
+            item.insert(k.into(), v);
+        }
+        let now = crate::sessions::now_rfc3339();
+        if let Updated::Done(_) = db
+            .update(&r.message_id, r.rev, item, &now)
+            .map_err(|e| e.to_string())?
+        {
+            out.push(r.message_id.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a row is a ledger letter to `old_code` (one the move handed on, or put in the inbox).
+fn handed_from(r: &MessageRow, old_code: &str) -> bool {
+    let s = |k: &str| r.item.get(k).and_then(Value::as_str);
+    s("dm_to") == Some(old_code) && s("dm_id").is_some_and(|i| i.starts_with("q_"))
+}
+
+/// 0eed7 VERIFY-integ3 M3: the footer the page put on its letter for a 1.x seat ([`reply_hint`]:
+/// the ledger id and an `aib dm-queue` line) is cut when the letter is shown on the web, where
+/// its id is another and the line is answered 409.
+pub fn without_reply_hint(msg: &str) -> &str {
+    match msg.rfind(REPLY_HINT_HEAD) {
+        Some(i) if msg.trim_end().ends_with(')') => msg[..i].trim_end(),
+        _ => msg,
+    }
+}
+
+/// How [`reply_hint`] starts.
+const REPLY_HINT_HEAD: &str = "\n\n(網頁來信。回覆方法:";
 
 /// DESIGN-web-inbox-aibd-7ebca-1121 r1 C (DECISION-council-webinbox §5): a letter to a code that
 /// moved is the web seat's in aibd; closed there, the ledger copy is closed after it, one way,
@@ -1356,6 +1404,74 @@ mod tests {
                 .is_empty(),
             "reason: forwarded_twice"
         );
+    }
+
+    /// 0eed7 VERIFY-integ3 M2: going back takes the handed-on letters out of the web inbox
+    /// (the ledger copy is the one); another code's and the seat's own letters stay.
+    #[test]
+    fn going_back_takes_the_handed_on_letters_out_of_the_web_inbox() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("state").join("dm-queue");
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        let p = write(
+            &root,
+            &letter("q_posted", "delivered", "seat", "519d0", "7ebca", "貼過"),
+        );
+        pass(&[p], d.path(), &db, true).unwrap();
+        write(
+            &root,
+            &letter("q_fresh", "queued", "seat", "519d0", "7ebca", "沒貼過"),
+        );
+        let seat = "s_0123456789abcdef";
+        db.seat_move("7ebca", seat, "page:0123abcd", "2026-11-21T00:00:00Z")
+            .unwrap();
+        forward_open(&db, d.path(), &root, "7ebca", seat).unwrap();
+        // a web seat's own letter to the seat stays
+        let own =
+            crate::seat_send::queued_row("s_fedcba9876543210", seat, None, "網頁的", "0").unwrap();
+        let own_id = own.message_id.clone();
+        db.insert(own).unwrap();
+        db.seat_unmove("7ebca", "2026-11-21T00:01:00Z").unwrap();
+        let mut got = take_back(&db, seat, "7ebca").unwrap();
+        got.sort();
+        assert_eq!(got.len(), 2, "reason: handed_on_left_in_web {got:?}");
+        let open: Vec<String> = db
+            .open_to(&format!("seat:{seat}"), 50)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.message_id)
+            .collect();
+        assert_eq!(open, [own_id], "reason: own_letter_taken");
+        let fresh = db
+            .by_idem(crate::import::OWNER, "dm:q_fresh")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh.item["status"], "archived");
+        assert_eq!(fresh.item["returned_to"], "legacy:7ebca");
+        assert!(
+            take_back(&db, seat, "7ebca").unwrap().is_empty(),
+            "reason: taken_twice"
+        );
+    }
+
+    /// 0eed7 VERIFY-integ3 M3: the page's reply footer for a 1.x seat is not shown on the web
+    #[test]
+    fn the_ledger_reply_footer_is_cut_on_the_web() {
+        let hint = reply_hint("7ebca", "q_e687840000000000", "20261113-035938-dab9", None);
+        let msg = format!("請看這個{hint}");
+        assert_eq!(without_reply_hint(&msg), "請看這個", "reason: footer_shown");
+        assert_eq!(without_reply_hint("沒有附註"), "沒有附註");
+        // the words alone in the middle of a letter are the sender's, kept
+        let mid = "(網頁來信。回覆方法:照做)之後還有字";
+        assert_eq!(without_reply_hint(mid), mid);
+        let more = format!("{hint}之後還有字");
+        assert_eq!(without_reply_hint(&more), more, "reason: sender_words_cut");
+        let d = tempfile::tempdir().unwrap();
+        let mut l = letter("q_h", "queued", "seat", "519d0", "7ebca", "x");
+        l["msg"] = json!(msg);
+        let body = bridge_body(&l, d.path());
+        assert!(!body.contains("dm-queue"), "reason: footer_shown {body}");
+        assert!(body.contains("請看這個"));
     }
 
     /// r1 C (5d33a PREREAD-inboxaibd L1 L2): a moved letter closed on the web closes the ledger
