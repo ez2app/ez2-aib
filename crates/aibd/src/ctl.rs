@@ -2499,7 +2499,7 @@ fn take_flag<'a>(words: &[&'a str], flag: &str) -> Result<(Vec<&'a str>, Option<
 
 /// `seat move <old seat code> [--provider P] [--model M] [--repo R] [--dry-run]`
 /// (SPEC-seat-open-oneline-519d0-1121): what moving that seat into the web takes, found from
-/// the code ([`aibd::seat_move::plan`]). `--dry-run` prints the six steps. A work seat with a
+/// the code ([`aibd::seat_plan_move::plan`]). `--dry-run` prints the six steps. A work seat with a
 /// repo is opened through the fingerprint, which only the page asks for today: without
 /// `--dry-run` it prints what to give the page's "add a seat" (PREREAD-seat-carry r2 §2 asks
 /// 5d33a for the ctl side of it).
@@ -2516,13 +2516,13 @@ fn seat_move(
     if let Some(w) = rest.first() {
         return Err(format!("seat move 不認得「{w}」\n{USAGE}"));
     }
-    let identity = aibd::seat_move::identity_dir(env).ok_or("找不到 HOME(identity 資料夾)")?;
+    let identity = aibd::seat_plan_move::identity_dir(env).ok_or("找不到 HOME(identity 資料夾)")?;
     let pending = env("AIBD_PLAN_PENDING")
         .map(std::path::PathBuf::from)
         .or_else(|| identity.parent().map(|h| h.join("pending")))
         .ok_or("找不到交接夾")?;
-    let p = aibd::seat_move::plan(code, &identity, &pending, provider, model, repo)?;
-    for line in aibd::seat_move::steps(&p) {
+    let p = aibd::seat_plan_move::plan(code, &identity, &pending, provider, model, repo)?;
+    for line in aibd::seat_plan_move::steps(&p) {
         println!("{line}");
     }
     if dry {

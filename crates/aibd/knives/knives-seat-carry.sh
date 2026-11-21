@@ -39,8 +39,8 @@ python3 -I scripts/knife.py crates/aibd/src/send_back.rs \
    --expect-fail settings_a_workflow_a_submodule_file_and_a_link_are_refused_by_name \
    -- cargo test -p aibd --locked --lib settings_a_workflow_a_submodule_file_and_a_link_are_refused_by_name
 # MV1-MV5 aibd ctl seat move finds the move from the seat code alone (SPEC-seat-open-oneline-519d0-1121)
-mv() { python3 -I scripts/knife.py crates/aibd/src/seat_move.rs "$1" "$2" --expect-fail "seat_move::tests::$3" \
-        -- cargo test -p aibd --locked --lib "seat_move::tests::$3"; }
+mv() { python3 -I scripts/knife.py crates/aibd/src/seat_plan_move.rs "$1" "$2" --expect-fail "seat_plan_move::tests::$3" \
+        -- cargo test -p aibd --locked --lib "seat_plan_move::tests::$3"; }
 # MV1 an empty persona binding is taken
 mv '    (!uid.is_empty()).then(|| uid.to_owned())' '    Some(uid.to_owned()) // knife' \
    the_persona_is_the_seat_codes_binding
