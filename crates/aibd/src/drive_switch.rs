@@ -288,7 +288,14 @@ pub async fn status(_st: AppState) -> Response {
     let s = tokio::task::spawn_blocking(move || read(&data))
         .await
         .unwrap_or_else(|_| Switch::off());
-    Json(status_of(&s, crate::owner_ok::available())).into_response()
+    let mut out = status_of(&s, crate::owner_ok::available());
+    // D7b: what the drive does next, sent and is held by, beside the switch (a view only)
+    let drive = tokio::task::spawn_blocking(crate::drive_view::view_now)
+        .await
+        .ok()
+        .flatten();
+    out["drive"] = drive.unwrap_or(Value::Null);
+    Json(out).into_response()
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ pub mod docs;
 pub mod drive_plan;
 pub mod drive_send;
 pub mod drive_switch;
+pub mod drive_view;
 pub mod drive_wake;
 pub mod events_push;
 pub mod folders;
