@@ -12,7 +12,7 @@ mn mail_nudge.rs '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTE
    '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER + 1) // knife' \
    a_message_is_named_twice_and_then_left_to_the_card
 # MN2 a message just written is named at once
-mn mail_nudge.rs '            .is_some_and(|at| at <= now - AFTER_SECS)' \
+mn mail_nudge.rs '            .is_some_and(|at| at <= now - wait_of(r))' \
    '            .is_some_and(|at| at <= now + AFTER_SECS) // knife' \
    a_message_written_three_minutes_ago_and_still_open_is_due
 # MN3 the person's own words are named as a task
