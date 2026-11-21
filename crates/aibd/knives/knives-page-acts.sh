@@ -16,7 +16,7 @@ pa '    crate::nodes::SET,' \
    every_page_act_arm_is_listed
 # PA2 a type no arm takes is listed (the page would show a button that answers unknown_act_type)
 pa '    crate::seat_send::RESUME,' \
-   '    crate::seat_send::RESUME, "seat_clear", // knife' \
+   '    crate::seat_send::RESUME, "no_such_act", // knife' \
    every_page_act_arm_is_listed
 # PA3 the version body gives some other list than PAGE_ACTS
 pw '            "acts": crate::seat_input::PAGE_ACTS,' \
@@ -70,8 +70,8 @@ nt '                Err(_) => st.store.idem_release(k).is_ok(),' \
 hs() { python3 -I scripts/knife.py crates/aibd/src/seat_now.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test seat_now "$3"; }
 # HO5 a field other than type / path is taken (a body naming another seat)
-ho '    if obj.keys().any(|k| k != "type" && k != "path") {' \
-   '    if false { // knife' \
+ho '        .any(|k| k != "type" && k != "path" && k != "sha256")' \
+   '        .any(|_| false) // knife' \
    a_handoff_is_one_absolute_md_path_and_nothing_else
 # HO6 the journal keeps the path itself
 hs '        payload: json!({"seat_id": seat_id, "path": {"len": h.path.chars().count(), "sha256": sha(&h.path)}}),' \

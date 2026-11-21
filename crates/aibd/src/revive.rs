@@ -514,21 +514,8 @@ pub async fn restart(
 ) -> Result<String, NotRestarted> {
     // held for this restart and let go however it ends, a dropped request too (5d33a
     // PREREAD 532b54da L1: a page whose connection broke left the seat 409 for good)
-    struct Held(String);
-    impl Drop for Held {
-        fn drop(&mut self) {
-            restarting()
-                .lock()
-                .unwrap_or_else(|x| x.into_inner())
-                .remove(&self.0);
-        }
-    }
-    let _held = {
-        let mut r = restarting().lock().unwrap_or_else(|x| x.into_inner());
-        if !r.insert(seat_id.to_owned()) {
-            return Err(NotRestarted::Running);
-        }
-        Held(seat_id.to_owned())
+    let Some(_held) = hold(seat_id) else {
+        return Err(NotRestarted::Running);
     };
     let session_id = restart_once(st, seat_id).await?;
     note(
@@ -538,6 +525,58 @@ pub async fn restart(
     )
     .await;
     Ok(session_id)
+}
+
+/// The seat held for a restart or a clear (`None`: one is under way); let go when dropped.
+pub struct Held(String);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        restarting()
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Hold `seat_id` for a restart or a clear (1a93b seat_clear holds it from the stop to the
+/// start, so a 重開 in between gets 409).
+pub fn hold(seat_id: &str) -> Option<Held> {
+    let mut r = restarting().lock().unwrap_or_else(|x| x.into_inner());
+    r.insert(seat_id.to_owned())
+        .then(|| Held(seat_id.to_owned()))
+}
+
+/// 1a93b seat_clear: start a stopped seat as [`restart`] does but on the new conversation
+/// `conv` (`--session-id`, never `--resume`), leaving the kept resume id alone (the caller
+/// swaps it once the start went well). The caller holds the seat ([`hold`]).
+pub async fn start_fresh(
+    st: &AppState,
+    seat_id: &str,
+    conv: String,
+) -> Result<String, NotRestarted> {
+    let busy =
+        st.sessions.list().iter().any(|s| {
+            s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
+        });
+    if busy {
+        return Err(NotRestarted::Running);
+    }
+    let (store, id) = (st.store.clone(), seat_id.to_owned());
+    let got = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
+        Ok((store.seat(&id)?, store.seat_meta(&id)?))
+    })
+    .await;
+    let Ok(Ok((seat, meta))) = got else {
+        return Err(NotRestarted::Unread);
+    };
+    let seat = seat.ok_or(NotRestarted::Unknown)?;
+    if aib_store::ARCHIVED == seat.state {
+        return Err(NotRestarted::Archived);
+    }
+    rejoin_with(st, &seat, meta, Some(conv))
+        .await
+        .map_err(NotRestarted::Skip)
 }
 
 async fn restart_once(st: &AppState, seat_id: &str) -> Result<String, NotRestarted> {
@@ -564,6 +603,17 @@ async fn restart_once(st: &AppState, seat_id: &str) -> Result<String, NotRestart
 }
 
 async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<String, Skip> {
+    rejoin_with(st, seat, meta, None).await
+}
+
+/// [`rejoin`], or with `fresh` a new conversation of that id (seat_clear): no resume, and the
+/// kept id is not filled.
+async fn rejoin_with(
+    st: &AppState,
+    seat: &Seat,
+    meta: Option<SeatMeta>,
+    fresh: Option<String>,
+) -> Result<String, Skip> {
     let meta = meta.ok_or(Skip::NoConversationId)?;
     let mode = plan(&meta, crate::seat_input::dgrs_input_on())?;
     let personas = st.personas.clone();
@@ -595,18 +645,22 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         .or_else(|| home.map(|h| h.join(".claude")));
     let (kept, cwd) = (meta.resume_id.clone(), meta.cwd.clone());
     let own = crate::seats::seat_home(st.sessions.private_dir(), &seat.seat_id);
-    let picked = tokio::task::spawn_blocking(move || {
-        let canon =
-            |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let own_folder = canon(std::path::Path::new(&cwd)) == canon(&own);
-        let dir = config.map(|c| claude_dir_for(&c, &cwd));
-        conversation(kept.as_deref(), dir.as_deref(), own_folder, || {
-            crate::seats::new_uuid().ok()
+    let picked = if let Some(id) = fresh.clone() {
+        Some((id, false))
+    } else {
+        tokio::task::spawn_blocking(move || {
+            let canon =
+                |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            let own_folder = canon(std::path::Path::new(&cwd)) == canon(&own);
+            let dir = config.map(|c| claude_dir_for(&c, &cwd));
+            conversation(kept.as_deref(), dir.as_deref(), own_folder, || {
+                crate::seats::new_uuid().ok()
+            })
         })
-    })
-    .await
-    .ok()
-    .flatten();
+        .await
+        .ok()
+        .flatten()
+    };
     let (conv, resume) = picked.ok_or(Skip::NoConversationId)?;
     let argv = if resume {
         aib_seatopen::resume_argv(&meta.provider, &mode, meta.model.as_deref(), &conv)
@@ -615,7 +669,7 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
     };
     let mut argv = argv.map_err(|_| Skip::Provider)?;
     // a seat opened before this slice: keep the id now, so the next restart finds it
-    if meta.resume_id.is_none() {
+    if meta.resume_id.is_none() && fresh.is_none() {
         let (store, seat_id, id) = (st.store.clone(), seat.seat_id.clone(), conv.clone());
         let _ = tokio::task::spawn_blocking(move || {
             let ev = crate::sessions::new_id("ev_").ok()?;

@@ -1255,6 +1255,7 @@ fn mcp_tools() -> Value {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "absolute path ending in .md, at most 512 characters"},
+                    "sha256": {"type": "string", "description": "optional: the note's SHA-256, 64 lowercase hex; after a clear the new conversation checks it"},
                 },
                 "required": ["path"],
                 "additionalProperties": false,
@@ -1484,11 +1485,11 @@ fn seat_receipt(c: &Client, args: &Value) -> Result<String, String> {
 /// (seat_now.rs checks every field; only the names below are passed on).
 fn seat_handoff(c: &Client, args: &Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("seat_handoff needs path")?;
-    let r = c.request(
-        "POST",
-        "/api/v1/act",
-        Some(json!({"type": aibd::seat_now::HANDOFF, "path": path})),
-    )?;
+    let mut body = json!({"type": aibd::seat_now::HANDOFF, "path": path});
+    if !args["sha256"].is_null() {
+        body["sha256"] = args["sha256"].clone();
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
     Ok(format!(
         "交接單記下了:{}",
         r["handoff"]["path"].as_str().unwrap_or(path)

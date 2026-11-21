@@ -76,6 +76,10 @@ struct Lines {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Handoff {
     pub path: String,
+    /// The note's SHA-256 as the seat counted it (64 lowercase hex), when it gave one: the new
+    /// conversation after a clear is told to check it (5d33a PREREAD-seatclear N1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     pub at: String,
 }
 
@@ -134,7 +138,10 @@ impl Board {
 /// Refused, never trimmed. Nothing is read from disk.
 pub fn parse_handoff(body: &Value) -> Result<String, Refused> {
     let obj = body.as_object().ok_or(Refused("body"))?;
-    if obj.keys().any(|k| k != "type" && k != "path") {
+    if obj
+        .keys()
+        .any(|k| k != "type" && k != "path" && k != "sha256")
+    {
         return Err(Refused("unknown_handoff_field"));
     }
     let p = one_line(obj.get("path"), "path", MAX_PATH)?.ok_or(Refused("path"))?;
@@ -148,6 +155,19 @@ pub fn parse_handoff(body: &Value) -> Result<String, Refused> {
         return Err(Refused("path"));
     }
     Ok(p)
+}
+
+/// The optional `sha256` of a [`HANDOFF`] body: 64 lowercase hex, or refused.
+pub fn handoff_sha(body: &Value) -> Result<Option<String>, Refused> {
+    match body.get("sha256") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(h))
+            if h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            Ok(Some(h.clone()))
+        }
+        Some(_) => Err(Refused("sha256")),
+    }
 }
 
 /// One handoff as a page sees it; a user folder page gets the path as `{len, sha256}` (the
@@ -170,19 +190,21 @@ pub async fn handoff_act(st: AppState, key: crate::seat_token::Key, body: Value)
             "this seat has stopped",
         );
     };
-    let path = match parse_handoff(&body) {
+    let parsed = parse_handoff(&body).and_then(|p| Ok((p, handoff_sha(&body)?)));
+    let (path, sha256) = match parsed {
         Ok(p) => p,
         Err(Refused(field)) => {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                &format!("{field}: seat_handoff takes path only: the absolute path of the .md, one line, ≤ {MAX_PATH} characters"),
+                &format!("{field}: seat_handoff takes path (the absolute path of the .md, one line, ≤ {MAX_PATH} characters) and sha256 (64 lowercase hex) only"),
             )
         }
     };
     let at = crate::sessions::now_rfc3339();
     let h = Handoff {
         path,
+        sha256,
         at: at.clone(),
     };
     board().set_handoff(&seat_id, h.clone());
@@ -482,6 +504,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_handoff_may_carry_its_sha256_and_nothing_else() {
+        let h = "ab".repeat(32);
+        assert_eq!(
+            handoff_sha(&json!({"type": HANDOFF, "path": "/a.md", "sha256": h})),
+            Ok(Some(h.clone()))
+        );
+        assert_eq!(
+            handoff_sha(&json!({"type": HANDOFF, "path": "/a.md"})),
+            Ok(None)
+        );
+        assert!(parse_handoff(&json!({"type": HANDOFF, "path": "/a.md", "sha256": h})).is_ok());
+        for bad in [json!("AB".repeat(32)), json!("ab"), json!(7)] {
+            assert_eq!(
+                handoff_sha(&json!({"type": HANDOFF, "sha256": bad})),
+                Err(Refused("sha256")),
+                "reason: bad_sha_taken {bad}"
+            );
+        }
+    }
+
+    #[test]
     fn a_handoff_is_one_absolute_md_path_and_nothing_else() {
         for ok in [
             "/Users/a/.ez2-aib/pending/HANDOFF-a1.md",
@@ -518,6 +561,7 @@ mod tests {
         let b = Board::default();
         let h = Handoff {
             path: "/u/HANDOFF-x.md".into(),
+            sha256: None,
             at: AT.into(),
         };
         b.set_handoff("seat_a", h.clone());
