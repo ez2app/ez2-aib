@@ -3989,7 +3989,7 @@
     gh_token_fields: '頁面送的欄位不對(請回報頁面工程席)', gh_token_shape: '這不像 GitHub 權杖(只能有英文、數字與底線);重貼一次',
     gh_token_refused: 'GitHub 不認這把權杖(打錯、過期或被撤銷)', gh_token_repo_not_selected: '這把權杖看不到這個倉;建的時候「Repository access」要選到它',
     gh_token_no_write: '這把權杖對這個倉沒有寫入權限;「Contents」要 Read and write', gh_token_check_failed: '現在問不到 GitHub(網路或 GitHub 出狀況),沒有存;稍後再試',
-    gh_token_unavailable: '這台的 aibd 還不能存權杖(Windows 要等 Windows Hello 接上)', gh_token_store: '寫不進這台的鑰匙圈,沒有存',
+    gh_token_unavailable: '這台的 AIB 還不能存權杖(Windows 要等 Windows Hello 接上)', gh_token_store: '寫不進這台的鑰匙圈,沒有存',
     push_repo_unknown: '找不到這個登記倉', pr_no_github_repo: '這個倉的遠端不是 GitHub', page_only: '只有這台內建的頁面能存權杖',
     owner_check_unavailable: '這台還不能按指紋,沒有存', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有存',
     finger_denied: '指紋取消了,沒有存', finger_expired: FINGER_GONE + ';沒有存,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有存',
@@ -4075,10 +4075,10 @@
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
   const RELOG_NAME = { claude: 'Claude', codex: 'Codex' };
   const RELOG_WHY = {
-    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請先在終端機登入',
+    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請在這台的終端機先登入它',
     login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
     login_not_started: '登入程式開不起來', url_host_refused: '登入程式給的網址不是官方登入頁,沒有轉給你', no_url: '登入程式 20 秒內沒給登入網址',
-    relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 aibd 還不能從頁面重新登入',
+    relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 AIB 還不能從頁面重新登入',
     owner_check_unavailable: '這台問不到指紋,沒有開始', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有開始',
     finger_denied: '指紋取消了,沒有開始', finger_expired: FINGER_GONE + ';沒有開始,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開始',
     timeout: '10 分鐘內沒登入完,這一輪結束了', exit_not_0: '登入沒成功(登入程式回報失敗)', not_logged_in: '登入程式結束了,但這台還是沒有登入', code: '碼要 8–512 個字、不能有空白,只能送一次', login_id: '這一輪登入找不到了',
