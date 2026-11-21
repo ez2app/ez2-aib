@@ -1200,3 +1200,26 @@ label.rvr{cursor:pointer}
 .atts{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .atc{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);border-radius:8px;padding:2px 4px 2px 3px;font-size:12px;background:#1d1e24}
 .atimg{width:40px;height:28px;object-fit:cover;border-radius:4px;display:block}
+/* 自動推進面板(D6 / D7 畫面) */
+.drvbox .bh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ek.kdrv{background:#2a2346;color:#cbb8ff}
+.drvon{color:var(--green);font-weight:600}
+.drvoff{color:#f0883e;font-weight:600}
+.drvq{color:var(--dim);font-size:12px;border:1px dashed var(--line2);border-radius:6px;padding:0 6px}
+.drvby{color:var(--dim);font-size:12px}
+.drvf{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+.drvwhy{flex:1;min-width:180px;background:#0c0c10;color:var(--text);border:1px solid var(--gold);border-radius:8px;padding:5px 8px}
+.drvs{margin-top:6px}
+.drvh{font-size:12px;color:var(--dim);margin-right:8px}
+.drvlg{font-size:11px;color:var(--dim)}
+.drvr{display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px solid var(--line2);min-width:0}
+.drvto{white-space:nowrap}
+.drvt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.drvdots{display:inline-flex;gap:3px}
+.drvd{width:8px;height:8px;border-radius:50%;background:#3a3b44;display:inline-block}
+.drvd.on{background:var(--green)}
+.drvd.unk{background:transparent;border:1px dashed #5a5b66}
+.drvn{font-size:13px;padding:2px 0}
+.drvl{font-style:normal;font-size:11px;color:#cbb8ff;margin-right:6px}
+.drvb{color:#f6c48b}
+.drvfoot{margin-top:6px;font-size:12px;color:var(--dim)}

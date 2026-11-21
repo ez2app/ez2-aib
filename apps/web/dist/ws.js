@@ -262,6 +262,7 @@
   async function loadThreads() {
     if (!S.me) return;
     await loadItemTalk();
+    driveLoad();
     const ids = S.seats.map((s) => s.seat_id);
     await Promise.all(ids.map(async (id) => {
       try { const r = await get('/api/v1/threads/' + encodeURIComponent(threadId(S.me, 'seat:' + id))); S.threads[id] = r.messages || []; }
@@ -1819,8 +1820,60 @@
     const tab = EVS.tab === 'all' || EVS.tab === 'dm' || EV_CLS.includes(Number(EVS.tab)) ? EVS.tab : 'all';
     const tabs = `<div class="etabs"><button type="button" class="et1 ${tab === 'all' ? 'on' : ''}" data-evtab="all">全部 <b>${tot}</b></button>${EV_CLS.map((k) => { const n = evCount(k, G); return `<button type="button" class="et1 ${String(tab) === String(k) ? 'on' : ''} ${n ? '' : 'z'}" data-evtab="${k}">${esc(EV_NAME[k])} <b>${n}</b></button>`; }).join('')}<button type="button" class="et1 dmt ${tab === 'dm' ? 'on' : ''} ${dmCount() ? '' : 'z'}" data-evtab="dm">暫不處理 <b>${dmCount()}</b></button></div>`;
     if (tab === 'dm' && !S.dmLoaded) { S.dmLoaded = true; loadDismissed(); }
-    const body = tab === 'dm' ? dmHtml(true) : tab === 'all' ? (S.heatF ? evBox(1, G, false) + heatHtml() + heatOnly(G) : tot ? EV_CLS.map((k) => evBox(k, G, false) + (k === 1 ? heatHtml() : '')).join('') + dmHtml() : heatHtml() + '<div class="empty">沒有事件</div>' + dmHtml()) : evBox(Number(tab), G, true);
+    const body = tab === 'dm' ? dmHtml(true) : tab === 'all' ? (S.heatF ? evBox(1, G, false) + heatHtml() + heatOnly(G) : tot ? EV_CLS.map((k) => evBox(k, G, false) + (k === 1 ? heatHtml() + driveHtml() : '')).join('') + dmHtml() : heatHtml() + '<div class="empty">沒有事件</div>' + dmHtml()) : evBox(Number(tab), G, true);
     return favBox() + `<div class="evbox"><div class="bh"><b>事件</b> <span class="st">${tot} 則</span></div>${tabs}<div class="slots">${body}</div></div>`;
+  }
+
+  // ---------- 自動推進面板(519d0 DEV-drive-web D6 / D7 畫面;1a93b OPINION-driveweb)----------
+  // aibd 有 drive_status ⇒ 照它(開關、next 七層、派工四格、卡點);沒有 ⇒ 用「自動推進的信」分類串拼派工列(只有「送到」確定,
+  // 「開工」看收件席之後有沒有開始回合),整塊標「拼的」。開關只在 aibd 回 can_toggle 時給鈕、要寫理由(drive_toggle);頁面不判權。
+  const DRV = { st: null, posts: [], at: 0, busy: false, open: false, why: '', note: '' };
+  const DRV_STAGES = [['sent', '送到'], ['read', '已讀'], ['taken', '接單'], ['started', '開工']];
+  const seatByCode = (c) => S.seats.find((x) => (x.code || String(x.seat_id).replace(/^seat_/, '').slice(0, 5)) === c) || null;
+  async function driveLoad(force) {
+    if (DRV.busy || (!force && Date.now() - DRV.at < 60000)) return;
+    DRV.busy = true; DRV.at = Date.now();
+    try {
+      if (ctHas('drive_status')) { const r = await act('drive_status', {}).catch(() => null); DRV.st = r && typeof r === 'object' ? r : null; }
+      if (!DRV.st) {
+        const L = await soft(get('/api/v1/threads?category=drive&limit=3')).catch(() => null);
+        const out = [];
+        for (const t of ((L && L.threads) || []).slice(0, 3)) { const r = await soft(get('/api/v1/threads/' + encodeURIComponent(t.thread_id))).catch(() => null); for (const p of (r && r.posts) || []) out.push(p); }
+        DRV.posts = out.filter((p) => p && p.source && p.source.kind === 'drive').sort((a, b) => (Date.parse(b.source.at || b.created || '') || 0) - (Date.parse(a.source.at || a.created || '') || 0)).slice(0, 8);
+      }
+    } finally { DRV.busy = false; }
+    if (document.querySelector('[data-drv]')) render();
+  }
+  // 拼的「開工」:收件席在這封之後開始過回合(aibd 用量列 turn_started_at)
+  function drvStarted(seatId, at) {
+    const U = S.usage, rows = (U && U.usage) || []; const t0 = Date.parse(at || '') || 0;
+    return rows.some((u) => u && u.seat_id === seatId && u.turn_started_at && Date.parse(u.turn_started_at) >= t0);
+  }
+  function drvRows() {
+    if (DRV.st && Array.isArray(DRV.st.dispatch)) return DRV.st.dispatch.filter((d) => d && typeof d.to === 'string').slice(0, 8).map((d) => ({ to: d.to, text: String(d.item || d.text || ''), at: d.at, st: String(d.stage || 'sent'), real: true }));
+    return DRV.posts.map((p) => { const code = String(p.source.to || ''), x = seatByCode(code); return { to: code, text: String(p.body || '').split('\n').find((l) => l.trim()) || '', at: p.source.at || p.created, st: x && drvStarted(x.seat_id, p.source.at || p.created) ? 'started' : 'sent', real: false }; });
+  }
+  function driveHtml() {
+    const st = DRV.st, rows = drvRows(), andy = dqItems().length;
+    if (!st && !rows.length) return '';
+    const on = st ? (st.on === true ? '<b class="drvon">開著</b>' : st.on === false ? '<b class="drvoff">關著</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
+    const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
+    const tog = st && st.can_toggle === true ? `<button type="button" class="k" data-drvtog="1">${st.on ? '關掉' : '打開'}</button>` : '';
+    const form = DRV.open && st && st.can_toggle === true ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${st.on ? '關' : '開'}(會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">${st.on ? '確定關掉' : '確定打開'}</button><button type="button" class="k" data-drvx="1">取消</button></div>` : '';
+    // aibd 給的(real):照它的階段;拼的:只知道「送到」與「開工」,中間兩格一律寫 AIB 還沒給(開工了也不代表讀過、接過)
+    const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real || k === 0 || z[0] === 'started', on = r.real ? k <= i : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
+    const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span><span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
+    const nx = st && Array.isArray(st.next) && st.next.length ? `<div class="drvs"><span class="drvh">下一步</span>${st.next.slice(0, 7).map((n) => `<div class="drvn"><i class="drvl">${esc(String(n.layer || ''))}</i>${esc(String(n.item || '').slice(0, 70))}${n.seat ? ' → @' + esc(String(n.seat)) : ''}</div>`).join('')}</div>` : '';
+    const bl = st && Array.isArray(st.blockers) && st.blockers.length ? `<div class="drvs"><span class="drvh">卡點</span>${st.blockers.slice(0, 5).map((b) => `<div class="drvn drvb">${esc(String(b.what || '').slice(0, 70))}${b.waits_for ? ' · 等 ' + esc(String(b.waits_for)) : ''}</div>`).join('')}</div>` : '';
+    const foot = `<div class="drvfoot">${andy ? `等你決定 ${andy} 件(在最上面)` : '沒有等你決定的'}${st ? '' : ' · 這塊是用「自動推進的信」拼的:只有「送到」確定,「開工」看那席之後有沒有開始回合;已讀 / 接單 AIB 還沒給'}${DRV.note ? ' · ' + esc(DRV.note) : ''}</div>`;
+    return `<div class="evbox drvbox" data-drv="1"><div class="bh"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
+  }
+  async function driveToggle() {
+    const st = DRV.st; if (!st || st.can_toggle !== true) return;
+    const why = DRV.why.trim(); if (!why) { DRV.note = '要寫一句理由'; return render(); }
+    try { const r = await act('drive_toggle', { on: !st.on, why }); DRV.open = false; DRV.why = ''; DRV.note = ''; if (r && typeof r === 'object' && 'on' in r) DRV.st = Object.assign({}, st, r); await driveLoad(true); }
+    catch (e) { DRV.note = errText(e); }
+    render();
   }
 
   // ---------- 頂端:等你決定(1a93b,519d0 ORDER-fastest-1120 第 5 條;取代本機頁 ANDY-NOW)----------
@@ -4297,6 +4350,7 @@
     const keepScroll = (() => { const t = document.getElementById('tl'); return t ? { top: t.scrollTop, atEnd: t.scrollTop + t.clientHeight >= t.scrollHeight - 30 } : null; })();
     const inp = document.getElementById('inp');
     const focus = inp && document.activeElement === inp ? { a: inp.selectionStart, b: inp.selectionEnd } : null;
+    const dwf = document.activeElement && document.activeElement.matches && document.activeElement.matches('[data-drvwhy]') ? { a: document.activeElement.selectionStart, b: document.activeElement.selectionEnd } : null;
     const ghf = document.activeElement && document.activeElement.matches && document.activeElement.matches('[data-ghnum]') ? { a: document.activeElement.selectionStart, b: document.activeElement.selectionEnd } : null;
     const sqe = document.getElementById('sq'), sqF = sqe && document.activeElement === sqe ? { a: sqe.selectionStart, b: sqe.selectionEnd } : null;
     const ae = document.activeElement, ansF = ae && ae.dataset && ae.dataset.ansfor ? { card: ae.dataset.ansfor, a: ae.selectionStart } : null;
@@ -4325,6 +4379,7 @@
     if (t) t.scrollTop = !keepScroll || keepScroll.atEnd ? t.scrollHeight : keepScroll.top;
     heatMount(); // 即時熱度:常駐節點放回位子
     ctPaint(el);
+    if (dwf) { const di = document.querySelector('[data-drvwhy]'); if (di) { di.focus(); try { di.setSelectionRange(dwf.a, dwf.b); } catch (e) { /* 舊瀏覽器 */ } } }
     if (ghf) { const gi = document.querySelector('[data-ghnum]'); if (gi) { gi.focus(); try { gi.setSelectionRange(ghf.a, ghf.b); } catch (e) { /* 數字框不給設 */ } } }
     if (focus) { const i = document.getElementById('inp'); if (i) { i.focus(); i.setSelectionRange(focus.a, focus.b); } }
     if (sqF) { const i = document.getElementById('sq'); if (i) { i.focus(); try { i.setSelectionRange(sqF.a, sqF.b); } catch (e) { /* type=search 某些瀏覽器不給 */ } } }
@@ -4794,6 +4849,9 @@
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
     const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
+    if (x.closest('[data-drvtog]')) { DRV.open = !DRV.open; DRV.note = ''; return render(); }
+    if (x.closest('[data-drvx]')) { DRV.open = false; DRV.why = ''; return render(); }
+    if (x.closest('[data-drvgo]')) return driveToggle();
     const atx = x.closest('[data-attx]'); if (atx) { CT.att.splice(Number(atx.dataset.attx), 1); return render(); }
     const ctb = x.closest('[data-ct]'); if (ctb) { const k = ctb.dataset.ct; CT.note = ''; if (k === 'shot') return ctShot(); if (k === 'pick') return ctPick(); if (k === 'file') return ctFile(); if (k === 'fav') { CT.favOpen = !CT.favOpen; if (CT.favOpen) ctFavLoad(); return render(); } }
     const fvb = x.closest('[data-fav]'); if (fvb) { if (!fvb.dataset.fav && fvb.dataset.fvid) { CT.favs = (CT.favs || []).filter((f) => f.id !== fvb.dataset.fvid); act('fav_delete', { fav_id: fvb.dataset.fvid }).catch(() => {}); return render(); } return ctFavToggle(fvb.dataset.fav); }
@@ -4838,6 +4896,7 @@
     const f = [...e.dataTransfer.files].find((x) => /^image\//.test(x.type)); if (f) { e.preventDefault(); annOpen(f, false); }
   });
   el.addEventListener('input', (e) => {
+    if (e.target.dataset && 'drvwhy' in e.target.dataset) { DRV.why = e.target.value; return; }
     if (e.target.dataset && 'fvq' in e.target.dataset) { CT.favQ = e.target.value; const box = e.target.closest('.fvbox'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = favBox(); const nb = tmp.firstElementChild; for (const n of [...box.querySelectorAll('.fvr,.empty')]) n.remove(); const tail = box.querySelector('.cthf'); for (const n of [...nb.querySelectorAll('.fvr,.empty')]) box.insertBefore(n, tail); } return; }
     if (e.target.dataset && 'ghnum' in e.target.dataset) { const G = (S.gh = S.gh || {}), q = e.target.value.trim(); G.num = q; for (const r of document.querySelectorAll('[data-ghpick]')) r.hidden = !!q && r.dataset.ghpick.indexOf(q) !== 0; return; } // 打字即篩(不重畫,焦點不跳)
     if (e.target.dataset && e.target.dataset.addho && S.add) { S.add.ho = e.target.value; return; }

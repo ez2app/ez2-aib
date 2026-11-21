@@ -53,6 +53,8 @@ for (const t of acts) {
   // b4297 feat/add-test-host-b4297-1121(62fd9f9690)才有 test_host_*;頁面看 version.acts 沒有就不畫。合進來後拿掉這行
   if (/^test_host_(list|add|remove)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('b4297 CARD-add-test-host r0(62fd9f9690)') && ws.includes("hasAct('test_host_list') !== true"), 'branch-only act is marked: ' + t); continue; }
   // a9136 feat/web-capture-a9136-1121(21a22431c / 9348a45c9,IFACE-chat-tools-aibd-a9136-1121 r1)才有:截圖 / 存圖 / webp / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
+  // 519d0 DEV-drive-web D6 / D7:aibd 的 drive_status / drive_toggle 還沒寫(形狀在 OPINION-driveweb-1a93b-1121);頁面只在有時呼叫,沒有就用「自動推進的信」拼
+  if (/^drive_(status|toggle)$/.test(t)) continue;
   if (/^(screen_capture|media_(get|put|webp|list|delete)|send_history_(list|delete)|fav_(add|list|tag|delete)|color_(push|list))$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('IFACE-chat-tools-page-1a93b-1121') && ws.includes('const ctHas = (t) => hasAct(t) === true;'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
@@ -407,6 +409,25 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const probe2 = (x) => x.match(pat2) !== null;
   ok(probe2("'aibd 回了 '") && probe2("'連不上 aibd'") && !probe2("'aibd'") && !probe2("x === 'aibd'"), 'reason: brand_rule_misses_quoted_edges');
   ok(!probe('aibd ctl web') && !probe('AIBD_BRAIN_ROOT') && !probe("'aibd'") && !probe('aibd:seats_tree') && !probe('tree_not_in_aibd') && !probe('aibd.yml') && !probe('叫 aibd 的工具伺服器'), 'reason: brand_rule_too_wide');
+}
+
+// §27 自動推進面板(519d0 DEV-drive-web D6 / D7 畫面)
+{
+  const css = read('apps/web/dist/ws.css');
+  const seg = ws.slice(ws.indexOf('// ---------- 自動推進面板'), ws.indexOf('// ---------- 頂端:等你決定'));
+  ok(seg.length > 1500, 'reason: drive_panel_missing');
+  // 放在熱度榜下面
+  ok(/k === 1 \? heatHtml\(\) \+ driveHtml\(\)/.test(ws), 'reason: drive_panel_not_below_heat');
+  // 先問 aibd(drive_status),沒有才用「自動推進的信」拼,且標「拼的」
+  ok(/if \(ctHas\('drive_status'\)\)/.test(seg) && /category=drive&limit=3/.test(seg) && /拼的/.test(seg), 'reason: drive_panel_source');
+  // 開關只在 aibd 說能切時給鈕;要理由;頁面不判權
+  ok(/st && st\.can_toggle === true \? `<button/.test(seg) && /if \(!st \|\| st\.can_toggle !== true\) return;/.test(seg) && /if \(!why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /act\('drive_toggle', \{ on: !st\.on, why \}\)/.test(seg), 'reason: drive_toggle_rules');
+  // 拼的派工只有「送到」確定;已讀 / 接單 寫 AIB 還沒給
+  ok(/:AIB 還沒給/.test(seg) && /\.drvd\.unk\{/.test(css), 'reason: drive_unknown_stage_not_marked');
+  // 理由框打字不被重畫吃掉
+  ok(/if \(dwf\) \{ const di = document\.querySelector\('\[data-drvwhy\]'\)/.test(ws) && /'drvwhy' in e\.target\.dataset\) \{ DRV\.why = e\.target\.value; return; \}/.test(ws), 'reason: drive_reason_loses_focus');
+  // 一分鐘最多讀一次
+  ok(/Date\.now\(\) - DRV\.at < 60000/.test(seg), 'reason: drive_polls_too_often');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
