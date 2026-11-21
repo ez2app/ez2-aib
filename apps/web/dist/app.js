@@ -31,6 +31,7 @@
     f: 'all', q: '', cur: null, view: 'list', help: false, fx: false, pair: null,
     contacts: [], me: null, thread: null, threadOf: null, banner: null, bannerKind: '', flowsNone: false,
     drafts: {},
+    ib: null, ibF: 'all', ibOpen: null, ibBody: null, // 待審區(519d0 SPEC-contacts-to-inbox r0–r4):aibd 給總收件匣才有;沒有(用戶資料夾頁 403)⇒ 照舊聯絡中心
   };
   const el = document.getElementById('cc');
 
@@ -115,6 +116,68 @@
       <div class="msgs">${msgs.length ? msgs.map((m) => msgHtml(m, c, readOnly)).join('') : `<div class="empty">${esc(t('no_msgs'))}</div>`}</div>
       ${readOnly ? '' : `<form class="reply" data-send="${esc(c.key)}"><input name="t" autocomplete="off" maxlength="32768" placeholder="${esc(t('reply_to', { name: c.name }))}" aria-label="${esc(t('reply_to', { name: c.name }))}" value="${esc(draft)}"><button class="g-btn gold" type="submit">${esc(t('send'))}</button></form>`}</div>`;
   }
+  // ---------- 待審區 ----------
+  // 一封一張卡;欄 0 未讀 / 1 讀了沒結 / 2 等你 / 3 已結(同網頁版總收件匣 1a93b c734997a8a);急件只看 aibd 的 level
+  const ibKey = (v) => { const k = String(v || ''); return /^human:/.test(k) && S.me ? S.me.key : k.replace(/^seat:legacy:/, 'seat:'); };
+  const ibCol = (m) => (m.done_at || m.superseded_by ? 3 : m.held_human || /^human:/.test(String(m.to_seat || '')) ? 2 : m.read_at ? 1 : 0);
+  const ibKind = (m) => (m.blocked ? 'blk' : m.level === 'urgent' ? 'urg' : ibCol(m) === 2 ? 'ask' : 'say');
+  const IB_RANK = { urg: 0, ask: 1, say: 2, blk: 3 }, IB_FX = { urg: 'urg', ask: 'ask', say: 'gold', blk: 'hold' };
+  // aibd 列的 failed_code(7ebca 12:22);同 ws.js INB_BLOCK,沒對到照寫代號
+  const IB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'aibd 內部出錯,沒送出' };
+  const IB_LVBY = { andy: '你', '519d0': '@519d0', system: '系統' };
+  const ibName = (k) => { const c = byKey(k); return c ? (S.me && c.key === S.me.key ? t('you') : c.name) : '@' + String(k).replace(/^(seat|human):/, ''); };
+  const ibAv = (k) => { const c = byKey(k); return c ? emoji(c) : '🤖'; };
+  function ibShow(m) {
+    if (S.pair && ibKey(m.from_seat) !== S.pair && ibKey(m.to_seat) !== S.pair) return false;
+    return S.ibF === 'all' || ibKind(m) === S.ibF;
+  }
+  function ibCard(m) {
+    const col = ibCol(m), k = ibKind(m), a = Number(m.age_min) || 0;
+    const age = col < 3 ? (a > 30 ? ' old' : a > 10 ? ' y' : '') : '';
+    const disp = /^派工\s*[::]/.test(String(m.first_line || ''));
+    const by = k === 'urg' ? (m.level_by_role ? String(m.level_by_role) : IB_LVBY[m.level_by] || '') : '';
+    const tag = `<span class="k ${disp && k === 'say' ? 'disp' : k}"${by ? ` title="${esc(t('ib_by', { r: by }))}"` : ''}>${esc(t(disp && k === 'say' ? 'ib_k_disp' : 'ib_k_' + k))}</span>`;
+    const tk = `<span class="tk"><span class="${m.delivered_at ? 'on' : ''}">${esc(t('ib_t_sent'))}</span><span class="${m.read_at ? 'on' : ''}">${esc(t('ib_t_read'))}</span><span class="${m.done_at ? 'on' : ''}"${m.done_evidence || m.done_why ? ` title="${esc(m.done_evidence || m.done_why)}"` : ''}>${esc(t('ib_t_done'))}</span></span>`;
+    const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? `<span class="via">${esc(t('ib_via'))}</span>` : '';
+    const dup = Number(m.dup_count) > 1 ? `<span class="dup">${esc(t('ib_dup', { n: Number(m.dup_count) | 0 }))}</span>` : '';
+    const why = m.superseded_by ? `<div class="why">${esc(t('ib_sup'))}</div>` : m.blocked ? `<div class="why">${esc(IB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</div>` : '';
+    return `<div class="card ${k === 'urg' ? 'urg' : k === 'ask' ? 'dec' : k === 'blk' ? 'blk' : age.trim()}${ibShow(m) ? '' : ' dim'}${S.ibOpen === m.id ? ' on' : ''}" role="button" tabindex="0" data-ib="${esc(m.id)}">
+      <div class="r1"><span class="mini">${ibAv(ibKey(m.from_seat))}</span><span class="who">${esc(ibName(ibKey(m.from_seat)))}</span>→<span class="mini">${ibAv(ibKey(m.to_seat))}</span><span class="who2">${esc(ibName(ibKey(m.to_seat)))}</span>${tag}<span class="age${age}">${esc(t('ib_min', { n: Math.round(a) }))}</span></div>
+      <div class="t">${esc(String(m.first_line || '').slice(0, 120))}</div><div class="r3">${tk}${dup}${via}</div>${why}</div>`;
+  }
+  function ibDrawer() {
+    const m = S.ibOpen && S.ib.rows.find((x) => x.id === S.ibOpen); if (!m) return '';
+    const body = S.ibBody == null ? t('ib_loading') : S.ibBody === false ? t('ib_nobody') : S.ibBody;
+    return `<div class="open ibdr"><div class="wall">${esc(t('ib_wall'))}</div><div class="r1"><span class="who">${esc(ibName(ibKey(m.from_seat)))}</span>→ ${esc(ibName(ibKey(m.to_seat)))}<button type="button" class="g-btn" data-ibx="1">${esc(t('ib_close'))}</button></div><pre class="ibt">${esc(body)}</pre></div>`;
+  }
+  function ibPeople() {
+    const open = {}; for (const m of S.ib.rows) if (ibCol(m) < 3) { const k = ibKey(m.to_seat); const x = (open[k] = open[k] || { n: 0, hot: false }); x.n++; if (ibKind(m) === 'urg' || (Number(m.age_min) || 0) > 30) x.hot = true; }
+    const L = S.contacts.filter((c) => !c.archived_at && !c.blocked).sort((a, b) => (isHuman(b) - isHuman(a)) || ((open[b.key] || {}).n || 0) - ((open[a.key] || {}).n || 0));
+    return L.map((c) => { const o = open[c.key]; return `<div class="p" role="button" tabindex="0" data-ibp="${esc(c.key)}" aria-current="${S.pair === c.key}">${avatar(c)}<div class="minw0"><div class="nm2"><span>${esc(S.me && c.key === S.me.key ? t('you') : c.name)}</span></div><div class="sub">${esc(presence(c))}</div></div><div class="meta">${o ? `<span class="badge${o.hot ? ' dec' : ''}">${o.n}</span>` : ''}</div></div>`; }).join('');
+  }
+  function ibHtml() {
+    const R = S.ib.rows, cols = [[], [], [], []];
+    for (const m of R) cols[ibCol(m)].push(m);
+    for (let i = 0; i < 4; i++) cols[i].sort((a, b) => (i < 3 ? IB_RANK[ibKind(a)] - IB_RANK[ibKind(b)] || (Number(b.age_min) || 0) - (Number(a.age_min) || 0) : (Number(a.age_min) || 0) - (Number(b.age_min) || 0)));
+    const stuck = {}; let oldest = 0, openN = 0;
+    for (const m of R) if (ibCol(m) < 3) { openN++; const k = ibKey(m.to_seat); stuck[k] = (stuck[k] || 0) + 1; oldest = Math.max(oldest, Number(m.age_min) || 0); }
+    const top = Object.keys(stuck).sort((a, b) => stuck[b] - stuck[a])[0];
+    const stat = top ? `<span class="ibstat">${esc(t('ib_stat', { n: openN, who: ibName(top), k: stuck[top], m: Math.round(oldest) }))}</span>` : '';
+    const chips = [['all', 'ib_all'], ['urg', 'ib_urg'], ['ask', 'ib_ask'], ['blk', 'ib_blk']].map(([k, w]) => `<button type="button" class="fchip ${k === 'urg' ? 'urg' : ''}" data-ibf="${k}" aria-pressed="${S.ibF === k}">${esc(t(w))}</button>`).join('');
+    const colHtml = cols.map((L, i) => { const seen = L.filter(ibShow).length; return `<div class="col"><h3>${esc(t('ib_c' + i))}<span class="n">${seen === L.length ? L.length : esc(t('ib_seen', { n: seen, all: L.length }))}</span>${i === 2 ? `<span class="ph">${esc(t('ib_c2_note'))}</span>` : ''}</h3>${L.map(ibCard).join('')}</div>`; }).join('');
+    const lg = `<div class="legend"><span class="lg urg"><i></i>${esc(t('ib_lg_urg'))}</span><span class="lg ask"><i></i>${esc(t('ib_lg_ask'))}</span><span class="lg say"><i></i>${esc(t('ib_lg_say'))}</span><span class="lg blk"><i></i>${esc(t('ib_lg_blk'))}</span><span>${esc(t('ib_lg_age'))}</span></div>`;
+    return `<div class="bar ibbar">${chips}${stat}</div>${S.ib.bridge === false ? `<div class="off-banner">${esc(t('ib_nobridge'))}</div>` : ''}<div class="ibmain"><div class="panel ibppl"><h4>${esc(t('ib_ppl'))}</h4>${ibPeople()}</div><div class="ibright"><div class="cols">${colHtml}</div>${ibDrawer()}</div></div>${lg}`;
+  }
+  // 光點 = 還沒結的信:寄件人頭像流到收件人頭像;篩選 / 點人之後只留那些
+  function ibFlows() {
+    const m = new Map(), on = new Set([...el.querySelectorAll('[data-av]')].map((n) => n.dataset.av));
+    for (const x of S.ib.rows) {
+      if (ibCol(x) === 3 || !ibShow(x)) continue;
+      const a = avId(ibKey(x.from_seat)), b = avId(ibKey(x.to_seat)); if (a === b || !on.has(a) || !on.has(b)) continue;
+      const k = a + '|' + b + '|' + IB_FX[ibKind(x)]; m.set(k, (m.get(k) || 0) + 1);
+    }
+    return [...m].map(([k, n]) => { const [a, b, kind] = k.split('|'); return { a, b, kind, n }; });
+  }
   const FILTERS = ['all', 'dec', 'unread', 'h', 'archived'];
   function head() {
     const dec = S.contacts.reduce((a, c) => a + (c.archived_at ? 0 : c.decide_open || 0), 0);
@@ -141,15 +204,17 @@
     const pos = focus ? a.selectionStart : 0;
     const cur = S.contacts.find((c) => c.key === S.cur) || null;
     let body;
-    if (NARROW.matches) body = S.view === 'tl' && cur ? `<div class="panel">${timeline(cur, true)}</div>` : `<div class="panel list">${listHtml()}</div>`;
+    if (S.ib) body = ibHtml();
+    else if (NARROW.matches) body = S.view === 'tl' && cur ? `<div class="panel">${timeline(cur, true)}</div>` : `<div class="panel list">${listHtml()}</div>`;
     else body = `<div class="two"><div class="panel list">${listHtml()}</div><div class="panel">${timeline(cur, false)}</div></div>`;
     const pc = S.pair ? S.contacts.find((c) => c.key === S.pair) : null;
     const pairChip = pc ? `<div class="bar"><button type="button" class="pairchip" data-unpair="1">${esc(t('only_pair', { name: pc.name }))}</button></div>` : '';
     const banner = S.banner ? `<div class="${S.bannerKind === 'err' ? 'err-banner' : 'off-banner'}" role="status">${esc(S.banner)}</div>` : '';
     const flowsNote = S.flowsNone && S.fx ? `<div class="off-banner">${esc(t('flows_none'))}</div>` : '';
-    el.innerHTML = head() + (S.fx ? fxPop() : '') + flowsNote + filters() + pairChip + (S.help ? `<div class="helpbox">${esc(t('help_text'))}</div>` : '') + banner + body;
+    el.innerHTML = head() + (S.fx ? fxPop() : '') + flowsNote + (S.ib ? '' : filters()) + pairChip + (S.help ? `<div class="helpbox">${esc(t('help_text'))}</div>` : '') + banner + body;
     syncOpts();
     if (el._cv) { el.appendChild(el._cv); FX.rendered(el); }
+    if (S.ib) FX.setFlows(ibFlows()); // 頭像在畫面上才算得到路,畫完再給
     const m = el.querySelector('.msgs'); if (m) m.scrollTop = m.scrollHeight;
     if (focus) { const n = el.querySelector(focus); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } }
   }
@@ -170,9 +235,10 @@
       const r = await AIB.contacts({ archived: true });
       S.contacts = r.contacts || [];
       S.me = AIB.me(S.contacts);
-      if (S.cur) await loadThread();
+      await loadInbox();
+      if (S.cur && !S.ib) await loadThread();
       if (S.bannerKind === 'err' || S.bannerKind === 'note' || S.banner === t('offline')) S.banner = null;
-      await loadFlows();
+      if (!S.ib) await loadFlows();
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) S.banner = t('need_pair'), S.bannerKind = 'err';
       else if (e && e.status === 0) S.banner = t('offline'), S.bannerKind = 'err';
@@ -180,6 +246,16 @@
       else if (e && e.status === 404) S.banner = t('not_yet'), S.bannerKind = 'note'; // 提示色,紅只給錯誤與危險(a9136 839bf494 N1)
       else S.banner = t('err', { m: (e && (e.code || e.message)) || '?' }), S.bannerKind = 'err';
     } finally { busy = false; render(); }
+  }
+  async function loadInbox() {
+    try { const r = await AIB.inbox(); S.ib = r && Array.isArray(r.rows || r.items) ? { rows: r.rows || r.items, counts: r.counts || {}, bridge: r.bridge } : null; }
+    catch (e) { if (e && (e.status === 403 || e.status === 404 || e.status === 405)) S.ib = null; else throw e; }
+  }
+  async function ibOpen(id) {
+    if (S.ibOpen === id) { S.ibOpen = null; return render(); }
+    S.ibOpen = id; S.ibBody = null; render();
+    let b = false; try { const r = await AIB.inboxOne(id); b = r && typeof (r.body != null ? r.body : r.text) === 'string' ? (r.body != null ? r.body : r.text) : false; } catch (e) { b = false; }
+    if (S.ibOpen === id) { S.ibBody = b; render(); }
   }
   async function loadThread() {
     if (!S.me || !S.cur) { S.thread = null; return; }
@@ -204,8 +280,17 @@
     try { f = await AIB.flows(600); } catch (e) { S.flowsNone = true; FX.setFlows([]); return; }
     S.flowsNone = f.source === 'none';
     const out = [];
-    for (const p of f.pairs || []) for (const k in KIND) if (p[k] > 0) out.push({ a: avId(p.from), b: avId(p.to), kind: KIND[k], n: p[k] });
+    for (const p of f.pairs || []) {
+      const tos = /^t_/.test(String(p.to || '')) ? (await members(p.to)).filter((x) => x !== p.from) : [p.to];
+      for (const to of tos) for (const k in KIND) if (p[k] > 0) out.push({ a: avId(p.from), b: avId(to), kind: KIND[k], n: p[k] });
+    }
     FX.setFlows(out);
+  }
+  const memo = {};
+  async function members(tid) {
+    const c = memo[tid]; if (c && Date.now() - c.at < 60000) return c.list;
+    let list = []; try { const r = await AIB.thread(tid); const th = (r && (r.thread || r)) || {}; list = (th.members || []).map((m) => String(m.seat || m.member || m)).filter(Boolean); } catch (e) { list = []; }
+    memo[tid] = { at: Date.now(), list }; return list;
   }
   async function loadPrefs() { try { FX.loadPrefs(await AIB.prefs()); syncOpts(); } catch (e) { /* 沒有偏好 = 用預設 */ } }
 
@@ -224,6 +309,10 @@
   el.addEventListener('click', (e) => {
     const x = e.target;
     if (x.closest('[data-unpair]')) { S.pair = null; return render(); }
+    const ibf = x.closest('[data-ibf]'); if (ibf) { S.ibF = ibf.dataset.ibf; S.pair = null; return render(); }
+    const ibp = x.closest('[data-ibp]'); if (ibp) { S.pair = S.pair === ibp.dataset.ibp ? null : ibp.dataset.ibp; return render(); }
+    const ibc = x.closest('[data-ib]'); if (ibc) return ibOpen(ibc.dataset.ib);
+    if (x.closest('[data-ibx]')) { S.ibOpen = null; return render(); }
     const f = x.closest('[data-f]'); if (f) { S.f = f.dataset.f; S.pair = null; return render(); }
     if (x.closest('[data-help]')) { S.help = !S.help; return render(); }
     if (x.closest('[data-fxgear]')) { S.fx = !S.fx; return render(); }
@@ -235,12 +324,13 @@
     const p = x.closest('[data-id]');
     if (!p && !x.closest('button')) {
       const hit = FX.hit(el, e);
-      if (hit && hit !== 'me') { S.pair = hit; return open(hit); }
+      if (hit && hit !== 'me') { S.pair = S.ib && S.pair === hit ? null : hit; return S.ib ? render() : open(hit); }
     }
     if (p) return open(p.dataset.id);
   });
   el.addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-id]')) { e.preventDefault(); open(e.target.dataset.id); }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-ib],[data-ibp]')) { e.preventDefault(); e.target.click(); }
   });
   el.addEventListener('input', (e) => {
     const i = e.target;

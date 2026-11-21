@@ -1,5 +1,7 @@
 'use strict';
-const KC = { gold:'226,179,74', dec:'229,72,77', shout:'90,169,255', hold:'139,139,150' };
+// 待審區 r3(Andy 12:3x「為什麼急的反而是藍色」):一般 = 淡金、等你決定 = 橘、急 = 紅(最大最快)、被擋 = 灰;舊名 dec / shout 留著對到新色
+const KC = { gold:'214,196,150', ask:'240,146,60', urg:'235,64,64', hold:'139,139,150', dec:'240,146,60', shout:'235,64,64' };
+const URG = (k) => k==='urg' || k==='shout', ASK = (k) => k==='ask' || k==='dec';
 // 粒子層(SPEC §2):每顆光點 = 一封信;資料由 app.js 從 GET /api/v1/flows 灌進來(FX.setFlows)
 const FX = window.FX = (() => {
   let FLOWS = [];
@@ -28,7 +30,7 @@ const FX = window.FX = (() => {
   }
   // 沿物件外框走：每個物件(標題列、膠囊、面板、清單列、卡片、信件…)的最外框往外 3px 是一條路，
   // 轉角往外打水平 / 垂直射線接到最近的另一條外框，組成路網;每顆光點用隨機權重挑自己的路(隨機流動)，轉角做圓角
-  const OBJ = '.title,.bar > *,.panel,.p,.card,.m,.tlh,.reply,.search,.grp,.open,.helpbox';
+  const OBJ = '.title,.bar > *,.panel,.p,.card,.m,.tlh,.reply,.search,.grp,.open,.helpbox,.col,.legend'; // 待審區:欄 .col 也是物件,光點只走欄與卡片之間的間格(Andy r1)
   function graph(el){
     const now = performance.now(); if (el._G && now - el._G.at < 400) return el._G;
     const box = el.getBoundingClientRect(), W = box.width, H = box.height, ins = 4, o = 3;
@@ -150,7 +152,7 @@ const FX = window.FX = (() => {
         f._acc = (f._acc||0) + dt * f.n * DEf() / 10000;
         if (f._acc >= 1 && total < MAX) { const via = Math.random() < .95 ? G.edge[Math.floor(Math.random()*G.edge.length)] : null; // 多半先繞到外圈隨機一點(四邊平均)
           const pts = path(G, f.a, f.b, 1.5, via); f._acc = 0;
-          if (pts) { const g = poly(pts); el._p.push({ f, g, d:0, v:SPf()*(1 + Math.min(5,f.n)*.06), hold:f.kind==='hold', life:0 }); total++; } }
+          if (pts) { const g = poly(pts); el._p.push({ f, g, d:0, v:SPf()*(1 + Math.min(5,f.n)*.06)*(URG(f.kind)?1.6:1), hold:f.kind==='hold', life:0 }); total++; } }
         if (f._acc > 2) f._acc = 2;
       }
       el._p = el._p.filter(q => {
@@ -158,7 +160,7 @@ const FX = window.FX = (() => {
         if (q.hold && q.d >= g.L/2) { q.life += dt; if (q.life > 3500) return false; } else q.d += q.v*dt;
         if (q.d >= g.L) return false;
         const c = KC[f.kind], a0 = (q.hold && q.d >= g.L/2 ? .35 + .65*Math.abs(Math.sin(q.life/220)) : 1) * ALf();
-        const R = (f.kind==='dec' ? 2.4 : 1.8) * SZf();
+        const R = (URG(f.kind) ? 2.8 : ASK(f.kind) ? 2.3 : 1.8) * SZf();
         const TN = Math.round(opt.tl/10);
         for (let k=TN;k>=0;k--) { // 尾巴 TN 節漸淡
           const P = pt(g, Math.max(0, Math.min(q.d, q.hold ? g.L/2 : g.L) - k*R*1.4) / g.L), a = a0 * (1 - k/(TN+1)), rr = R * (1 - k/(TN+1)*.5);
@@ -188,7 +190,10 @@ const FX = window.FX = (() => {
     attach(el){ const cv = document.createElement('canvas'); cv.className = 'fx'; cv.setAttribute('aria-hidden','true'); el._cv = cv; el._p = []; el.appendChild(cv); mocks.add(el); io.observe(el); el.addEventListener('scroll', () => still() && drawStatic(el), true); },
     rendered(el){ if (still()) requestAnimationFrame(() => drawStatic(el)); },
     opt,
-    setFlows(list){ FLOWS = list; for (const el of mocks) { el._G = null; } redraw(); },
+    setFlows(list){ // r2(Andy「光點沒跑」):預設數量 10% 每條流約 50 秒一顆、從 0 累積 ⇒ 開頁前十幾秒一顆都沒有;新出現的流先給接近 1,0–3 秒內先出一顆,之後照原節奏(預設值不改)
+      const was = new Map(FLOWS.map((f) => [f.a + '|' + f.b + '|' + f.kind, f._acc]));
+      for (const f of list) { const k = f.a + '|' + f.b + '|' + f.kind; f._acc = was.has(k) ? was.get(k) : 1 - Math.random() * .05; }
+      FLOWS = list; for (const el of mocks) { el._G = null; } redraw(); },
     loadPrefs(p){ // p = GET /api/v1/prefs/contacts_fx
       if (!p || !p.value) return; rev = p.revision;
       const was = still(); for (const k in PK) if (Number.isFinite(p.value[PK[k]])) opt[k] = clamp(p.value[PK[k]]);
