@@ -4049,7 +4049,8 @@
   const MOVE_DISP = /^\s*派工\s*[:：]/;
   async function moveMine(id, code, r) {
     // 5d33a r9 L2 / N1:頁面不判派工權;只有 aibd 在 letters 上標 dispatch:true 的才寫「這些是你的」,其餘只列「帶著的派工信」並寫寄件人、標未核
-    const pick = (L) => L.map((m) => ({ id: String(m.id || m.letter_id || ''), line: String(m.first_line || '').trim(), from: cinbId(m.sender || m.from_seat || ''), ok: m.dispatch === true })).filter((m) => m.id && MOVE_DISP.test(m.line));
+    const pick = (L) => L.map((m) => ({ id: String(m.id || m.letter_id || ''), line: String(m.first_line || '').trim(), from: cinbId(m.sender || m.from_seat || ''), ok: m.dispatch === true, ask: m.asks_work })).filter((m) => m.id && (m.ask === true || m.ok || (m.ask === undefined && MOVE_DISP.test(m.line))));
+    // 7ebca 5d6e3df0da:letters 多 asks_work(第一行寫著「派工:」,只是點名);信橋轉來的 dispatch 一律 false ⇒ 落「寫著派工、寄件權還沒核」
     if (r && Array.isArray(r.letters)) return { src: 'aibd', L: pick(r.letters) };
     const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null), R = ib && (ib.rows || ib.items);
     if (!Array.isArray(R)) return { src: 'none', L: [] };
@@ -4072,7 +4073,7 @@
     const row = (m) => '<div class="mvi"><code>' + esc(m.id.slice(0, 14)) + '</code> <b>' + esc(who(m)) + '</b> ' + esc(m.line.slice(0, 90)) + '</div>';
     const part = (A, head) => (A.length ? '<b>' + head + '(' + A.length + ' 封)</b>' + A.slice(0, 8).map(row).join('') + (A.length > 8 ? '<small>還有 ' + (A.length - 8) + ' 封,到待審區看全部</small>' : '') : '');
     const yes = L.filter((m) => m.ok), un = L.filter((m) => !m.ok);
-    return '<div class="mvl">' + part(yes, '這些是你的') + part(un, '帶著的派工信 · 寄件人有沒有派工權 AIB 還沒核') + '</div>';
+    return '<div class="mvl">' + part(yes, '這些是你的') + part(un, '寫著派工、寄件權還沒核(先看內容再決定)') + '</div>';
   }
   async function seatMove(id, code) {
     S.moveMsg = null;
