@@ -184,4 +184,16 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/const half = 'half' in m \? m\.half === true :/.test(ws), 'reason: half_field_not_read');
 }
 
+// 16. 519d0 10:07(Andy 09:4x–10:05 在預覽撞到的四處)
+{
+  ok(ws.includes("const SB_NAME = '交回本機原倉(新分支)'") && !ws.includes('>送回倉(建新分支)<'), 'reason: send_back_still_named_vaguely');
+  ok(/main 沒動,也還沒上 GitHub/.test(ws), 'reason: send_back_done_without_main_untouched');
+  ok(/if \(sbb && running\(sbb\.dataset\.sendback\)\)/.test(ws), 'reason: running_seat_send_back_silent');
+  ok(/if \(S\.sbMsg && S\.sbMsg\.bad\) say\(S\.sbMsg\.text, 'err'\)/.test(ws), 'reason: send_back_error_only_in_seat_box');
+  ok(/codex: '終端機打 codex login'/.test(ws) && !/例:claude 打 \/login/.test(ws), 'reason: codex_told_claude_login');
+  ok(/data-addpv="1">去預覽開席</.test(ws), 'reason: mother_page_plus_no_preview_way');
+  ok(/回了失敗碼/.test(ws), 'reason: nonzero_exit_marked_error');
+  ok(/function repoTag\(s\)/.test(ws) && /\$\{repoTag\(s\)\}/.test(ws), 'reason: seat_card_without_repo_tag');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

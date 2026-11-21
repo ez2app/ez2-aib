@@ -1312,10 +1312,17 @@
     if (!P.length) return '';
     return `<div class="snb" data-seatnowbox><div class="snh">各席現在 <small>在做什麼 · 等誰 · 幾封信沒結</small></div>${P.map(seatNowLine).join('')}${ghBox()}</div>`;
   }
+  // 519d0 10:07 第 3 點:席卡標明它動的是哪裡。aibd 只說得出「登記倉的副本」(repo_copy);其他做事席開在自己的新資料夾,不是你的倉
+  function repoTag(s) {
+    const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
+    if (rc) return `<span class="rpt cp" title="這一席改的是「${esc(String(rc.repo || ''))}」的副本;你的原倉要按「交回本機原倉」才會多一條分支,main 不動">原倉副本 · ${esc(String(rc.repo || ''))}</span>`;
+    if (s.mode === 'work') return '<span class="rpt" title="這一席開在 aibd 給它的新資料夾,不是你登記的倉">自己的新資料夾</span>';
+    return '';
+  }
   function treeTag(s) {
     const L = (S.seats || []).filter((x) => !isArch(x));
     if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
-    if (s.repo_copy && typeof s.repo_copy === 'object') return `<small class="tt own" title="「${esc(String(s.repo_copy.repo || ''))}」的副本;做完用席窗的「送回倉」建新分支">倉副本 · ${esc(String(s.repo_copy.repo || ''))}</small>`; // a9136 IFACE-web-merge r1 §1:這種席不給合回
+    if (s.repo_copy && typeof s.repo_copy === 'object') return `<small class="tt own" title="「${esc(String(s.repo_copy.repo || ''))}」的副本;做完用席窗的「交回本機原倉」建新分支(main 不動、不上 GitHub)">倉副本 · ${esc(String(s.repo_copy.repo || ''))}</small>`; // a9136 IFACE-web-merge r1 §1:這種席不給合回
     const fo = s.folder_owner, t = s.tree && typeof s.tree === 'object' ? s.tree : null;
     const own = (c) => { const o = L.find((y) => y.seat_id === c || String(y.code || '') === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)); return o ? '@' + seatShort(o) : '@' + c; };
     const br = t && t.branch ? String(t.branch).replace(/^refs\/heads\//, '') : '';
@@ -1671,7 +1678,7 @@
   }
   function wkHtml(c, res) {
     const id = String(c.id || ''), open = id && S.wkOpen && S.wkOpen.has(id), all = id && S.wkAll && S.wkAll.has(id);
-    const st = !res ? '<span class="wkst run">執行中</span>' : res.err ? '<span class="wkst bad">出錯</span>' : '<span class="wkst">▸</span>';
+    const st = !res ? '<span class="wkst run">執行中</span>' : res.err ? (String(res.text || '').trim() ? '<span class="wkst soft" title="指令跑完了,但回了不是 0 的結束碼(例:搜尋沒對到)。不一定是壞事,點開看輸出">回了失敗碼</span>' : '<span class="wkst bad">出錯</span>') : '<span class="wkst">▸</span>';
     let body = '';
     if (open) {
       if (!res) body = '<div class="wkr na">還沒有結果</div>';
@@ -1846,7 +1853,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -3151,20 +3158,21 @@
   // 第 6 件第一片(a9136 IFACE-web-merge r1):有 repo_copy 的席 ⇒「送回倉(建新分支)」;這種席不給合回。
   // 兩步跟登記倉同形:先問(202 帶 plan 給畫面)→ 指紋 → 帶票 + plan.head 重送 ⇒ 200 {repo, branch, head, commits, files};分支名以 200 那次為準
   const SB_WHY = {
-    seat_busy: '這一席還在跑,先停下它再送', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
+    seat_busy: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按一次「' + '交回本機原倉' + '」', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
     settings_touched: '動到 AI 設定檔、workflow、.gitmodules、.lfsconfig 或符號連結,不能從頁面送', objects_missing: '副本的物件不齊,沒有送',
     too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
-    send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次送回倉',
-    seat_id: '這一席不是登記倉的副本,不能送回倉', send_back_built_in_page_only: '只有這台內建的頁面能送回倉',
+    send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次交回本機原倉',
+    seat_id: '這一席不是登記倉的副本,不能交回原倉', send_back_built_in_page_only: '只有這台內建的頁面能交回原倉',
     owner_check_unavailable: '這台還不能按指紋,沒有送', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有送',
     finger_denied: '指紋取消了,沒有送', finger_expired: FINGER_GONE + ';沒有送,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有送',
   };
-  const SB_SAFE = '只在倉裡建一條新分支,不會推、不會改你正在用的分支。';
+  const SB_SAFE = '只在你這台電腦的原倉建一條新分支:main 和你正在用的分支都不動,也不會上 GitHub。';
+  const SB_NAME = '交回本機原倉(新分支)'; // 519d0 10:07 第 4 點(Andy 10:05 連問兩次「送回倉」是什麼)
   function sendBackHtml(s) {
     const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
     if (!rc) return '';
     if (S.sb && S.sb.seat === s.seat_id) return '';
-    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((rc.sendable === false ? '這一席看起來還在跑,先停下再送;' : '') + '把這一席副本裡已提交的改動,送回「' + String(rc.repo || '') + '」建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>送回倉(建新分支)</button>`;
+    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((running(s.seat_id) || rc.sendable === false ? '這一席還在跑:先按「停止」,停好再交回;' : '') + '把這一席副本裡已提交的改動,交回你這台電腦的原倉「' + String(rc.repo || '') + '」,建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>${S.sbBusy === s.seat_id || running(s.seat_id) ? '先停止,再' : ''}${SB_NAME}</button>`;
   }
   function sendBackBox(s) {
     const B = S.sb && S.sb.seat === s.seat_id ? S.sb : null, M = S.sbMsg && S.sbMsg.seat === s.seat_id ? S.sbMsg : null;
@@ -3173,7 +3181,7 @@
       const what = p.repo ? `送回「${esc(p.repo)}」,新分支 <b>${esc(p.branch || '')}</b>${p.head ? ' · 頭 ' + esc(String(p.head).slice(0, 12)) : ''}${p.commits != null ? ' · ' + (Number(p.commits) | 0) + ' 個提交' : ''}${p.files != null ? ' · ' + (Number(p.files) | 0) + ' 個檔' : ''}` : '正在問 aibd 要送什麼…';
       return `<div class="sbw" data-sendbackwait>${what}${L.length ? `<div class="sbl">要讓你看到的檔:${L.slice(0, 20).map((x) => '<code>' + esc(String(x)) + '</code>').join(' ')}</div>` : ''}<div>${SB_SAFE}只送已提交的。</div>${B.left != null ? `<div class="sbf">請在這台 Mac 按指紋 · 還有 ${B.left | 0} 秒 · ${FINGER_BEHIND}</div>` : ''}</div>`;
     }
-    if (M) return `<div class="trm${M.bad ? ' bad' : ''}" data-sendbackmsg>${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>${M.bad ? '' : pushBox(s)}`;
+    if (M) return `<div class="trm${M.bad ? ' bad big' : ''}" data-sendbackmsg role="${M.bad ? 'alert' : 'status'}">${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>${M.bad ? '' : pushBox(s)}`;
     return '';
   }
   async function sendBack(id) {
@@ -3181,13 +3189,14 @@
     try {
       const r = await fingerAct('seat_send_back', { seat_id: id }, (t, sec, first) => { if (S.sb && S.sb.seat === id) { S.sb.plan = (first && first.plan) || S.sb.plan; S.sb.left = sec; render(); } }, (first) => ({ head: String((first && first.plan && first.plan.head) || '') }));
       S.sbOk = { seat: id, repo: String((r && r.repo) || ''), branch: String((r && r.branch) || ''), head: String((r && r.head) || '') }; S.pushMsg = null; S.prAsk = null;
-      S.sbMsg = { seat: id, text: '已在「' + String((r && r.repo) || '') + '」建新分支 ' + String((r && r.branch) || '') + (r && r.head ? '(頭 ' + String(r.head).slice(0, 12) + (r.commits != null ? ',' + (Number(r.commits) | 0) + ' 個提交' : '') + (r.files != null ? '、' + (Number(r.files) | 0) + ' 個檔' : '') + ')' : '') + '。不會推、不會改你正在用的分支。' };
+      S.sbMsg = { seat: id, text: '已在你這台電腦的原倉「' + String((r && r.repo) || '') + '」建分支 ' + String((r && r.branch) || '') + (r && r.head ? '(頭 ' + String(r.head).slice(0, 12) + (r.commits != null ? ',' + (Number(r.commits) | 0) + ' 個提交' : '') + (r.files != null ? '、' + (Number(r.files) | 0) + ' 個檔' : '') + ')' : '') + '。main 沒動,也還沒上 GitHub。' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code), c = e && e.code;
       const k = SB_WHY[c] ? c : rs;
       const b = (e && e.body) || {};
-      S.sbMsg = { seat: id, bad: true, text: (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
+      S.sbMsg = { seat: id, bad: true, text: '沒有交回:' + (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
     }
+    if (S.sbMsg && S.sbMsg.bad) say(S.sbMsg.text, 'err'); // 519d0 10:07 第 1 點:席窗沒開或捲走了,頂端也寫同一句
     S.sb = null; render();
   }
   // 第 5 件殼(519d0 22:19):送回倉成功那列多「推上去」(G2)與「開 PR」(G3)。
@@ -3416,9 +3425,16 @@
     const where = A.role ? `${node ? `<div class="apsel"><b>${esc(nodeT || node)}</b></div>` : ''}<div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找專案項目(標題或編號)" aria-label="找專案項目" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div>` : '<div class="apn">先選角色才要掛到項目;「不掛」就只開席</div>';
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
-    const FIX = { 這台還沒登入: '在這台的終端機先登入它(例:claude 打 /login),登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 aibd 還不會開它,等新版' };
+    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
+    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 aibd 還不會開它,等新版' };
     if (!pv) {
-      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(FIX[p.why]) : ''}</li>`).join('');
+      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
+      // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
+      const pvGo = !inPreview() && Array.isArray(S.pvs) && S.pvs.some((x) => !x.sample);
+      if (pvGo) return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="加一席">
+      <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
+      <div class="aok">這一頁是管預覽的母體頁,不在這裡開席。開席請到預覽那一頁:按下面的鈕,在預覽清單按「打開」就會帶好配對直接進去。</div>
+      <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button><button type="button" class="go" data-addpv="1">去預覽開席</button></div></div></div>`;
       return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="加一席">
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="aerr" role="alert">這台現在開不了任何 AI,所以不能加席。</div><ul class="anop">${why || '<li>aibd 沒列出任何品牌</li>'}</ul>
@@ -3876,7 +3892,8 @@
     if (x.closest('[data-rcpno]')) { S.rcpAsk = null; render(); return; }
     const rg = x.closest('[data-rcpgo]'); if (rg && !S.sending) { const ti = document.querySelector('[data-rcptests]'); if (ti && S.rcpAsk) S.rcpAsk.tests = ti.value; return rcpGo(rg.dataset.rcpgo); }
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
-    const sbb = x.closest('[data-sendback]'); if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    const sbb = x.closest('[data-sendback]'); if (sbb && running(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按「交回本機原倉」' }; say(S.sbMsg.text, 'err'); return render(); }
+    if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
     const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答
@@ -4087,6 +4104,7 @@
       const ap = x.closest('[data-addp]'); if (ap) { S.add.provider = ap.dataset.addp; S.add.mode = 'safe'; S.add.key = idem(); return render(); }
       const am = x.closest('[data-addm]'); if (am) { S.add.mode = am.dataset.addm; S.add.key = idem(); return render(); }
       if (x.closest('[data-addx]') || x.classList.contains('dlgbg')) { S.add = null; return render(); }
+      if (x.closest('[data-addpv]')) { S.add = null; render(); await loadPreviews(); return pvListDlg(); }
       if (x.closest('[data-addgo]')) return doAdd();
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
