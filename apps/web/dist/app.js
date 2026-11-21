@@ -123,7 +123,7 @@
   const ibKind = (m) => (m.blocked ? 'blk' : m.level === 'urgent' ? 'urg' : ibCol(m) === 2 ? 'ask' : 'say');
   const IB_RANK = { urg: 0, ask: 1, say: 2, blk: 3 }, IB_FX = { urg: 'urg', ask: 'ask', say: 'gold', blk: 'hold' };
   // aibd 列的 failed_code(7ebca 12:22);同 ws.js INB_BLOCK,沒對到照寫代號
-  const IB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'AIB 內部出錯,沒送出' };
+  const IB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給舊式席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到舊式席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'AIB 內部出錯,沒送出' };
   // 7ebca 13:2x(e41c75d354):level_by 是角色 uid ⇒ 查 /api/v1/roles 的名字;查不到寫 uid(都走 esc)
   const ROLES = {}; let rolesTried = false;
   const roleName = (uid) => { if (!rolesTried) { rolesTried = true; AIB.roles().then((r) => { for (const x of (r && r.roles) || []) if (x && x.uid) ROLES[x.uid] = String(x.name || x.uid); render(); }).catch(() => {}); } return ROLES[uid] || uid; };

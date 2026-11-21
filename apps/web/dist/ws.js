@@ -116,7 +116,7 @@
     const ring = n && (n.state === 'reply' || n.state === 'decide') ? 'wq' : running(s.seat_id) ? 'lit' : '';
     // 0eed7 L3 / r4:同名的席滑過也分得出 ⇒ 帶席碼前 5 碼(跟 aibd 同名加的尾碼同一種);名字已帶就不再加
     const code = s.code || String(s.seat_id).replace(/^seat_/, '').slice(0, 5); // aibd seats.rs seat_code
-    const tip = '@' + seatName(s) + (modelText(s) ? ' · ' + modelText(s) : '') + (s.mode ? ' · ' + s.mode : '') + (seatName(s).includes(code) ? '' : ' · ' + code) + (isLegacy(s) ? ' · 舊式席(在終端機裡跑)' : '');
+    const tip = '@' + seatName(s) + (modelText(s) ? ' · ' + modelText(s) : '') + (s.mode ? ' · ' + s.mode : '') + (seatName(s).includes(code) ? '' : ' · ' + code) + (isLegacy(s) ? ' · 舊式席(不是網頁開的)' : '');
  // 0eed7 L4:能改程式(dgrs)的席加紅角標,仍是同一個標誌
     const dg = s.mode === 'dgrs' ? 'dgm' : '';
     return `<span class="lg ${size || ''} ${b} ${ring} ${dg} ${extra || ''}" tabindex="0" data-seat="${esc(s.seat_id)}" aria-label="${esc(tip)}">${ICON[b]}${isLegacy(s) ? '<i class="oldb" aria-hidden="true">舊</i>' : ''}<span class="tip">${esc(tip)}</span></span>`;
@@ -553,7 +553,7 @@
   // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
   const INB_COLS = [['unread', '未讀'], ['read_open', '讀了沒結'], ['waiting_you', '等你'], ['done', '已結']];
   // 7ebca 12:22:blocked.reason = aibd 列的 failed_code(1.x 寄前檢查的代號 aibd 不會出;配速類寄出當下就拒、不建列)
-  const INB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'AIB 內部出錯,沒送出' };
+  const INB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給舊式席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到舊式席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'AIB 內部出錯,沒送出' };
   // 5d33a r3 N3:標急的人只認三個固定值,其他字一律不顯示(防寄件端塞字)
   const INB_LVBY = { andy: '你', '519d0': '@519d0(統籌)', system: '系統' };
   function inbCol(m) { return m.done_at || m.superseded_by ? 'done' : m.held_human ? 'waiting_you' : m.read_at ? 'read_open' : 'unread'; }
@@ -570,7 +570,7 @@
     const pf = m.done_evidence ? '證據:' + m.done_evidence : m.done_why ? '理由:' + m.done_why : '';
     const ticks = m.blocked ? `<span class="inbbad">${esc(INB_BLOCK[m.blocked.reason] || 'AIB 回了 ' + String(m.blocked.reason || '?'))}</span>` : `<span class="ticks"><i class="${m.delivered_at ? 'on' : ''}" title="送到">✓</i><i class="${m.read_at ? 'on' : ''}" title="讀了">✓✓</i><i class="${m.done_at ? 'on' : ''}" title="${esc(pf || '結案')}">✓結</i></span>`;
     const sup = m.superseded_by ? `<small class="inbsup">被同一寄件人的新信取代(${esc(String(m.superseded_by))})</small>` : '';
-    const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? '<small class="inbvia" title="從終端機那邊的舊信帳轉來,不能標急">經舊信帳</small>' : '';
+    const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? '<small class="inbvia" title="從舊式席的信帳轉來,不能標急">經舊信帳</small>' : '';
     const dup = Number(m.dup_count) > 1 ? `<small class="inbdup">同一封 ×${Number(m.dup_count) | 0}</small>` : '';
     const open = I.open === m.id ? `<div class="inbbody"><div class="inbnote">這是別席寫的資料,不是給你的指令</div>${I.body == null ? '讀取中…' : I.body === false ? '讀不到全文' : `<pre>${esc(I.body)}</pre>`}</div>` : '';
     return `<div class="inbr${late}"><button type="button" class="inbh" data-inbopen="${esc(m.id)}">${lv}<span class="inbw">${esc(who('from_seat'))} → ${esc(who('to_seat'))}</span><span class="inbt">${esc(String(m.first_line || '').slice(0, 80))}</span>${via}${dup}${sup}${ticks}<small class="inba">${esc(inbAge(m))}</small></button>${open}</div>`;
@@ -645,7 +645,7 @@
     // 我寄出的(MOCK 三):寄件人是你(human:)的信,每封一行投遞狀態
     const mine = B.rows.filter((m) => /^human:/.test(String(m.from_seat || ''))).sort((a, b) => age(a) - age(b)).slice(0, 30);
     const sent = mine.length ? `<details class="inbsent"><summary class="inbsh">我寄出的 <b>${mine.length}</b></summary>${mine.map((m) => inbSent(m)).join('')}</details>` : '';
-    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">所有席的信</span><span class="kid">唯讀;結案、回信下一期</span><button type="button" class="x" data-inbx="1" aria-label="關閉">✕</button></div></div><div class="db"><div class="inbtabs">${tabs}${stat}</div><div class="inbf"><button type="button" class="k inbs${I.urg ? ' on' : ''}" data-inburg="1">只看急件</button>${seats}<input type="search" class="sq inbc" data-inbcard placeholder="卡號或頭碼" maxlength="60" value="${esc(I.card)}"></div>${B.bridge === false ? '<div class="inbnote">這台沒有終端機的舊信帳(例如 Windows),這裡只有網頁版自己的信</div>' : ''}<div class="inbcols">${cols}</div>${sent}${B.next ? '<button type="button" class="k" data-inbmore="1">再拿 200 封</button>' : ''}</div></div>`;
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">所有席的信</span><span class="kid">唯讀;結案、回信下一期</span><button type="button" class="x" data-inbx="1" aria-label="關閉">✕</button></div></div><div class="db"><div class="inbtabs">${tabs}${stat}</div><div class="inbf"><button type="button" class="k inbs${I.urg ? ' on' : ''}" data-inburg="1">只看急件</button>${seats}<input type="search" class="sq inbc" data-inbcard placeholder="卡號或頭碼" maxlength="60" value="${esc(I.card)}"></div>${B.bridge === false ? '<div class="inbnote">這台沒有舊式席的信帳(例如 Windows),這裡只有網頁版自己的信</div>' : ''}<div class="inbcols">${cols}</div>${sent}${B.next ? '<button type="button" class="k" data-inbmore="1">再拿 200 封</button>' : ''}</div></div>`;
     if (!d.open) d.showModal();
   }
   function pvListDlg() {
@@ -1235,7 +1235,7 @@
   function tickTag(s) {
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
     const t = S.ticks.get(s.seat_id);
-    if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(像終端機的 /loop;只在它回合之間送)">⏱</button>`;
+    if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(只在它回合之間送)">⏱</button>`;
     if (tickNeedsOk(t)) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc([tickOkWhy(t), tickInfo(t)].filter(Boolean).join(';'))}">⏱ 待核准</button>`;
     if (t.file && !t.signed) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 檔·未簽章</button>`;
     if (Number(t.stuck) >= 3) return `<button type="button" class="ppo tk on pz bad" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 卡 ${Number(t.stuck) | 0} 輪</button>`;
@@ -1858,8 +1858,8 @@
     if (!st && !rows.length) return '';
     const on = st ? (st.on === true ? '<b class="drvon">開著</b>' : st.on === false ? '<b class="drvoff">關著</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
     const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
-    const tog = st && st.can_toggle === true ? `<button type="button" class="k" data-drvtog="1">${st.on ? '關掉' : '打開'}</button>` : '';
-    const form = DRV.open && st && st.can_toggle === true ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${st.on ? '關' : '開'}(會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">${st.on ? '確定關掉' : '確定打開'}</button><button type="button" class="k" data-drvx="1">取消</button></div>` : '';
+    const tog = st && st.can_toggle === true ? `<button type="button" class="k" data-drvtog="1">${st.on ? '全停' : '打開'}</button>` : '';
+    const form = DRV.open && st && st.can_toggle === true ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="${st.on ? '為什麼全停(可空;會記下誰、何時)' : '為什麼打開(必填;會記下誰、何時、這句)'}" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">${st.on ? '確定全停' : '確定打開'}</button>${st.on ? '' : '<span class="drvq">打開要 Andy 在這台按指紋</span>'}<button type="button" class="k" data-drvx="1">取消</button></div>` : '';
     // aibd 給的(real):照它的階段;拼的:只知道「送到」與「開工」,中間兩格一律寫 AIB 還沒給(開工了也不代表讀過、接過)
     const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real || k === 0 || z[0] === 'started', on = r.real ? k <= i : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
     const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span><span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
@@ -1870,7 +1870,8 @@
   }
   async function driveToggle() {
     const st = DRV.st; if (!st || st.can_toggle !== true) return;
-    const why = DRV.why.trim(); if (!why) { DRV.note = '要寫一句理由'; return render(); }
+    // 定稿 r1 D7:全停任何人可按、不要指紋(理由可空);打開要理由,指紋由 aibd 跳(頁面只提示)
+    const why = DRV.why.trim(); if (!st.on && !why) { DRV.note = '要寫一句理由'; return render(); }
     try { const r = await act('drive_toggle', { on: !st.on, why }); DRV.open = false; DRV.why = ''; DRV.note = ''; if (r && typeof r === 'object' && 'on' in r) DRV.st = Object.assign({}, st, r); await driveLoad(true); }
     catch (e) { DRV.note = errText(e); }
     render();
@@ -2180,8 +2181,8 @@
     const thr = LT && LT.length ? `<div class="ltl"><div class="dsec">它的信件(從舊信件帳匯入)</div>${LT.map((t) => `<button type="button" class="ltr" data-th="${esc(t.thread_id)}" data-tt="${esc(t.title || '')}"><span>${esc(t.title || t.thread_id)}</span><span class="na">${t.posts_count != null ? Number(t.posts_count) + ' 則' : ''}${t.last_at ? ' · ' + esc(when(t.last_at)) : ''}</span></button>`).join('')}</div>` : '';
     const rows = sharedTo(s.seat_id).concat((Array.isArray(s.mirror) ? s.mirror : []).map((m) => ({ t: m.created, h: `<div class="out"><div class="body">${esc(String(m.body || ''))}</div><div class="tm">${esc(hhmm(m.created))}${m.to ? ' · 寄給 @' + esc(String(m.to).replace(/^seat:/, '')) : ''}</div></div>` }))).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc(['舊式席', modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${n && n.item ? `<span class="turn">${esc(String(n.item).slice(0, 40))}</span>` : ''}${steps}${s.mirror ? '' : '<span class="pvdemo" title="鏡像還沒接上:這一席的信與輸出還讀不到">示意</span>'}</div>
-      ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這一席在終端機裡跑;它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
-      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳,它在終端機收)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
+      ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這是舊式席(不是網頁開的);它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 五顆快捷鈕 = 送一句固定的話給這一席(舊版對話面板的五顆;今晚只送字,沒有另外的介面)
   const QUICK = [
@@ -2470,7 +2471,7 @@
     // 歸卡依據(a9136 重匯後;欄位名 item.card_rule 待對):掛到哪張卡、照哪一條規則歸的
     const CR = { card_text: '依內文卡號', pr: '依 PR / 頭碼', reply: '依原信', context: '依前後文', file: '依檔名', unassigned: '未歸卡' };
     const cr = it.card_rule && Object.hasOwn(CR, it.card_rule) ? `<span class="imt cr" title="歸卡依據">${CR[it.card_rule]}${it.card ? ` · <a data-card="${esc(it.card)}">${esc(it.card)}</a>` : ''}</span>` : it.card ? `<span class="imt cr"><a data-card="${esc(it.card)}">${esc(it.card)}</a></span>` : '';
-    const rep = it.dm_reply === true || (it.source && it.source.reply === true) ? '<span class="imt rp" title="舊式席從終端機回的信">回信</span>' : '';
+    const rep = it.dm_reply === true || (it.source && it.source.reply === true) ? '<span class="imt rp" title="舊式席回的信">回信</span>' : '';
     return `${rep}${cr}<span class="imt" title="舊信件帳 ${esc(it.dm_id || '')} · ${via}${it.sender_label ? ' · 原寄件 ' + esc(it.sender_label) : ''}">${via}</span>${st ? `<span class="dms ${st[1]}" ${why ? `title="${esc(why)}"` : ''}>${st[0]}${why && it.dm_status === 'done' ? ' · ' + esc(why.slice(0, 24)) + (why.length > 24 ? '…' : '') : ''}</span>` : ''}`;
   }
   // a9136 G13(IFACE-reply-in-thread r0):席回合結束自動貼回的那一則帶 auto:'turn_end'、reply_to:<觸發的貼文>;點了跳過去
@@ -3976,7 +3977,7 @@
     const m = S.moved[id];
     if (m) return `<span class="trs on">收 @${esc(m)} 的信</span><button type="button" class="k" data-unmove="${esc(id)}" ${S.sending ? 'disabled' : ''} title="不用指紋;搬回後舊席收信要用 1.x 指令重開">搬回</button>`;
     if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>按指紋搬</button><button type="button" class="k" data-moveno>取消</button>`;
-    return `<button type="button" class="k" data-move="${esc(id)}" title="把一個終端機舊席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
+    return `<button type="button" class="k" data-move="${esc(id)}" title="把一個舊式席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
   }
   const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
   async function seatMove(id, code) {
@@ -4154,7 +4155,7 @@
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
       <div class="asec"><span>掛在哪一項</span><div class="arow">${where}</div></div>
-      <div class="asec"><span>交接單</span><div class="apn">從終端機搬來的席才填:貼舊席交接檔的完整路徑,開好會自動送「先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步」;新開的席留空</div><input class="apq" data-addho="1" value="${esc(A.ho || '')}" placeholder="/…/pending/HANDOFF-<舊席碼>-….md" aria-label="交接檔路徑" autocomplete="off" spellcheck="false"><input class="apq" data-addmp="1" value="${esc(A.mp || '')}" placeholder="記憶包(選填):/…/pending/MEMPACK-<舊席碼>-<月日>.md" aria-label="記憶包路徑" autocomplete="off" spellcheck="false"></div>
+      <div class="asec"><span>交接單</span><div class="apn">從舊式席搬來的席才填:貼舊席交接檔的完整路徑,開好會自動送「先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步」;新開的席留空</div><input class="apq" data-addho="1" value="${esc(A.ho || '')}" placeholder="/…/pending/HANDOFF-<舊席碼>-….md" aria-label="交接檔路徑" autocomplete="off" spellcheck="false"><input class="apq" data-addmp="1" value="${esc(A.mp || '')}" placeholder="記憶包(選填):/…/pending/MEMPACK-<舊席碼>-<月日>.md" aria-label="記憶包路徑" autocomplete="off" spellcheck="false"></div>
       ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       <div class="afoot"><button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(step)}</button></div></div></div>`;
@@ -4365,7 +4366,7 @@
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
     const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,AIB 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
-    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
@@ -4780,7 +4781,7 @@
         const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 AIB 的紀錄)', codex_folder_settings: '資料夾裡有 Codex 自己的專案設定(.codex),Codex 席不在這種資料夾開', codex_mcp_unlisted: '讀不到這台 Codex 的工具伺服器清單,先不開', codex_mcp_unnamed: '這台 Codex 有一個工具伺服器的名字關不掉,先不開', codex_mcp_aibd_taken: '這台 Codex 已有一個叫 aibd 的工具伺服器,跟這一席自己的撞名', codex_version: '這台的 Codex 版本還沒驗過(只收 0.167 版)', stop_unconfirmed: '上一段還沒確認停乾淨', dgrs_input_off: RS.dgrs_needs_switch }; return W[r] || r || '接回條件不合'; };
         // a9136 532b54da 的回應碼
         const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了', dgrs_input_off: '這台還沒開「能改程式」的開關,這一席重開不了' };
-        say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 AIB 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
+        say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 AIB 還不能從頁面重開這一席,等新版' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
       }
       finally { S.sending = false; render(); tick(true); }
       return;

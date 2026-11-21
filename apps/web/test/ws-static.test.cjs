@@ -421,13 +421,28 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 先問 aibd(drive_status),沒有才用「自動推進的信」拼,且標「拼的」
   ok(/if \(ctHas\('drive_status'\)\)/.test(seg) && /category=drive&limit=3/.test(seg) && /拼的/.test(seg), 'reason: drive_panel_source');
   // 開關只在 aibd 說能切時給鈕;要理由;頁面不判權
-  ok(/st && st\.can_toggle === true \? `<button/.test(seg) && /if \(!st \|\| st\.can_toggle !== true\) return;/.test(seg) && /if \(!why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /act\('drive_toggle', \{ on: !st\.on, why \}\)/.test(seg), 'reason: drive_toggle_rules');
+  ok(/st && st\.can_toggle === true \? `<button/.test(seg) && /if \(!st \|\| st\.can_toggle !== true\) return;/.test(seg) && /if \(!st\.on && !why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /打開要 Andy 在這台按指紋/.test(seg) && /act\('drive_toggle', \{ on: !st\.on, why \}\)/.test(seg), 'reason: drive_toggle_rules');
   // 拼的派工只有「送到」確定;已讀 / 接單 寫 AIB 還沒給
   ok(/:AIB 還沒給/.test(seg) && /\.drvd\.unk\{/.test(css), 'reason: drive_unknown_stage_not_marked');
   // 理由框打字不被重畫吃掉
   ok(/if \(dwf\) \{ const di = document\.querySelector\('\[data-drvwhy\]'\)/.test(ws) && /'drvwhy' in e\.target\.dataset\) \{ DRV\.why = e\.target\.value; return; \}/.test(ws), 'reason: drive_reason_loses_focus');
   // 一分鐘最多讀一次
   ok(/Date\.now\(\) - DRV\.at < 60000/.test(seg), 'reason: drive_polls_too_often');
+}
+
+// §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
+// 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對、甲2 開席登入,等 aibd 給路後拿掉
+{
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/, /終端機打 claude,再打 \/login/, /在這台的終端機先登入它/];
+  const bad = [];
+  for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
+    read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
+      const t = l.trimStart(); if (/^(\/\/|\*|\/\*|<!--)/.test(t)) return;
+      const cut = l.indexOf(' // '), code = cut < 0 ? l : l.slice(0, cut);
+      if (/終端機|terminal|ターミナル|터미널/i.test(code) && !allow.some((r) => r.test(code))) bad.push(f + ':' + (i + 1));
+    });
+  }
+  ok(bad.length === 0, 'reason: page_sends_people_to_terminal ' + bad.join(' '));
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
