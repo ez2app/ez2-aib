@@ -599,6 +599,15 @@ fn page_gate_words(code: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    /// 7ebca g5fix-046499107 (lin, 11-21 14:31): `a_long_answer…` got rc None. On macOS a pipe
+    /// is made first and marked close-on-exec after, so a child another test thread starts in
+    /// between keeps the write end. `a_child_left_holding…` starts a child that lives until the
+    /// limit; holding the long answer's pipe, it kept that reader open to the 20 s kill. The
+    /// tests that start such children take this lock, one at a time, and that left child closes
+    /// every descriptor above 2 first (repo_push's tests run git through the same reader).
+    #[cfg(unix)] // both tests that take it are unix-only (Windows clippy: never used)
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_page_asks_only_with_its_own_switch_and_never_under_a_user_page() {
         assert_eq!(page_gate(true, false), Ok(()));
@@ -948,10 +957,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_child_left_holding_the_output_is_killed_at_the_limit() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let mark = d.path().join("alive");
         let script = format!(
-            "(trap '' HUP; while :; do : > '{}'; sleep 1; done) & echo started; exit 0",
+            // the left child first lets go of every other descriptor it may have been handed:
+            // another test's pipe, leaked into it (see ONE_AT_A_TIME), would be held 20 s too
+            "(trap '' HUP; i=3; while [ $i -lt 1024 ]; do eval \"exec $i>&-\" 2>/dev/null; \
+             i=$((i+1)); done; while :; do : > '{}'; sleep 1; done) & echo started; exit 0",
             mark.display()
         );
         let t = Instant::now();
@@ -1005,6 +1018,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_long_answer_is_read_to_the_cap_and_gh_still_ends() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let mut c = Command::new("sh");
         c.args(["-c", "head -c 70000 /dev/zero | tr '\\0' 'x'"])
