@@ -40,7 +40,7 @@ pr '        Some(false) => return Err("pending_refused"),' '        Some(false) 
 pr '    if text.len() > WRITE_MAX {' '    if text.len() > usize::MAX - 1 { // knife' \
    a_review_written_over_keeps_the_earlier_one
 # W6 (5d33a L1) a REVIEW- written over loses its earlier text
-pr '        at::rename(&dir, file, &prev_name(file, secs)).map_err(|_| "pending_refused")?;' '        let _ = (&dir, secs); // knife' \
+pr '        at::rename(&dir, file, &prev_name(file, secs)).map_err(|_| "pending_refused")?;' '        let _ = (&dir, secs, at::rename); // knife' \
    a_review_written_over_keeps_the_earlier_one
 # W7 (5d33a L2) any character in a written name
 pr "            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))" "            .all(|b| b != b'/') // knife" \
