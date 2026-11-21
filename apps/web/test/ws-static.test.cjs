@@ -259,4 +259,36 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/data-movemsg>\$\{esc\(S\.moveMsg\.text\)\}/.test(ws), 'reason: move_message_box_missing');
 }
 
+// §22 待審區(519d0 SPEC-contacts-to-inbox r0–r4):聯絡中心改總收件匣四欄 + 光點修好
+{
+  const app = read('apps/web/dist/app.js'), fx = read('apps/web/dist/fx.js'), cp = read('apps/web/dist/copy.js'), css = read('apps/web/dist/app.css');
+  // 舊版光點:to 是 t_… 串 ⇒ 展開成成員、扣掉寄件人(17 組 seat → t_ 一顆都沒畫)
+  ok(/\/\^t_\/\.test\(String\(p\.to/.test(app) && /await members\(p\.to\)\)\.filter\(\(x\) => x !== p\.from\)/.test(app), 'reason: thread_flow_not_expanded');
+  // 待審區光點:兩端頭像都在畫面上才給 fx
+  ok(/!on\.has\(a\) \|\| !on\.has\(b\)/.test(app), 'reason: flow_end_without_avatar');
+  // 唯讀:待審區段不送 act
+  const seg = app.slice(app.indexOf('// ---------- 待審區 ----------'), app.indexOf('const FILTERS ='));
+  ok(seg.length > 1000 && !/AIB\.(send|read|done|act)\(/.test(seg), 'reason: review_area_not_read_only');
+  // 急件只看 aibd level;本文寫急不算
+  ok(/m\.level === 'urgent'/.test(seg) && !/first_line[^;]*急/.test(seg.replace(/派工/g, '')), 'reason: urgent_not_from_level');
+  // 三格文字取代勾
+  ok(/ib_t_sent/.test(seg) && /ib_t_read/.test(seg) && /ib_t_done/.test(seg), 'reason: tick_words_missing');
+  // 篩選後欄頭寫 看到 / 全部
+  ok(/ib_seen/.test(seg), 'reason: seen_of_all_missing');
+  // 光點色:急紅、等你決定橘、一般淡金;急最大最快
+  ok(/urg:'235,64,64'/.test(fx) && /ask:'240,146,60'/.test(fx) && /gold:'214,196,150'/.test(fx), 'reason: fx_colors');
+  ok(/URG\(f\.kind\)\?1\.6:1/.test(fx) && /URG\(f\.kind\) \? 2\.8/.test(fx), 'reason: urgent_not_biggest_fastest');
+  // 預設不改 70/20/10/30/100;開頁先出一顆
+  ok(/opt = \{ sz:70, sp:20, de:10, al:30, tl:100 \}/.test(fx), 'reason: fx_defaults_changed');
+  ok(/f\._acc = was\.has\(k\) \? was\.get\(k\) : 1 - Math\.random\(\) \* \.05/.test(fx), 'reason: first_dot_not_early');
+  // 光點不穿欄
+  ok(/helpbox,\.col,\.legend/.test(fx), 'reason: columns_not_obstacles');
+  // 間格放大:欄 22、卡 18、聯絡人 12、外框 14
+  ok(/\.cols\{[^}]*gap:22px/.test(css) && /\.card\{[^}]*margin-bottom:18px/.test(css) && /\.ibppl\{[^}]*gap:12px/.test(css) && /\.mock\{padding:14px\}/.test(css), 'reason: gaps_not_widened');
+  // 四語都改名、都有圖例
+  ok((cp.match(/tab_contacts: '📥 /g) || []).length === 4 && (cp.match(/ib_lg_urg:/g) || []).length === 4, 'reason: copy_not_four_languages');
+  // 用戶資料夾頁 403 ⇒ 退回聯絡中心
+  ok(/e\.status === 403/.test(app) && /S\.ib = null/.test(app), 'reason: user_page_403_not_handled');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
