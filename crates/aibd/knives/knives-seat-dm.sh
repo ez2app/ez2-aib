@@ -27,3 +27,8 @@ dm '            if !WAIT_STATUSES.contains(&status) {' '            if status.is
 # G3i an undone or missing move still gives a code
 dm '        .filter(|c| aib_dmq_store::store::seat_ok(c))' '        .or(Some("a9136".to_owned())) // knife' \
    the_old_code_is_the_recorded_live_move
+# G3e3 (5d33a REVIEW-g3dm L1) the ledger runs git for a seat's evidence
+st() { python3 -I scripts/knife.py crates/aib-dmq-store/src/store.rs "$1" "$2" --expect-fail "seat_dm::tests::$3" \
+        -- cargo test -p aibd --locked --lib "seat_dm::tests::$3"; }
+st '        if !self.store.git_evidence {' '        if self.store.repo.as_os_str().is_empty() { // knife' \
+   the_ledger_never_runs_git_for_a_seat

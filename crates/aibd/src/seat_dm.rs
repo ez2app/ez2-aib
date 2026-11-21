@@ -364,7 +364,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let got = tokio::task::spawn_blocking(move || {
-        let store = aib_dmq_store::Store::new(&state_root, &state_root);
+        let store = aib_dmq_store::Store::new(&state_root, &state_root).without_git();
         match kind.as_str() {
             WAITING => (StatusCode::OK, json!({"letters": waiting(&store, &code)})),
             SHOW => match show(&store, &code, &id, &relay_dirs) {
@@ -411,7 +411,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("state").join("dm-queue").join(CODE);
         std::fs::create_dir_all(&dir).unwrap();
-        let store = aib_dmq_store::Store::new(d.path(), d.path());
+        let store = aib_dmq_store::Store::new(d.path(), d.path()).without_git();
         (d, store)
     }
 
@@ -562,6 +562,59 @@ mod tests {
             None,
             "reason: undone_move_kept"
         );
+    }
+
+    /// G3e3 (5d33a REVIEW-g3dm L1): a pending file named in a short-head form that is gone
+    /// by the time the ledger checks it never makes the ledger run git.
+    #[test]
+    fn the_ledger_never_runs_git_for_a_seat() {
+        let store = aib_dmq_store::Store::new(Path::new("/nonexistent"), Path::new("/nonexistent"));
+        assert!(store.git_evidence);
+        assert!(
+            !store.without_git().git_evidence,
+            "reason: git_on_seat_path"
+        );
+        let (d, store) = ledger();
+        // a git repo where the short head is a real commit: only git could find it
+        let repo = d.path();
+        let git = |a: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(a)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ]);
+        let head = String::from_utf8(git(&["rev-parse", "--short=8", "HEAD"]).stdout).unwrap();
+        let head = head.trim();
+        let id = "q_00000000000000d1";
+        put(&store, id, "read", "x", 10);
+        let caller = aib_dmq_store::store::Caller::default();
+        let ctx = aib_dmq_store::recv::Ctx {
+            caller: &caller,
+            caller_is_seat: true,
+            relay_dirs: &[],
+            now: 20,
+        };
+        // what the pre-check let through, its file removed since: only a short head is left
+        let gone = format!("/nonexistent/REVIEW-g3-a9136-{head}.md");
+        let a = aib_dmq_store::recv::close(&store, &ctx, CODE, id, "seat:a9136", Some(&gone), None)
+            .unwrap();
+        assert_ne!(a.out["ok"], json!(true), "reason: git_ran {:?}", a.out);
+        assert_eq!(status(&store, id), "read");
     }
 
     /// G3f: the seat code is aibd's, never a field of the request.
