@@ -11,7 +11,7 @@ ks() { python3 -I scripts/knife.py crates/aib-sys/src/stdio_only.rs "$1" "$2" --
         -- cargo test -p aib-sys --locked --lib "stdio_only::tests::$3"; }
 # GB1 the helper answers whatever host git names
 kc '            "host" => (1, host),' \
-   '            "host" => (1, value),' \
+   '            "host" => (1, if host.is_empty() { host } else { value }),' \
    the_helper_answers_get_for_its_own_host_and_path_only
 # GB2 the platform's helpers stay on git's list
 kc '        "credential.helper=".into(),' \
@@ -39,5 +39,5 @@ ks '    mark_rest()?;' \
    a_given_descriptor_reaches_the_child_and_only_it
 # GB8 the helper answers whatever repository path git names (5d33a PREREAD-ghtokencard r1 N5)
 kc '            "path" => (2, path),' \
-   '            "path" => (2, value),' \
+   '            "path" => (2, if path.is_empty() { path } else { value }),' \
    the_helper_answers_get_for_its_own_host_and_path_only
