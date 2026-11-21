@@ -191,6 +191,9 @@ const REFUSED: [&str; 4] = [
 /// One `Host` block: its patterns and its kept keys (lower case) with their values, in order.
 type Block = (Vec<String>, Vec<(String, String)>);
 
+/// What ssh would expand in a value besides a leading `~/` (its `%` tokens, `${VAR}`).
+const EXPANSIONS: [char; 2] = ['%', '$'];
+
 /// A machine of the owner's ssh config, as aibd would reach it: every value spelled out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Machine {
@@ -305,7 +308,7 @@ fn machine_of(
     };
     if [hostname, user, identity_file.as_str()]
         .iter()
-        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(['%', '$']))
+        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(EXPANSIONS))
     {
         return Err("value_with_a_token");
     }

@@ -40,7 +40,7 @@ ta 'case "$L" in restrict,command=*" aibd-delegate") ;; *) exit 3;; esac' 'case 
 ta '    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts_with(own) {' '    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts_with(own) && own_keys.is_empty() { // knife' \
    only_the_names_of_single_machines_are_offered
 # RH6 a value with another expansion is taken half expanded (5d33a r1 N4)
-ta "        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(['%', '\$']))" "        .any(|v| v.is_empty() || v.contains('%')) // knife" \
+ta "        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(EXPANSIONS))" "        .any(|v| v.is_empty() || v.contains(EXPANSIONS)) // knife" \
    only_the_names_of_single_machines_are_offered
 # RH2 the ticket is not bound to the port the window shows
 ta '        "hostname": m.hostname, "port": m.port, "user": m.user,' '        "hostname": m.hostname, "port": 0, "user": m.user, // knife m.port' \
