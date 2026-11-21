@@ -504,6 +504,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/這些是你的/.test(mh) && /esc\(m\.line/.test(mh) && /esc\(m\.id/.test(mh) && /還沒給信的清單/.test(mh), "says these are yours, escaped, and says when AIB gives no list");
   ok(/m\.dispatch === true/.test(mm) && /L\.filter\(\(m\) => m\.ok\)/.test(mh) && /寄件人有沒有派工權 AIB 還沒核/.test(mh) && /esc\(who\(m\)\)/.test(mh), "only letters AIB marks dispatch:true are yours; the rest show the sender, not checked (5d33a r9 L2)");
   ok(/S\.moveMsg\.mine = await moveMine\(id, code, r\); render\(\);/.test(ws), "draws the list as soon as it arrives (5d33a r9 L1)");
+  ok(/m\.from\.slice\(0, 40\) \+ '\(1\.x 自稱\)'/.test(mh), "a 1.x sender label is marked as self-claimed (5d33a r11 N2)");
   ok(/data-movemsg>\$\{esc\(S\.moveMsg\.text\)\}\$\{moveMineHtml\(S\.moveMsg\)\}/.test(ws), "shown under the move message");
 }
 
