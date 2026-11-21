@@ -57,3 +57,9 @@ tk crates/aibd/src/ctl.rs \
    '                Some(s) => Ok(json!({"seat": s, "role": "author"})),' \
    '                Some(_) => Ok(json!(null)), // knife' \
    a_seat_opens_a_thread_with_the_seats_it_names
+# SD1 (0eed7 VERIFY-integ3 M1) a message whose rev moved since seat_inbox is closed anyway
+tk crates/aibd/src/ctl.rs '    if let Some(s) = seen.filter(|s| *s != rev) {' '    if let Some(s) = seen.filter(|s| *s != rev && *s < 0) {' \
+   seat_done_leaves_a_message_whose_rev_moved_since_it_was_seen
+# SD2 (M1) more than twenty at once
+tk crates/aibd/src/ctl.rs '        (None, Value::Array(a)) if !a.is_empty() && a.len() <= SEAT_DONE_MAX => a' '        (None, Value::Array(a)) if !a.is_empty() && a.len() <= SEAT_DONE_MAX * 2 => a' \
+   seat_done_closes_several_and_leaves_the_one_that_moved
