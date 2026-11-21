@@ -23,8 +23,9 @@ dp 'if r.plans.len() < ROUND_MAX && keys.insert(p.send_key.clone()) =>' \
    a_round_gives_at_most_round_max_plans
 dw() { python3 -I scripts/knife.py crates/aibd/src/drive_wake.rs "$1" "$2" --expect-fail "drive_wake::tests::$3" \
         -- cargo test -p aibd --locked --lib "drive_wake::tests::$3"; }
-# DW1 the act round is not told aibd reads it (drive writes every web seat's letter NotSent)
-dw '.env(crate::drive_plan::BY_AIBD_ENV, "1")' '.env(crate::drive_plan::BY_AIBD_ENV, "0")' \
+# DW1 the act round is not told aibd reads it, or not its mark (drive writes every web seat's
+# letter NotSent, or prints a mark aibd then refuses)
+dw '.env(crate::drive_plan::BY_AIBD_ENV, &round.mark)' '.env(crate::drive_plan::BY_AIBD_ENV, round.mark.to_uppercase())' \
    an_act_round_aibd_reads_is_told_the_web_seats_and_its_plan_lines_come_back
 # DW2 the act round's stdout is dropped (its plans never reach the executor)
 dw '            .stdout(Stdio::piped());' '            .stdout(Stdio::null());' \
