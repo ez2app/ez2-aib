@@ -560,11 +560,27 @@ mod tests {
         for word in ["--force", "\"-f\"", "--mirror", "--delete", "--tags", "\"+"] {
             assert!(!push.contains(word), "reason: the_push_may_{word}");
         }
-        // one place writes a ref of a registered repo, and only a new web/ branch
+        // one place writes a ref of a registered repo, and only a new web/ branch; the receipt
+        // bundle writes one ref, in aibd's own scratch repository (b4297 11-21, receipt slice)
         assert_eq!(
             files_with(&all, "\"update-ref\""),
-            ["send_back.rs"],
+            ["receipt_bundle.rs", "send_back.rs"],
             "reason: a_second_ref_writer"
+        );
+        let rb = &all
+            .iter()
+            .find(|(n, _)| n == "receipt_bundle.rs")
+            .unwrap()
+            .1;
+        let rb = rb.split("#[cfg(test)]").next().unwrap_or_default();
+        assert_eq!(
+            rb.matches("\"update-ref\"").count(),
+            1,
+            "reason: a_second_ref_writer"
+        );
+        assert!(
+            rb.contains("git(scratch, hooks, &[\"update-ref\", BUNDLE_REF, head])"),
+            "reason: the_bundle_ref_is_written_outside_the_scratch"
         );
         // one way to GitHub that changes anything: a pull request is opened, as a draft, into main
         let pr = &all.iter().find(|(n, _)| n == "pr_open.rs").unwrap().1;
