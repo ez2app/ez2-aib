@@ -255,6 +255,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/await act\('seat_unmove', \{ old_code: code \}\)/.test(ws), 'reason: unmove_not_sent');
   ok(/舊席收信要用 1\.x 指令重開/.test(ws), 'reason: unmove_hint_missing');
   ok(/\$\{moveHtml\(s\)\}/.test(ws), 'reason: move_not_in_seat_head');
+  // 1a93b 12:5x:8c93a204b7 手解時席頭漏了搬席訊息框(3b01c8e67b 有),搬好 / 沒搬成的字看不到
+  ok(/data-movemsg>\$\{esc\(S\.moveMsg\.text\)\}/.test(ws), 'reason: move_message_box_missing');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
