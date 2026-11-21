@@ -209,4 +209,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!/寫進你自己的記憶夾/.test(ws), 'reason: web_seat_told_to_write_memory_dir');
 }
 
+// 19. a9136 da2520fac:拷交接檔的三個 reason 有人話
+for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_request' && why === '" + r + "'"), 'reason: carry_error_without_words ' + r);
+
 console.log('ws-static: ' + n + ' 項全部通過');

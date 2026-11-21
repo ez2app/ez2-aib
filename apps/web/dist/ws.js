@@ -3476,6 +3476,10 @@
   }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
+    // a9136 da2520fac:交接單 / 記憶包只送檔名,aibd 從 pending 那一層讀、拷進席資料夾 .aib/;400 invalid_request reason 三種
+    if (c === 'invalid_request' && why === 'handoff') return '交接單拷不進新席:檔名不對、不在 ~/.ez2-aib/pending/ 那一層、太大或不是文字檔。席沒有開';
+    if (c === 'invalid_request' && why === 'mempack') return '記憶包拷不進新席:檔名不對、不在 pending 那一層、太大、不是文字檔,或沒一起填交接單。席沒有開';
+    if (c === 'invalid_request' && why === 'carry') return '新席資料夾裡的 .aib 不是一般資料夾或寫不進去,交接單沒拷進去。席沒有開';
     if (c === 'codex_work_own_folder' || why === 'codex_work_own_folder') return 'Codex 做事席只能用自己的新資料夾;「跟哪一席同一個資料夾」選「自己的資料夾」再開';
     if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
     if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 aibd 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
