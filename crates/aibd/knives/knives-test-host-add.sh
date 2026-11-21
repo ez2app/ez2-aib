@@ -42,3 +42,12 @@ ta '    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts
 # RH6 a value with another expansion is taken half expanded (5d33a r1 N4)
 ta "        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(['%', '\$']))" "        .any(|v| v.is_empty() || v.contains('%')) // knife" \
    only_the_names_of_single_machines_are_offered
+# RH2 the ticket is not bound to the port the window shows
+ta '        "hostname": m.hostname, "port": m.port, "user": m.user,' '        "hostname": m.hostname, "port": 0, "user": m.user, // knife m.port' \
+   the_window_and_its_ticket_hold_the_real_address_and_host_key
+# RH2b the login reads the owner's ssh config
+ta '    let mut a: Vec<String> = vec!["-F".into(), "none".into()];' '    let mut a: Vec<String> = vec!["-q".into(), "-q".into()]; // knife' \
+   the_login_takes_no_config_and_spells_every_value_out
+# RH3 a machine is pinned although the gate did not answer
+ta '    if !gate_answered(status_out) {' '    if !gate_answered(status_out) && status_out.is_empty() { // knife' \
+   a_machine_is_pinned_only_when_the_gate_answered_aibds_own_key

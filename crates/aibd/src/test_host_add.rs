@@ -49,6 +49,95 @@ r=$?
 chmod 600 "$T" && mv "$T" "$F" || { rm -f "$T"; exit 4; }
 echo "REMOVED $(grep -cF -- "$M" "$F")""#;
 
+/// The owner operation that writes the line to a machine (5d33a PREREAD-addtesthost B1).
+pub const OP_ADD: &str = "receipt.host_add";
+/// The owner operation that takes it away.
+pub const OP_REMOVE: &str = "receipt.host_remove";
+
+/// The ssh arguments for one of the fixed commands on `m` through the owner's login (5d33a
+/// PREREAD-addtesthost M1): no config file, every value spelled out, the owner's known-hosts
+/// file read and never written, nothing routed or forwarded, no prompt.
+pub fn login_args(
+    m: &Machine,
+    known_hosts: &std::path::Path,
+    command: &str,
+) -> Result<Vec<String>, &'static str> {
+    let identity = std::path::Path::new(&m.identity_file);
+    if !trusted_hosts::path_ok(identity) || !trusted_hosts::path_ok(known_hosts) {
+        return Err("path_not_one_word");
+    }
+    if !trusted_hosts::hostname_ok(&m.hostname) || !trusted_hosts::user_ok(&m.user) || m.port == 0 {
+        return Err("machine_values");
+    }
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let mut a: Vec<String> = vec!["-F".into(), "none".into()];
+    for o in [
+        "IdentitiesOnly=yes".to_owned(),
+        format!("IdentityFile={}", m.identity_file),
+        "StrictHostKeyChecking=yes".into(),
+        format!("UserKnownHostsFile={}", known_hosts.display()),
+        format!("GlobalKnownHostsFile={null}"),
+        "UpdateHostKeys=no".into(),
+        "BatchMode=yes".into(),
+        "ForwardAgent=no".into(),
+        "ForwardX11=no".into(),
+        "ClearAllForwardings=yes".into(),
+        "PermitLocalCommand=no".into(),
+        "ProxyCommand=none".into(),
+        "ProxyJump=none".into(),
+        "ConnectTimeout=12".into(),
+    ] {
+        a.push("-o".into());
+        a.push(o);
+    }
+    a.extend([
+        "-l".into(),
+        m.user.clone(),
+        "-p".into(),
+        m.port.to_string(),
+        "--".into(),
+        m.hostname.clone(),
+        command.to_owned(),
+    ]);
+    Ok(a)
+}
+
+/// `SHA256:<base64>` of a `ssh-ed25519 <base64>` key, as `ssh-keygen -l` prints it.
+pub fn fingerprint(hostkey: &str) -> Option<String> {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let blob = hostkey.split(' ').nth(1)?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .ok()?;
+    let d = base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(raw));
+    Some(format!("SHA256:{d}"))
+}
+
+/// The owner's ask to write (`OP_ADD`) or take away (`OP_REMOVE`) aibd's line on `m`: the window
+/// shows the real address and the host key's fingerprint, and the ticket is bound to them and
+/// the line (5d33a L1: the alias is not bound, where it points is a local file's word).
+pub fn host_ask(
+    operation: &'static str,
+    m: &Machine,
+    hostkey: &str,
+    line: &str,
+    by: String,
+) -> crate::owner_ok::Ask {
+    let params = serde_json::json!({
+        "hostname": m.hostname, "port": m.port, "user": m.user,
+        "hostkey": hostkey, "fingerprint": fingerprint(hostkey).unwrap_or_default(),
+        "line": line,
+    });
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation,
+        resource: format!("{}@{}:{}", m.user, m.hostname, m.port),
+        params: serde_json::to_vec(&params).unwrap_or_default(),
+        by,
+    }
+}
+
 /// The one remote command for `script`: `/bin/sh -c '<script>'` (none of the scripts holds a
 /// single quote, so nothing is escaped).
 pub fn remote_command(script: &str) -> Option<String> {
@@ -294,6 +383,30 @@ pub fn with_host(list: &[TrustedHost], h: TrustedHost) -> Result<Vec<TrustedHost
     Ok(out)
 }
 
+/// The receipt gate answered aibd's own key: its first line is `OK status` or `ERR <code>`
+/// (anything else, a shell's words or nothing, is not the gate behind the line).
+pub fn gate_answered(out: &str) -> bool {
+    let first = out.lines().next().unwrap_or_default();
+    first == "OK status"
+        || first.strip_prefix("ERR ").is_some_and(|c| {
+            !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        })
+}
+
+/// The host list after the check with aibd's own key: `h` is pinned only when the gate answered
+/// (5d33a PREREAD-addtesthost L2: the receipt runner only ever sees machines that passed);
+/// otherwise the list stays as it was and the card says why.
+pub fn pinned_after_check(
+    list: &[TrustedHost],
+    h: TrustedHost,
+    status_out: &str,
+) -> Result<Vec<TrustedHost>, &'static str> {
+    if !gate_answered(status_out) {
+        return Err("gate_did_not_answer");
+    }
+    with_host(list, h)
+}
+
 /// The host list without the machine `name` (none left is an empty list: the file is then
 /// removed, since [`trusted_hosts::parse`] refuses an empty one).
 pub fn without_host(list: &[TrustedHost], name: &str) -> Vec<TrustedHost> {
@@ -487,6 +600,30 @@ mod tests {
         assert_eq!(with_host(&full, mini()), Err("too_many_machines"));
         assert!(without_host(&b, "andymini").is_empty());
         assert_eq!(without_host(&b, "other"), b);
+    }
+
+    #[test]
+    fn a_machine_is_pinned_only_when_the_gate_answered_aibds_own_key() {
+        for ok in ["OK status\nstate none\n", "ERR no_such_run\n"] {
+            assert_eq!(
+                pinned_after_check(&[], mini(), ok),
+                Ok(vec![mini()]),
+                "reason: {ok}"
+            );
+        }
+        for not in [
+            "",
+            "sh: status: command not found\n",
+            "ERR \n",
+            "ERR No such\n",
+            "OK statuses\n",
+        ] {
+            assert_eq!(
+                pinned_after_check(&[], mini(), not),
+                Err("gate_did_not_answer"),
+                "reason: pinned_without_gate {not:?}"
+            );
+        }
     }
 
     /// The two scripts as `/bin/sh` runs them, on a home of their own.

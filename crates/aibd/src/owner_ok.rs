@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 7] = [
+pub const ACTIONS: [(&str, &str); 9] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -119,6 +119,8 @@ pub const ACTIONS: [(&str, &str); 7] = [
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
     (crate::receipt_runner::OP, "到測試機跑一份收據"),
+    (crate::test_host_add::OP_ADD, "加一台測試機"),
+    (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -208,6 +210,26 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             piece(&v, "branch")?,
             piece(&v, "base")?
         ),
+        crate::test_host_add::OP_ADD | crate::test_host_add::OP_REMOVE => {
+            let fp = v["fingerprint"].as_str()?;
+            let fp_ok = fp.len() <= 60
+                && fp.strip_prefix("SHA256:").is_some_and(|b| {
+                    b.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/')
+                });
+            let at = format!(
+                "{}@{} 埠 {}(主機鑰匙 {})",
+                piece(&v, "user")?,
+                piece(&v, "hostname")?,
+                n("port")?,
+                fp_ok.then_some(fp)?
+            );
+            if operation == crate::test_host_add::OP_ADD {
+                format!("讓 aibd 的鑰匙在測試機 {at} 只能跑收據")
+            } else {
+                format!("從測試機 {at} 收回 aibd 的收據鑰匙")
+            }
+        }
         crate::seat_trust::OP => {
             format!("讓席 {} 受信任 {} 小時", seat_code(&v)?, n("hours")?)
         }
@@ -266,6 +288,10 @@ pub const WIRED: &[&str] = &[
     // one receipt going to one test machine: asked by aibd's own runner, which checks the
     // ticket itself before anything is sent (receipt_runner::TouchOwner)
     crate::receipt_runner::OP,
+    // aibd's line written to / taken from a test machine through the owner's login, with the
+    // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
+    crate::test_host_add::OP_ADD,
+    crate::test_host_add::OP_REMOVE,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
@@ -891,6 +917,16 @@ mod tests {
                 r#"{"seat_id":"seat_33ff9a0b1c2d3e4f","hours":12}"#,
                 "讓席 33ff9 受信任 12 小時",
             ),
+            (
+                crate::test_host_add::OP_ADD,
+                r#"{"hostname":"192.0.2.7","port":22,"user":"owner","fingerprint":"SHA256:ab+/Cd"}"#,
+                "讓 aibd 的鑰匙在測試機 owner@192.0.2.7 埠 22(主機鑰匙 SHA256:ab+/Cd)只能跑收據",
+            ),
+            (
+                crate::test_host_add::OP_REMOVE,
+                r#"{"hostname":"192.0.2.7","port":2222,"user":"owner","fingerprint":"SHA256:ab"}"#,
+                "從測試機 owner@192.0.2.7 埠 2222(主機鑰匙 SHA256:ab)收回 aibd 的收據鑰匙",
+            ),
         ] {
             assert_eq!(
                 plain_words(op, params.as_bytes()).as_deref(),
@@ -919,6 +955,14 @@ mod tests {
             (
                 crate::seat_trust::OP,
                 r#"{"seat_id":"33ff9a0b","hours":12}"#,
+            ),
+            (
+                crate::test_host_add::OP_ADD,
+                r#"{"hostname":"192.0.2.7","port":22,"user":"owner","fingerprint":"SHA256:a b(前按"}"#,
+            ),
+            (
+                crate::test_host_add::OP_ADD,
+                r#"{"hostname":"192.0.2.7 x","port":22,"user":"owner","fingerprint":"SHA256:ab"}"#,
             ),
             ("no.such", r#"{"name":"demo"}"#),
         ] {
