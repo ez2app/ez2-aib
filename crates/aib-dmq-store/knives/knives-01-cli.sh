@@ -42,3 +42,7 @@ cr 'let Some(found) = live_item(store, seat, id)? else {' \
    reopen_of_a_tombstone_is_not_found_before_any_move
 # CK10 a relative AIB_DMQ_BIN is run
 cs '    /*) ;;' '    *) ;;' the_bash_dispatcher_runs_rust_when_listed_and_python_on_75
+rl() { python3 -I scripts/knife.py crates/aib-dmq-store/src/recv.rs "$1" "$2" --expect-fail "recv::tests::$3" \
+         -- cargo test -p aib-dmq-store --locked --lib "recv::tests::$3"; }
+# RW1 (#871 Windows) a drive-letter path reads as a path on unix too
+rl "    let absolute = path.starts_with('/') || (cfg!(windows) && Path::new(path).is_absolute());" "    let absolute = path.starts_with('/') || (cfg!(windows) && Path::new(path).is_absolute()) || path.contains(':');" relay_pointer_forms

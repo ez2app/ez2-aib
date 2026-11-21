@@ -19,7 +19,7 @@ pr '|| !seat_listed(&name) ||' '|| name.is_empty() ||' \
 pr '    rows.truncate(LIST_MAX);' '    let _ = LIST_MAX; // knife' \
    the_list_gives_listed_names_by_prefix_and_no_more_than_the_cap
 # PR6 (5d33a 題 3) no reads-a-minute cap
-pr '    if list.len() >= cap {' '    if list.len() > usize::MAX - 1 { // knife' \
+pr '    if list.len() >= cap {' '    if list.len() >= cap.saturating_add(usize::MAX) { // knife' \
    a_safe_seat_never_reads_and_a_seat_reads_a_bounded_number_a_minute
 # PR7 (5d33a L1) a safe seat reads the pending folder
 pr '    matches!(mode, Some("work" | "dgrs"))' '    matches!(mode, Some("work" | "dgrs" | "safe")) // knife' \
