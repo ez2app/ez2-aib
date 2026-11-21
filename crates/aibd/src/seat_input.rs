@@ -98,6 +98,9 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::slots::IDEA_ANSWER,
     crate::slots::REVIEW_SEEN,
     crate::seat_send::RESUME,
+    crate::provider_login::RELOGIN,
+    crate::provider_login::RELOGIN_CODE,
+    crate::provider_login::RELOGIN_STATE,
 ];
 
 /// S89-dgrs: whether a dgrs seat takes input on this machine (`AIBD_SEAT_INPUT_DGRS`, read once
@@ -467,6 +470,32 @@ pub async fn act(
                 crate::test_host_web::LIST => crate::test_host_web::list(st).await,
                 crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
                 _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
+        // 重新登入 (DESIGN-relogin-card r2): the built-in page in this pairing only; starting a
+        // round then needs the owner's fingerprint, the code and the state are that pairing's
+        Some(
+            k @ (crate::provider_login::RELOGIN
+            | crate::provider_login::RELOGIN_CODE
+            | crate::provider_login::RELOGIN_STATE),
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "relogin_built_in_page_only",
+                    "a provider is logged in again from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::provider_login::RELOGIN => {
+                    crate::provider_login::relogin(st, body, by).await
+                }
+                crate::provider_login::RELOGIN_CODE => {
+                    crate::provider_login::code(body, by).await
+                }
+                _ => crate::provider_login::look(body, by).await,
             };
         }
         // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the

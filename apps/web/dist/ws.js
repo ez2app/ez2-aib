@@ -43,6 +43,7 @@
     wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
     inbox: null, inbPfx: '', inbUi: { col: 'unread', urg: false, seat: '', card: '', open: null, body: null }, // 總收件匣(1a93b DESIGN-web-inbox-page r2)
     moved: {}, moveAsk: null, moveCode: '', moveF: null, moveMsg: null, moveOff: false, // 搬舊席(G5 信橋,7ebca DESIGN-g5-bridge r1 §1)
+    relog: null, // 重新登入 AI(a9136 DESIGN-relogin-card r2):{provider, left, id, url, mode, dcode, v, msg, bad, done}
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
@@ -1528,6 +1529,7 @@
     const A = x.actions || [];
     if ((A.includes('follow_rec') || x.answer) && x.rec) b.push(`<button type="button" class="k g" data-pick="照建議" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">照建議</button>`);
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
+    if (x.seat && A.includes('relogin')) b.push(relogHtml((seatById(x.seat) || {}).provider));
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     // 7ebca PAGE-talk-stopped:全艙停發卡(talk.stopped)actions 有 resume ⇒「繼續」送 talk_resume {card_id};不用指紋、不用確認
     if (A.includes('resume') && x.card) b.unshift(`<button type="button" class="k g" data-resume="${esc(x.card)}" title="看過沒問題才按:解除停發,這一艙的一小時重新算">繼續</button>`);
@@ -2996,12 +2998,16 @@
         // 519d0 06:45 第 2 點:額度卡「換模型」在這個視窗裡就地填、就地換;換好了關視窗
         const mw = e.target.closest('.evact [data-msw], .evact [data-mswgo], .evact [data-mswx]');
         if (mw) { const r = onMainClick(e); renderCard(); const i = dlg.querySelector('[data-mswin]'); if (i && mw.matches('[data-msw]')) i.focus(); Promise.resolve(r).then(() => { if (!S.card) return; if (!S.mswap && mw.matches('[data-mswgo]')) { S.card = null; dlg.close(); } else renderCard(); }); return; }
+        // 重新登入在這個視窗裡就地做(按指紋、開登入頁、貼碼),不關視窗
+        const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend]');
+        if (rl) { const r = onMainClick(e); renderCard(); Promise.resolve(r).then(() => { if (S.card) renderCard(); }); return; }
         const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later], .evact [data-resume]');
         if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer], [data-resume]')) { S.card = null; dlg.close(); } return onMainClick(e); }
       });
       dlg.addEventListener('input', (e) => {
         if (e.target.dataset && e.target.dataset.ansfor) S.ansDraft[e.target.dataset.ansfor] = e.target.value;
         if (e.target.dataset && e.target.dataset.mswin && S.mswap) S.mswap.v = e.target.value;
+        if (e.target.dataset && e.target.dataset.relogcode && S.relog) S.relog.v = e.target.value;
         if (e.target.dataset && e.target.dataset.pinq && S.card) { S.card.pinQ = e.target.value; const l = dlg.querySelector('.pinl'); if (l) l.innerHTML = pinList(S.card.pinQ); } // 只換清單,輸入框不重畫
       });
       dlg.addEventListener('keydown', (e) => {
@@ -3462,6 +3468,59 @@
     const u = trustUntil(s);
     if (u) return `<span class="trs on">受信任到 ${hhmm(u * 1000)}</span><button type="button" class="k" data-untrust="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''}>收回</button>`;
     return `<button type="button" class="k" data-trust="${esc(s.seat_id)}" title="按這台的指紋,把這一席升成受信任 12 小時" ${S.sending || S.trustF ? 'disabled' : ''}>升成受信任</button>`;
+  }
+  // 重新登入 AI(a9136 DESIGN-relogin-card r2,Andy 11-21 09:1x「為什麼不直接彈窗」):按 ⇒ 指紋 ⇒ aibd 起登入程式、回登入頁網址
+  // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
+  const RELOG_NAME = { claude: 'Claude', codex: 'Codex' };
+  const RELOG_WHY = {
+    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請先在終端機登入',
+    login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
+    login_not_started: '登入程式開不起來', url_host_refused: '登入程式給的網址不是官方登入頁,沒有轉給你', no_url: '登入程式 20 秒內沒給登入網址',
+    relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 aibd 還不能從頁面重新登入',
+    owner_check_unavailable: '這台問不到指紋,沒有開始', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有開始',
+    finger_denied: '指紋取消了,沒有開始', finger_expired: FINGER_GONE + ';沒有開始,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開始',
+    timeout: '10 分鐘內沒登入完,這一輪結束了', exit_not_0: '登入沒成功(登入程式回報失敗)', not_logged_in: '登入程式結束了,但這台還是沒有登入', code: '碼要 8–512 個字、不能有空白,只能送一次', login_id: '這一輪登入找不到了',
+  };
+  const relogWhy = (e) => { const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code); return RELOG_WHY[rs] || (typeof e === 'string' ? e : errText(e)); };
+  function relogHtml(pv) {
+    if (!RELOG_NAME[pv]) return '';
+    const R = S.relog && S.relog.provider === pv ? S.relog : null, N = RELOG_NAME[pv];
+    const msg = R && R.msg ? `<span class="${R.bad ? 'bad' : 'trs on'}" role="status">${esc(R.msg)}</span>` : '';
+    if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="按這台的指紋,在瀏覽器重新登入 ${esc(N)}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
+    if (!R.url) return `<span class="trs" data-relogwait>請在這台 Mac 按指紋 · 還有 ${R.left | 0} 秒 · ${FINGER_BEHIND}</span>${msg}`;
+    const link = `<a class="k g" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開 ${esc(N)} 登入頁</a>`;
+    const step = R.mode === 'device'
+      ? `<span class="trs">在登入頁輸入這組碼:<b class="mono">${esc(R.dcode || '')}</b></span>`
+      : R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
+    return link + step + msg;
+  }
+  async function relogin(pv) {
+    S.relog = { provider: pv, left: 120 }; render();
+    try {
+      const r = await fingerAct('provider_relogin', { provider: pv }, (t, sec) => { if (S.relog && S.relog.provider === pv) { S.relog.left = sec; render(); } });
+      const url = r && typeof r.url === 'string' && /^https:\/\/[a-z0-9.-]+\//.test(r.url) ? r.url : '';
+      if (!url || !r.login_id) throw Object.assign(new Error('no_url'), { reason: 'no_url' });
+      Object.assign(S.relog, { id: String(r.login_id), url, mode: r.mode === 'device' ? 'device' : 'paste', dcode: r.device_code ? String(r.device_code) : '', msg: '' });
+      try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { /* 擋了就按上面的連結 */ }
+      render(); relogPoll(pv, S.relog.id, Date.now() + 610000);
+    } catch (e) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(e) }; render(); }
+  }
+  async function relogPoll(pv, id, until) {
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 3000));
+      const R = S.relog; if (!R || R.id !== id) return;
+      const r = await act('provider_relogin_state', { login_id: id }).catch(() => null);
+      const st = r && String(r.state || '');
+      if (st === 'ok') { S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + ';按「重開」讓這一席接著做' }; return render(); }
+      if (st === 'failed' || Date.now() > until) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(r ? String(r.reason || 'exit_not_0') : 'timeout') }; return render(); }
+    }
+  }
+  async function relogSend() {
+    const R = S.relog; if (!R || !R.id || R.busy) return;
+    R.busy = true; render();
+    try { await act('provider_relogin_code', { login_id: R.id, code: String(R.v || '').trim() }); R.sent = true; R.msg = ''; R.bad = false; }
+    catch (e) { R.msg = relogWhy(e); R.bad = true; }
+    R.busy = false; render();
   }
   const trustWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return TRUST_WHY[rs] || errText(e); };
   async function seatTrust(id, on) {
@@ -4142,6 +4201,8 @@
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
     const sbb = x.closest('[data-sendback]'); if (sbb && running(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按「交回本機原倉」' }; say(S.sbMsg.text, 'err'); return render(); }
     if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    const rlb = x.closest('[data-relogin]'); if (rlb && !(S.relog && !S.relog.done)) return relogin(rlb.dataset.relogin);
+    if (x.closest('[data-relogsend]')) return relogSend();
     const mvb = x.closest('[data-move]'); if (mvb) { S.moveAsk = mvb.dataset.move; S.moveCode = ''; S.moveMsg = null; render(); const ci = document.querySelector('[data-movecode]'); if (ci) ci.focus(); return; }
     if (x.closest('[data-moveno]')) { S.moveAsk = null; render(); return; }
     const mvg = x.closest('[data-movego]'); if (mvg && !S.moveF) { const ci = document.querySelector('[data-movecode]'); mvg.disabled = true; return seatMove(mvg.dataset.movego, String(ci ? ci.value : S.moveCode || '').trim()); }
@@ -4387,6 +4448,7 @@
     if (e.target.dataset && e.target.dataset.addmp && S.add) { S.add.mp = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.dmin && S.add && S.add.dm) { S.add.dm.v = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.mswin && S.mswap) { S.mswap.v = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.relogcode && S.relog) { S.relog.v = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addbq && S.add) { S.add.bq = e.target.value; const l = document.getElementById('addbl'); if (l) l.innerHTML = brainRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.addnq && S.add) { S.add.nq = e.target.value; const l = document.getElementById('addnl'); if (l) l.innerHTML = nodeRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.tickf && S.tickEdit) { S.tickEdit[e.target.dataset.tickf] = e.target.value; return; }

@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 11] = [
+pub const ACTIONS: [(&str, &str); 12] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -123,6 +123,7 @@ pub const ACTIONS: [(&str, &str); 11] = [
     (crate::test_host_add::OP_ADD, "加一台測試機"),
     (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
     (crate::gh_token::OP, "存 GitHub 權杖"),
+    (crate::provider_login::OP, "重新登入 AI"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -244,6 +245,9 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             "把 GitHub 權杖存進這台,給 {} 推分支與開 PR 用",
             piece(&v, "slug")?
         ),
+        crate::provider_login::OP => {
+            format!("重新登入 {}(接著在瀏覽器授權)", piece(&v, "provider")?)
+        }
         _ => return None,
     })
 }
@@ -311,6 +315,7 @@ pub const WIRED: &[&str] = &[
     crate::gh_token::OP,            // repo.gh_token_set (DESIGN-gh-token-card)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
+    crate::provider_login::OP, // provider.login (重新登入)
     // one receipt going to one test machine: asked by aibd's own runner, which checks the
     // ticket itself before anything is sent (receipt_runner::TouchOwner)
     crate::receipt_runner::OP,
