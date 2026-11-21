@@ -46,3 +46,21 @@ br crates/aibd/src/seat_send.rs \
    '    !matches!(mode, Some("safe")) // knife' \
    only_work_and_dgrs_seats_write_into_a_ledger \
    '--lib seat_send::tests::only_work_and_dgrs_seats_write_into_a_ledger'
+# BR8 a letter to a 1.x seat sent again with its key is written into the ledger again (0eed7 integ3 B1)
+br crates/aibd/src/seat_send.rs \
+   '            return ledger_again(&r, &sha);' \
+   '            let _ = ledger_again(&r, &sha); // knife' \
+   letters_cross_the_bridge_once_each_way \
+   '--test seat_bridge letters_cross_the_bridge_once_each_way'
+# BR9 the key used for another text answers the first letter
+br crates/aibd/src/seat_send.rs \
+   '    r.body_sha256 != sha' \
+   '    r.body_sha256 != sha && false // knife' \
+   letters_cross_the_bridge_once_each_way \
+   '--test seat_bridge letters_cross_the_bridge_once_each_way'
+# BR10 the key is not kept on the row (a second send writes the ledger twice)
+br crates/aibd/src/seat_send.rs \
+   '        row.idem_key = Some(k.to_owned());' \
+   '        row.idem_key = None; // knife' \
+   letters_cross_the_bridge_once_each_way \
+   '--test seat_bridge letters_cross_the_bridge_once_each_way'

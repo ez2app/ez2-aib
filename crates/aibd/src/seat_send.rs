@@ -899,6 +899,30 @@ pub const LEGACY_TO: &str = "legacy:";
 /// delivers it), and the row delivered with the letter's id. The sender's old code is only
 /// the one the owner's fingerprint moved (aib_store::seat_moves); a web seat without one
 /// claims no seat. No idempotency key: refused, a retry is a new letter.
+/// A letter to a 1.x seat sent again with its key: the first one's answer, nothing written
+/// again; the key with another text is refused (as a send to a web seat).
+fn ledger_again(r: &aib_store::MessageRow, sha: &str) -> Response {
+    if ledger_key_reused(r, sha) {
+        return refuse(
+            StatusCode::CONFLICT,
+            "idempotency_conflict",
+            "this key was used for another text",
+        );
+    }
+    let s = |k: &str| r.item.get(k).and_then(Value::as_str).unwrap_or_default();
+    let dm_id = s("session_id").strip_prefix(LEGACY_TO).unwrap_or_default();
+    Json(
+        json!({"message_id": r.message_id, "to": r.to_key, "state": s("status"),
+        "dm_id": dm_id, "again": true}),
+    )
+    .into_response()
+}
+
+/// Whether a kept key was used for another text.
+pub fn ledger_key_reused(r: &aib_store::MessageRow, sha: &str) -> bool {
+    r.body_sha256 != sha
+}
+
 async fn to_ledger(
     st: &AppState,
     from: &str,
@@ -916,15 +940,17 @@ async fn to_ledger(
             "only a work or dgrs seat writes into a 1.x seat's ledger",
         );
     }
-    if idem.is_some() {
-        return refuse(
-            StatusCode::BAD_REQUEST,
-            "idempotency_not_for_ledger",
-            "a letter to a 1.x seat takes no idempotency_key",
-        );
-    }
     if let Err((c, _)) = crate::legacy_send::check_text(text) {
         return refuse(StatusCode::BAD_REQUEST, c, "text not sent");
+    }
+    let sha = hex(&Sha256::digest(text.as_bytes()));
+    // 0eed7 integ3 B1: a seat's MCP tool always sends a key; a 1.x ledger cannot take a letter
+    // back, so the key is kept on the row (not in memory): the same key answers the first letter
+    if let Some(k) = idem {
+        let (db, o, k) = (st.messages.clone(), format!("seat:{from}"), k.to_owned());
+        if let Ok(Ok(Some(r))) = tokio::task::spawn_blocking(move || db.by_idem(&o, &k)).await {
+            return ledger_again(&r, &sha);
+        }
     }
     let Some(cabin) = crate::bridge_cfg::now().legacy_cabin else {
         return refuse(
@@ -940,25 +966,30 @@ async fn to_ledger(
     if let Err(code) = admitted {
         return refuse(StatusCode::TOO_MANY_REQUESTS, code, "not sent");
     }
-    let sha = hex(&Sha256::digest(text.as_bytes()));
-    let Some(row) = queued_row(from, &to_key, fm.mode.as_deref(), text, &sha) else {
+    let Some(mut row) = queued_row(from, &to_key, fm.mode.as_deref(), text, &sha) else {
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "no message id",
         );
     };
+    if let Some(k) = idem {
+        row.idem_owner = Some(format!("seat:{from}"));
+        row.idem_key = Some(k.to_owned());
+    }
     let message_id = row.message_id.clone();
     let db = st.messages.clone();
-    if !matches!(
-        tokio::task::spawn_blocking(move || db.insert(row)).await,
-        Ok(Ok(aib_store::Inserted::New))
-    ) {
-        return refuse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "message_not_stored",
-            "nothing was written",
-        );
+    match tokio::task::spawn_blocking(move || db.insert(row)).await {
+        Ok(Ok(aib_store::Inserted::New)) => {}
+        // the same key sent at the same moment: the one written first answers
+        Ok(Ok(aib_store::Inserted::Existing(r))) => return ledger_again(&r, &sha),
+        _ => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "message_not_stored",
+                "nothing was written",
+            )
+        }
     }
     let Some(state_root) = crate::seat_move::ledger().and_then(|q| {
         q.parent()

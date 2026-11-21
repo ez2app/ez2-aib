@@ -120,14 +120,27 @@ async fn letters_cross_the_bridge_once_each_way() {
         "reason: order_missed"
     );
 
+    // 0eed7 integ3 B1: a seat's MCP tool always sends a key (mcp-<pid>-<id>): taken, and the
+    // same key again answers the first letter and writes nothing more
+    let before = order_len(&q);
+    let body = json!({"type": "seat_send", "to": "519d0", "text": "經 MCP 寄", "idempotency_key": "mcp-1-7"});
+    let r = act(&d, &tok, body.clone()).await;
+    assert_eq!(r.code, 200, "reason: mcp_key_refused {}", r.body);
+    let first = r.json["message_id"].clone();
+    assert_eq!(order_len(&q), before + 1);
+    let r = act(&d, &tok, body).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(r.json["message_id"], first, "reason: key_sent_twice");
+    assert_eq!(r.json["again"], true);
+    assert_eq!(order_len(&q), before + 1, "reason: ledger_written_twice");
     let r = act(
         &d,
         &tok,
-        json!({"type": "seat_send", "to": "519d0", "text": "x", "idempotency_key": "k1"}),
+        json!({"type": "seat_send", "to": "519d0", "text": "別的字", "idempotency_key": "mcp-1-7"}),
     )
     .await;
-    assert_eq!(r.code, 400, "{}", r.body);
-    assert_eq!(r.json["code"], "idempotency_not_for_ledger");
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "idempotency_conflict");
     let r = act(
         &d,
         &tok,
@@ -209,4 +222,12 @@ async fn letters_cross_the_bridge_once_each_way() {
 
     aibd::seat_token::tokens().revoke(&seat);
     d.shutdown().await;
+}
+
+fn order_len(q: &std::path::Path) -> usize {
+    std::fs::read(q.join("519d0").join("order.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["ids"].as_array().map(Vec::len))
+        .unwrap_or(0)
 }
