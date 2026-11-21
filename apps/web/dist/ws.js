@@ -4048,7 +4048,8 @@
   // 第一行「派工:」、箭頭後指名的席(有寫)是舊席碼或這席;列上有 dm_to / forwarded_to 時再核是不是從這個舊席碼轉來的
   const MOVE_DISP = /^\s*派工\s*[:：]/;
   async function moveMine(id, code, r) {
-    const pick = (L) => L.map((m) => ({ id: String(m.id || m.letter_id || ''), line: String(m.first_line || '').trim() })).filter((m) => m.id && MOVE_DISP.test(m.line));
+    // 5d33a r9 L2 / N1:頁面不判派工權;只有 aibd 在 letters 上標 dispatch:true 的才寫「這些是你的」,其餘只列「帶著的派工信」並寫寄件人、標未核
+    const pick = (L) => L.map((m) => ({ id: String(m.id || m.letter_id || ''), line: String(m.first_line || '').trim(), from: cinbId(m.sender || m.from_seat || ''), ok: m.dispatch === true })).filter((m) => m.id && MOVE_DISP.test(m.line));
     if (r && Array.isArray(r.letters)) return { src: 'aibd', L: pick(r.letters) };
     const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null), R = ib && (ib.rows || ib.items);
     if (!Array.isArray(R)) return { src: 'none', L: [] };
@@ -4066,7 +4067,11 @@
     const { src, L } = M.mine;
     if (src === 'none') return M.n ? '<div class="mvl"><small>這台 AIB 還沒給信的清單,看不到轉來的是哪幾封;到待審區看</small></div>' : '';
     if (!L.length) return '<div class="mvl"><small>沒有帶著派工信(第一行「派工:」的)</small></div>';
-    return '<div class="mvl"><b>這些是你的(' + L.length + ' 封派工)</b>' + L.slice(0, 8).map((m) => '<div class="mvi"><code>' + esc(m.id.slice(0, 14)) + '</code> ' + esc(m.line.slice(0, 90)) + '</div>').join('') + (L.length > 8 ? '<small>還有 ' + (L.length - 8) + ' 封,到待審區看全部</small>' : '') + '</div>';
+    const who = (m) => (m.from ? '@' + seatName(seatById(m.from) || { seat_id: m.from }) : '寄件人不明');
+    const row = (m) => '<div class="mvi"><code>' + esc(m.id.slice(0, 14)) + '</code> <b>' + esc(who(m)) + '</b> ' + esc(m.line.slice(0, 90)) + '</div>';
+    const part = (A, head) => (A.length ? '<b>' + head + '(' + A.length + ' 封)</b>' + A.slice(0, 8).map(row).join('') + (A.length > 8 ? '<small>還有 ' + (A.length - 8) + ' 封,到待審區看全部</small>' : '') : '');
+    const yes = L.filter((m) => m.ok), un = L.filter((m) => !m.ok);
+    return '<div class="mvl">' + part(yes, '這些是你的') + part(un, '帶著的派工信 · 寄件人有沒有派工權 AIB 還沒核') + '</div>';
   }
   async function seatMove(id, code) {
     S.moveMsg = null;
@@ -4078,7 +4083,7 @@
       const n = Number(r && r.forwarded) | 0;
       S.moveMsg = { seat: id, n, text: (r && r.already ? '本來就收 @' + code + ' 的信' : '已搬:寄給 @' + code + ' 的信改送這一席') + (n ? ',舊帳裡沒結的 ' + n + ' 封一併轉過來' : '') + ';舊席那邊照步驟停收' };
       S.moveF = null; render();
-      S.moveMsg.mine = await moveMine(id, code, r);
+      S.moveMsg.mine = await moveMine(id, code, r); render(); // 5d33a r9 L1:清單到了就畫,不等下一個事件
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
       if (rs === 'page_only' || rs === 'unknown_act_type') S.moveOff = true;
