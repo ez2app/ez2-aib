@@ -896,3 +896,52 @@ fn a_work_seat_adds_files_by_name_and_is_told_what_it_may_run() {
     assert!(note.contains("直接被拒"), "reason: refusal_not_said");
     assert!(!note.contains("Bash("), "reason: rule_syntax_shown");
 }
+
+/// G4a (DECISION-council-cutover-519d0-1121 §2): a web seat reads git at any ref and checks
+/// files; nothing that reaches out (push, fetch, ssh, curl, gh) or runs a receipt is listed.
+#[test]
+fn a_work_seat_reads_git_anywhere_and_reaches_nothing_outside() {
+    for rule in [
+        "Bash(git log *)",
+        "Bash(git show *)",
+        "Bash(git diff *)",
+        "Bash(git merge-base *)",
+        "Bash(git merge-tree *)",
+        "Bash(git rev-parse *)",
+        "Bash(git cat-file *)",
+        "Bash(rustfmt --check *)",
+        "Bash(node --check *)",
+        "Bash(node apps/web/test/*)",
+    ] {
+        assert!(WORK_ALLOWED.contains(&rule), "reason: not_allowed {rule}");
+        assert!(
+            WORK_FREE_ARGS.contains(&rule),
+            "reason: free_args_unlisted {rule}"
+        );
+    }
+    for word in [
+        "git push",
+        "git fetch",
+        "git pull",
+        "git remote",
+        "git config",
+        "git worktree",
+        "git bundle",
+        "ssh",
+        "curl",
+        "gh ",
+        "aib ",
+        "cargo",
+    ] {
+        assert!(
+            !WORK_ALLOWED.iter().any(|r| r.contains(word)),
+            "reason: reaches_out {word}"
+        );
+    }
+    let note = work_note();
+    assert!(note.contains("`git log …`"), "reason: not_told {note}");
+    assert!(
+        note.contains("`node apps/web/test/*`"),
+        "reason: test_path_not_told {note}"
+    );
+}

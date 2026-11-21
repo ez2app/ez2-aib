@@ -22,3 +22,15 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '    provider == "claude" && mode == "safe"' \
   --expect-fail a_work_seat_is_told_its_commands_before_its_card \
   -- cargo test -p aibd --locked --lib a_work_seat_is_told_its_commands_before_its_card
+# G4A1 a web seat cannot read git at any ref (DECISION-council-cutover-519d0-1121 §2, DESIGN-g4-7b81e-1121)
+python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs \
+  '    "Bash(git log *)", // G4a reads' \
+  '    "Bash(git log --oneline *)", // G4a reads' \
+  --expect-fail a_work_seat_reads_git_anywhere_and_reaches_nothing_outside \
+  -- cargo test -p aib-seatopen --locked --lib a_work_seat_reads_git_anywhere_and_reaches_nothing_outside
+# G4A2 a rule that reaches outside slips onto the list
+python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs \
+  '    "Bash(node apps/web/test/*)", // G4a page tests' \
+  '    "Bash(node apps/web/test/*)", "Bash(git fetch *)", // G4a page tests' \
+  --expect-fail a_work_seat_reads_git_anywhere_and_reaches_nothing_outside \
+  -- cargo test -p aib-seatopen --locked --lib a_work_seat_reads_git_anywhere_and_reaches_nothing_outside

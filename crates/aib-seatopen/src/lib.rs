@@ -160,6 +160,20 @@ pub const WORK_ALLOWED: &[&str] = &[
     "Bash(pwd)",
     "Bash(node --test)",
     "Bash(node --test *)",
+    // G4a (DECISION-council-cutover-519d0-1121 §2, DESIGN-g4-7b81e-1121): reading git and
+    // checking files, any arguments. Free arguments are safe here because the seat's commands
+    // run in the sandbox: no read outside its folder, writes only inside it, git with no
+    // transport and hooks at aibd's empty folder (`--no-index` / `--output=` reach nothing new).
+    "Bash(git log *)", // G4a reads
+    "Bash(git show *)",
+    "Bash(git diff *)",
+    "Bash(git merge-base *)",
+    "Bash(git merge-tree *)",
+    "Bash(git rev-parse *)",
+    "Bash(git cat-file *)",
+    "Bash(rustfmt --check *)",
+    "Bash(node --check *)",
+    "Bash(node apps/web/test/*)", // G4a page tests
 ];
 
 /// The Bash rules of [`WORK_ALLOWED`] that take free arguments; every other Bash rule is a
@@ -172,6 +186,16 @@ pub const WORK_FREE_ARGS: &[&str] = &[
     "Bash(git commit -m *)",
     "Bash(git commit -q -m *)",
     "Bash(node --test *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(git diff *)",
+    "Bash(git merge-base *)",
+    "Bash(git merge-tree *)",
+    "Bash(git rev-parse *)",
+    "Bash(git cat-file *)",
+    "Bash(rustfmt --check *)",
+    "Bash(node --check *)",
+    "Bash(node apps/web/test/*)",
 ];
 
 /// The words at the top of a claude work seat's system prompt (519d0 11-21 M6: a seat that
