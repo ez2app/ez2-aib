@@ -23,6 +23,7 @@ pub mod dm_import;
 pub mod docs;
 pub mod drive_wake;
 pub mod events_push;
+pub mod gh_token;
 pub mod gh_view;
 pub mod guard;
 pub mod hosts;

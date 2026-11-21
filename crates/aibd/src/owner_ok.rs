@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 7] = [
+pub const ACTIONS: [(&str, &str); 8] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -119,6 +119,7 @@ pub const ACTIONS: [(&str, &str); 7] = [
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
     (crate::receipt_runner::OP, "到測試機跑一份收據"),
+    (crate::gh_token::OP, "存 GitHub 權杖"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -211,6 +212,10 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         crate::seat_trust::OP => {
             format!("讓席 {} 受信任 {} 小時", seat_code(&v)?, n("hours")?)
         }
+        crate::gh_token::OP => format!(
+            "把 GitHub 權杖存進這台,給 {} 推分支與開 PR 用",
+            piece(&v, "slug")?
+        ),
         _ => return None,
     })
 }
@@ -274,6 +279,7 @@ pub const WIRED: &[&str] = &[
     crate::repo_push::OP,
     crate::pr_open::OP,
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
+    crate::gh_token::OP,            // repo.gh_token_set (DESIGN-gh-token-card)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
     // one receipt going to one test machine: asked by aibd's own runner, which checks the

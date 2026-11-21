@@ -15,11 +15,11 @@ pa '        let ok = (1..=TOKEN_MAX).contains(&t.0.len())' \
    '        let ok = (1..=TOKEN_MAX * 2).contains(&t.0.len())' \
    a_token_is_one_plain_word
 # PA3 one item whatever the repository
-pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
-   '    Some((format!("{SERVICE}{owner}-demo{}", &name[..0]), owner.to_owned()))' \
+pa '    Some((format!("{SERVICE}{owner}/{name}"), owner.to_owned()))' \
+   '    Some((format!("{SERVICE}{owner}/demo{}", &name[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
 # PA4 the owner left out of the item's name (5d33a PREREAD-prapi 4)
-pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
+pa '    Some((format!("{SERVICE}{owner}/{name}"), owner.to_owned()))' \
    '    Some((format!("{SERVICE}{name}{}", &owner[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
 # PA5 ready whatever the store has

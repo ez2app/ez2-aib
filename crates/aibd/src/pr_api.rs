@@ -27,9 +27,10 @@ use crate::pr_open::{Opened, PrApi, PrError};
 /// Every request goes here and nowhere else.
 pub const API: &str = "https://api.github.com";
 /// A repository's token is the keychain item with this service name followed by
-/// `<owner>-<name>`, and its owner as the account (5d33a PREREAD-prapi-7b81e 4: two owners'
-/// repositories of one name never share a token).
-pub const SERVICE: &str = "ez2-aibd-github-";
+/// `<owner>/<name>`, and its owner as the account (5d33a PREREAD-prapi-7b81e 4: two owners'
+/// repositories of one name never share a token; PREREAD-ghtokencard L2: `:` and `/`, which
+/// no owner or name holds, so `a-b/c` and `a/b-c` are two items).
+pub const SERVICE: &str = "ez2-aibd-github:";
 pub const TOKEN_MAX: usize = 255;
 /// [`PrError::Failed`]'s words: GitHub refused the token (expired or revoked).
 pub const REFUSED: &str = "token";
@@ -71,7 +72,45 @@ impl Drop for Token {
 pub trait Secrets: Send + Sync {
     fn has(&self, service: &str, account: &str) -> bool;
     fn get(&self, service: &str, account: &str) -> Option<Token>;
+    /// Keeps `token` as the item, replacing one already there (DESIGN-gh-token-card 甲).
+    fn set(&self, service: &str, account: &str, token: &Token) -> Result<(), &'static str>;
 }
+
+/// What GitHub says of a repository, read with the token about to be kept: it must see the
+/// repository and may push to it (DESIGN-gh-token-card §3). Only `permissions.push` is read.
+pub fn repo_request(slug: &str) -> Request {
+    Request {
+        method: "GET",
+        url: format!("{API}/repos/{slug}"),
+        body: None,
+    }
+}
+
+/// The token reaches the repository and may push: none; otherwise why, as the page reads it.
+pub fn can_push(status: u16, answer: &[u8]) -> Result<(), &'static str> {
+    match status {
+        200 => {
+            let v: Value = serde_json::from_slice(answer).unwrap_or(Value::Null);
+            if v["permissions"]["push"] == Value::Bool(true) {
+                Ok(())
+            } else {
+                Err(GH_NO_WRITE)
+            }
+        }
+        401 => Err(GH_REFUSED),
+        403 | 404 => Err(GH_NOT_SELECTED),
+        _ => Err(GH_UNREACHABLE),
+    }
+}
+
+/// [`can_push`]'s words. GitHub refused the token (mistyped, expired, revoked).
+pub const GH_REFUSED: &str = "gh_token_refused";
+/// ... the token does not see the repository (not picked under "Repository access").
+pub const GH_NOT_SELECTED: &str = "gh_token_repo_not_selected";
+/// ... sees it but may not write to it.
+pub const GH_NO_WRITE: &str = "gh_token_no_write";
+/// ... GitHub could not be asked (no network, a timeout, a 5xx): not a no.
+pub const GH_UNREACHABLE: &str = "gh_token_check_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -94,7 +133,7 @@ pub fn item_of(slug: &str) -> Option<(String, String)> {
     // GitHub reads `Owner/Name` and `owner/name` as one repository; the keychain does not
     let lower = slug.to_ascii_lowercase();
     let (owner, name) = lower.split_once('/')?;
-    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))
+    Some((format!("{SERVICE}{owner}/{name}"), owner.to_owned()))
 }
 
 /// `text` as one piece of an address: everything but `A-Z a-z 0-9 - . _ ~` is `%XX`.
@@ -202,6 +241,10 @@ impl Secrets for Keychain {
     fn get(&self, service: &str, account: &str) -> Option<Token> {
         Token::new(aib_sys::presence_macos::password(service, account).ok()??)
     }
+    fn set(&self, service: &str, account: &str, token: &Token) -> Result<(), &'static str> {
+        aib_sys::presence_macos::password_store(service, account, token.expose())
+            .map_err(|_| "gh_token_store")
+    }
 }
 
 /// What this build opens pull requests with: the keychain and the system's curl on macOS,
@@ -214,6 +257,23 @@ pub fn platform_api() -> Option<Arc<dyn PrApi>> {
             secrets: Arc::new(Keychain),
             wire: Arc::new(Curl(PathBuf::from(CURL))),
         }))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// What a pasted token is checked and kept with ([`crate::gh_token`]): the keychain and the
+/// system's curl on macOS, nothing elsewhere (DESIGN-gh-token-card 5: Windows says why and
+/// shows no field until its owner fingerprint is wired).
+pub fn platform_keeper() -> Option<crate::gh_token::Keeper> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(crate::gh_token::Keeper {
+            secrets: Arc::new(Keychain),
+            wire: Arc::new(Curl(PathBuf::from(CURL))),
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -384,6 +444,9 @@ mod tests {
             self.has(service, account)
                 .then(|| Token::new(b"tok_1".to_vec()).unwrap())
         }
+        fn set(&self, _: &str, _: &str, _: &Token) -> Result<(), &'static str> {
+            Err("read_only")
+        }
     }
 
     type Sent = (Request, Vec<u8>);
@@ -403,7 +466,7 @@ mod tests {
 
     fn github(answers: Vec<Answer>) -> (GitHub, Arc<Fake>, Arc<Store>) {
         let store = Arc::new(Store(
-            "ez2-aibd-github-ez2app-demo",
+            "ez2-aibd-github:ez2app/demo",
             "ez2app",
             Mutex::new(0),
         ));
@@ -460,21 +523,61 @@ mod tests {
     }
 
     #[test]
+    fn a_token_is_kept_only_when_github_says_it_may_push_to_that_repository() {
+        assert_eq!(
+            repo_request("ez2app/ez2-aib"),
+            Request {
+                method: "GET",
+                url: "https://api.github.com/repos/ez2app/ez2-aib".into(),
+                body: None
+            }
+        );
+        let yes = json!({"permissions": {"push": true, "pull": true}}).to_string();
+        assert_eq!(can_push(200, yes.as_bytes()), Ok(()));
+        for (status, answer, want) in [
+            (
+                200,
+                r#"{"permissions":{"push":false,"pull":true}}"#,
+                GH_NO_WRITE,
+            ),
+            (200, r#"{"permissions":{"push":"true"}}"#, GH_NO_WRITE),
+            (200, "not json", GH_NO_WRITE),
+            (401, "", GH_REFUSED),
+            (403, "", GH_NOT_SELECTED),
+            (404, "", GH_NOT_SELECTED),
+            (301, "", GH_UNREACHABLE),
+            (502, "", GH_UNREACHABLE),
+        ] {
+            assert_eq!(
+                can_push(status, answer.as_bytes()),
+                Err(want),
+                "reason: can_push_{status}_{answer}"
+            );
+        }
+    }
+
+    #[test]
     fn a_token_is_the_item_named_after_the_repository_and_read_once_per_call() {
         assert_eq!(
             item_of("ez2app/ez2-aib"),
             Some((
-                "ez2-aibd-github-ez2app-ez2-aib".to_owned(),
+                "ez2-aibd-github:ez2app/ez2-aib".to_owned(),
                 "ez2app".to_owned()
             ))
         );
         assert_eq!(
             item_of("Ez2App/Ez2_AIB.x"),
             Some((
-                "ez2-aibd-github-ez2app-ez2_aib.x".to_owned(),
+                "ez2-aibd-github:ez2app/ez2_aib.x".to_owned(),
                 "ez2app".to_owned()
             )),
             "reason: item_name_follows_the_remotes_case"
+        );
+        // a dash joins nothing: a-b/c and a/b-c are two repositories, two items (5d33a L2)
+        assert_ne!(
+            item_of("a-b/c").map(|i| i.0),
+            item_of("a/b-c").map(|i| i.0),
+            "reason: items_collide"
         );
         for bad in ["", "one", "a/b/c", "-o/r", "o/..", "o /r", "o/r\n"] {
             assert_eq!(item_of(bad), None, "reason: item_of_{bad:?}");

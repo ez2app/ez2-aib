@@ -87,6 +87,10 @@ pub async fn run(
     if let Some(api) = crate::pr_api::platform_api() {
         crate::pr_open::set_api(api);
     }
+    // DESIGN-gh-token-card-7b81e-1121: where a pasted token is checked and kept
+    if let Some(k) = crate::pr_api::platform_keeper() {
+        crate::gh_token::set_keeper(k);
+    }
     crate::gh_view::log_override();
     let run_dir = dirs.run_dir();
     platform::create_private_dir(&dirs.data_dir())?;
