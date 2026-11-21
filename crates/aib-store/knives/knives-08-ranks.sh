@@ -21,3 +21,7 @@ rk '            rank <= Rank::Lead,' \
 rk 'pub const DEFAULT_MIN: Rank = Rank::Lead;' \
    'pub const DEFAULT_MIN: Rank = Rank::Plain;' \
    an_act_with_no_least_rank_needs_a_lead
+# RK3b an unknown stored least rank opens the act to all (5d33a REVIEW-rank N1)
+rk '        .and_then(Rank::known)' \
+   '        .map(Rank::of_num)' \
+   an_act_with_no_least_rank_needs_a_lead

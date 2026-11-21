@@ -79,10 +79,15 @@ impl Rank {
 
     /// A stored number; anything unknown reads as the lowest.
     fn of_num(n: i64) -> Rank {
+        Rank::known(n).unwrap_or(Rank::Plain)
+    }
+
+    fn known(n: i64) -> Option<Rank> {
         match n {
-            1 => Rank::Lead,
-            2 => Rank::Owner,
-            _ => Rank::Plain,
+            0 => Some(Rank::Plain),
+            1 => Some(Rank::Lead),
+            2 => Some(Rank::Owner),
+            _ => None,
         }
     }
 }
@@ -263,7 +268,9 @@ pub fn perm_min(db: &MessageDb, act: &str) -> Rank {
             .ok()
             .flatten()
         })
-        .map_or(DEFAULT_MIN, Rank::of_num)
+        // an unknown stored number is no lower threshold (5d33a REVIEW-rank 9f58554c N1)
+        .and_then(Rank::known)
+        .unwrap_or(DEFAULT_MIN)
 }
 
 #[cfg(test)]
@@ -333,6 +340,13 @@ mod tests {
         assert_eq!(perm_min(&m, URGENT), Rank::Plain);
         m.perm_set(URGENT, Rank::Owner, "owner", "t2").unwrap();
         assert_eq!(perm_min(&m, URGENT), Rank::Owner);
+        // a number no rank has reads as the default, never as plain
+        m.write(|c| {
+            c.execute("UPDATE perms SET min_rank = 7 WHERE act = 'urgent'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(perm_min(&m, URGENT), Rank::Lead, "reason: unknown_opens");
     }
 
     /// RK4: a granted role whose rank is gone counts as nothing (N4: still listed).
