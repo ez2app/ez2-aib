@@ -1109,3 +1109,17 @@ label.rvr{cursor:pointer}
 .sir{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;font-size:13px;border-top:1px solid var(--line)}
 .sir .sig{font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line)}
 .sir.g0 .sig{background:var(--red);color:#fff;border-color:var(--red)}
+/* 即時熱度(519d0 SPEC-heat-rail r1):固定五列高度;位移 1.1 秒緩出、淡入淡出 0.9 秒、熱度條 1.4 秒(Web Animations,ws.js heatSlide);減少動態效果不動 */
+.ek.kheat{background:linear-gradient(90deg,#f0923c,#eb4040);color:#fff}
+.ecls.heat .hhint,.hhint2{color:var(--muted,#8a8a94);font-size:11px;margin-left:auto;white-space:nowrap}
+.hhint2{margin-left:6px;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.heatl{position:relative;overflow:hidden}
+.heatr{position:absolute;left:0;right:0;top:0;height:34px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:8px;background:var(--card,#17181d);border:1px solid #23242b;color:inherit;font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.heatr[aria-pressed="true"]{border-color:#e2b34a}
+.heatr .hrk{width:14px;color:#8a8a94;text-align:center;flex:none}
+.heatr .ht{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.heatr .hbar{width:46px;height:5px;border-radius:3px;background:#2a2b33;overflow:hidden;flex:none}
+.heatr .hbar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#f0923c,#eb4040)}
+.heatr .htr{width:12px;text-align:center;color:#555;flex:none}.heatr .htr.up{color:#f0923c}.heatr .htr.dn{color:#6f9be8}
+.heatr .hsn{width:34px;text-align:right;color:#8a8a94;font-size:11px;flex:none}
+.heatl.gray .heatr{opacity:.5}

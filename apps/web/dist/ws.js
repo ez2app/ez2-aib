@@ -1676,13 +1676,120 @@
     for (const c of L) if (c && c.card_id && !M.has(c.card_id)) { const s = c.seat_id ? seatById(c.seat_id) : null; M.set(c.card_id, { card: c.card_id, text: (typeof c.text === 'string' && c.text) || (typeof c.item === 'string' && c.item) || (s ? seatName(s) + ' ' : '') + (KIND_TEXT[c.kind] || c.kind || '事件') }); }
     S.dmN = L.length; render();
   }
+  // ---------- 即時熱度(519d0 SPEC-heat-rail r1;Andy 12:4x「待人決策下方、預載五個、移動要優雅、不要急」)----------
+  // 頁面先用已拿到的事件卡算(最快上線);aibd 給分數之後只換資料來源(2.0 畫面只讀)
+  // 熱度 = 近 30 分每則事件 × 種類權重 × 0.5^(分鐘/10) 加總 + 牽涉席數;主題 = 卡號 / PR / 收據 / 一對席
+  const HEAT_W = { 1: 5, 4: 3, 2: 3, 3: 2, 5: 2, 6: 1 }, HEAT_N = 5, HEAT_H = 40, HEAT_MIN = 3, HEAT_GAP = 5000;
+  const HEAT = { el: null, rows: {}, order: [], at: 0, prev: {}, gray: false };
+  function heatTopic(x) {
+    const t = String(x.text || '') + ' ' + String(x.ref || '');
+    let m = /\b([A-Z]\d*-[A-Za-z0-9][\w-]{1,30})/.exec(String(x.ref || '')) || /\b([NSHEGM]\d*-[A-Za-z0-9][\w-]{1,30})/.exec(t);
+    if (m) return { k: 'card:' + m[1], label: m[1] };
+    if ((m = /(?:PR\s*)?#(\d{3,5})\b/.exec(t))) return { k: 'pr:' + m[1], label: 'PR #' + m[1] };
+    if ((m = /\b([0-9a-f]{5}-[a-z0-9]{2,12}-[0-9a-f]{7,12})\b/.exec(t))) return { k: 'rc:' + m[1], label: '收據 ' + m[1] };
+    // 一對席:先取本文點名的兩席(「@7ebca 跟 @f1fae 對頭碼」),不夠才補卡片所屬的席
+    const who = new Set(); for (const w of t.matchAll(/@([0-9a-f]{5})\b/g)) if (who.size < 2) who.add(w[1]);
+    if (who.size < 2 && x.seat) who.add(seatName(seatById(x.seat) || { seat_id: x.seat }));
+    const L = [...who].filter(Boolean).sort(); if (!L.length) return null;
+    return { k: 'seat:' + L.join('~'), label: L.map((w) => '@' + w).join(' ↔ ') };
+  }
+  function heatScore(now) {
+    const T = {};
+    for (const x of slots()) {
+      if (isPast(x)) continue;
+      const tp = heatTopic(x); if (!tp) continue;
+      const at = new Date(x.t).getTime(), age = Number.isFinite(at) ? Math.max(0, (now - at) / 60000) : 30;
+      const o = (T[tp.k] = T[tp.k] || { k: tp.k, label: tp.label, h: 0, last: 0, seats: new Set(), text: '' });
+      if (at > o.last) { o.last = at; o.text = String(x.text || ''); }
+      if (x.seat) o.seats.add(x.seat); for (const w of String(x.text || '').matchAll(/@([0-9a-f]{5})\b/g)) o.seats.add(w[1]);
+      if (age <= 30) o.h += (HEAT_W[x.lv] || 1) * Math.pow(0.5, age / 10);
+    }
+    for (const k in T) { const o = T[k]; if (o.h > 0) o.h += o.seats.size; }
+    return T;
+  }
+  // 遲滯:每 5 秒最多重排;新主題要高出第 5 名 15% 才擠進;分差 < 15% 不換位(同示意頁 MOCK-heat)
+  function heatOrder(T, now) {
+    const all = Object.values(T), hot = all.filter((o) => o.h >= HEAT_MIN).sort((a, b) => b.h - a.h);
+    if (!hot.length) { HEAT.gray = true; return all.sort((a, b) => b.last - a.last).slice(0, HEAT_N).map((o) => o.k); }
+    const wasGray = HEAT.gray; HEAT.gray = false;
+    const cur = HEAT.order.filter((k) => T[k] && T[k].h >= HEAT_MIN);
+    if (!cur.length || wasGray) return hot.slice(0, HEAT_N).map((o) => o.k);
+    if (now - HEAT.at < HEAT_GAP) return HEAT.order;
+    let next = cur.slice(0, HEAT_N);
+    for (const c of hot) {
+      if (next.includes(c.k)) continue;
+      if (next.length < HEAT_N) { next.push(c.k); continue; }
+      const lo = next.slice().sort((a, b) => T[a].h - T[b].h)[0];
+      if (c.h > T[lo].h * 1.15) next[next.indexOf(lo)] = c.k;
+    }
+    const pos = (k) => { const i = HEAT.order.indexOf(k); return i < 0 ? 99 : i; };
+    next.sort((a, b) => (Math.abs(T[a].h - T[b].h) < Math.max(T[a].h, T[b].h) * 0.15 ? pos(a) - pos(b) : T[b].h - T[a].h));
+    return next;
+  }
+  // 五列放在同一個常駐節點(render 整頁重寫也不換),位置用 transform + Web Animations 慢慢滑,重寫不會打斷
+  const heatCalm = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } };
+  function heatSlide(n, prop, from, to, ms) {
+    n.style[prop] = to;
+    if (heatCalm() || from === to || !n.animate) return;
+    try { n.animate([{ [prop]: from }, { [prop]: to }], { duration: ms, easing: prop === 'transform' ? 'cubic-bezier(.22,.9,.24,1)' : 'ease' }); } catch (e) { /* 舊瀏覽器:直接到位 */ }
+  }
+  function heatPaint() {
+    const now = Date.now(), T = heatScore(now);
+    const next = heatOrder(T, now);
+    if (next.join() !== HEAT.order.join()) { HEAT.order = next; HEAT.at = now; }
+    if (!HEAT.el) { HEAT.el = document.createElement('div'); HEAT.el.className = 'heatl'; HEAT.el.style.height = HEAT_N * HEAT_H + 'px'; }
+    const box = HEAT.el, max = Math.max(1, ...HEAT.order.map((k) => (T[k] ? T[k].h : 0)));
+    box.classList.toggle('gray', HEAT.gray);
+    for (const k of Object.keys(HEAT.rows)) if (!HEAT.order.includes(k)) {
+      const n = HEAT.rows[k]; delete HEAT.rows[k];
+      heatSlide(n, 'opacity', '1', '0', 900); setTimeout(() => n.remove(), heatCalm() ? 0 : 900);
+    }
+    HEAT.order.forEach((k, i) => {
+      const o = T[k]; if (!o) return;
+      let n = HEAT.rows[k], fresh = false;
+      if (!n) {
+        fresh = true; n = HEAT.rows[k] = document.createElement('button'); n.type = 'button'; n.className = 'heatr'; n.dataset.heat = k;
+        n.innerHTML = '<span class="hrk"></span><span class="ht"></span><span class="hbar"><i></i></span><span class="htr">·</span><span class="hsn"></span>';
+        n.style.transform = 'translateY(' + HEAT_N * HEAT_H + 'px)'; box.appendChild(n);
+      }
+      const y = 'translateY(' + i * HEAT_H + 'px)';
+      if (n.style.transform !== y) heatSlide(n, 'transform', n.style.transform, y, 1100);
+      if (fresh) heatSlide(n, 'opacity', '0', '1', 900);
+      n.querySelector('.hrk').textContent = String(i + 1);
+      const t = n.querySelector('.ht'); t.textContent = !o.text ? o.label : o.text.indexOf(o.label.replace(/^(PR |收據 )/, '')) >= 0 ? o.text : o.label + ' · ' + o.text; n.title = t.textContent;
+      const bar = n.querySelector('.hbar i'), w = HEAT.gray ? '0%' : Math.round((o.h / max) * 100) + '%';
+      if (bar.style.width !== w) heatSlide(bar, 'width', bar.style.width || '0%', w, 1400);
+      const pv = HEAT.prev[k], dv = pv == null ? 0 : o.h - pv, tr = n.querySelector('.htr');
+      if (now - (HEAT.prevAt || 0) >= HEAT_GAP) { tr.textContent = dv > 0.5 ? '▲' : dv < -0.5 ? '▼' : '·'; tr.className = 'htr' + (dv > 0.5 ? ' up' : dv < -0.5 ? ' dn' : ''); }
+      n.querySelector('.hsn').textContent = o.seats.size ? o.seats.size + ' 席' : '';
+      n.setAttribute('aria-pressed', S.heatF === k ? 'true' : 'false');
+    });
+    if (now - (HEAT.prevAt || 0) >= HEAT_GAP) { HEAT.prev = {}; for (const k in T) HEAT.prev[k] = T[k].h; HEAT.prevAt = now; }
+    HEAT.T = T;
+    return box;
+  }
+  function heatHtml() {
+    return `<div class="ecls heat"><div class="ecl"><span class="ek kheat">即時熱度</span><b>${HEAT.order.length}</b><span class="hhint">近 30 分鐘 · 點一列只看它</span></div><div data-heatslot></div></div>`;
+  }
+  // render 整頁重寫之後把常駐節點放回位子(不重建 ⇒ 動畫不中斷)
+  function heatMount() {
+    const slot = document.querySelector('[data-heatslot]'); if (!slot) return;
+    slot.replaceWith(heatPaint());
+  }
+  const heatMatch = (x) => { const tp = heatTopic(x); return !!tp && tp.k === S.heatF; };
+  function heatOnly(G) {
+    const L = [].concat(...EV_CLS.map((k) => G[k] || [])).filter((x) => !isPast(x) && heatMatch(x)).sort((a, b) => new Date(b.t) - new Date(a.t));
+    const name = (HEAT.T && HEAT.T[S.heatF] && HEAT.T[S.heatF].label) || S.heatF;
+    return `<div class="ecls"><div class="ecl"><span class="ek kheat">只看</span><span class="hhint2">${esc(name)}</span><button type="button" class="k sm2" data-heatx="1">全部</button></div>${L.length ? L.map((x) => evCard(x)).join('') : '<div class="empty">這個主題現在沒有事件</div>'}</div>`;
+  }
+  setInterval(() => { if (document.querySelector('.heatl')) heatPaint(); }, HEAT_GAP);
   function slotsHtml() {
     const G = evByCls();
     const tot = EV_CLS.reduce((a, k) => a + evCount(k, G), 0);
     const tab = EVS.tab === 'all' || EVS.tab === 'dm' || EV_CLS.includes(Number(EVS.tab)) ? EVS.tab : 'all';
     const tabs = `<div class="etabs"><button type="button" class="et1 ${tab === 'all' ? 'on' : ''}" data-evtab="all">全部 <b>${tot}</b></button>${EV_CLS.map((k) => { const n = evCount(k, G); return `<button type="button" class="et1 ${String(tab) === String(k) ? 'on' : ''} ${n ? '' : 'z'}" data-evtab="${k}">${esc(EV_NAME[k])} <b>${n}</b></button>`; }).join('')}<button type="button" class="et1 dmt ${tab === 'dm' ? 'on' : ''} ${dmCount() ? '' : 'z'}" data-evtab="dm">暫不處理 <b>${dmCount()}</b></button></div>`;
     if (tab === 'dm' && !S.dmLoaded) { S.dmLoaded = true; loadDismissed(); }
-    const body = tab === 'dm' ? dmHtml(true) : tab === 'all' ? (tot ? EV_CLS.map((k) => evBox(k, G, false)).join('') : '<div class="empty">沒有事件</div>') + dmHtml() : evBox(Number(tab), G, true);
+    const body = tab === 'dm' ? dmHtml(true) : tab === 'all' ? (S.heatF ? evBox(1, G, false) + heatHtml() + heatOnly(G) : tot ? EV_CLS.map((k) => evBox(k, G, false) + (k === 1 ? heatHtml() : '')).join('') + dmHtml() : heatHtml() + '<div class="empty">沒有事件</div>' + dmHtml()) : evBox(Number(tab), G, true);
     return `<div class="evbox"><div class="bh"><b>事件</b> <span class="st">${tot} 則</span></div>${tabs}<div class="slots">${body}</div></div>`;
   }
 
@@ -3857,6 +3964,7 @@
       </div>`;
     const t = document.getElementById('tl');
     if (t) t.scrollTop = !keepScroll || keepScroll.atEnd ? t.scrollHeight : keepScroll.top;
+    heatMount(); // 即時熱度:常駐節點放回位子
     if (focus) { const i = document.getElementById('inp'); if (i) { i.focus(); i.setSelectionRange(focus.a, focus.b); } }
     if (sqF) { const i = document.getElementById('sq'); if (i) { i.focus(); try { i.setSelectionRange(sqF.a, sqF.b); } catch (e) { /* type=search 某些瀏覽器不給 */ } } }
     if (ansF) { const i = [...el.querySelectorAll('[data-ansfor]')].find((x) => x.dataset.ansfor === ansF.card); if (i) { i.focus(); i.setSelectionRange(ansF.a, ansF.a); } }
@@ -4164,6 +4272,8 @@
       }
       return tick(true);
     }
+    const hr = x.closest('[data-heat]'); if (hr) { S.heatF = S.heatF === hr.dataset.heat ? null : hr.dataset.heat; return render(); }
+    if (x.closest('[data-heatx]')) { S.heatF = null; return render(); }
     const etab = x.closest('[data-evtab]'); if (etab) { EVS.tab = etab.dataset.evtab; evSave(); return render(); }
     if (x.closest('[data-evpast]')) { S.evPast = !S.evPast; return render(); }
     const ecls = x.closest('[data-evcls]'); if (ecls) { const k = ecls.dataset.evcls; if (EVS.open[k]) delete EVS.open[k]; else { EVS.open[k] = 1; EVS.page[k] = 1; } evSave(); return render(); }

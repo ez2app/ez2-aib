@@ -291,4 +291,22 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/e\.status === 403/.test(app) && /S\.ib = null/.test(app), 'reason: user_page_403_not_handled');
 }
 
+// §23 即時熱度(519d0 SPEC-heat-rail r1)
+{
+  const css = read('apps/web/dist/ws.css');
+  ok(/HEAT_W = \{ 1: 5, 4: 3, 2: 3, 3: 2, 5: 2, 6: 1 \}, HEAT_N = 5/.test(ws), 'reason: heat_weights_or_five_rows');
+  ok(/Math\.pow\(0\.5, age \/ 10\)/.test(ws) && /age <= 30/.test(ws), 'reason: heat_half_life_window');
+  ok(/HEAT_GAP = 5000/.test(ws) && /now - HEAT\.at < HEAT_GAP/.test(ws), 'reason: heat_reorders_too_often');
+  ok(/c\.h > T\[lo\]\.h \* 1\.15/.test(ws) && /\* 0\.15 \? pos\(a\) - pos\(b\)/.test(ws), 'reason: heat_no_hysteresis');
+  ok(/'transform', n\.style\.transform, y, 1100/.test(ws) && /'opacity', '0', '1', 900/.test(ws) && /'width', bar\.style\.width \|\| '0%', w, 1400/.test(ws), 'reason: heat_motion_timing');
+  ok(/prefers-reduced-motion: reduce/.test(ws) && /if \(heatCalm\(\) \|\| from === to/.test(ws), 'reason: heat_ignores_reduced_motion');
+  // 常駐節點:render 重寫後放回,不重建(動畫不斷)
+  ok(/slot\.replaceWith\(heatPaint\(\)\)/.test(ws) && /heatMount\(\); \/\/ 即時熱度/.test(ws), 'reason: heat_node_rebuilt_each_render');
+  // 放在待人決策下方
+  ok(/evBox\(k, G, false\) \+ \(k === 1 \? heatHtml\(\)/.test(ws), 'reason: heat_not_below_decisions');
+  ok(/HEAT\.gray = true/.test(ws) && /\.heatl\.gray/.test(css), 'reason: heat_cold_not_gray');
+  // 一對席先取本文點名的兩席
+  ok(/matchAll\(\/@\(\[0-9a-f\]\{5\}\)\\b\/g\)\) if \(who\.size < 2\)/.test(ws), 'reason: heat_pair_from_card_seat_first');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
