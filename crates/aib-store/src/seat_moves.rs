@@ -137,6 +137,22 @@ impl MessageDb {
         Ok(live_code(&c, seat_id)?)
     }
 
+    /// The web seat `old_code` last went back from (its move ended), `None` while it is moved
+    /// or never was: going back again tidies that seat's inbox (5d33a REVIEW-g5um L1).
+    pub fn last_unmoved_seat(&self, old_code: &str) -> Result<Option<String>> {
+        let c = self.read()?;
+        if live_seat(&c, old_code)?.is_some() {
+            return Ok(None);
+        }
+        Ok(c.query_row(
+            "SELECT seat_id FROM seat_moves WHERE old_code = ?1 AND unmoved_at IS NOT NULL
+             ORDER BY unmoved_at DESC LIMIT 1",
+            params![old_code],
+            |r| r.get(0),
+        )
+        .optional()?)
+    }
+
     /// The web seat 1.x seat `old_code` moved into now (a live move only).
     pub fn moved_seat(&self, old_code: &str) -> Result<Option<String>> {
         let c = self.read()?;

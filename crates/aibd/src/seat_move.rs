@@ -309,26 +309,44 @@ pub async fn unmoved(st: AppState, body: Value, by: String) -> Response {
         Ok(Ok(s)) => s,
         _ => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "store"),
     };
-    // 0eed7 VERIFY-integ3 M2: what the move handed to the web seat leaves its inbox
-    let mut taken_back = 0;
-    if let Some(s) = &seat {
-        let (m, sid, c) = (st.messages.clone(), s.clone(), code.clone());
-        taken_back = tokio::task::spawn_blocking(move || crate::dm_import::take_back(&m, &sid, &c))
+    // pressed again after it went back: the seat it went back from is tidied (L1)
+    let again_from = if seat.is_none() {
+        let (m, c) = (st.messages.clone(), code.clone());
+        tokio::task::spawn_blocking(move || m.last_unmoved_seat(&c))
             .await
             .ok()
             .and_then(Result::ok)
-            .map_or(0, |v| v.len());
+            .flatten()
+    } else {
+        None
+    };
+    // 0eed7 VERIFY-integ3 M2: what the move handed to the web seat leaves its inbox; a failure
+    // is said (5d33a REVIEW-g5um L1: the letters would stay open on both sides; going back
+    // again takes them, the move itself is not undone)
+    let mut taken_back = 0;
+    let mut take_back_error: Option<String> = None;
+    if let Some(s) = seat.as_ref().or(again_from.as_ref()) {
+        let (m, sid, c) = (st.messages.clone(), s.clone(), code.clone());
+        match tokio::task::spawn_blocking(move || crate::dm_import::take_back(&m, &sid, &c)).await {
+            Ok(Ok(v)) => taken_back = v.len(),
+            Ok(Err(e)) => take_back_error = Some(e),
+            Err(e) => take_back_error = Some(e.to_string()),
+        }
+    }
+    if let Some(s) = &seat {
         crate::seats::side_event(
             &st,
             UNMOVE,
             "seat.unmoved",
-            json!({"old_code": code, "seat": s, "by": by, "taken_back": taken_back}),
+            json!({"old_code": code, "seat": s, "by": by, "taken_back": taken_back,
+                "take_back_error": take_back_error}),
         )
         .await;
     }
     Json(
         json!({"done": true, "old_code": code, "was_moved_into": seat,
-        "taken_back": taken_back}),
+        "taken_back": taken_back, "take_back_error": take_back_error,
+        "again": take_back_error.as_ref().map(|_| "網頁收件匣還留著轉過的信,請再按一次搬回整理")}),
     )
     .into_response()
 }

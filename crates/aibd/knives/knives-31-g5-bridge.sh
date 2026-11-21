@@ -88,3 +88,9 @@ br crates/aibd/src/dm_import.rs \
    "        Some(i) => msg[..i].trim_end(), // knife" \
    the_ledger_reply_footer_is_cut_on_the_web \
    '--lib dm_import::tests::the_ledger_reply_footer_is_cut_on_the_web'
+# BR15 going back again finds no seat to tidy (5d33a REVIEW-g5um L1)
+br crates/aib-store/src/seat_moves.rs \
+   '            "SELECT seat_id FROM seat_moves WHERE old_code = ?1 AND unmoved_at IS NOT NULL' \
+   '            "SELECT seat_id FROM seat_moves WHERE old_code = ?1 AND unmoved_at IS NULL' \
+   going_back_takes_the_handed_on_letters_out_of_the_web_inbox \
+   '--lib dm_import::tests::going_back_takes_the_handed_on_letters_out_of_the_web_inbox'

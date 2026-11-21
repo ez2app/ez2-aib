@@ -741,10 +741,27 @@ pub fn forward_open(
 /// the code): the ledger copy, still open, is the one; nothing is closed in the ledger. The ids
 /// taken back.
 pub fn take_back(db: &MessageDb, seat_id: &str, old_code: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    // 5d33a REVIEW-g5um N1: page after page until a page takes none back (a taken one leaves
+    // the open list; the seat's own letters stay and end the loop)
+    loop {
+        let before = out.len();
+        take_back_page(db, seat_id, old_code, &mut out)?;
+        if out.len() == before {
+            return Ok(out);
+        }
+    }
+}
+
+fn take_back_page(
+    db: &MessageDb,
+    seat_id: &str,
+    old_code: &str,
+    out: &mut Vec<String>,
+) -> Result<(), String> {
     let rows = db
         .open_to(&format!("seat:{seat_id}"), aib_store::PAGE_MAX)
         .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
     for r in rows.iter().filter(|r| handed_from(r, old_code)) {
         let mut item = r.item.clone();
         for (k, v) in [
@@ -762,7 +779,7 @@ pub fn take_back(db: &MessageDb, seat_id: &str, old_code: &str) -> Result<Vec<St
             out.push(r.message_id.clone());
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Whether a row is a ledger letter to `old_code` (one the move handed on, or put in the inbox).
@@ -1452,6 +1469,12 @@ mod tests {
             take_back(&db, seat, "7ebca").unwrap().is_empty(),
             "reason: taken_twice"
         );
+        // pressed again after it went back: the seat it went back from (5d33a L1)
+        assert_eq!(
+            db.last_unmoved_seat("7ebca").unwrap().as_deref(),
+            Some(seat)
+        );
+        assert_eq!(db.last_unmoved_seat("a9136").unwrap(), None);
     }
 
     /// 0eed7 VERIFY-integ3 M3: the page's reply footer for a 1.x seat is not shown on the web
