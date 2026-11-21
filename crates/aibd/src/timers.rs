@@ -352,6 +352,15 @@ pub static RECEIPT_LINK_WAIT: Timer = Timer::operation(
     "only while aibd says one line to a pinned test machine (a receipt's bundle, a read, a cancel): re-check its ssh until it ends, stop it at the line's own limit (N-webonly 4, b4297 11-21)",
 );
 
+/// 「加一台測試機」(b4297 11-21): one fixed command through the owner's login, or one status
+/// through aibd's key.
+pub static TEST_HOST_WAIT: Timer = Timer::operation(
+    "test_host.wait",
+    ms(200),
+    secs(60),
+    "only while the page adds or takes away a test machine: re-check the one ssh (the fixed read / write / removal through the owner's login, or one status through aibd's key) until it ends, stop it at 60 s (DESIGN-add-test-host, b4297 11-21)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -378,6 +387,7 @@ pub static ALL: &[&Timer] = &[
     &RECEIPT_POLL,
     &RECEIPT_OWNER_WAIT,
     &RECEIPT_LINK_WAIT,
+    &TEST_HOST_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
