@@ -85,8 +85,8 @@ python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        if git(&ba
 # MB2 a base with changes not committed is merged into
 python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if changed(&base_dir)? {' '    if changed(&base_dir)? && false { // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was
-# MB3 a running seat's tree is merged back
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_seats().contains(&seat_id) {' '    if st.sessions.live_seats().contains(&seat_id) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+# MB3 an open, idle seat is refused again (519d0 11-21: only a seat in a turn is)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.in_turn(&seat_id) {' '    if !st.sessions.in_turn(&seat_id) {' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
 # QS1 a seat waiting for a slot does not say so
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))' '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)).filter(|_| false))' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \

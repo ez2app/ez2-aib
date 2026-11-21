@@ -6,20 +6,20 @@ pa() { python3 -I scripts/knife.py crates/aibd/src/pr_api.rs "$1" "$2" --expect-
         -- cargo test -p aibd --locked --lib "pr_api::tests::$3"; }
 po() { python3 -I scripts/knife.py crates/aibd/src/pr_open.rs "$1" "$2" --expect-fail "pr_open::tests::$3" \
         -- cargo test -p aibd --locked --lib "pr_open::tests::$3"; }
-# PA1 a quote or a backslash in a token
-pa '                .all(|&b| b.is_ascii_graphic() && !matches!(b, b'"'"'"'"'"' | b'"'"'\'"'"''"'"' | b'"'"'\\'"'"'));' \
-   '                .all(|&b| b.is_ascii_graphic() && !matches!(b, b'"'"'"'"'"' | b'"'"'\'"'"''"'"'));' \
+# PA1 a token of any visible characters (a quote, a dash)
+pa '            && t.0.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'"'"'_'"'"');' \
+   '            && t.0.iter().all(|&b| b.is_ascii_graphic());' \
    a_token_is_one_plain_word
 # PA2 a token of any length
 pa '        let ok = (1..=TOKEN_MAX).contains(&t.0.len())' \
    '        let ok = (1..=TOKEN_MAX * 2).contains(&t.0.len())' \
    a_token_is_one_plain_word
 # PA3 one item whatever the repository
-pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
-   '    Some((format!("{SERVICE}{owner}-demo{}", &name[..0]), owner.to_owned()))' \
+pa '    Some((format!("{SERVICE}{owner}/{name}"), owner.to_owned()))' \
+   '    Some((format!("{SERVICE}{owner}/demo{}", &name[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
 # PA4 the owner left out of the item's name (5d33a PREREAD-prapi 4)
-pa '    Some((format!("{SERVICE}{owner}-{name}"), owner.to_owned()))' \
+pa '    Some((format!("{SERVICE}{owner}/{name}"), owner.to_owned()))' \
    '    Some((format!("{SERVICE}{name}{}", &owner[..0]), owner.to_owned()))' \
    a_token_is_the_item_named_after_the_repository_and_read_once_per_call
 # PA5 ready whatever the store has

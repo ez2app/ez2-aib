@@ -153,16 +153,75 @@ pub const WORK_ALLOWED: &[&str] = &[
     "Bash(git show HEAD)",
     "Bash(git show --stat HEAD)",
     "Bash(git add -A)",
+    "Bash(git add *)", // a file by name (519d0 11-21 M6)
     "Bash(git commit -m *)",
+    "Bash(git commit -q -m *)",
     "Bash(ls)",
     "Bash(pwd)",
     "Bash(node --test)",
     "Bash(node --test *)",
+    // G4a (DECISION-council-cutover-519d0-1121 §2, DESIGN-g4-7b81e-1121): reading git and
+    // checking files, any arguments. Free arguments are safe here because the seat's commands
+    // run in the sandbox: no read outside its folder, writes only inside it, git with no
+    // transport and hooks at aibd's empty folder (`--no-index` / `--output=` reach nothing new).
+    "Bash(git log *)", // G4a reads
+    "Bash(git show *)",
+    "Bash(git diff *)",
+    "Bash(git merge-base *)",
+    "Bash(git merge-tree *)",
+    "Bash(git rev-parse *)",
+    "Bash(git cat-file *)",
+    "Bash(rustfmt --check *)",
+    "Bash(node --check *)",
+    "Bash(node apps/web/test/*)", // G4a page tests
+    // G4b (5d33a PREREAD-g4 2): writes inside the seat's own copy only (hooks at aibd's empty
+    // folder, no transport); one copy holds several branches, so no `git worktree`
+    "Bash(git switch *)", // G4b writes
+    "Bash(git cherry-pick *)",
+    "Bash(git branch *)",
+    "Bash(git stash *)",
 ];
 
 /// The Bash rules of [`WORK_ALLOWED`] that take free arguments; every other Bash rule is a
 /// whole fixed command (5d33a M2).
-pub const WORK_FREE_ARGS: &[&str] = &["Bash(git commit -m *)", "Bash(node --test *)"];
+/// `git add *` (519d0 11-21, Andy's seat had `git add README.md` refused, 0eed7 VERIFY-pv8 r2
+/// M6) takes paths and flags; what it could read outside the folder (`--pathspec-from-file`)
+/// the sandbox's read rules refuse, and it writes only the folder's own index.
+pub const WORK_FREE_ARGS: &[&str] = &[
+    "Bash(git add *)",
+    "Bash(git commit -m *)",
+    "Bash(git commit -q -m *)",
+    "Bash(node --test *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(git diff *)",
+    "Bash(git merge-base *)",
+    "Bash(git merge-tree *)",
+    "Bash(git rev-parse *)",
+    "Bash(git cat-file *)",
+    "Bash(rustfmt --check *)",
+    "Bash(node --check *)",
+    "Bash(node apps/web/test/*)",
+    "Bash(git switch *)",
+    "Bash(git cherry-pick *)",
+    "Bash(git branch *)",
+    "Bash(git stash *)",
+];
+
+/// The words at the top of a claude work seat's system prompt (519d0 11-21 M6: a seat that
+/// does not know what it may run stops at the first refusal): its commands, read off
+/// [`WORK_ALLOWED`], and that a refusal is final (nobody is asked).
+pub fn work_note() -> String {
+    let cmds: Vec<String> = WORK_ALLOWED
+        .iter()
+        .filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(')'))
+        .map(|c| format!("- `{}`", c.replace(" *", " …")))
+        .collect();
+    format!(
+        "這一席是做事席:檔案工具(讀、找、改、寫)只在這個資料夾裡用;終端機指令只准下面這些         (… 是你自己填的檔名或說明,`git commit` 可以接好幾個 -m),其他指令會直接被拒、         沒有人會來核准,不要等也不要重試:\n{}\n\n         一次只下一個指令:不要用 &&、;、| 串接(整串會被拒);要寫檔用寫檔工具,不要用 printf / echo / cat 寫。\n\n推上 GitHub、開 PR、送回倉都不是你做的:提交好就停,在回覆裡說做了什麼,         由主人在頁面上按。",
+        cmds.join("\n")
+    )
+}
 
 /// The longest persona word taken, in characters.
 pub const PERSONA_MAX_CHARS: usize = 64;

@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 aib-core = { path = "../aib-core" }
+aib-dmq = { path = "../aib-dmq" }
+aib-dmq-store = { path = "../aib-dmq-store" }
 aib-expect = { path = "../aib-expect" }
 aib-ghread = { path = "../aib-ghread" }
 aib-ledger = { path = "../aib-ledger" }

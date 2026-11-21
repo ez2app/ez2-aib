@@ -87,6 +87,10 @@ pub async fn run(
     if let Some(api) = crate::pr_api::platform_api() {
         crate::pr_open::set_api(api);
     }
+    // DESIGN-gh-token-card-7b81e-1121: where a pasted token is checked and kept
+    if let Some(k) = crate::pr_api::platform_keeper() {
+        crate::gh_token::set_keeper(k);
+    }
     crate::gh_view::log_override();
     let run_dir = dirs.run_dir();
     platform::create_private_dir(&dirs.data_dir())?;
@@ -251,6 +255,8 @@ pub async fn run(
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
                 pairing.set_presence(p);
+                // pairing's windows get the countdown beside them too (Andy 11-21 01:42; 519d0 05:49)
+                crate::touch_hud::turn_on();
             }
             Ok(Err(why)) => tracing::warn!(why, "fingerprint pairing is refused at this start"),
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
@@ -410,6 +416,9 @@ pub async fn run(
     };
     // B1dm-S5: a seat that starts gets what other seats sent it while it was not running
     let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // DESIGN-web-inbox-aibd-7ebca-1121 r1 A: a web seat a bridged letter was put in is told
+    // the same way (redeliver, then mail_nudge)
+    crate::dm_import::set_wake(started_tx.clone());
     sessions.set_started(started_tx);
     // N-workspace: a seat's next turn starts with what it has not seen of its conversations
     sessions.set_catch_up(Arc::new(crate::catch_up::Library(
@@ -418,6 +427,8 @@ pub async fn run(
     )));
     // G13: a seat's turn answer back into the conversation that called it
     crate::reply_back::start(state.clone());
+    // S79-rust 3b: the drive wake's work orders for web seats are sent from here
+    crate::drive_send::start(state.clone());
     crate::work_audit::start(state.clone());
     // ORDER-webonly-today 7: the timed sentences the page set, if any
     crate::seat_tick::ensure_started(state.clone());
@@ -437,6 +448,14 @@ pub async fn run(
             crate::seat_send::redeliver(redeliver_state.clone(), seat.clone()).await;
             // N-webonly-c32: then its open messages that are due are named once more
             crate::mail_nudge::nudge(redeliver_state.clone(), seat).await;
+        }
+    });
+    // 5d33a REVIEW-d3wake L1: every seat looked at once, a look-again lost with the stop
+    let start_store = state.store.clone();
+    tokio::spawn(async move {
+        if let Ok(Ok(metas)) = tokio::task::spawn_blocking(move || start_store.seat_metas()).await {
+            let ids: Vec<String> = metas.into_iter().map(|m| m.seat_id).collect();
+            crate::mail_nudge::at_start(&ids);
         }
     });
     // N-revive: seats running when aibd last stopped on purpose start again, conversation kept

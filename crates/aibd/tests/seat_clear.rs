@@ -22,6 +22,21 @@ fn args_log(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
+/// [`args_log`] once at least `n` whole lines are there: the clear answers before the fake
+/// provider writes its argument line (7b81e-ghi-7ee2cc792 lin 11-21: not_started_once, one line
+/// short; as default_model's daad1d5933). Gives what is there after 10 s.
+fn args_log_at_least(cwd: &Path, n: usize) -> Vec<String> {
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        got = args_log(cwd);
+        if got.len() >= n {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    got
+}
+
 fn find_db(dir: &Path) -> PathBuf {
     let mut todo = vec![dir.to_path_buf()];
     while let Some(d) = todo.pop() {
@@ -124,7 +139,7 @@ async fn the_page_clears_a_seat_onto_a_new_conversation_that_reads_its_handoff()
     assert_ne!(sid, sb, "reason: same_session");
     assert_eq!(r.json["kept"], true, "{}", r.body);
     assert_eq!(r.json["first_line"], true, "{}", r.body);
-    let args = args_log(&wb);
+    let args = args_log_at_least(&wb, starts + 1);
     assert_eq!(args.len(), starts + 1, "reason: not_started_once {args:?}");
     let again = args.last().unwrap();
     assert!(!again.contains("--resume"), "reason: resumed_old {again}");

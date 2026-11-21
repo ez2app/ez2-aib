@@ -154,14 +154,10 @@ pub fn mask_mail(text: &str) -> String {
     out
 }
 
-/// The folder documents are read from: `AIBD_PLAN_PENDING` or `~/.ez2-aib/pending`.
+/// The folder documents are read from ([`crate::folders::docs_root`]: a checked
+/// `AIBD_PLAN_PENDING`, `~/.ez2-aib/pending`, or `<aibd data>/docs(.noindex)`).
 pub fn root() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("AIBD_PLAN_PENDING") {
-        return Some(PathBuf::from(p));
-    }
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|h| PathBuf::from(h).join(".ez2-aib").join("pending"))
+    crate::folders::docs_root()
 }
 
 /// A secret kind by its name (5d33a D3).

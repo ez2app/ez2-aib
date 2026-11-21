@@ -48,3 +48,9 @@ sb 'if commits == 0 {' \
 sb 'if left.files == 0 || meta.len() > left.bytes {' \
    'if (left.files == 0 || meta.len() > left.bytes) && false {' \
    the_copy_budget_refuses_more_files_or_bytes
+# IDL1 an open, idle seat is refused again (519d0 11-21, Andy in preview 51405)
+python3 -I scripts/knife.py crates/aibd/src/send_back.rs \
+  '    if st.sessions.in_turn(&req.seat_id) {' \
+  '    if !st.sessions.in_turn(&req.seat_id) {' \
+  --expect-fail a_repo_reaches_a_seat_only_through_the_owners_fingerprint \
+  -- cargo test -p aibd --locked --test seats_page_open_repo a_repo_reaches_a_seat_only_through_the_owners_fingerprint
