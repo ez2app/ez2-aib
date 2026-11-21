@@ -1866,7 +1866,7 @@
     const nx = st && Array.isArray(st.next) && st.next.length ? `<div class="drvs"><span class="drvh">下一步</span>${st.next.slice(0, 7).map((n) => `<div class="drvn"><i class="drvl">${esc(String(n.layer || ''))}</i>${esc(String(n.item || '').slice(0, 70))}${n.seat ? ' → @' + esc(String(n.seat)) : ''}</div>`).join('')}</div>` : '';
     const bl = st && Array.isArray(st.blockers) && st.blockers.length ? `<div class="drvs"><span class="drvh">卡點</span>${st.blockers.slice(0, 5).map((b) => `<div class="drvn drvb">${esc(String(b.what || '').slice(0, 70))}${b.waits_for ? ' · 等 ' + esc(String(b.waits_for)) : ''}</div>`).join('')}</div>` : '';
     const foot = `<div class="drvfoot">${andy ? `等你決定 ${andy} 件(在最上面)` : '沒有等你決定的'}${st ? '' : ' · 這塊是用「自動推進的信」拼的:只有「送到」確定,「開工」看那席之後有沒有開始回合;已讀 / 接單 AIB 還沒給'}${DRV.note ? ' · ' + esc(DRV.note) : ''}</div>`;
-    return `<div class="evbox drvbox" data-drv="1"><div class="bh"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
+    return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
   }
   async function driveToggle() {
     const st = DRV.st; if (!st || st.can_toggle !== true) return;

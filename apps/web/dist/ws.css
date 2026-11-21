@@ -1201,7 +1201,7 @@ label.rvr{cursor:pointer}
 .atc{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);border-radius:8px;padding:2px 4px 2px 3px;font-size:12px;background:#1d1e24}
 .atimg{width:40px;height:28px;object-fit:cover;border-radius:4px;display:block}
 /* 自動推進面板(D6 / D7 畫面) */
-.drvbox .bh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.drvbox .ecl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ek.kdrv{background:#2a2346;color:#cbb8ff}
 .drvon{color:var(--green);font-weight:600}
 .drvoff{color:#f0883e;font-weight:600}
