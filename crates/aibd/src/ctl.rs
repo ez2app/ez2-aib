@@ -3876,6 +3876,8 @@ mod tests {
         let (c2, server2) = fake(vec![]);
         let line = seat_done_call(&c2, &format!(r#"{{"messages":[{}]}}"#, too_many.join(",")));
         assert_eq!(line["result"]["isError"], true, "reason: more_than_twenty");
+        let t = line["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.contains("1 to 20"), "reason: more_than_twenty_tried {t}");
         assert!(server2.join().unwrap().is_empty());
     }
 
