@@ -272,6 +272,9 @@ pub struct StoreDm {
 pub const DM_RELAY_AT: usize = 600;
 /// The longest text drive sends (legacy_send's 64 KiB).
 pub const DM_TEXT_MAX: usize = 64 * 1024;
+/// Why a letter was not written: the seat has no folder in the ledger (act's
+/// [`crate::act::seat_gone`]: the seat is not there, a nudge to it is final).
+pub const NO_SEAT_FOLDER: &str = "no folder in the ledger";
 /// sender_origin of a letter drive wrote.
 pub const DM_ORIGIN: &str = "aib-drive";
 
@@ -327,9 +330,7 @@ impl Sender for StoreDm {
         let store = aib_dmq_store::Store::new(root, root);
         let has_folder = store.seat_dir(seat).is_ok_and(|d| d.is_dir());
         if !has_folder {
-            return Err(SendError::NotSent(format!(
-                "{seat}: no folder in the ledger"
-            )));
+            return Err(SendError::NotSent(format!("{seat}: {NO_SEAT_FOLDER}")));
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -697,10 +698,13 @@ mod store_dm_tests {
             matches!(dm.send("beef/519d0", "派工: x"), Err(SendError::NotSent(_))),
             "reason: unknown_cabin_sent"
         );
-        assert!(
-            matches!(dm.send("dab9/abcde", "派工: x"), Err(SendError::NotSent(_))),
-            "reason: seat_folder_made"
-        );
+        match dm.send("dab9/abcde", "派工: x") {
+            Err(SendError::NotSent(why)) => assert!(
+                crate::act::seat_gone(&why),
+                "reason: missing_seat_not_gone {why}"
+            ),
+            other => panic!("reason: seat_folder_made {other:?}"),
+        }
         assert!(!d.path().join("state/dm-queue/abcde").exists());
         let store = aib_dmq_store::Store::new(d.path(), d.path());
         assert!(store.order_ids("519d0").unwrap().is_empty());

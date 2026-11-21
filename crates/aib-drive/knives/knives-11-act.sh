@@ -196,12 +196,7 @@ ak '                Some("retry") => {' '                Some("retry") if false 
 ik '        Err(SendError::Unknown(e)) => write(dir, |m| {' \
    '        Err(SendError::Unknown(e)) => write(dir, |m| { let e = &e; if true { return Ok((Some(line("abandoned", key, now_ms, &why("x", false))), Outcome::SendUnknown(e.clone()))); } // knife' \
    a_send_whose_result_is_unknown_is_never_sent_again
-# SN11 a program that could not start counts as maybe sent (never tried again)
-sk '            if e.starts_with(&format!("{} not run:", self.program)) {' '            if e.is_empty() { // knife' \
-   a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
-# SN12 (5d33a r2 1) any exit but 0 counts as surely not sent: exit 3 / 4 are sent again
-sk '    if code == Some(2) {' '    if code != Some(0) { // knife' \
-   the_result_line_gives_the_stage_and_the_id
+# SN11 / SN12 retired (S79-rust slice 3a): no program is started and no exit code read
 # SN13 an incomplete round keeps the nudge key eaten
 ak '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
    '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
@@ -219,13 +214,7 @@ ak '                    if *n >= RETRY_MAX {' '                    if *n > RETRY
 ak 'if o.get("backoff").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
    a_key_is_given_up_after_three_tries_that_did_not_go_out
 # 7b81e d3ad28dc M1 evidence: the RESULT line is the answer whatever the exit code; sort-queued is queued
-# SN17 a sent stage counts only with exit 0 (delivered + exit 5 becomes unknown)
-sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' \
-   '    if matches!(stage, "delivered" | "queued" | "sort-queued") && code == Some(0) { // knife' \
-   a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
-# SN18 sort-queued (what aib dm prints for a queued dm) is not taken as queued
-sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' '    if matches!(stage, "delivered" | "queued") { // knife' \
-   the_result_line_gives_the_stage_and_the_id
+# SN17 / SN18 retired (S79-rust slice 3a): no RESULT line; a letter written is queued
 # SN19 (5d33a r2 2) while a nudge backs off, the sender is told it was nudged
 ak '        } else if hist.backing_off.contains(&nk) {' '        } else if false { // knife' \
    a_retry_line_lets_the_next_round_plan_the_key_again

@@ -1158,7 +1158,8 @@ pub const NO_CABIN: &str = "no cabin in the seat facts";
 /// facts are incomplete would mark a live seat gone and tell its sender a wrong 「收件席不在」
 /// (5d33a 0a39f00a L1), so there it is retried as before.
 pub fn seat_gone(why: &str) -> bool {
-    why.starts_with("aib dm stage resolve,")
+    // S79-rust slice 3a: drive writes the ledger itself; no seat folder is the same "not there"
+    why.starts_with("aib dm stage resolve,") || why.ends_with(crate::source::NO_SEAT_FOLDER)
 }
 
 /// The journal line for a nudge whose seat is not there ([`seat_gone`]): never tried again,

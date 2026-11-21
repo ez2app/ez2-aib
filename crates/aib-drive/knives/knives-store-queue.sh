@@ -24,3 +24,9 @@ sd '            ("sender_kind", Value::from("system")),' '            ("sender_k
 sd '            ("sender_seat", Value::Null),' '            ("sender_seat", Value::from(seat)),' a_letter_is_queued_in_the_ledger_as_the_systems
 # SDK5 two cabins with the same short code: the first is taken
 sd '            [one] => Some(one.clone()),' '            [one, ..] => Some(one.clone()),' the_cabin_is_found_from_its_short_code_only_when_one_matches
+# SDK6 a seat with no folder is a busy moment, not gone (its nudge backs off round after round)
+python3 -I scripts/knife.py crates/aib-drive/src/act.rs \
+  '    why.starts_with("aib dm stage resolve,") || why.ends_with(crate::source::NO_SEAT_FOLDER)' \
+  '    why.starts_with("aib dm stage resolve,") || why.ends_with(crate::source::NO_SEAT_FOLDER) && why.is_empty()' \
+  --expect-fail source::store_dm_tests::what_cannot_be_written_is_not_sent_and_writes_nothing \
+  -- cargo test -p aib-drive --locked --lib source::store_dm_tests::what_cannot_be_written_is_not_sent_and_writes_nothing
