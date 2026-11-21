@@ -40,6 +40,7 @@
   // ---------- 狀態 ----------
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
+    wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
@@ -1757,6 +1758,11 @@
     if (T.last) return `<span class="turn ${T.last.err ? 'bad' : ''}">上一回合 ${esc(durS(T.last.ms))}${T.last.turns ? ' · ' + T.last.turns + ' 步' : ''}</span>`;
     return '';
   }
+  const TITLE0 = document.title, SPIN = ['◐', '◓', '◑', '◒']; let spinI = 0;
+  // 分頁標題只在這裡組:等回覆轉圈(或回完沒看 ●)+「(N) 等你決定 · 」(askNotice 給)+ 原標題;兩處各寫會互蓋、一秒一閃
+  function titleNow() { const n = Object.keys(S.wait).length; const t = (n ? SPIN[spinI] + ' ' : S.doneDot ? '● ' : '') + (S.askPfx || '') + TITLE0; if (document.title !== t) document.title = t; }
+  setInterval(() => { spinI = (spinI + 1) % 4; titleNow(); }, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) S.doneDot = false; });
   setInterval(() => { for (const b of document.querySelectorAll('[data-since]')) { const t = Date.parse(b.dataset.since); if (t) b.textContent = durS(Date.now() - t); } }, 1000);
   function outItems(seatId) {
     const se = lastSession(seatId);
@@ -1850,8 +1856,8 @@
     const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
     const uc = u && u.pct != null ? (u.pct >= (S.usage.red_pct || 95) ? 'red' : u.pct >= (S.usage.handoff_pct || 85) ? 'warn' : '') : '';
     const use = u && u.pct != null ? `<span class="use ${uc}" title="${esc((u.model || '') + (u.used != null ? ' · ' + u.used + ' / ' + u.window : ''))}">用量<progress class="usep" max="100" value="${Math.max(0, Math.min(100, Number(u.pct) || 0))}"></progress>${Number(u.pct) | 0}%</span>` : '';
-    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
-    if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
+    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), saidRows(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
+    { const wr = waitRow(s.seat_id, false); if (wr) rows.push(wr); else if (n && n.state === 'busy') rows.push({ h: '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
@@ -1974,18 +1980,51 @@
     return toolLine(c);
   };
   // 席在跑:最下面一行「@席 正在 …」,時間從這一回合第一筆輸出算
-  function runRows() {
-    const out = [];
-    for (const id of workSeats()) {
-      const T = turnOf(id); if (!T || !T.running) continue;
-      const W = workTools(id, String(T.since || ''), ''); let cur = null;
-      if (W) for (const c of W.uses) if (String(c.id || '') && !W.RES.has(c.id)) cur = c;
-      const s = seatById(id) || { seat_id: id, provider: 'claude' };
-      const what = cur ? '正在' + DOING(cur) : '在想…';
-      const stl = stallOf(id);
-      const head = stl && stl.none ? stallHtml(id, stl) : `<span class="spn"></span> ${esc(what)} · <b data-since="${esc(T.since)}">${esc(durS(Date.now() - Date.parse(T.since)))}</b>${stl ? ' ' + stallHtml(id, stl) : ''}`;
-      out.push({ t: '\uffff' + id, h: `<div class="msg runl${stl && stl.none ? ' stall' : ''}" data-stall="${stl ? (stl.none ? 'none' : 'quiet') : ''}"><div class="who">${logo(s, 'sm')}</div><div class="body">${head}</div><button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button></div>` });
+  // 519d0 SPEC-wait-row-unify r0(Andy 11:5x「能不能都用同一種方式」):單席與共同對話同一個等回覆列。
+  // 秒數從按下送出起算(S.wait[id].at);三段字:已送到等它開始 / 在想… / 正在<工具>;回合中再送 = 排在後面(aibd 回 202),不是錯
+  const WAIT_MAX = 30 * 60 * 1000;
+  function waitMark(id, text, queued) {
+    const now = Date.now(); S.wait[id] = { at: now, queued: !!queued, started: 0 };
+    if (text != null) (S.said[id] = S.said[id] || []).push({ t: new Date(now).toISOString(), text: String(text) });
+  }
+  function waitPhase(id) {
+    // 剛開的席還沒有任何輸出 ⇒ turnOf 是 null;回合開始以 aibd 用量那列的 turn_started_at 為準
+    let T = turnOf(id);
+    if (!T) { const se = lastSession(id), u = se && S.usage && (S.usage.usage || []).find((x) => x.seat_id === id && x.session_id === (se.id || se.session_id)); if (u && 'turn_started_at' in u) T = { running: !!(u.turn_started_at && (se.state === 'running' || se.state === 'pending')), since: u.turn_started_at }; }
+    const W = S.wait[id], run = !!(T && T.running && T.since);
+    if (W) {
+      const since = run ? Date.parse(T.since) : 0;
+      if (run && !W.started && since >= W.at - 1500) { W.started = Date.now(); const L = (S.lat[id] = S.lat[id] || []); L.push(W.started - W.at); if (L.length > 10) L.shift(); }
+      if ((!run && W.started) || Date.now() - W.at > WAIT_MAX) { delete S.wait[id]; if (document.hidden) S.doneDot = true; }
     }
+    const V = S.wait[id];
+    if (!V && !run) return null;
+    let what;
+    if (V && !V.started) what = V.queued || run ? '它正在忙,這句排在後面' : '已送到,等它開始';
+    else { const Wt = S.out && workTools(id, String(T.since || ''), ''); let cur = null; if (Wt) for (const c of Wt.uses) if (String(c.id || '') && !Wt.RES.has(c.id)) cur = c; what = cur ? '正在' + DOING(cur) : '在想…'; }
+    return { what, base: V ? V.at : Date.parse(T.since), run };
+  }
+  const median = (a) => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor((b.length - 1) / 2)] : 0; };
+  function waitRow(id, shared) {
+    const P = waitPhase(id); if (!P) return null;
+    const s = seatById(id) || { seat_id: id, provider: 'claude' };
+    const stl = P.run ? stallOf(id) : null;
+    const L = S.lat[id] || [], med = L.length >= 3 ? median(L) : 0, el = Date.now() - P.base;
+    const usual = med ? `<small class="wusual${el > 3 * med ? ' slow' : ''}" title="最近 ${L.length} 次從送出到它開始">通常 ${Math.max(1, Math.round(med / 1000))} 秒</small>` : '';
+    const iso = new Date(P.base).toISOString();
+    const head = stl && stl.none ? stallHtml(id, stl) : `<span class="spn"></span> ${esc(P.what)} · <b data-since="${esc(iso)}">${esc(durS(el))}</b>${usual}${stl ? ' ' + stallHtml(id, stl) : ''}`;
+    const se = lastSession(id), sid = se && (se.id || se.session_id);
+    const stop = sid && (se.state === 'running' || se.state === 'pending') ? `<button type="button" class="k wstop" data-stop="${esc(sid)}">${S.stopArm === sid ? '再按一次停止' : '先停手'}</button>` : '';
+    return { t: shared ? '\uffff' + id : '\uffff', h: `<div class="msg runl${stl && stl.none ? ' stall' : ''}" data-stall="${stl ? (stl.none ? 'none' : 'quiet') : ''}"><div class="who">${logo(s, 'sm')}</div><div class="body">${head}</div>${stop}${shared ? `<button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button>` : ''}</div>` };
+  }
+  // 單席窗:自己直接送的話(aibd 的輸出裡沒有),送出當下就放進時間軸
+  function saidRows(id) {
+    return (S.said[id] || []).map((m) => ({ t: m.t, h: `<div class="wk in mine"><span><span class="lg sm you">你</span> ${esc(m.text.split('\n')[0].slice(0, 200))}</span></div>` }));
+  }
+  function runRows() {
+    const ids = new Set(workSeats().concat(Object.keys(S.wait)));
+    const out = [];
+    for (const id of ids) { const r = waitRow(id, true); if (r) out.push(r); }
     return out;
   }
   function sharedRows() {
@@ -2621,12 +2660,10 @@
     S.askBusy = false; render(); tick(true);
   }
   // 分頁標題 + 響一聲:新出現的題目才響(開頁時已在的只改標題);瀏覽器擋自動播放就只改標題
-  let askTitle0 = null, askHeard = null;
+  let askHeard = null;
   function askNotice() {
-    if (askTitle0 === null) askTitle0 = document.title;
     const L = pendingAsks(), n = L.length;
-    const t = (n ? '(' + n + ') 等你決定 · ' : '') + askTitle0;
-    if (document.title !== t) document.title = t;
+    S.askPfx = n ? '(' + n + ') 等你決定 · ' : ''; titleNow();
     const ids = new Set(L.map((x) => x.card));
     if (askHeard && [...ids].some((k) => !askHeard.has(k))) askBeep();
     if (S.paired) askHeard = ids;
@@ -3695,8 +3732,11 @@
     return '沒送出:' + (e.code || e.message || e.status);
   }
   async function sendSeat(seatId, text) {
-    const r = await act('seat_input', { seat_id: seatId, text });
-    return r.__status === 202 ? '已交給它,這一回合結束就收到' : '已送出';
+    waitMark(seatId, text, false); render();
+    let r;
+    try { r = await act('seat_input', { seat_id: seatId, text }); } catch (e) { delete S.wait[seatId]; (S.said[seatId] || []).pop(); throw e; }
+    if (r.__status === 202 && S.wait[seatId]) S.wait[seatId].queued = true;
+    return r.__status === 202 ? '它正在忙,這句排在後面;這一回合結束就收到' : '已送出';
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
   // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
@@ -3766,7 +3806,7 @@
       let tid = '';
       try { tid = await ensureShared(); } catch (e) { if (!(e && (e.status === 404 || e.status === 405 || e.code === 'unknown_act_type'))) { say(errText(e), 'err'); return false; } }
       if (tid) {
-        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); { const QT = T.filter((s) => queuedOf(s)); say(QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡', QT.length ? 'err' : ''); } return true; }
+        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); for (const x of T) waitMark(x.seat_id, null, running(x.seat_id) && !!(turnOf(x.seat_id) || {}).running); { const QT = T.filter((s) => queuedOf(s)); say(QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡', QT.length ? 'err' : ''); } return true; }
         catch (e) {
           // 開串之後才加的席不是成員 ⇒ 退回一對一信(回答不會帶回這裡,照實說)
           if (!(e && e.code === 'to_not_a_member')) { say(errText(e), 'err'); return false; }

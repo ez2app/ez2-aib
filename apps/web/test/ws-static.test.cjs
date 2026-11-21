@@ -212,4 +212,15 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
 // 19. a9136 da2520fac:拷交接檔的三個 reason 有人話
 for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_request' && why === '" + r + "'"), 'reason: carry_error_without_words ' + r);
 
+// 20. 519d0 SPEC-wait-row-unify r0:單席與共同對話同一個等回覆列;秒數從按送出起算;送出當下就有列與自己的話;回合中再送 = 排在後面
+{
+  ok(/function waitRow\(id, shared\)/.test(ws) && /const r = waitRow\(id, true\)/.test(ws) && /const wr = waitRow\(s\.seat_id, false\)/.test(ws), 'reason: wait_row_not_shared');
+  ok(/async function sendSeat\(seatId, text\) \{\n    waitMark\(seatId, text, false\); render\(\);/.test(ws), 'reason: wait_row_not_at_send');
+  ok(/return \{ what, base: V \? V\.at : Date\.parse\(T\.since\), run \};/.test(ws), 'reason: seconds_not_from_send');
+  for (const w of ['已送到,等它開始', '在想…', '它正在忙,這句排在後面']) ok(ws.includes(w), 'reason: wait_phase_words ' + w);
+  ok(!/這一席還沒有輸出[^\n]*在想… '\}\$\{stallHtml/.test(ws) && !ws.includes("rows.push({ h: stl ? `<div class=\"ev"), 'reason: old_single_seat_busy_line_left');
+  ok(/function saidRows\(id\)/.test(ws) && /saidRows\(s\.seat_id\)/.test(ws), 'reason: own_words_not_in_seat_window');
+  ok(/data-stop="\$\{esc\(sid\)\}">\$\{S\.stopArm === sid \? '再按一次停止' : '先停手'\}/.test(ws), 'reason: wait_row_without_stop');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
