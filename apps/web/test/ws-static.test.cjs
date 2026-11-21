@@ -515,6 +515,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/x\.first_line/.test(dl) && /x\.at_ms != null/.test(dl) && /n\.why_now/.test(dl) && /b\.owner/.test(dl) && /d\.next_complete !== false/.test(dl), "reads next / dispatch / blockers in the D7b shape");
   ok(/queued: '', handed: ''/.test(ws) && /partial:/.test(dl) && /const known = r\.real \? !r\.partial :/.test(ws) && /queued: '已排進信件帳', handed: '已交 AIB 寄'/.test(ws), "queued / handed are not 送到 (a9136 21:58): all four marks stay unknown, the row says 已排進信件帳 / 已交 AIB 寄");
   ok(/這台沒有自動推進的帳/.test(ws) && /只列到一部分/.test(ws), "says when the list is partial or there is no ledger");
+  ok(/\?\? '', raw:/.test(dl) && !/\?\? 'sent'/.test(dl) && /'不明'/.test(ws), "a stage not in the table is 不明, never 送到 (5d33a r13 N2)");
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
