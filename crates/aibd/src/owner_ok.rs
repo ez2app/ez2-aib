@@ -270,6 +270,7 @@ pub const WIRED: &[&str] = &[
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
+    crate::drive_switch::OP,
     // one receipt going to one test machine: asked by aibd's own runner, which checks the
     // ticket itself before anything is sent (receipt_runner::TouchOwner)
     crate::receipt_runner::OP,
@@ -302,6 +303,11 @@ pub fn mark_for(preview: bool) -> &'static str {
 }
 
 static OWNER: std::sync::OnceLock<std::sync::Arc<Owner>> = std::sync::OnceLock::new();
+
+/// Whether the owner check can be asked here (the switch on and the key checked at start).
+pub fn available() -> bool {
+    OWNER.get().is_some()
+}
 
 /// Called once at start when [`SWITCH`] is `1` and the fingerprint key checked out (the first
 /// call wins); the windows share pairing's gate.

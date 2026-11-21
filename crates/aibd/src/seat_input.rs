@@ -50,6 +50,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::drive_switch::TOGGLE,
+    crate::drive_switch::STATUS,
     crate::seat_move::MOVE,
     crate::seat_move::UNMOVE,
     crate::send_back::SEND_BACK,
@@ -443,6 +445,24 @@ pub async fn act(
                 crate::seat_trust::untrust(st, body, by).await
             };
         }
+        // D7a (DECISION-council-driveweb r1 §2): the dispatch switch, from the built-in page in
+        // this pairing only; turning it on then needs the owner's fingerprint
+        Some(k @ (crate::drive_switch::TOGGLE | crate::drive_switch::STATUS)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "the dispatch switch is moved from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::drive_switch::TOGGLE {
+                crate::drive_switch::toggle(st, body, by).await
+            } else {
+                crate::drive_switch::status(st).await
+            };
+        }
         // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
         // built-in page in this pairing only, with the owner's fingerprint; going back needs none
         Some(k @ (crate::seat_move::MOVE | crate::seat_move::UNMOVE)) => {
@@ -677,7 +697,7 @@ pub async fn act(
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "unknown_act_type",
-                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add, node_set, decision_answer, slot_dismiss, slot_restore, slot_pin, idea_answer, review_seen or legacy_send",
+                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add, node_set, decision_answer, slot_dismiss, slot_restore, slot_pin, idea_answer, review_seen, legacy_send, drive_toggle or drive_status",
             )
         }
     }

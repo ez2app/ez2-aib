@@ -21,6 +21,7 @@ pub mod display;
 pub mod dm_cards;
 pub mod dm_import;
 pub mod docs;
+pub mod drive_switch;
 pub mod drive_wake;
 pub mod events_push;
 pub mod folders;
