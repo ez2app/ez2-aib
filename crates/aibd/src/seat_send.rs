@@ -900,6 +900,15 @@ async fn to_ledger(
     text: &str,
     idem: Option<&str>,
 ) -> Response {
+    // 5d33a REVIEW-g5bridge M1: a 1.x seat holds every hand (as a dgrs seat does); a safe
+    // seat reads what may carry an injection and writes into none of them
+    if fm.mode.as_deref() == Some("safe") {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "safe_cannot_send_to_legacy",
+            "a safe seat does not write into a 1.x seat's ledger",
+        );
+    }
     if idem.is_some() {
         return refuse(
             StatusCode::BAD_REQUEST,

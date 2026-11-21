@@ -41,7 +41,23 @@ async fn letters_cross_the_bridge_once_each_way() {
         json!({"legacy_cabin": "cab1"}).to_string(),
     )
     .unwrap();
-    let (seat, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    // a work seat (its folder under <data>/seat-work, as seats_page_open_dgrs opens one)
+    let work = dir.path().join("data").join("seat-work");
+    let (seat, _) = d.open_as("claude", "work", &seat_dir(&work, "a")).await;
+    // 5d33a REVIEW-g5bridge M1: a safe seat writes into no 1.x ledger
+    let (safe, _) = d.open("safe", &seat_dir(dir.path(), "s")).await;
+    let safe_tok = aibd::seat_token::tokens().issue(&safe).unwrap();
+    let r = act(
+        &d,
+        &safe_tok,
+        json!({"type": "seat_send", "to": "519d0", "text": "注入"}),
+    )
+    .await;
+    assert_eq!(r.code, 403, "reason: safe_wrote_ledger {}", r.body);
+    assert_eq!(r.json["code"], "safe_cannot_send_to_legacy");
+    let none = std::fs::read_dir(q.join("519d0")).unwrap().count();
+    assert_eq!(none, 0, "reason: safe_letter_in_ledger");
+    aibd::seat_token::tokens().revoke(&safe);
     let tok = aibd::seat_token::tokens().issue(&seat).unwrap();
     let db = aib_store::MessageDb::open(&dir.path().join("data").join("messages.sqlite")).unwrap();
 

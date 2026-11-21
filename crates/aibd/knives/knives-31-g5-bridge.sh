@@ -40,3 +40,9 @@ br crates/aibd/src/seat_send.rs \
    '            if false && moved_to.is_none() // knife' \
    letters_cross_the_bridge_once_each_way \
    '--test seat_bridge letters_cross_the_bridge_once_each_way'
+# BR7 a safe seat writes into a 1.x seat's ledger (5d33a REVIEW-g5bridge M1)
+br crates/aibd/src/seat_send.rs \
+   '    if fm.mode.as_deref() == Some("safe") {' \
+   '    if false && fm.mode.as_deref() == Some("safe") { // knife' \
+   letters_cross_the_bridge_once_each_way \
+   '--test seat_bridge letters_cross_the_bridge_once_each_way'
