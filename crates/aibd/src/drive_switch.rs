@@ -408,6 +408,22 @@ mod tests {
         );
     }
 
+    /// 5d33a REVIEW-integ5 L1: the owner's window names turning the drive on in words, not
+    /// the operation code.
+    #[test]
+    fn the_owner_window_says_what_turning_on_does() {
+        let a = ask_of("先開", "page:00".into());
+        assert_eq!(
+            crate::owner_ok::plain_words(a.operation, &a.params).as_deref(),
+            Some("打開自動推進派工:aibd 照自動推進的計畫寄派工給網頁席"),
+            "reason: code_in_window"
+        );
+        assert!(
+            crate::owner_ok::ACTIONS.iter().any(|(op, _)| *op == OP),
+            "reason: not_in_actions"
+        );
+    }
+
     #[test]
     fn hex_reads_back() {
         assert_eq!(

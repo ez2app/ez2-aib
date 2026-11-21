@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 13] = [
+pub const ACTIONS: [(&str, &str); 14] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -125,6 +125,7 @@ pub const ACTIONS: [(&str, &str); 13] = [
     (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
     (crate::gh_token::OP, "存 GitHub 權杖"),
     (crate::provider_login::OP, "重新登入 AI"),
+    (crate::drive_switch::OP, "打開自動推進派工"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -277,6 +278,10 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         ),
         crate::provider_login::OP => {
             format!("重新登入 {}(接著在瀏覽器授權)", piece(&v, "provider")?)
+        }
+        // D7a: the reason the owner typed is in the window's resource line (free text)
+        crate::drive_switch::OP if v["to"] == "on" => {
+            "打開自動推進派工:aibd 照自動推進的計畫寄派工給網頁席".to_owned()
         }
         _ => return None,
     })
