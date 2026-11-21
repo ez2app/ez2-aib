@@ -48,6 +48,8 @@ for (const t of acts) {
   if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   // 1a93b feat/aibd-page-acts-1a93b-1120(62e1bdbeb8)才有 seat_clear;頁面看 version.acts 沒有就灰掉寫「要新版 aibd」。合進來後拿掉這行
   if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
+  // b4297 feat/add-test-host-b4297-1121(62fd9f9690)才有 test_host_*;頁面看 version.acts 沒有就不畫。合進來後拿掉這行
+  if (/^test_host_(list|add|remove)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('b4297 CARD-add-test-host r0(62fd9f9690)') && ws.includes("hasAct('test_host_list') !== true"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -170,6 +172,15 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/quota: lv === 3 && str\(c\.why\) === '額度'/.test(ws), 'reason: quota_card_not_read');
   ok(/if \(x\.quota && hasAct\('seat_model_set'\) === true\)/.test(ws), 'reason: swap_shown_without_act');
   ok(/await act\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
+}
+
+// 15. b4297 CARD-add-test-host r0:測試機區塊只在 aibd 有 test_host_list 時畫;加 / 收回走指紋兩段;why 代碼都有人話
+{
+  ok(/if \(hasAct\('test_host_list'\) !== true\) return '';/.test(ws), 'reason: test_host_without_act');
+  ok(/await fingerAct\(kind === 'add' \? 'test_host_add' : 'test_host_remove', \{ name \}/.test(ws) && !/act\('test_host_add'/.test(ws), 'reason: test_host_without_finger');
+  for (const w of ['reached_through_something_else', 'config_has_match_or_include', 'no_identity_file', 'identity_file_not_absolute', 'value_with_a_token', 'port', 'aibd_own_key']) ok(new RegExp('\\b' + w + ': ').test(ws), 'reason: why_without_words ' + w);
+  for (const c of ['no_receipt_gate', 'not_a_mac', 'owner_login_failed', 'write_failed', 'remove_failed', 'page_only']) ok(new RegExp('\\b' + c + ': ').test(ws), 'reason: error_without_words ' + c);
+  ok(/r\.reason === 'gate_did_not_answer'/.test(ws), 'reason: gate_silence_not_shown');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');

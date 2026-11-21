@@ -823,7 +823,53 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
+    return h + testHostHtml();
+  }
+  // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
+  const TH_WHY = {
+    reached_through_something_else: '這台要經跳板,不支援', config_has_match_or_include: 'ssh 設定有 Match / Include,讀不準,不支援',
+    no_identity_file: '這台的 ssh 設定看不懂', identity_file_not_absolute: '這台的 ssh 設定看不懂', value_with_a_token: '這台的 ssh 設定看不懂', port: '這台的 ssh 設定看不懂',
+    aibd_own_key: '這台設定用的是 aibd 自己的鑰匙',
+  };
+  const TH_ERR = {
+    no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
+    write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
+    page_only: '只有這台 aibd 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
+  };
+  async function thLoad() {
+    if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
+    S.th = Object.assign(S.th || {}, { loading: true });
+    try { const r = await act('test_host_list', {}); S.th = { list: Array.isArray(r && r.machines) ? r.machines : [], pinned: Number(r && r.pinned) || 0, max: Number(r && r.max) || 0, at: Date.now(), row: (S.th && S.th.row) || {} }; }
+    catch (e) { S.th = { err: TH_ERR[e && (e.code || e.reason)] || errText(e), at: Date.now(), row: {} }; }
+    render();
+  }
+  function testHostHtml() {
+    if (hasAct('test_host_list') !== true) return '';
+    const T = S.th;
+    if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="thh"><b>測試機</b><span class="hv">讀取中…</span></div>'; }
+    let h = `<div class="thh"><b>測試機</b><span class="hv">${T.list ? '收據可用 ' + T.pinned + (T.max ? ' / 最多 ' + T.max : '') : ''}</span><button type="button" class="k" data-threload="1" title="重讀這台 ssh 設定裡的機器">重讀</button></div>`;
+    if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
+    if (!T.list.length) return h + '<div class="thr hv">這台的 ssh 設定裡沒有別台機器</div>';
+    for (const m of T.list) {
+      const nm = String(m.name || ''), R = T.row[nm] || {};
+      const half = R.half || (m.pinned === false && R.gateless);
+      const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
+      const st = R.busy ? (R.wait || '處理中…') : m.pinned ? '✅ 可跑收據' : half ? '⚠️ 寫了但收據閘沒回' : m.usable ? '還沒加' : '❌ ' + (TH_WHY[m.why] || '不支援');
+      const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${m.pinned || half ? '收回這台' : '加'}</button>`;
+      h += `<div class="thr"><span class="hd ${dot}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(String(m.address || ''))}</i></span><span class="hv">${esc(st)}</span>${btn}${R.msg ? `<div class="thm ${R.bad ? 'bad' : ''}" role="${R.bad ? 'alert' : 'status'}">${esc(R.msg)}</div>` : ''}</div>`;
+    }
     return h;
+  }
+  async function thAct(kind, name) {
+    const T = S.th; if (!T || !T.row) return;
+    const R = (T.row[name] = { busy: true });
+    render();
+    try {
+      const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = '請在這台 Mac 跳出的指紋視窗按下(' + (kind === 'add' ? '加' : '收回') + ' ' + name + ')· 還有 ' + sec + ' 秒 · ' + FINGER_BEHIND; render(); });
+      if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: '已寫上,但那台的收據閘沒回;可以收回這台', bad: true }; }
+      else T.row[name] = { msg: kind === 'add' ? '已加上,之後收據可以排到這台' : '已收回' };
+    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: TH_ERR[c] || errText(e), bad: true }; }
+    S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }
 
   // ---------- 右:事件 ----------
@@ -3840,6 +3886,8 @@
     if (x.closest('[data-bootretry]')) { location.reload(); return; } // 憑證在這個分頁裡,重新載入不會再送配對碼
     if (x.closest('[data-sr]')) { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; const sq = document.getElementById('sq'); if (sq) sq.value = ''; render(); } // 點一筆:跳過去,搜尋收起(框清空、中欄回原樣;0eed7 L2:之前只清了 S.q,沒重畫,框與結果都還在)
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
+    const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
+    if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);
