@@ -2810,7 +2810,7 @@
     c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png');
     annClose(); CT.note = 'aibd 還收不了圖(沒有 media_put):已下載成 png,先自己拖給那一席'; render();
   }
-  // aibd 頁 CSP style-src 'self':標籤裡的 style="…" 會被擋 ⇒ 畫完後用 CSSOM 上色,只收 #RRGGBB
+  // aibd 頁 CSP style-src 'self':標籤裡寫內聯樣式屬性會被擋 ⇒ 畫完後用 CSSOM 上色,只收 #RRGGBB
   function ctPaint(root) { for (const n of (root || document).querySelectorAll('[data-bg]')) if (/^#[0-9a-f]{6}$/i.test(n.dataset.bg)) n.style.background = n.dataset.bg; }
   function ctInsert(s) {
     const inp = document.getElementById('inp'); if (!inp) return;
