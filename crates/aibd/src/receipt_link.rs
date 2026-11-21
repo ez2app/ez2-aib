@@ -85,7 +85,7 @@ fn gate_ok(p: &str) -> bool {
 }
 
 /// An address for `from=`: one IPv4 or IPv6 address, no pattern, no name.
-fn from_ok(ip: &str) -> bool {
+pub(crate) fn from_ok(ip: &str) -> bool {
     ip.parse::<std::net::IpAddr>().is_ok()
 }
 

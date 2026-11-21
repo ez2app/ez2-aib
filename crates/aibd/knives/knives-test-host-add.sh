@@ -51,3 +51,21 @@ ta '    let mut a: Vec<String> = vec!["-F".into(), "none".into()];' '    let mut
 # RH3 a machine is pinned although the gate did not answer
 ta '    if !gate_answered(status_out) {' '    if !gate_answered(status_out) && status_out.is_empty() { // knife' \
    a_machine_is_pinned_only_when_the_gate_answered_aibds_own_key
+# TW-N1 the window shows a line whose from= the writer would refuse (5d33a ee27b561 N1)
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '                    .filter(|f| crate::receipt_link::from_ok(f))?;' \
+  '                    .filter(|f| !f.is_empty())?; // knife' \
+  --expect-fail "test_host_add::tests::the_window_and_its_ticket_hold_the_real_address_and_host_key" \
+  -- cargo test -p aibd --locked --lib "test_host_add::tests::the_window_and_its_ticket_hold_the_real_address_and_host_key"
+# TW-N2 a child keeps aibd's whole environment
+python3 -I scripts/knife.py crates/aibd/src/test_host_web.rs \
+  '    cmd.env_clear();' \
+  '    cmd.env("AIBD_KNIFE", "1"); // knife' \
+  --expect-fail "test_host_web::tests::a_child_keeps_no_environment_but_windows_system_names" \
+  -- cargo test -p aibd --locked --lib "test_host_web::tests::a_child_keeps_no_environment_but_windows_system_names"
+# TW-N3 the temporary list is written through a link someone put there
+python3 -I scripts/knife.py crates/aibd/src/test_host_web.rs \
+  '    match std::fs::remove_file(p) {' \
+  '    match Ok::<(), std::io::Error>(()) { // knife' \
+  --expect-fail "test_host_web::tests::the_list_is_written_beside_itself_and_none_left_is_no_file" \
+  -- cargo test -p aibd --locked --lib "test_host_web::tests::the_list_is_written_beside_itself_and_none_left_is_no_file"

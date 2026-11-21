@@ -100,6 +100,38 @@ fn pinned(data: &Path) -> Result<Vec<TrustedHost>, &'static str> {
         .map_err(|_| "host_list_unreadable")
 }
 
+/// What a child keeps of aibd's environment: nothing, except on Windows the few names its
+/// system DLLs need to load at all (5d33a N2, same as `receipt_link`'s callers would need).
+const KEPT_ENV_WINDOWS: [&str; 3] = ["SystemRoot", "SystemDrive", "WINDIR"];
+
+fn clean_env(cmd: &mut Command) -> &mut Command {
+    cmd.env_clear();
+    if cfg!(windows) {
+        for k in KEPT_ENV_WINDOWS {
+            if let Some(v) = std::env::var_os(k) {
+                cmd.env(k, v);
+            }
+        }
+    }
+    cmd
+}
+
+/// `text` into a new file at `p`: whatever was there (a file or a link someone put) is removed
+/// first and the file is made new, so a link is never followed (5d33a N3).
+fn write_new(p: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    match std::fs::remove_file(p) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(p)?
+        .write_all(text.as_bytes())
+}
+
 /// The list written whole beside itself and moved in place (an empty list: no file).
 fn write_pinned(data: &Path, list: &[TrustedHost]) -> Result<(), &'static str> {
     let p = hosts_file(data);
@@ -113,7 +145,7 @@ fn write_pinned(data: &Path, list: &[TrustedHost]) -> Result<(), &'static str> {
     let dir = data.join(trusted_hosts::DIR);
     std::fs::create_dir_all(&dir).map_err(|_| "host_list_unwritable")?;
     let tmp = dir.join(format!("{}.tmp", trusted_hosts::FILE));
-    std::fs::write(&tmp, th::list_text(list)).map_err(|_| "host_list_unwritable")?;
+    write_new(&tmp, &th::list_text(list)).map_err(|_| "host_list_unwritable")?;
     std::fs::rename(&tmp, &p).map_err(|_| "host_list_unwritable")
 }
 
@@ -134,9 +166,8 @@ fn machines_now(data: &Path) -> Option<Vec<(String, Result<Machine, &'static str
 /// One ssh, `input` on its standard input, stopped at [`SECS`]: its exit and what it printed
 /// (`None`: it could not start or was stopped).
 fn run(ssh: &Path, args: &[String], input: Option<String>) -> Option<(bool, String)> {
-    let mut child = Command::new(ssh)
+    let mut child = clean_env(&mut Command::new(ssh))
         .args(args)
-        .env_clear()
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
@@ -194,9 +225,9 @@ fn probe(ssh: &Path, m: &Machine) -> Result<th::Read, &'static str> {
 fn check(data: &Path, ssh: &Path, h: &TrustedHost) -> String {
     let dir = data.join(trusted_hosts::DIR);
     let known = dir.join("check_known_hosts");
-    if std::fs::write(
+    if write_new(
         &known,
-        trusted_hosts::known_hosts_text(std::slice::from_ref(h)),
+        &trusted_hosts::known_hosts_text(std::slice::from_ref(h)),
     )
     .is_err()
     {
@@ -530,10 +561,48 @@ mod tests {
         };
         assert_eq!(pinned(d.path()).unwrap(), Vec::new());
         write_pinned(d.path(), std::slice::from_ref(&h)).unwrap();
-        assert_eq!(pinned(d.path()).unwrap(), vec![h]);
+        assert_eq!(pinned(d.path()).unwrap(), vec![h.clone()]);
         write_pinned(d.path(), &[]).unwrap();
         assert!(!hosts_file(d.path()).exists(), "reason: empty_list_left");
         assert_eq!(pinned(d.path()).unwrap(), Vec::new());
+        // a link put where the temporary file goes is replaced, never written through
+        #[cfg(unix)]
+        {
+            let outside = d.path().join("outside");
+            std::fs::write(&outside, "keep").unwrap();
+            let tmp = d
+                .path()
+                .join(trusted_hosts::DIR)
+                .join(format!("{}.tmp", trusted_hosts::FILE));
+            std::os::unix::fs::symlink(&outside, &tmp).unwrap();
+            write_pinned(d.path(), std::slice::from_ref(&h)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&outside).unwrap(),
+                "keep",
+                "reason: wrote_through_link"
+            );
+            assert_eq!(pinned(d.path()).unwrap(), vec![h.clone()]);
+        }
+    }
+
+    #[test]
+    fn a_child_keeps_no_environment_but_windows_system_names() {
+        let mut c = Command::new("ssh");
+        clean_env(&mut c);
+        let kept: Vec<String> = c
+            .get_envs()
+            .filter(|(_, v)| v.is_some())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        if cfg!(windows) {
+            assert!(
+                std::env::var_os("SystemRoot").is_none() || kept.iter().any(|k| k == "SystemRoot"),
+                "reason: windows_without_systemroot {kept:?}"
+            );
+            assert!(kept.iter().all(|k| KEPT_ENV_WINDOWS.contains(&k.as_str())));
+        } else {
+            assert_eq!(kept, Vec::<String>::new(), "reason: env_kept_off_windows");
+        }
     }
 
     #[test]
