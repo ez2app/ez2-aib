@@ -227,7 +227,7 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             if operation == crate::test_host_add::OP_ADD {
                 format!("讓 aibd 的鑰匙在測試機 {at}只能跑收據")
             } else {
-                format!("從測試機 {at} 收回 aibd 的收據鑰匙")
+                format!("從測試機 {at}收回 aibd 的收據鑰匙")
             }
         }
         crate::seat_trust::OP => {
