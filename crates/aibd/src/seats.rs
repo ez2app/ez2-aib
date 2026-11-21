@@ -1058,6 +1058,11 @@ struct RawOpen {
     /// The role it joins those nodes with ([`crate::assign::with_seat_role`]); never from a body.
     #[serde(skip)]
     join_role: &'static str,
+    /// A page's handoff and memory pack, read from the pending folder before the open
+    /// ([`crate::seat_carry::gather`]): copied into `<cwd>/.aib/` once the folder is known,
+    /// before the seat starts (PREREAD-seat-carry-a9136-1121); never from a body.
+    #[serde(skip)]
+    carry: Vec<(String, Vec<u8>)>,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -1549,6 +1554,13 @@ struct PageOpen {
     /// none: the registered repo's HEAD.
     #[serde(default)]
     base: Option<String>,
+    /// A seat moved in from the terminal (PREREAD-seat-carry-a9136-1121): the file name, never a
+    /// path, of its handoff (`HANDOFF-….md`) in the pending folder; copied into `.aib/`.
+    #[serde(default)]
+    handoff: Option<String>,
+    /// With `handoff`: its memory pack's file name (`MEMPACK-….md`).
+    #[serde(default)]
+    mempack: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -1609,6 +1621,17 @@ pub async fn page_open(
     if req.base.is_some() && req.repo.is_none() {
         return Refusal("base", "base goes with repo").into_response();
     }
+    // read before anything is opened: a refused name opens nothing (PREREAD-seat-carry)
+    let (ho, mp) = (req.handoff.clone(), req.mempack.clone());
+    let carry = match tokio::task::spawn_blocking(move || {
+        crate::seat_carry::gather(crate::docs::root().as_deref(), ho.as_deref(), mp.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err((reason, message))) => return Refusal(reason, message).into_response(),
+        Err(_) => return internal(),
+    };
     let mut opened_by = opened_by;
     let tree_cwd = match req.repo.as_deref() {
         None => None,
@@ -1666,6 +1689,7 @@ pub async fn page_open(
         tree: tree_cwd.is_some(),
         join_nodes_of: join_of,
         join_role: crate::assign::with_seat_role(req.role.as_deref()),
+        carry,
     };
     let raw = RawOpen {
         cwd: tree_cwd.or(raw.cwd),
@@ -2216,6 +2240,26 @@ async fn open_checked(
             }
         }
     };
+    // the handoff and memory pack go into the folder before the seat is written and starts
+    let carried = if req.carry.is_empty() {
+        Vec::new()
+    } else {
+        let (into, files) = (cwd.clone(), std::mem::take(&mut req.carry));
+        match tokio::task::spawn_blocking(move || {
+            crate::seat_carry::put(std::path::Path::new(&into), &files)
+        })
+        .await
+        {
+            Ok(Ok(c)) => c,
+            _ => {
+                return Refusal(
+                    "carry",
+                    "the handoff could not be copied into the seat's folder (.aib is not a plain folder there)",
+                )
+                .into_response()
+            }
+        }
+    };
     // what the session start needs once the seat is written
     let started = (seat_id.clone(), card.clone(), cwd.clone());
     let now = now_rfc3339();
@@ -2337,6 +2381,9 @@ async fn open_checked(
             match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {
                 Ok(session) => response["session"] = session,
                 Err(e) => response["session_error"] = e,
+            }
+            if !carried.is_empty() {
+                response["carried"] = serde_json::json!(carried);
             }
             if let Some(k) = key {
                 let store = st.store.clone();
@@ -2964,6 +3011,7 @@ mod tests {
             tree: false,
             join_nodes_of: None,
             join_role: "observer",
+            carry: Vec::new(),
         }
     }
 

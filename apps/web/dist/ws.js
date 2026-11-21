@@ -3447,6 +3447,10 @@
       // 7b81e 986bce061:帶倉可給 base(40 碼小寫提交)⇒ 這一席的分支從那一顆開(例:全合頭);空白不送
       const bs = String(A.base || '').trim();
       if (body.repo && bs) { if (!/^[0-9a-f]{40}$/.test(bs)) { A.busy = false; A.msg = REPO_WHY.base; A.err = true; return render(); } body.base = bs; }
+      // a9136 PREREAD-seat-carry(519d0 10:46):網頁席讀不到 pending ⇒ 只送檔名,aibd 從 pending 拷進席資料夾的 .aib/,回 carried 相對路徑
+      const baseOf = (p) => String(p).split(/[\\/]/).pop() || '';
+      if (hoPath) body.handoff = baseOf(hoPath);
+      if (mpPath) body.mempack = baseOf(mpPath);
       const r = body.repo ? await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開 · 還有 ' + sec + ' 秒 · ' + FINGER_BEHIND; render(); } }) : await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
@@ -3462,7 +3466,10 @@
       if (sq) note += ';它在排隊:同時最多 ' + (Number(sq.slots) || S.maxRun || '幾') + ' 席在跑、都在用' + (sq.position ? ',排第 ' + sq.position + ' 位' : '') + ',停掉一席它就開始';
       let hoNote = '';
       if (hoPath && seat.seat_id) {
-        const line = mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
+        const C = Array.isArray(r.carried) ? r.carried.map(String) : [];
+        const cHo = C.find((x) => /^\.aib\/HANDOFF-/.test(x)), cMp = C.find((x) => /^\.aib\/MEMPACK-/.test(x));
+        // 拷進來了 ⇒ 第一句用相對路徑、記憶包每段重讀(網頁席沒有記憶夾);舊 aibd 沒回 carried ⇒ 照舊句
+        const line = cHo ? (cMp ? mpFirst(cHo, cMp).replace('把記憶包第 2 段每一節寫進你自己的記憶夾', '之後每段開始先重讀 ' + cMp + '(不寫記憶夾)') : HO_FIRST + cHo) : mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
         if (ss.state === 'pending') { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 0 }; hoNote = ';它開始跑時會自動送第一句(讀交接檔)'; }
         else { try { await act('seat_input', { seat_id: seat.seat_id, text: line }); hoNote = ';已送第一句(讀交接檔)'; } catch (e) { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 1 }; note += ';第一句還沒送進去,稍後自動再送'; } }
       }
