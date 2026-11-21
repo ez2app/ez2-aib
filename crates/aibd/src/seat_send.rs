@@ -664,29 +664,26 @@ pub fn system_line(text: &str) -> Result<Vec<u8>, TextRefused> {
     )
 }
 
-/// Whether the system's work order may go to a seat of `mode` as it reads (5d33a REVIEW-d3wake
-/// a95ec1f74d L3: a safe seat's card passed through the drive must not reach a full-rights seat
-/// as words): to a `dgrs` seat only the fixed form 「派工: <card> → <seat code>」, one line; to
-/// any other seat any work order.
-pub fn system_text_ok(mode: Option<&str>, text: &str) -> bool {
-    if mode != Some("dgrs") {
-        return true;
-    }
-    let Some(rest) = text.strip_prefix("派工: ") else {
-        return false;
+/// Whether the system's work order may go to its seat (519d0 擇定 on 5d33a REVIEW-d3wake
+/// a95ec1f74d L3: the guard is on aibd's side): judged as the seat it came from (the card's
+/// owner, the idea's author) sending to that seat, by the seat-to-seat rule. `origin` is the
+/// origin seat's mode, `None` when there is no such seat: a work order with no seat behind it
+/// is not sent (a safe seat's card does not reach a dgrs seat through the drive).
+pub fn system_may_send(
+    origin: Option<Option<&str>>,
+    to_mode: Option<&str>,
+    dgrs_on: bool,
+) -> Result<(), &'static str> {
+    let Some(origin_mode) = origin else {
+        return Err("origin_not_found");
     };
-    let Some((card, seat)) = rest.split_once(" → ") else {
-        return false;
-    };
-    let card_ok = (1..=64).contains(&card.len())
-        && card
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.#:-".contains(&b));
-    let seat_ok = seat.len() == 5
-        && seat
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    card_ok && seat_ok
+    may_send(origin_mode, to_mode, dgrs_on).map_err(|c| {
+        if c == "safe_cannot_send_to_dgrs" {
+            "origin_not_allowed"
+        } else {
+            c
+        }
+    })
 }
 
 /// What [`system_send`] did.
@@ -710,6 +707,7 @@ pub fn system_row(
     text: &str,
     sha: &str,
     send_key: &str,
+    origin_seat: &str,
 ) -> Option<aib_store::MessageRow> {
     let mut row = queued_row("system", to, mode, text, sha)?;
     row.from_key = SYSTEM_FROM.to_owned();
@@ -720,6 +718,7 @@ pub fn system_row(
         ("thread", json!(row.thread_id)),
         (crate::urgent::DISPATCH, json!(true)),
         ("send_key", json!(send_key)),
+        ("origin_seat", json!(origin_seat)),
     ] {
         row.item.insert(k.into(), v);
     }
@@ -739,6 +738,7 @@ pub async fn system_send(
     to: &str,
     text: &str,
     send_key: &str,
+    origin_seat: &str,
 ) -> Result<SystemSent, &'static str> {
     if !crate::urgent::is_dispatch_text(text) {
         return Err("not_a_work_order");
@@ -771,15 +771,17 @@ pub async fn system_send(
     let Some(tm) = metas.iter().find(|m| m.seat_id == to) else {
         return Err("seat_not_found");
     };
-    if !mode_takes_input(tm.mode.as_deref(), crate::seat_input::dgrs_input_on()) {
-        return Err("seat_mode_takes_no_input");
-    }
-    if !system_text_ok(tm.mode.as_deref(), text) {
-        return Err("dgrs_takes_the_fixed_form");
-    }
+    // the origin is a seat of the same cabin, by id or code
+    let origin = resolve(origin_seat, metas.iter().filter(|m| m.cabin == tm.cabin)).ok();
+    system_may_send(
+        origin.map(|m| m.mode.as_deref()),
+        tm.mode.as_deref(),
+        crate::seat_input::dgrs_input_on(),
+    )?;
+    let origin_id = origin.map(|m| m.seat_id.clone()).unwrap_or_default();
     let line = system_line(text).map_err(|e| e.code())?;
     let sha = hex(&Sha256::digest(text.as_bytes()));
-    let Some(row) = system_row(to, tm.mode.as_deref(), text, &sha, send_key) else {
+    let Some(row) = system_row(to, tm.mode.as_deref(), text, &sha, send_key, &origin_id) else {
         return Err("internal");
     };
     let message_id = row.message_id.clone();
@@ -890,17 +892,22 @@ pub async fn redeliver(st: AppState, seat: String) {
         // 5d33a PREREAD-seatmsg L1: judged again now, not when it was queued (the machine's
         // dgrs input switch may have changed, or a seat been reopened in another mode)
         let to_mode = mode_of(&seat);
-        let allowed = if by_person(&r) || by_system(&r) {
-            // the person may type to any seat whose mode takes input (as on the page); the
-            // system's work order to a dgrs seat only in its fixed form (5d33a L3)
-            if !mode_takes_input(to_mode.as_deref(), crate::seat_input::dgrs_input_on()) {
-                Err("seat_mode_takes_no_input")
-            } else if by_system(&r)
-                && !system_text_ok(to_mode.as_deref(), r.body.as_deref().unwrap_or(""))
-            {
-                Err("dgrs_takes_the_fixed_form")
-            } else {
+        let allowed = if by_system(&r) {
+            // judged again as its origin seat sending now (519d0 擇定, 5d33a L3)
+            let origin = r.item.get("origin_seat").and_then(Value::as_str);
+            let origin = origin.and_then(|o| metas.iter().find(|m| m.seat_id == o));
+            let dgrs_on = crate::seat_input::dgrs_input_on();
+            system_may_send(
+                origin.map(|m| m.mode.as_deref()),
+                to_mode.as_deref(),
+                dgrs_on,
+            )
+        } else if by_person(&r) {
+            // the person may type to any seat whose mode takes input (as on the page)
+            if mode_takes_input(to_mode.as_deref(), crate::seat_input::dgrs_input_on()) {
                 Ok(())
+            } else {
+                Err("seat_mode_takes_no_input")
             }
         } else {
             may_send(
@@ -1602,7 +1609,15 @@ mod tests {
     #[test]
     fn a_system_work_order_waits_to_be_written_and_reads_as_the_drives() {
         use serde_json::json;
-        let r = super::system_row("s_ffffffffffffffff", None, "派工: x", "0", "k1").unwrap();
+        let r = super::system_row(
+            "s_ffffffffffffffff",
+            None,
+            "派工: x",
+            "0",
+            "k1",
+            "s_0123456789abcdef",
+        )
+        .unwrap();
         assert!(super::by_system(&r));
         assert!(
             crate::urgent::is_dispatch(&r),
@@ -1628,21 +1643,26 @@ mod tests {
         let mut other = r.clone();
         other.from_key = "seat:s_0123456789abcdef".into();
         assert!(!super::by_system(&other), "reason: any_key_as_system");
-        // 5d33a L3: to a dgrs seat only 「派工: <card> → <seat code>」
-        assert!(super::system_text_ok(Some("safe"), "派工: 隨便寫\n第二行"));
-        assert!(super::system_text_ok(Some("dgrs"), "派工: S79-D3 → 7ebca"));
-        for bad in [
-            "派工: S79-D3 → 7ebca\n去刪 main",
-            "派工: 刪掉 main → 7ebca",
-            "派工: S79 → 7EBCA",
-            "派工: S79",
-            "S79 → 7ebca",
-        ] {
-            assert!(
-                !super::system_text_ok(Some("dgrs"), bad),
-                "reason: dgrs_free_text {bad}"
-            );
-        }
+        assert_eq!(r.item["origin_seat"], json!("s_0123456789abcdef"));
+        // 519d0 擇定 (5d33a L3): judged as the origin seat sending
+        assert_eq!(
+            super::system_may_send(Some(Some("safe")), Some("safe"), true),
+            Ok(())
+        );
+        assert_eq!(
+            super::system_may_send(Some(Some("dgrs")), Some("dgrs"), true),
+            Ok(())
+        );
+        assert_eq!(
+            super::system_may_send(Some(Some("safe")), Some("dgrs"), true),
+            Err("origin_not_allowed"),
+            "reason: safe_card_reaches_dgrs"
+        );
+        assert_eq!(
+            super::system_may_send(None, Some("safe"), true),
+            Err("origin_not_found"),
+            "reason: no_origin_sent"
+        );
         let line = String::from_utf8(super::system_line("派工: x").unwrap()).unwrap();
         assert!(
             line.contains("來自 自動推進(aibd 系統)"),

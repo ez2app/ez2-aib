@@ -94,7 +94,11 @@ ss '        (crate::urgent::DISPATCH, json!(true)),' \
 ss '    row.idem_key = Some(send_key.to_owned());' \
    '    row.idem_key = Some(send_key.to_owned()).filter(|_| false); // knife' \
    a_system_work_order_waits_to_be_written_and_reads_as_the_drives
-# DW17 the system's work order reaches a dgrs seat as free words (5d33a L3)
-ss '    if mode != Some("dgrs") {' \
-   '    if mode != Some("dgrs") || true { // knife' \
+# DW17 a safe seat's card reaches a dgrs seat through the drive (519d0 擇定, 5d33a L3)
+ss '    may_send(origin_mode, to_mode, dgrs_on).map_err(|c| {' \
+   '    may_send(Some("dgrs"), to_mode, dgrs_on).map_err(|c| { // knife' \
+   a_system_work_order_waits_to_be_written_and_reads_as_the_drives
+# DW18 a work order with no origin seat is sent
+ss '        return Err("origin_not_found");' \
+   '        return Ok(()); // knife' \
    a_system_work_order_waits_to_be_written_and_reads_as_the_drives
