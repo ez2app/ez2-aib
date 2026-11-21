@@ -149,7 +149,7 @@ ik '    if let Err(no) = recheck() {' '    if let Err(no) = recheck().or_else(|_
 # IN4 a failed send is written done
 ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, SendError>(Map::new())) { // knife' \
    a_failed_send_is_abandoned_not_done
-# E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
+# E5 / E9 / E10 sending (act.rs send_round, source.rs StoreDm)
 # SN1 a fix request is not sent (notify_fix is sendable since 56cda 11-15, IFACE r10 1)
 ak 'pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];' 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", WORK[1], WORK[2]]; // knife' \
    review_dispatch_dispatch_and_fix_requests_are_sent
@@ -170,9 +170,7 @@ ak 'r.insert("stage".into(), json!(stage));' 'let _ = stage; // knife' \
    the_done_line_keeps_the_delivery_stage_apart_from_read_and_taken
 sk() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked "$3"; }
-# SN7 any stage aib dm prints counts as sent
-sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' '    if stage != "-" { // knife' \
-   the_result_line_gives_the_stage_and_the_id
+# SN7 retired (S79-rust slice 3a): no `aib dm` RESULT line to read any more
 # SN8 a text starting with a dash goes to aib dm (read as a flag)
 sk 'if text.starts_with(' 'if false && text.starts_with(' \
    aib_dm_takes_only_an_address_and_one_text
@@ -430,16 +428,7 @@ ak '        .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));' '     
 # SDR3 a by that is not a seat code is printed as written
 ak '        .filter(|b| crate::source::is_seat(b))' '        .filter(|b| !b.is_empty()) // knife' \
    every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key
-# SDR4 a missing shell falls back to aib itself (未認證 again)
-python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs \
-  '        || format!("{AFW_SHELL} not found next to {aib}"),' '        || aib.to_owned(), // knife' \
-  --expect-fail act_sends_through_the_shell_next_to_aib_and_never_aib_itself \
-  -- cargo test -p aib-drive --locked act_sends_through_the_shell_next_to_aib_and_never_aib_itself
-# SDR5 act's dm sender runs aib directly
-python3 -I scripts/knife.py crates/aib-drive/src/source.rs \
-  '            program: crate::progpath::afw_program(),' '            program: crate::progpath::aib_program(), // knife' \
-  --expect-fail the_dm_sender_runs_the_repo_shell_not_aib \
-  -- cargo test -p aib-drive --locked the_dm_sender_runs_the_repo_shell_not_aib
+# SDR4 / SDR5 retired (S79-rust slice 3a): no shell, drive writes the ledger itself (source.rs StoreDm, knives SDK*)
 # SDR7 a queue item from act's own shell (a plain name, no seat) is nudged as 寄件人 不明
 ak '        } else if !w.from_name.is_empty() {' '        } else if false && !w.from_name.is_empty() { // knife' \
    a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
