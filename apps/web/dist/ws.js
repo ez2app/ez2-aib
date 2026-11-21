@@ -4067,7 +4067,8 @@
     const { src, L } = M.mine;
     if (src === 'none') return M.n ? '<div class="mvl"><small>這台 AIB 還沒給信的清單,看不到轉來的是哪幾封;到待審區看</small></div>' : '';
     if (!L.length) return '<div class="mvl"><small>沒有帶著派工信(第一行「派工:」的)</small></div>';
-    const who = (m) => (m.from ? '@' + seatName(seatById(m.from) || { seat_id: m.from }) : '寄件人不明');
+    // 7ebca 59509a1b64:sender 是 sender_label(例「AIB2統籌@519d0」)、沒有才是席號 ⇒ 認得的席寫 @名字,帶 @ 的標籤照原樣
+    const who = (m) => (!m.from ? '寄件人不明' : seatById(m.from) ? '@' + seatName(seatById(m.from)) : m.from.includes('@') ? m.from.slice(0, 40) : '@' + m.from.slice(0, 40));
     const row = (m) => '<div class="mvi"><code>' + esc(m.id.slice(0, 14)) + '</code> <b>' + esc(who(m)) + '</b> ' + esc(m.line.slice(0, 90)) + '</div>';
     const part = (A, head) => (A.length ? '<b>' + head + '(' + A.length + ' 封)</b>' + A.slice(0, 8).map(row).join('') + (A.length > 8 ? '<small>還有 ' + (A.length - 8) + ' 封,到待審區看全部</small>' : '') : '');
     const yes = L.filter((m) => m.ok), un = L.filter((m) => !m.ok);
