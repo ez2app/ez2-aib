@@ -565,6 +565,7 @@ mod tests {
     /// limit; holding the long answer's pipe, it kept that reader open to the 20 s kill. The
     /// tests that start such children take this lock, one at a time, and that left child closes
     /// every descriptor above 2 first (repo_push's tests run git through the same reader).
+    #[cfg(unix)] // both tests that take it are unix-only (Windows clippy: never used)
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
