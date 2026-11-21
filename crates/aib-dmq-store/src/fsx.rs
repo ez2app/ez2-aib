@@ -206,16 +206,13 @@ impl SeatDir {
         #[cfg(unix)]
         {
             use nix::errno::Errno;
-            use nix::fcntl::{open, openat, OFlag};
+            use nix::fcntl::{open, openat};
             use nix::sys::stat::{mkdirat, Mode};
             if make {
                 std::fs::create_dir_all(parent)?;
             }
-            let p = open(
-                parent,
-                OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-                Mode::empty(),
-            )?;
+            // the queue folder itself is not followed either (5d33a REVIEW-g5dir L1)
+            let p = open(parent, at::dir_flags(), Mode::empty())?;
             let fd = match openat(&p, name, at::dir_flags(), Mode::empty()) {
                 Err(Errno::ENOENT) if make => {
                     match mkdirat(&p, name, Mode::S_IRWXU) {
