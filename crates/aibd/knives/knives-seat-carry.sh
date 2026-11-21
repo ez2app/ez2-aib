@@ -31,7 +31,7 @@ sc '        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_
 sc '            Err(("mempack", "a memory pack goes with a handoff"))' '            Ok(Vec::new()) // knife' \
    a_memory_pack_comes_with_its_handoff
 # SC10 (5d33a L1) the write goes by path, so a link put in after the look moves it
-sc '        at::write_new(dir, name, bytes, at::read_only_mode())?;' '        let _ = dir; std::fs::write(Path::new(DIR).join(name), bytes)?; // knife' \
+sc '        at::write_new(dir, name, bytes, at::read_only_mode())?;' '        let _ = (dir, at::read_only_mode()); std::fs::write(Path::new(DIR).join(name), bytes)?; // knife' \
    a_link_put_in_after_the_look_does_not_move_the_write
 # SC11 (5d33a L2) a commit bringing .aib/ is sent back
 python3 -I scripts/knife.py crates/aibd/src/send_back.rs \

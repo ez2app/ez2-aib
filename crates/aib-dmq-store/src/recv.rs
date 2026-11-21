@@ -125,7 +125,10 @@ pub fn relay_path_of(msg: &str) -> Option<&str> {
         return None;
     }
     let path = py_strip(tail);
-    path.starts_with('/').then_some(path)
+    // 1.x writes `/`-rooted paths; aibd on Windows writes `C:\…` (and canonical `\\?\C:\…`)
+    // ones (#871 Windows: the long letter was never shown). A `/p` stays a path everywhere.
+    let absolute = path.starts_with('/') || (cfg!(windows) && Path::new(path).is_absolute());
+    absolute.then_some(path)
 }
 
 /// dm_relay.relay_file_ok: resolved, named RELAY-dm-<[A-Za-z0-9_-]+>.txt, directly in one of
@@ -843,6 +846,19 @@ mod tests {
         );
         assert_eq!(relay_path_of("長訊已落檔(9 位元組),請讀:/p"), Some("/p"));
         assert_eq!(relay_path_of("長訊已落檔(9 位元組),請讀:rel/p"), None);
+        // #871: a Windows path is a path on Windows only; a relative one is never
+        let win = "長訊已落檔(9 位元組),請讀:C:\\r\\RELAY-dm-x.txt";
+        let verbatim = "長訊已落檔(9 位元組),請讀:\\\\?\\C:\\r\\RELAY-dm-x.txt";
+        if cfg!(windows) {
+            assert_eq!(relay_path_of(win), Some("C:\\r\\RELAY-dm-x.txt"));
+            assert_eq!(
+                relay_path_of(verbatim),
+                Some("\\\\?\\C:\\r\\RELAY-dm-x.txt")
+            );
+        } else {
+            assert_eq!(relay_path_of(win), None, "reason: windows_shape_on_unix");
+        }
+        assert_eq!(relay_path_of("長訊已落檔(9 位元組),請讀:r\\p"), None);
         assert_eq!(relay_path_of("長訊已落檔( 位元組),請讀:/p"), None);
         assert_eq!(relay_path_of("長訊已落檔(9 位元組,來自 @AB),請讀:/p"), None);
         assert_eq!(relay_path_of("長訊已落檔(9 位元組),請讀:/p\nmore"), None);
