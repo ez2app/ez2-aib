@@ -468,9 +468,9 @@ pub fn refused_response(r: &Refused) -> Response {
 }
 
 /// The seat list's `repo_copy` (IFACE-web-merge r1 §1): `{repo, sendable}` for a seat in its
-/// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat does
-/// not run now); the act itself decides.
-pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
+/// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat is
+/// not in a turn, `busy`); the act itself decides.
+pub fn repo_copy_of(cwd: &str, busy: bool) -> Value {
     let tree = Path::new(cwd);
     crate::seat_worktree::base_of(tree)
         .and_then(|(_, author)| {
@@ -482,7 +482,7 @@ pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
             // the copy's committed head, read as plain files (1a93b: the page's 跑收據 needs
             // it); null when the copy's .git names none
             let head = crate::seat_worktree::clone_head(tree).map(|(_, sha)| sha);
-            json!({"repo": repo, "sendable": !live, "head": head})
+            json!({"repo": repo, "sendable": !busy, "head": head})
         })
 }
 
@@ -515,8 +515,15 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             "a ticket comes with the head of its plan, and only then",
         );
     }
-    if st.sessions.live_seats().contains(&req.seat_id) {
-        return conflict("seat_busy", "the seat runs now; stop it first", json!({}));
+    // 519d0 11-21 (Andy in preview 51405: a seat done with its turn, open and idle, was
+    // refused three times): only a seat in a turn is refused, as 合回's author is. What goes
+    // is the copy's committed head, read here and again under the ticket (`head_moved`).
+    if st.sessions.in_turn(&req.seat_id) {
+        return conflict(
+            "seat_busy",
+            "the seat is in a turn; wait for it to finish",
+            json!({}),
+        );
     }
     let (store, sid) = (st.store.clone(), req.seat_id.clone());
     let meta = match tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await {

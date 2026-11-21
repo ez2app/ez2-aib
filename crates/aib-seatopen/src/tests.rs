@@ -875,3 +875,82 @@ fn plain_refusals_match_the_1x_source_word_for_word() {
     );
     assert_eq!(OpenError::Cabin("m".into()).to_string(), "m");
 }
+
+/// 519d0 11-21 M6 (Andy's seat: `git add README.md` refused, the seat stopped): a file is
+/// added by name, a commit may be quiet, and the seat is told every command it may run.
+#[test]
+fn a_work_seat_adds_files_by_name_and_is_told_what_it_may_run() {
+    for rule in ["Bash(git add *)", "Bash(git commit -q -m *)"] {
+        assert!(WORK_ALLOWED.contains(&rule), "reason: not_allowed {rule}");
+        assert!(
+            WORK_FREE_ARGS.contains(&rule),
+            "reason: free_args_unlisted {rule}"
+        );
+    }
+    let note = work_note();
+    for rule in WORK_ALLOWED.iter().filter(|r| r.starts_with("Bash(")) {
+        let cmd = &rule["Bash(".len()..rule.len() - 1];
+        let shown = format!("`{}`", cmd.replace(" *", " …"));
+        assert!(note.contains(&shown), "reason: not_told {shown}");
+    }
+    assert!(note.contains("直接被拒"), "reason: refusal_not_said");
+    // 0eed7 VERIFY-integ3 A1: a seat chained printf && git add && git commit and was refused
+    assert!(
+        note.contains("一次只下一個指令:不要用 &&、;、| 串接"),
+        "reason: chaining_not_said"
+    );
+    assert!(!note.contains("Bash("), "reason: rule_syntax_shown");
+}
+
+/// G4a (DECISION-council-cutover-519d0-1121 §2): a web seat reads git at any ref and checks
+/// files; nothing that reaches out (push, fetch, ssh, curl, gh) or runs a receipt is listed.
+#[test]
+fn a_work_seat_reads_git_anywhere_and_reaches_nothing_outside() {
+    for rule in [
+        "Bash(git log *)",
+        "Bash(git show *)",
+        "Bash(git diff *)",
+        "Bash(git merge-base *)",
+        "Bash(git merge-tree *)",
+        "Bash(git rev-parse *)",
+        "Bash(git cat-file *)",
+        "Bash(rustfmt --check *)",
+        "Bash(node --check *)",
+        "Bash(node apps/web/test/*)",
+        "Bash(git switch *)",
+        "Bash(git cherry-pick *)",
+        "Bash(git branch *)",
+        "Bash(git stash *)",
+    ] {
+        assert!(WORK_ALLOWED.contains(&rule), "reason: not_allowed {rule}");
+        assert!(
+            WORK_FREE_ARGS.contains(&rule),
+            "reason: free_args_unlisted {rule}"
+        );
+    }
+    for word in [
+        "git push",
+        "git fetch",
+        "git pull",
+        "git remote",
+        "git config",
+        "git worktree",
+        "git bundle",
+        "ssh",
+        "curl",
+        "gh ",
+        "aib ",
+        "cargo",
+    ] {
+        assert!(
+            !WORK_ALLOWED.iter().any(|r| r.contains(word)),
+            "reason: reaches_out {word}"
+        );
+    }
+    let note = work_note();
+    assert!(note.contains("`git log …`"), "reason: not_told {note}");
+    assert!(
+        note.contains("`node apps/web/test/*`"),
+        "reason: test_path_not_told {note}"
+    );
+}
