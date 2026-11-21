@@ -67,12 +67,12 @@ ok(codes.size >= 10, 'repo refusal codes read');
 for (const c of codes) ok(why.has(c), 'reason: repo_refusal_without_words ' + c);
 for (const c of ['owner_check_unavailable', 'owner_check_not_approved', 'preview_no_dgrs']) ok(why.has(c) && rust.includes('"' + c + '"'), 'fingerprint / preview refusal in words: ' + c);
 
-// 5. 等指紋:202 帶 ticket 才等、帶同一張單重送、2 分鐘停
+// 5. 等指紋:202 帶 ticket 才等、帶同一張單重送、等到單號到期(沒給到期 10 分)停
 const fa = (ws.split('async function fingerAct(')[1] || '').split('\n  }\n')[0];
 ok(/__status === 202 && r\.ticket/.test(fa), 'waits only on 202 with a ticket');
 // a9136 IFACE-web-merge r1 §4:送回倉重送要多帶第一步的 plan.head ⇒ extra(first) 的欄位;沒給 extra 就是空的,其他照舊同一份
 ok(/Object\.assign\(\{\}, body, more, \{ ticket \}\)/.test(fa) && /more = extra \? extra\(first\) : \{\}/.test(fa), 'resends the same body with the ticket');
-ok(/owner_check_not_approved/.test(fa) && /120000/.test(fa), 'not approved yet keeps waiting, up to 2 minutes');
+ok(/owner_check_not_approved/.test(fa) && /Date\.parse\(String\(r\.expires_at/.test(fa) && /Date\.now\(\) \+ 600000/.test(fa) && !/120000/.test(fa), 'not approved yet keeps waiting, until the ticket expires (10 minutes when aibd gives no expiry)');
 ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.test(fa) && /probe = false/.test(fa), 'asks the ticket state when aibd has it (7b81e G2), else falls back to resending');
 
 // 6. 做事席帶倉開的時候 aibd 不問指紋(7b81e 986bce061 asked_now = mode != work)⇒「在哪裡改」對做事席不能說要按指紋
