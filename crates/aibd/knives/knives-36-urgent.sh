@@ -42,8 +42,8 @@ ur crates/aibd/src/seat_send.rs \
    '--test seat_send an_urgent_letter_needs_a_granted_lead_role'
 # UR10 a level that is not one is taken as urgent
 ur crates/aibd/src/urgent.rs \
-   '        Some(Value::String(s)) if s == URGENT => Ok(true),' \
-   '        Some(Value::String(_)) => Ok(true), // knife' \
+   '        Some(Value::String(s)) if s == URGENT => Some(true),' \
+   '        Some(Value::String(_)) => Some(true), // knife' \
    only_urgent_and_normal_are_levels \
    '--lib urgent::tests::only_urgent_and_normal_are_levels'
 # UR11 the cap counts a page of the sent box (a hundred plain letters hide the urgent ones)

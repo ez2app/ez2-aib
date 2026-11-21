@@ -1063,7 +1063,7 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
     };
     let idem = body.get("idempotency_key").and_then(Value::as_str);
     // 待審 1.5 期 (urgent.rs): a seat may ask urgent; aibd decides from the seat's rank
-    let Ok(wants_urgent) = crate::urgent::asked(body.get("level")) else {
+    let Some(wants_urgent) = crate::urgent::asked(body.get("level")) else {
         return refuse(
             StatusCode::BAD_REQUEST,
             "invalid_request",

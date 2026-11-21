@@ -30,13 +30,14 @@ pub fn is_urgent(row: &aib_store::MessageRow) -> bool {
         && row.item.get("imported").and_then(Value::as_bool) != Some(true)
 }
 
-/// `level` as asked: `None` / `"normal"` ⇒ plain, `"urgent"` ⇒ urgent, anything else refused.
-pub fn asked(v: Option<&Value>) -> Result<bool, ()> {
+/// `level` as asked: `None` / `"normal"` ⇒ plain, `"urgent"` ⇒ urgent, anything else `None`
+/// (refused; not a `Result<_, ()>`, clippy result_unit_err, receipt uw1).
+pub fn asked(v: Option<&Value>) -> Option<bool> {
     match v {
-        None | Some(Value::Null) => Ok(false),
-        Some(Value::String(s)) if s == "normal" => Ok(false),
-        Some(Value::String(s)) if s == URGENT => Ok(true),
-        _ => Err(()),
+        None | Some(Value::Null) => Some(false),
+        Some(Value::String(s)) if s == "normal" => Some(false),
+        Some(Value::String(s)) if s == URGENT => Some(true),
+        _ => None,
     }
 }
 
@@ -117,11 +118,11 @@ mod tests {
 
     #[test]
     fn only_urgent_and_normal_are_levels() {
-        assert_eq!(asked(None), Ok(false));
-        assert_eq!(asked(Some(&json!("normal"))), Ok(false));
-        assert_eq!(asked(Some(&json!("urgent"))), Ok(true));
+        assert_eq!(asked(None), Some(false));
+        assert_eq!(asked(Some(&json!("normal"))), Some(false));
+        assert_eq!(asked(Some(&json!("urgent"))), Some(true));
         for bad in [json!("URGENT"), json!(1), json!(true), json!("high")] {
-            assert_eq!(asked(Some(&bad)), Err(()), "reason: level_taken {bad}");
+            assert_eq!(asked(Some(&bad)), None, "reason: level_taken {bad}");
         }
     }
 
