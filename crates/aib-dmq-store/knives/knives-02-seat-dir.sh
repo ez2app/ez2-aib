@@ -20,3 +20,8 @@ sd crates/aib-dmq-store/src/locks.rs \
    '        Level::Directory => dir.lock_handle(DIR_LOCK_FILE),' \
    '        Level::Directory => dir.open_private(DIR_LOCK_FILE), // knife' \
    a_held_folder_lock_holds_the_python_writer
+# SD4 the queue folder above the seat folders is opened through a link (5d33a REVIEW-g5dir L1)
+sd crates/aib-dmq-store/src/fsx.rs \
+   '            let p = open(parent, at::dir_flags(), Mode::empty())?;' \
+   '            let p = open(parent, nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY, Mode::empty())?; // knife' \
+   a_queue_folder_that_is_a_link_takes_no_write

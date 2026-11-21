@@ -87,6 +87,20 @@ fn a_seat_folder_that_is_a_link_takes_no_write() {
 }
 
 #[test]
+fn a_queue_folder_that_is_a_link_takes_no_write() {
+    let d = tempfile::tempdir().expect("tempdir");
+    let s = Store::new(d.path(), d.path());
+    let other = d.path().join("elsewhere");
+    std::fs::create_dir_all(other.join(SEAT)).expect("other");
+    std::fs::create_dir_all(d.path().join("state")).expect("state");
+    symlink(&other, queue(d.path())).expect("link");
+
+    assert!(s.write_item(SEAT, &item("q_00000000000000a1")).is_err());
+    assert!(s.order_append(SEAT, "q_00000000000000a1").is_err());
+    assert!(names(&other.join(SEAT)).is_empty(), "{:?}", names(&other));
+}
+
+#[test]
 fn a_folder_changed_into_a_link_after_opening_keeps_the_write_where_it_was_opened() {
     let d = tempfile::tempdir().expect("tempdir");
     let s = Store::new(d.path(), d.path());
