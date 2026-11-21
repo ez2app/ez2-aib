@@ -226,7 +226,16 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
                 fp_ok.then_some(fp)?
             );
             if operation == crate::test_host_add::OP_ADD {
-                format!("讓 aibd 的鑰匙在測試機 {at}只能跑收據")
+                // 5d33a N1 (REVIEW-addtesthost ee27b561): the line's from= is said too; a line
+                // without one, or with one the line writer would refuse, shows no window
+                let from = v["line"]
+                    .as_str()?
+                    .split(",from=\"")
+                    .nth(1)?
+                    .split('"')
+                    .next()
+                    .filter(|f| crate::receipt_link::from_ok(f))?;
+                format!("讓 aibd 的鑰匙在測試機 {at}只能跑收據,只收從 {from} 連進來的")
             } else {
                 format!("從測試機 {at}收回 aibd 的收據鑰匙")
             }
@@ -931,8 +940,8 @@ mod tests {
             ),
             (
                 crate::test_host_add::OP_ADD,
-                r#"{"hostname":"192.0.2.7","port":22,"user":"owner","fingerprint":"SHA256:ab+/Cd"}"#,
-                "讓 aibd 的鑰匙在測試機 owner@192.0.2.7 埠 22(主機鑰匙 SHA256:ab+/Cd)只能跑收據",
+                r#"{"hostname":"192.0.2.7","port":22,"user":"owner","fingerprint":"SHA256:ab+/Cd","line":"restrict,command=\"/g\",from=\"192.0.2.9\" k"}"#,
+                "讓 aibd 的鑰匙在測試機 owner@192.0.2.7 埠 22(主機鑰匙 SHA256:ab+/Cd)只能跑收據,只收從 192.0.2.9 連進來的",
             ),
             (
                 crate::test_host_add::OP_REMOVE,

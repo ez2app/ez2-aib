@@ -677,7 +677,7 @@ mod tests {
             "reason: fingerprint_not_ssh_keygen"
         );
         let m = machine(&std::env::temp_dir());
-        let line = format!("restrict,command=\"/x/gate\" {KEY} aibd-delegate");
+        let line = format!("restrict,command=\"/x/gate\",from=\"192.0.2.9\" {KEY} aibd-delegate");
         let ask = host_ask(OP_ADD, &m, KEY, &line, "page:p1".into());
         assert_eq!(ask.resource, "owner@192.0.2.7:2222");
         let words = crate::owner_ok::plain_words(ask.operation, &ask.params).unwrap();
@@ -689,6 +689,22 @@ mod tests {
             words.contains("SHA256:+DiY3wvv"),
             "reason: window_without_host_key {words}"
         );
+        assert!(
+            words.contains("只收從 192.0.2.9 連進來"),
+            "reason: window_without_from {words}"
+        );
+        // a line without from=, or with one the writer refuses, shows no window at all
+        for bad in [
+            format!("restrict,command=\"/x/gate\" {KEY} aibd-delegate"),
+            format!("restrict,command=\"/x/gate\",from=\"a b\" {KEY} aibd-delegate"),
+        ] {
+            let a = host_ask(OP_ADD, &m, KEY, &bad, "p".into());
+            assert_eq!(
+                crate::owner_ok::plain_words(a.operation, &a.params),
+                None,
+                "reason: window_without_from_shown {bad}"
+            );
+        }
         // each of the four and the line changes the ticket's parameters; the alias does not
         let base = ask.params.clone();
         let mut renamed = m.clone();
