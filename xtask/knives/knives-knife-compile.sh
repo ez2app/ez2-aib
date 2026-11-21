@@ -58,3 +58,7 @@ kc '            verdict.insert(*knife, Verdict::Error(said.clone()));' \
 kc '    u8::from(err + anc + uns > 0)' \
    '    u8::from(err + anc > 0)' \
    past_the_limit_the_knives_left_are_unsure_and_never_ok
+# KC13 one knife that cannot be written in alone is called an error, not an anchor fault (5d33a N1, REVIEW-kcbisect)
+kc '        if seen.unplaced {' \
+   '        if seen.unplaced && seen.mine.len() > 9 {' \
+   two_knives_that_only_fail_together_are_both_ok_and_take_nobody_with_them

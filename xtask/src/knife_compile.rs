@@ -328,11 +328,13 @@ pub enum Verdict {
 }
 
 /// What one check of some knives together showed: the errors on a knife's own lines, and the
-/// first error on no knife's lines.
+/// first error on no knife's lines. `unplaced`: the knives could not be written in together
+/// at all, so nothing was checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Seen {
     pub mine: BTreeMap<usize, String>,
     pub elsewhere: Option<String>,
+    pub unplaced: bool,
 }
 
 /// Judge the knives `open` after a check of them together showed `why`, an error on no knife's
@@ -363,6 +365,12 @@ pub fn settle(
         }
         *used += 1;
         let seen = look(open)?;
+        // 5d33a N1 (REVIEW-kcbisect f93fca49): one knife that cannot be written in alone is an
+        // anchor fault, as before the split
+        if seen.unplaced {
+            verdict.insert(*one, Verdict::Anchor);
+            return Ok(());
+        }
         let said = seen.mine.get(one).cloned().or(seen.elsewhere);
         verdict.insert(*one, said.map_or(Verdict::Ok, Verdict::Error));
         return Ok(());
@@ -485,6 +493,7 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
                 return Ok(Seen {
                     mine: BTreeMap::new(),
                     elsewhere: Some("these knives could not be written in together".into()),
+                    unplaced: true,
                 });
             };
             let placed: Vec<Placed> = one
@@ -506,6 +515,7 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
                 elsewhere: rest
                     .first()
                     .map(|d| format!("{}:{} {}", d.file, d.line, d.msg)),
+                unplaced: false,
             })
         };
         let mut used = split_checks;
@@ -591,6 +601,7 @@ mod tests {
             Ok(Seen {
                 mine,
                 elsewhere: bad.or(both),
+                unplaced: false,
             })
         };
         let open: Vec<usize> = (0..n).collect();
@@ -631,6 +642,22 @@ mod tests {
             (v.get(&4), used),
             (Some(&Verdict::Ok), 1),
             "reason: a_knife_clean_alone_is_an_error"
+        );
+        // one knife that cannot be written in alone is an anchor fault (5d33a N1, REVIEW-kcbisect)
+        let mut v = BTreeMap::new();
+        let mut used = 0;
+        let mut unplaced = |_: &[usize]| -> Result<Seen, String> {
+            Ok(Seen {
+                elsewhere: Some("these knives could not be written in together".into()),
+                unplaced: true,
+                ..Seen::default()
+            })
+        };
+        settle(&[4], "an error elsewhere", &mut used, &mut unplaced, &mut v).unwrap();
+        assert_eq!(
+            v.get(&4),
+            Some(&Verdict::Anchor),
+            "reason: a_knife_not_written_in_is_not_an_anchor_fault"
         );
     }
 
