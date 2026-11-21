@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--handoff HANDOFF-….md [--mempack MEMPACK-….md]] [--dry-run] | seat move <seat-code> [--provider P] [--model M] [--repo R] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -2251,17 +2251,21 @@ fn execute_in(
         ["seat", "open", name, "--", argv @ ..] if !argv.is_empty() => {
             return seat_open(c, name, argv);
         }
+        ["seat", "move", code, rest @ ..] => return seat_move(code, rest, env),
         ["seat", "open", words @ ..] if !words.is_empty() && !words.contains(&"--") => {
             // S89-live-workdir: the seat works in its own empty folder unless --here asks for
             // this one (aibd refuses a folder with project settings)
             let here = words.contains(&"--here");
             let words: Vec<&str> = words.iter().copied().filter(|w| *w != "--here").collect();
+            // PREREAD-seat-carry: --handoff / --mempack name files in the pending folder
+            let (words, handoff) = take_flag(&words, "--handoff")?;
+            let (words, mempack) = take_flag(&words, "--mempack")?;
             let cwd = if here {
                 Some(std::env::current_dir().map_err(|e| format!("current folder: {e}"))?)
             } else {
                 None
             };
-            return seat_open_persona(c, &words, cards, env, cwd.as_deref());
+            return seat_open_persona(c, &words, cards, env, cwd.as_deref(), [handoff, mempack]);
         }
         _ => return Err(USAGE.into()),
     };
@@ -2321,6 +2325,71 @@ fn ambiguous(word: &str, cards: &[aib_seatopen::Persona]) -> String {
     )
 }
 
+/// `words` without `flag <value>`, and the value; a flag given twice or without a value is refused.
+fn take_flag<'a>(words: &[&'a str], flag: &str) -> Result<(Vec<&'a str>, Option<&'a str>), String> {
+    let mut out = Vec::new();
+    let mut got = None;
+    let mut it = words.iter().copied();
+    while let Some(w) = it.next() {
+        if w != flag {
+            out.push(w);
+            continue;
+        }
+        match (it.next(), got) {
+            (Some(v), None) if !v.starts_with("--") => got = Some(v),
+            _ => return Err(format!("{flag} 要給一個檔名(只能給一次)")),
+        }
+    }
+    Ok((out, got))
+}
+
+/// `seat move <old seat code> [--provider P] [--model M] [--repo R] [--dry-run]`
+/// (SPEC-seat-open-oneline-519d0-1121): what moving that seat into the web takes, found from
+/// the code ([`aibd::seat_move::plan`]). `--dry-run` prints the six steps. A work seat with a
+/// repo is opened through the fingerprint, which only the page asks for today: without
+/// `--dry-run` it prints what to give the page's "add a seat" (PREREAD-seat-carry r2 §2 asks
+/// 5d33a for the ctl side of it).
+fn seat_move(
+    code: &str,
+    rest: &[&str],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    let dry = rest.contains(&"--dry-run");
+    let rest: Vec<&str> = rest.iter().copied().filter(|w| *w != "--dry-run").collect();
+    let (rest, provider) = take_flag(&rest, "--provider")?;
+    let (rest, model) = take_flag(&rest, "--model")?;
+    let (rest, repo) = take_flag(&rest, "--repo")?;
+    if let Some(w) = rest.first() {
+        return Err(format!("seat move 不認得「{w}」\n{USAGE}"));
+    }
+    let identity = aibd::seat_move::identity_dir(env).ok_or("找不到 HOME(identity 資料夾)")?;
+    let pending = env("AIBD_PLAN_PENDING")
+        .map(std::path::PathBuf::from)
+        .or_else(|| identity.parent().map(|h| h.join("pending")))
+        .ok_or("找不到交接夾")?;
+    let p = aibd::seat_move::plan(code, &identity, &pending, provider, model, repo)?;
+    for line in aibd::seat_move::steps(&p) {
+        println!("{line}");
+    }
+    if dry {
+        println!("(--dry-run:只印步驟,什麼都沒動)");
+        return Ok(());
+    }
+    let at = |n: &str| pending.join(n).display().to_string();
+    Err(format!(
+        "帶倉開做事席要按指紋,這版 ctl 還不能代開(等 5d33a 預讀 PREREAD-seat-carry r2 §2)。\n\
+         現在請在網頁「加席」:人格 {} · {} · 能改程式 · 倉 {} · 交接檔 {} · 記憶包 {}",
+        p.persona_uid,
+        p.provider,
+        p.repo.as_deref().unwrap_or("(不帶倉)"),
+        at(&p.handoff),
+        p.mempack
+            .as_deref()
+            .map(at)
+            .unwrap_or_else(|| "(沒有)".into()),
+    ))
+}
+
 /// `seat open <provider> <dgrs|safe> <persona> …` (B4-1b-1): the 2.0 seat-open words
 /// (aib-seatopen), the persona's name resolved here against the cards (the API takes
 /// only the uid, 7b81e 11-14), then `POST /seats/open` with a fresh `Idempotency-Key`.
@@ -2333,22 +2402,35 @@ fn seat_open_persona(
     cards: &dyn aibd::personas::PersonaSource,
     env: &dyn Fn(&str) -> Option<String>,
     cwd: Option<&Path>,
+    carry: [Option<&str>; 2],
 ) -> Result<(), String> {
-    match open_persona_answer(c, words, cards, env, cwd)? {
+    match open_persona_carry(c, words, cards, env, cwd, carry)? {
         Some(v) => println!("{v}"),
         None => println!("{USAGE}"),
     }
     Ok(())
 }
 
-/// [`seat_open_persona`]'s work: aibd's answer to `POST /seats/open`, or `None` for help /
-/// version (nothing sent). `aibd ctl chat` reads the seat and session out of the answer.
+/// [`open_persona_carry`] with no handoff (`aibd ctl chat`).
 fn open_persona_answer(
     c: &Client,
     words: &[&str],
     cards: &dyn aibd::personas::PersonaSource,
     env: &dyn Fn(&str) -> Option<String>,
     cwd: Option<&Path>,
+) -> Result<Option<Value>, String> {
+    open_persona_carry(c, words, cards, env, cwd, [None, None])
+}
+
+/// [`seat_open_persona`]'s work: aibd's answer to `POST /seats/open`, or `None` for help /
+/// version (nothing sent). `aibd ctl chat` reads the seat and session out of the answer.
+fn open_persona_carry(
+    c: &Client,
+    words: &[&str],
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+    cwd: Option<&Path>,
+    carry: [Option<&str>; 2],
 ) -> Result<Option<Value>, String> {
     use aib_seatopen::{Cabin, OpenError, Outcome};
     let cards = cards
@@ -2392,6 +2474,14 @@ fn open_persona_answer(
     });
     if let Some(c) = cwd {
         body["cwd"] = json!(c);
+    }
+    if let [Some(h), m] = carry {
+        body["handoff"] = json!(h);
+        if let Some(m) = m {
+            body["mempack"] = json!(m);
+        }
+    } else if carry[1].is_some() {
+        return Err("--mempack 要跟 --handoff 一起給".into());
     }
     let key = open_key()?;
     c.request_keyed("POST", "/api/v1/seats/open", Some(body), Some(&key))
@@ -2800,6 +2890,26 @@ mod tests {
     /// ORDER-autodrive-webdev 7ebca 3 (Andy 11-20 00:06 FINDING-andy-realrun 1): a seat reads
     /// the tool list to choose; review work goes in the thread, where the person and ask_person
     /// see it, and a seat that is not a member is brought in by the person.
+    /// MV5 (PREREAD-seat-carry): `--handoff F` is taken out of the words once, with a value.
+    #[test]
+    fn a_flag_and_its_value_are_taken_out_once() {
+        let w = ["claude", "safe", "p", "--handoff", "HANDOFF-a.md", "--here"];
+        let (rest, v) = take_flag(&w, "--handoff").unwrap();
+        assert_eq!(rest, ["claude", "safe", "p", "--here"]);
+        assert_eq!(v, Some("HANDOFF-a.md"));
+        assert_eq!(take_flag(&w, "--mempack").unwrap().1, None);
+        for bad in [
+            &["--handoff"][..],
+            &["--handoff", "--here"][..],
+            &["--handoff", "a", "--handoff", "b"][..],
+        ] {
+            assert!(
+                take_flag(bad, "--handoff").is_err(),
+                "reason: flag_shape {bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_tools_say_review_goes_in_the_thread() {
         let tools = mcp_tools();

@@ -70,6 +70,7 @@ pub mod seat_carry;
 pub mod seat_clear;
 pub mod seat_input;
 pub mod seat_model;
+pub mod seat_move;
 pub mod seat_now;
 pub mod seat_now_all;
 pub mod seat_send;

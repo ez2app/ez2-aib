@@ -1063,6 +1063,12 @@ struct RawOpen {
     /// before the seat starts (PREREAD-seat-carry-a9136-1121); never from a body.
     #[serde(skip)]
     carry: Vec<(String, Vec<u8>)>,
+    /// `aibd ctl seat open … --handoff F [--mempack F]`: the same two file names a page gives
+    /// (PREREAD-seat-carry-a9136-1121), read into `carry` before the open.
+    #[serde(default)]
+    handoff: Option<String>,
+    #[serde(default)]
+    mempack: Option<String>,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -1496,13 +1502,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 4 KiB")
             .into_response();
     };
-    let req: RawOpen = match serde_json::from_slice(&bytes) {
+    let mut req: RawOpen = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(_) => return Refusal(
             "body",
-            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, new?, dry_run?}",
+            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, new?, dry_run?, handoff?, mempack?}",
         )
         .into_response(),
+    };
+    // the same carry a page's open has, read before anything opens (PREREAD-seat-carry)
+    let (ho, mp) = (req.handoff.take(), req.mempack.take());
+    req.carry = match tokio::task::spawn_blocking(move || {
+        crate::seat_carry::gather(crate::docs::root().as_deref(), ho.as_deref(), mp.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err((reason, message))) => return Refusal(reason, message).into_response(),
+        Err(_) => return internal(),
     };
     open_checked(st, req, key, None).await
 }
@@ -1690,6 +1707,8 @@ pub async fn page_open(
         join_nodes_of: join_of,
         join_role: crate::assign::with_seat_role(req.role.as_deref()),
         carry,
+        handoff: None,
+        mempack: None,
     };
     let raw = RawOpen {
         cwd: tree_cwd.or(raw.cwd),
@@ -3012,6 +3031,8 @@ mod tests {
             join_nodes_of: None,
             join_role: "observer",
             carry: Vec::new(),
+            handoff: None,
+            mempack: None,
         }
     }
 

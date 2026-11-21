@@ -30,3 +30,27 @@ sc '        Ok(m) if m.file_type().is_dir() => {}' '        Ok(m) if m.file_type
 # SC9 a memory pack without its handoff is taken
 sc '            Err(("mempack", "a memory pack goes with a handoff"))' '            Ok(Vec::new()) // knife' \
    a_memory_pack_comes_with_its_handoff
+# MV1-MV5 aibd ctl seat move finds the move from the seat code alone (SPEC-seat-open-oneline-519d0-1121)
+mv() { python3 -I scripts/knife.py crates/aibd/src/seat_move.rs "$1" "$2" --expect-fail "seat_move::tests::$3" \
+        -- cargo test -p aibd --locked --lib "seat_move::tests::$3"; }
+# MV1 an empty persona binding is taken
+mv '    (!uid.is_empty()).then(|| uid.to_owned())' '    Some(uid.to_owned()) // knife' \
+   the_persona_is_the_seat_codes_binding
+# MV2 an older handoff is taken
+mv '        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))' '        .min_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))) // knife' \
+   the_newest_handoff_and_pack_of_that_seat_are_taken
+# MV2b an answers file is taken as the memory pack
+mv '                rest.len() == 4 && rest.bytes().all(|b| b.is_ascii_digit())' '                rest.len() >= 4 // knife' \
+   the_newest_handoff_and_pack_of_that_seat_are_taken
+# MV3 a relative repo line is taken
+mv '        Path::new(rest).is_absolute().then(|| rest.to_owned())' '        Some(rest.to_owned()) // knife' \
+   the_repo_is_the_handoffs_repo_line
+# MV4 the plan stops saying the old seat stays open
+mv '            "6. 印結果:新席碼、席資料夾、第一句已送 / 失敗原因;舊席 {} 不關(關席要真人)",' '            "6. 印結果:新席碼、席資料夾、第一句已送 / 失敗原因;舊席 {} 一併關掉", // knife' \
+   a_plan_is_found_from_the_seat_code_alone
+# MV5 a flag given twice or with another flag as its value is taken
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+   '            (Some(v), None) if !v.starts_with("--") => got = Some(v),' \
+   '            (Some(v), _) => got = Some(v), // knife' \
+   --expect-fail a_flag_and_its_value_are_taken_out_once \
+   -- cargo test -p aibd --locked --bin aibd a_flag_and_its_value_are_taken_out_once
