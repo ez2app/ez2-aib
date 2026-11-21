@@ -641,6 +641,61 @@ pub fn inbox_row(letter: &Value, seat_id: &str, state_root: &Path) -> Result<Mes
     })
 }
 
+/// One letter a move handed on (519d0 派工 M4, 0eed7 VERIFY-integ3 M4): the seat is told which
+/// of them are work orders and that they are its own (the code moved into it).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Handed {
+    pub id: String,
+    pub first_line: String,
+    pub sender: String,
+    pub dispatch: bool,
+}
+
+/// The longest first line kept in [`Handed`].
+const FIRST_LINE_MAX: usize = 120;
+
+/// What a handed-on letter is: its first line, who sent it, whether it is a work order (the
+/// first line 「派工:」, as D3 reads a work order's text; a bridged letter never wakes a seat on
+/// its own, this only names it).
+pub fn handed(letter: &Value) -> Handed {
+    let first = clean(
+        text(letter, "msg")
+            .trim_start()
+            .lines()
+            .next()
+            .unwrap_or(""),
+    );
+    let mut first_line = first.clone();
+    if first_line.len() > FIRST_LINE_MAX {
+        let mut cut = FIRST_LINE_MAX;
+        while !first_line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        first_line.truncate(cut);
+        first_line.push('…');
+    }
+    let sender = match clean(text(letter, "sender_label")) {
+        l if l.is_empty() => clean(text(letter, "sender_seat")),
+        l => l,
+    };
+    Handed {
+        id: text(letter, "id").to_owned(),
+        first_line,
+        sender,
+        dispatch: first.starts_with("派工:") || first.starts_with("派工："),
+    }
+}
+
+/// The line a handed-on letter carries at its end, read by the seat when it is written to it:
+/// it was the old code's, the code is this seat now, so a work order in it is this seat's.
+pub fn move_note(old_code: &str, dispatch: bool) -> String {
+    if dispatch {
+        format!("\n〔搬席轉來:這封原本寄給 {old_code},{old_code} 已搬進你這席;這張派工歸你,照派工做或回寄件席說明不接。〕")
+    } else {
+        format!("\n〔搬席轉來:這封原本寄給 {old_code},{old_code} 已搬進你這席,這封歸你。〕")
+    }
+}
+
 /// Ledger statuses of a letter still open (to be read or closed).
 const OPEN: [&str; 3] = ["queued", "delivered", "read"];
 
@@ -656,7 +711,7 @@ pub fn forward_open(
     queue: &Path,
     old_code: &str,
     seat_id: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<Handed>, String> {
     let mut out = Vec::new();
     let Ok(dir) = std::fs::read_dir(queue.join(old_code)) else {
         return Ok(out);
@@ -688,14 +743,20 @@ pub fn forward_open(
             continue;
         }
         let key = format!("{KEY}{}", text(&letter, "id"));
+        let h = handed(&letter);
+        let note = move_note(old_code, h.dispatch);
         match db
             .by_idem(crate::import::OWNER, &key)
             .map_err(|e| e.to_string())?
         {
             None => {
-                let row = inbox_row(&letter, seat_id, state_root)?;
+                let mut row = inbox_row(&letter, seat_id, state_root)?;
+                let body = format!("{}{note}", row.body.as_deref().unwrap_or_default());
+                row.body_sha256 = sha256_hex(&body);
+                row.len = i64::try_from(body.len()).unwrap_or(i64::MAX);
+                row.body = Some(body);
                 if let Inserted::New = db.insert(row).map_err(|e| e.to_string())? {
-                    out.push(text(&letter, "id").to_owned());
+                    out.push(h);
                 }
             }
             Some(had) => {
@@ -717,7 +778,7 @@ pub fn forward_open(
                 ] {
                     item.insert(k.into(), v);
                 }
-                let body = bridge_body(&letter, state_root);
+                let body = format!("{}{note}", bridge_body(&letter, state_root));
                 let f = aib_store::seat_moves::Forward {
                     to_key: &to,
                     item,
@@ -728,7 +789,7 @@ pub fn forward_open(
                     .forward(&had.message_id, had.rev, f, &crate::sessions::now_rfc3339())
                     .map_err(|e| e.to_string())?
                 {
-                    out.push(text(&letter, "id").to_owned());
+                    out.push(h);
                 }
             }
         }
@@ -1391,8 +1452,9 @@ mod tests {
         let seat = "s_0123456789abcdef";
         db.seat_move("7ebca", seat, "page:0123abcd", "2026-11-21T00:00:00Z")
             .unwrap();
-        let mut got = forward_open(&db, d.path(), &root, "7ebca", seat).unwrap();
-        got.sort();
+        let handed = forward_open(&db, d.path(), &root, "7ebca", seat).unwrap();
+        let mut got: Vec<&str> = handed.iter().map(|h| h.id.as_str()).collect();
+        got.sort_unstable();
         assert_eq!(
             got,
             ["q_fresh", "q_posted"],
@@ -1421,6 +1483,74 @@ mod tests {
                 .is_empty(),
             "reason: forwarded_twice"
         );
+    }
+
+    /// 519d0 派工 M4: a handed-on letter says it is the seat's now, and a work order is named
+    #[test]
+    fn a_handed_on_work_order_says_it_is_the_seats() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("state").join("dm-queue");
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        write(
+            &root,
+            &letter(
+                "q_job",
+                "queued",
+                "seat",
+                "519d0",
+                "7ebca",
+                "派工: 修 M4 → 7ebca\n細節",
+            ),
+        );
+        write(
+            &root,
+            &letter("q_note", "queued", "seat", "519d0", "7ebca", "只是通知"),
+        );
+        write(
+            &root,
+            &letter(
+                "q_wide",
+                "queued",
+                "seat",
+                "519d0",
+                "7ebca",
+                "派工：全形冒號",
+            ),
+        );
+        let seat = "s_0123456789abcdef";
+        db.seat_move("7ebca", seat, "page:0123abcd", "2026-11-21T00:00:00Z")
+            .unwrap();
+        let mut got = forward_open(&db, d.path(), &root, "7ebca", seat).unwrap();
+        got.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].id, "q_job");
+        assert!(
+            got[2].dispatch,
+            "reason: wide_colon_not_a_work_order {:?}",
+            got[2]
+        );
+        assert!(got[0].dispatch, "reason: work_order_not_named");
+        assert_eq!(got[0].first_line, "派工: 修 M4 → 7ebca");
+        assert!(!got[1].dispatch, "reason: note_named_a_work_order");
+        let job = db
+            .by_idem(crate::import::OWNER, "dm:q_job")
+            .unwrap()
+            .unwrap();
+        let body = job.body.unwrap();
+        assert!(
+            body.contains("這張派工歸你"),
+            "reason: not_told_it_is_its {body}"
+        );
+        assert_eq!(
+            job.body_sha256,
+            sha256_hex(&body),
+            "reason: sha_of_old_body"
+        );
+        let note = db
+            .by_idem(crate::import::OWNER, "dm:q_note")
+            .unwrap()
+            .unwrap();
+        assert!(note.body.unwrap().contains("這封歸你"));
     }
 
     /// 0eed7 VERIFY-integ3 M2: going back takes the handed-on letters out of the web inbox

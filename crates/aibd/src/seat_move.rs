@@ -283,9 +283,10 @@ pub async fn moved(st: AppState, body: Value, by: String) -> Response {
         json!({"old_code": code, "seat": sid, "by": by, "forwarded": forwarded.len()}),
     )
     .await;
+    // 519d0 派工 M4: which letters came along, which are work orders (the page lists them)
     Json(
         json!({"done": true, "old_code": code, "seat_id": sid, "steps": STEPS,
-        "forwarded": forwarded.len()}),
+        "forwarded": forwarded.len(), "letters": forwarded}),
     )
     .into_response()
 }

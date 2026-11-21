@@ -94,3 +94,15 @@ br crates/aib-store/src/seat_moves.rs \
    '            "SELECT seat_id FROM seat_moves WHERE old_code = ?1 AND unmoved_at IS NULL' \
    going_back_takes_the_handed_on_letters_out_of_the_web_inbox \
    '--lib dm_import::tests::going_back_takes_the_handed_on_letters_out_of_the_web_inbox'
+# BR16 a handed-on letter is not told it is the seat's (519d0 派工 M4)
+br crates/aibd/src/dm_import.rs \
+   '                let body = format!("{}{note}", row.body.as_deref().unwrap_or_default());' \
+   '                let body = row.body.clone().unwrap_or_default(); let _ = &note; // knife' \
+   a_handed_on_work_order_says_it_is_the_seats \
+   '--lib dm_import::tests::a_handed_on_work_order_says_it_is_the_seats'
+# BR17 a work order is told as a plain letter (M4)
+br crates/aibd/src/dm_import.rs \
+   '    if dispatch {' \
+   '    if false && dispatch { // knife' \
+   a_handed_on_work_order_says_it_is_the_seats \
+   '--lib dm_import::tests::a_handed_on_work_order_says_it_is_the_seats'
