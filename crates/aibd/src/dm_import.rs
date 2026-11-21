@@ -672,6 +672,34 @@ pub fn pass(
     db: &MessageDb,
     post_new: bool,
 ) -> Result<Counts, String> {
+    pass_with(files, state_root, db, post_new, &wake)
+}
+
+/// Where a web seat that got a new letter is told (aibd's started channel: redeliver, then
+/// mail_nudge), set once at start ([`set_wake`]); unset (tests, no server) nothing is told.
+static WAKE: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> =
+    std::sync::OnceLock::new();
+
+/// DESIGN-web-inbox-aibd-7ebca-1121 r1 A (DECISION-council-webinbox §4-4): the channel a seat
+/// that got a bridged letter is woken through.
+pub fn set_wake(tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    let _ = WAKE.set(tx);
+}
+
+fn wake(seat_id: &str) {
+    if let Some(tx) = WAKE.get() {
+        let _ = tx.send(seat_id.to_owned());
+    }
+}
+
+/// [`pass`], telling `woken` each web seat a new bridged letter was put in.
+pub fn pass_with(
+    files: &[PathBuf],
+    state_root: &Path,
+    db: &MessageDb,
+    post_new: bool,
+    woken: &dyn Fn(&str),
+) -> Result<Counts, String> {
     let mut c = Counts::default();
     let mut opened = std::collections::BTreeSet::new();
     // built once a pass has a new letter (the tree is read then)
@@ -752,7 +780,10 @@ pub fn pass(
         if let Some(seat_id) = moved_into {
             let row = inbox_row(&letter, &seat_id, state_root)?;
             match db.insert(row).map_err(|e| e.to_string())? {
-                Inserted::New => c.new += 1,
+                Inserted::New => {
+                    c.new += 1;
+                    woken(&seat_id);
+                }
                 Inserted::Existing(_) => c.already += 1,
             }
             continue;
@@ -982,7 +1013,11 @@ mod tests {
             );
             files.push(write(&root, &l));
         }
-        let c = pass(&files, d.path(), &db, true).unwrap();
+        let woke = std::cell::RefCell::new(Vec::new());
+        let tell = |s: &str| woke.borrow_mut().push(s.to_owned());
+        let c = pass_with(&files, d.path(), &db, true, &tell).unwrap();
+        assert_eq!(woke.borrow().len(), 3, "reason: seat_not_woken");
+        assert!(woke.borrow().iter().all(|s| s == seat));
         assert_eq!(c.new, 3, "reason: not_into_inbox {c:?}");
         let row = db
             .by_idem(crate::import::OWNER, "dm:q_m1")
@@ -1005,7 +1040,8 @@ mod tests {
         );
         assert!(body.contains("***@example.com"), "reason: email_not_masked");
         assert!(!body.contains("andy.i@"), "reason: email_name_kept");
-        let again = pass(&files, d.path(), &db, true).unwrap();
+        let again = pass_with(&files, d.path(), &db, true, &tell).unwrap();
+        assert_eq!(woke.borrow().len(), 3, "reason: woken_again");
         assert_eq!((again.new, again.already), (0, 3), "reason: posted_twice");
         // moved back: the next letter waits in the 1.x ledger's thread again
         db.seat_unmove("7ebca", "2026-11-21T00:01:00Z").unwrap();

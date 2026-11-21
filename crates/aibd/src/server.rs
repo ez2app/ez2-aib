@@ -410,6 +410,9 @@ pub async fn run(
     };
     // B1dm-S5: a seat that starts gets what other seats sent it while it was not running
     let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // DESIGN-web-inbox-aibd-7ebca-1121 r1 A: a web seat a bridged letter was put in is told
+    // the same way (redeliver, then mail_nudge)
+    crate::dm_import::set_wake(started_tx.clone());
     sessions.set_started(started_tx);
     // N-workspace: a seat's next turn starts with what it has not seen of its conversations
     sessions.set_catch_up(Arc::new(crate::catch_up::Library(
