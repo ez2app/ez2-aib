@@ -421,6 +421,8 @@ pub async fn run(
     )));
     // G13: a seat's turn answer back into the conversation that called it
     crate::reply_back::start(state.clone());
+    // S79-rust 3b: the drive wake's work orders for web seats are sent from here
+    crate::drive_send::start(state.clone());
     crate::work_audit::start(state.clone());
     // ORDER-webonly-today 7: the timed sentences the page set, if any
     crate::seat_tick::ensure_started(state.clone());

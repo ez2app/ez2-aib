@@ -29,3 +29,19 @@ dw '.env(crate::drive_plan::BY_AIBD_ENV, "1")' '.env(crate::drive_plan::BY_AIBD_
 # DW2 the act round's stdout is dropped (its plans never reach the executor)
 dw '            .stdout(Stdio::piped());' '            .stdout(Stdio::null());' \
    an_act_round_aibd_reads_is_told_the_web_seats_and_its_plan_lines_come_back
+de() { python3 -I scripts/knife.py crates/aibd/src/drive_send.rs "$1" "$2" --expect-fail "drive_send::tests::$3" \
+        -- cargo test -p aibd --locked --lib "drive_send::tests::$3"; }
+# DS1 a seat gets any number of work orders (no pace on aibd's side, L3)
+de '            if *key != plan.send_key && now.saturating_duration_since(*at) < PACE {' \
+   '            if *key != plan.send_key && now.saturating_duration_since(*at) < Duration::ZERO {' \
+   a_seat_gets_one_work_order_in_thirty_minutes_and_its_own_key_again
+# DS2 the same key again is paced (a restarted round's letter never reaches system_send's answer)
+de '            if *key != plan.send_key && now.saturating_duration_since(*at) < PACE {' \
+   '            if (*key != plan.send_key || !key.is_empty()) && now.saturating_duration_since(*at) < PACE {' \
+   a_seat_gets_one_work_order_in_thirty_minutes_and_its_own_key_again
+# DS3 a seat taken back is still told to drive as a web seat
+python3 -I scripts/knife.py crates/aib-store/src/seat_moves.rs \
+  '            "SELECT old_code FROM seat_moves WHERE unmoved_at IS NULL ORDER BY old_code",' \
+  '            "SELECT DISTINCT old_code FROM seat_moves ORDER BY old_code",' \
+  --expect-fail seat_moves::tests::the_moved_codes_are_the_live_moves_only \
+  -- cargo test -p aib-store --locked --lib seat_moves::tests::the_moved_codes_are_the_live_moves_only
