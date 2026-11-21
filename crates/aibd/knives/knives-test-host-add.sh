@@ -36,3 +36,9 @@ ta 'M=" $K aibd-delegate"' 'M=" aibd-delegate"' \
 # TA7 a line of the key without aibd's mark is added
 ta 'case "$L" in restrict,command=*" aibd-delegate") ;; *) exit 3;; esac' 'case "$L" in restrict,command=*) ;; *) exit 3;; esac' \
    the_line_is_written_once_after_a_last_newline_and_taken_away_alone
+# RH5 a key file in aibd's own delegate folder is taken as the owner's login (5d33a r1 N5)
+ta '    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts_with(own) {' '    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts_with(own) && own_keys.is_empty() { // knife' \
+   only_the_names_of_single_machines_are_offered
+# RH6 a value with another expansion is taken half expanded (5d33a r1 N4)
+ta "        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(['%', '\$']))" "        .any(|v| v.is_empty() || v.contains('%')) // knife" \
+   only_the_names_of_single_machines_are_offered

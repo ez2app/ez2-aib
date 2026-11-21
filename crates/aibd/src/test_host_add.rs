@@ -117,10 +117,14 @@ pub struct Machine {
 /// name when no block sets one and `home` for a leading `~/`. A name is offered with why it
 /// cannot be used instead when a matching block routes it elsewhere, a value has a `%` token or
 /// is missing, or the file has a `Match` or `Include` (what those apply to is not read here).
+/// Only `~/` is expanded; any other `~`, `%` or `$` makes the machine unusable rather than half
+/// expanded (5d33a PREREAD-addtesthost r1 N4), and so does a key file under `own_keys`, aibd's
+/// own delegate folder (N5: the two ways in are never mixed).
 pub fn machines(
     config: &str,
     user: &str,
     home: &str,
+    own_keys: &str,
 ) -> Vec<(String, Result<Machine, &'static str>)> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut whole_file_refused = false;
@@ -165,7 +169,8 @@ pub fn machines(
     names
         .into_iter()
         .map(|name| {
-            let got = machine_of(&blocks, &name, user, home, whole_file_refused);
+            let got = machine_of(&blocks, &name, user, home, whole_file_refused)
+                .and_then(|m| own_key_refused(m, own_keys));
             (name, got)
         })
         .collect()
@@ -211,9 +216,13 @@ fn machine_of(
     };
     if [hostname, user, identity_file.as_str()]
         .iter()
-        .any(|v| v.contains('%') || v.is_empty())
+        .any(|v| v.is_empty() || v.starts_with('~') || v.contains(['%', '$']))
     {
         return Err("value_with_a_token");
+    }
+    // a Windows path is absolute with its drive; `/…` is taken as absolute on both
+    if !(identity_file.starts_with('/') || std::path::Path::new(&identity_file).is_absolute()) {
+        return Err("identity_file_not_absolute");
     }
     Ok(Machine {
         name: name.to_owned(),
@@ -222,6 +231,15 @@ fn machine_of(
         user: user.to_owned(),
         identity_file,
     })
+}
+
+/// A key file in aibd's own delegate folder is not the owner's login (5d33a N5).
+fn own_key_refused(m: Machine, own_keys: &str) -> Result<Machine, &'static str> {
+    let own = std::path::Path::new(own_keys);
+    if !own_keys.is_empty() && std::path::Path::new(&m.identity_file).starts_with(own) {
+        return Err("aibd_own_key");
+    }
+    Ok(m)
 }
 
 /// What [`READ`] said about a machine.
@@ -314,7 +332,7 @@ mod tests {
                    IdentityFile ~/.ssh/id_rsa\nhost=pro13\n Port=2222\nHost !bad web-?? -oProxy\n\
                    HostName 192.0.2.9\nHost jump-*\n ProxyJump gw\nHost jump-a\n\
                    Host *\n  User fallback\n  IdentityFile ~/.ssh/id_ed25519\n  ProxyCommand none\n";
-        let m = machines(cfg, "me", "/Users/me");
+        let m = machines(cfg, "me", "/Users/me", "/d/trusted");
         let names: Vec<&str> = m.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["andymini", "lin-macmini", "pro13", "jump-a"]);
         assert_eq!(
@@ -339,7 +357,12 @@ mod tests {
             Err("reached_through_something_else"),
             "reason: proxy_offered"
         );
-        let no_key = machines("Host lone\n HostName 192.0.2.8\n", "me", "/Users/me");
+        let no_key = machines(
+            "Host lone\n HostName 192.0.2.8\n",
+            "me",
+            "/Users/me",
+            "/d/trusted",
+        );
         assert_eq!(no_key[0].1, Err("no_identity_file"));
         let token = machines(
             "Host t\n HostName %h.example\n IdentityFile ~/k\n",
@@ -347,8 +370,38 @@ mod tests {
             "/h",
         );
         assert_eq!(token[0].1, Err("value_with_a_token"));
+        for (half, why) in [
+            ("~other/k", "value_with_a_token"),
+            ("${HOME}/k", "value_with_a_token"),
+            ("/h/${X}/k", "value_with_a_token"),
+            ("k", "identity_file_not_absolute"),
+        ] {
+            let m = machines(
+                &format!("Host t\n IdentityFile {half}\n"),
+                "me",
+                "/h",
+                "/d/trusted",
+            );
+            assert_eq!(m[0].1, Err(why), "reason: half_expanded {half}");
+        }
+        let own = machines(
+            "Host t\n IdentityFile /d/trusted/delegate_ed25519\n",
+            "me",
+            "/h",
+            "/d/trusted",
+        );
+        assert_eq!(
+            own[0].1,
+            Err("aibd_own_key"),
+            "reason: delegate_key_as_login"
+        );
         for refused in ["Include other\n", "Match exec \"x\"\n"] {
-            let m = machines(&format!("{refused}Host a\n IdentityFile ~/k\n"), "me", "/h");
+            let m = machines(
+                &format!("{refused}Host a\n IdentityFile ~/k\n"),
+                "me",
+                "/h",
+                "/d/trusted",
+            );
             assert_eq!(
                 m[0].1,
                 Err("config_has_match_or_include"),
@@ -356,7 +409,7 @@ mod tests {
             );
         }
         assert!(
-            machines("HostName andymini\n", "me", "/h").is_empty(),
+            machines("HostName andymini\n", "me", "/h", "/d/trusted").is_empty(),
             "reason: hostname_read_as_host"
         );
     }
