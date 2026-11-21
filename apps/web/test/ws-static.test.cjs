@@ -271,6 +271,9 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 唯讀:待審區段不送 act
   const seg = app.slice(app.indexOf('// ---------- 待審區 ----------'), app.indexOf('const FILTERS ='));
   ok(seg.length > 1000 && !/AIB\.(send|read|done|act)\(/.test(seg), 'reason: review_area_not_read_only');
+  // 被擋原因給人話:IB_BLOCK 每一條都是中文句子,不是 aibd 代號(代號只進 title)
+  { const ib = (app.match(/const IB_BLOCK = \{([^}]*)\}/) || [])[1] || '', vals = [...ib.matchAll(/: '([^']*)'/g)].map((m) => m[1]);
+    ok(vals.length >= 11 && vals.every((v) => /[\u4e00-\u9fff]/.test(v)), 'reason: blocked_reason_not_human_words'); }
   // 急件只看 aibd level;本文寫急不算
   ok(/m\.level === 'urgent'/.test(seg) && !/first_line[^;]*急/.test(seg.replace(/派工/g, '')), 'reason: urgent_not_from_level');
   // 三格文字取代勾
@@ -300,7 +303,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §23 即時熱度(519d0 SPEC-heat-rail r1)
 {
   const css = read('apps/web/dist/ws.css');
-  ok(/HEAT_W = \{ 1: 5, 4: 3, 2: 3, 3: 2, 5: 2, 6: 1 \}, HEAT_N = 5/.test(ws), 'reason: heat_weights_or_five_rows');
+  ok(/HEAT_W = \{ 1: 5, 4: 3, 2: 3, 3: 2, 5: 2, 6: 1 \}, HEAT_N = 5,/.test(ws), 'reason: heat_weights_or_five_rows');
   ok(/Math\.pow\(0\.5, age \/ 10\)/.test(ws) && /age <= 30/.test(ws), 'reason: heat_half_life_window');
   ok(/HEAT_GAP = 5000/.test(ws) && /now - HEAT\.at < HEAT_GAP/.test(ws), 'reason: heat_reorders_too_often');
   ok(/c\.h > T\[lo\]\.h \* 1\.15/.test(ws) && /\* 0\.15 \? pos\(a\) - pos\(b\)/.test(ws), 'reason: heat_no_hysteresis');
@@ -329,6 +332,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const run = ws.slice(ws.indexOf('function waitRow('), ws.indexOf('function saidRows('));
   ok(run.length > 100 && !/copyBtn/.test(run), 'reason: copy_button_on_pending_row');
   // 複製原文(不是排好的 HTML)、1.5 秒、被拒改選取
+  // 剪貼簿 1 秒沒回(權限框卡住)就走選取,不讓按鈕一直停在等
+  ok(/Promise\.race\(\[navigator\.clipboard\.writeText\(txt\), new Promise\(\(ok, no\) => setTimeout\(\(\) => no\(new Error\('clipboard_timeout'\)\), 1000\)\)\]\)/.test(ws), 'reason: copy_waits_forever');
   ok(/COPYT\.set\(String\(key\), txt\)/.test(ws) && /navigator\.clipboard\.writeText\(txt\)/.test(ws) && /until: Date\.now\(\) \+ 1500/.test(ws) && /已選取,按 ⌘C/.test(ws) && /r\.selectNodeContents\(body\)/.test(ws), 'reason: copy_rules');
 }
 
