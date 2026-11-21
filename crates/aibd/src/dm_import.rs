@@ -1134,7 +1134,6 @@ mod tests {
         assert_eq!(relay_path(&other, d.path()), None, "reason: non_relay_read");
     }
 
-    #[test]
     /// G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §2): a letter to a moved code lands once in the
     /// web seat's inbox, the whole text behind the fixed line, e-mail names masked.
     #[test]
@@ -1256,7 +1255,7 @@ mod tests {
         let mut own = letter("q_own", "delivered", "seat", "7ebca", "519d0", "hi");
         own["aibd_message_id"] = json!(mid);
         let p = write(&root, &own);
-        let c = pass(&[p.clone()], d.path(), &db, true).unwrap();
+        let c = pass(std::slice::from_ref(&p), d.path(), &db, true).unwrap();
         assert_eq!(
             (c.new, c.updated),
             (0, 1),
@@ -1378,7 +1377,7 @@ mod tests {
                 .unwrap();
         let file = q.join("7ebca").join(format!("{}.json", sent.id));
         // not moved: a post in the 1.x thread, not the web seat's
-        pass(&[file.clone()], home, &db, true).unwrap();
+        pass(std::slice::from_ref(&file), home, &db, true).unwrap();
         let post = db
             .by_idem(crate::import::OWNER, &format!("dm:{}", sent.id))
             .unwrap()
@@ -1408,6 +1407,7 @@ mod tests {
         assert_eq!(l["done_evidence"], Value::Null, "reason: evidence_passed");
     }
 
+    #[test]
     fn a_pass_posts_a_letter_once_and_follows_its_status() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("state").join("dm-queue");
