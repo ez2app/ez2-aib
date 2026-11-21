@@ -61,7 +61,7 @@ br crates/aibd/src/seat_send.rs \
 # BR10 the key is not kept on the row (a second send writes the ledger twice)
 br crates/aibd/src/seat_send.rs \
    '        row.idem_key = Some(k.to_owned());' \
-   '        row.idem_key = None; // knife' \
+   '        row.idem_key = Some(k.to_owned()).filter(|_| false); // knife' \
    letters_cross_the_bridge_once_each_way \
    '--test seat_bridge letters_cross_the_bridge_once_each_way'
 # BR11 going back leaves the handed-on letters in the web inbox (0eed7 VERIFY-integ3 M2)

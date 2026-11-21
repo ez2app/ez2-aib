@@ -200,14 +200,16 @@ async fn letters_cross_the_bridge_once_each_way() {
     let r = act(&d, &tok, json!({"type": "message_outbox"})).await;
     assert_eq!(r.code, 200, "{}", r.body);
     let rows = r.json["messages"].as_array().unwrap();
-    assert_eq!(rows.len(), 4, "reason: outbox_count {}", r.body);
+    // the three above, the one before them, and the one sent with the MCP key (0eed7 B1)
+    assert_eq!(rows.len(), 5, "reason: outbox_count {}", r.body);
     assert!(
         rows.iter().all(|m| m["to_seat"] == "legacy:519d0"),
         "reason: other_rows {}",
         r.body
     );
+    assert_eq!(rows[0]["id"], first, "reason: not_newest_first");
     let (mid, dm) = &sent[2];
-    let newest = &rows[0];
+    let newest = &rows[1];
     assert_eq!(newest["id"], mid.as_str(), "reason: not_newest_first");
     assert_eq!(newest["dm_id"], dm.as_str(), "reason: ledger_id_missing");
     assert_eq!(newest["dm_status"], "done", "reason: ledger_state_missing");
