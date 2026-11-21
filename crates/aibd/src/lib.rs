@@ -77,6 +77,7 @@ pub mod search;
 pub mod seat_carry;
 pub mod seat_clear;
 pub mod seat_dm;
+pub mod seat_fetch;
 pub mod seat_input;
 pub mod seat_model;
 pub mod seat_move;

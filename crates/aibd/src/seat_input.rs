@@ -59,6 +59,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
+    crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
@@ -304,6 +305,18 @@ pub async fn act(
                     );
                 };
                 return crate::seat_pending::seat_act(st, &seat, body).await;
+            }
+            // G8 (DESIGN-g4-7b81e-1121; 5d33a PREREAD-g4 L2): a seat fetches a commit of its
+            // registered repo into its own copy; the seat is the token's, never the body's
+            if crate::seat_fetch::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_fetch::act(st, body, Some(seat)).await;
             }
             // DESIGN-seat-now-all: a trusted, listed seat reads what every seat is doing
             if crate::seat_now_all::is_seat_act(&body) {
@@ -577,6 +590,18 @@ pub async fn act(
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a
         // registered repo go back as one new branch; the built-in page in this pairing only,
         // then the owner's fingerprint (a seat's token never reaches /api/v1/act as a page)
+        // G8: the built-in page in this pairing brings a commit into a seat's copy (no
+        // fingerprint: it reads the registered repo and writes only that copy)
+        Some(crate::seat_fetch::FETCH) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "seat_fetch_built_in_page_only",
+                    "a commit is fetched into a seat's copy from the built-in page in this pairing only",
+                );
+            }
+            return crate::seat_fetch::act(st, body, None).await;
+        }
         Some(crate::send_back::SEND_BACK) => {
             let from_user_page = held_as_user_page(&page).await;
             if from_user_page || page.carried {

@@ -638,18 +638,25 @@ mod tests {
             crate::WORK_ALLOWED
                 .iter()
                 .filter(|t| t.starts_with("Bash("))
-                .all(
-                    |t| ["Bash(git ", "Bash(ls)", "Bash(pwd)", "Bash(node --test"]
-                        .iter()
-                        .any(|p| t.starts_with(p))
-                ),
+                .all(|t| [
+                    "Bash(git ",
+                    "Bash(ls)",
+                    "Bash(pwd)",
+                    "Bash(node --test",
+                    "Bash(node --check ",
+                    "Bash(node apps/web/test/",
+                    "Bash(rustfmt --check ",
+                ]
+                .iter()
+                .any(|p| t.starts_with(p))),
             "reason: bash_rule_beyond_reading"
         );
-        // 5d33a M2: only the listed rules take free arguments (no `git diff *`, `ls *`)
+        // 5d33a M2: only the listed rules take free arguments (no `ls *`; G4a's git reads are
+        // listed, under the sandbox)
         assert!(
             crate::WORK_ALLOWED
                 .iter()
-                .filter(|t| t.ends_with(" *)"))
+                .filter(|t| t.ends_with("*)"))
                 .all(|t| crate::WORK_FREE_ARGS.contains(t)),
             "reason: free_args_rule"
         );

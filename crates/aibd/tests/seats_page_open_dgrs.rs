@@ -538,11 +538,16 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
         "reason: no_tree_branch {row}"
     );
     assert_eq!(row["tree"]["unmerged"], 0, "{row}");
-    // 043dd round 2 合回: not while it runs; stopped, its commit goes into the author's folder
+    // 043dd round 2 合回; 519d0 11-21: open and idle is not busy (nothing committed yet, so
+    // nothing is merged); stopped, its commit goes into the author's folder
     let mb = json!({"type": "seat_merge_back", "seat_id": third, "idem_key": "mb-1"});
     let r = post(mb.to_string()).await;
     assert_eq!(r.code, 409, "{}", r.body);
-    assert_eq!(r.json["code"], "seat_busy", "{}", r.body);
+    assert_ne!(
+        r.json["code"], "seat_busy",
+        "reason: idle_seat_refused {}",
+        r.body
+    );
     let r = d
         .call(
             "DELETE",
