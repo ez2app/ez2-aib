@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# GB1–GB7: a push of a registered GitHub repository goes with aibd's own one-shot git helper, which answers only its host and path from the one descriptor it was given; a missing or refused token is said before the window, GitHub out of reach is not (DESIGN-gh-token-card-7b81e-1121 r1 L1, §4; 5d33a PREREAD-ghtokencard 4, L1)
+# GB1–GB8: a push of a registered GitHub repository goes with aibd's own one-shot git helper, which answers only its host and path from the one descriptor it was given; a missing or refused token is said before the window, GitHub out of reach is not (DESIGN-gh-token-card-7b81e-1121 r1 L1, §4; 5d33a PREREAD-ghtokencard 4, L1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 kc() { python3 -I scripts/knife.py crates/aibd/src/git_cred.rs "$1" "$2" --expect-fail "git_cred::tests::$3" \
@@ -37,3 +37,7 @@ ks '    let r = unsafe { libc::dup2(from, to) };' \
 ks '    mark_rest()?;' \
    '    let _ = mark_rest;' \
    a_given_descriptor_reaches_the_child_and_only_it
+# GB8 the helper answers whatever repository path git names (5d33a PREREAD-ghtokencard r1 N5)
+kc '            "path" => (2, path),' \
+   '            "path" => (2, value),' \
+   the_helper_answers_get_for_its_own_host_and_path_only

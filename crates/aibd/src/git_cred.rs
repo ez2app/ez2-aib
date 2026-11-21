@@ -100,7 +100,9 @@ pub fn answer(op: &str, request: &str, host: &str, path: &str, given: &[u8]) -> 
     seen.iter().all(|s| *s).then(|| given.to_vec())
 }
 
-/// `aibd git-cred --fd 3 --host <host> --path <path> <op>`, as git runs it.
+/// `aibd git-cred --fd 3 --host <host> --path <path> <op>`, as git runs it. Asked again in the
+/// same push (after a 401, 5d33a r1 N4) it reads the same, now empty, pipe and says nothing:
+/// nothing opens a second one.
 pub fn main(args: &[&str]) -> std::process::ExitCode {
     // git ignores a helper that says nothing; an error is the same nothing
     let ["--fd", fd, "--host", host, "--path", path, op] = args else {
