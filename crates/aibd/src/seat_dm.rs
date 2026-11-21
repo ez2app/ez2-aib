@@ -182,15 +182,22 @@ pub fn aibd_urgent(
     false
 }
 
-/// Whether the 1.x letter `id` was handed to the web inbox (dm_import's row, key `dm:<id>`).
-pub fn in_web_inbox(db: &aib_store::MessageDb, id: &str) -> bool {
+/// Whether the 1.x letter `id` was handed to this web seat's inbox: dm_import's row (key
+/// `dm:<id>`) addressed to `seat:<seat_id>`. A mirror row posted to a 1.x thread is not one
+/// (5d33a REVIEW-g3 be9077a6 L1: the web seat cannot close that one there).
+pub fn in_web_inbox(db: &aib_store::MessageDb, id: &str, seat_id: &str) -> bool {
     db.by_idem(
         crate::import::OWNER,
         &format!("{}{id}", crate::dm_import::KEY),
     )
     .ok()
     .flatten()
-    .is_some()
+    .is_some_and(|row| web_row_for(&row.to_key, seat_id))
+}
+
+/// A row addressed to this web seat itself.
+pub fn web_row_for(to_key: &str, seat_id: &str) -> bool {
+    to_key.strip_prefix("seat:") == Some(seat_id)
 }
 
 /// Close several letters with one evidence (PREREAD-seat-inbox-summary r3, 5d33a 題 1): each at
@@ -486,6 +493,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             .unwrap_or_default()
     });
     let db = st.messages.clone();
+    let me = seat_id.to_owned();
     let evidence = body
         .get("evidence")
         .and_then(Value::as_str)
@@ -504,7 +512,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                     &code,
                     now,
                     &|mid, letter| aibd_urgent(&db, mid, &code, letter),
-                    &|id| in_web_inbox(&db, id),
+                    &|id| in_web_inbox(&db, id, &me),
                 ),
             ),
             SHOW => match show(&store, &code, &id, &relay_dirs) {
@@ -521,7 +529,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                     evidence.as_deref(),
                     why.as_deref(),
                     now,
-                    &|id| in_web_inbox(&db, id),
+                    &|id| in_web_inbox(&db, id, &me),
                 ),
                 (None, None) => (
                     StatusCode::BAD_REQUEST,
@@ -537,7 +545,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                     evidence.as_deref(),
                     why.as_deref(),
                     now,
-                    &|id| in_web_inbox(&db, id),
+                    &|id| in_web_inbox(&db, id, &me),
                 ),
             },
         }
@@ -981,6 +989,25 @@ mod tests {
         assert_eq!(st, StatusCode::CONFLICT, "reason: closed_in_ledger {v:?}");
         assert_eq!(v["code"], json!("close_in_web_inbox"));
         assert_eq!(status(&store, id), "read");
+    }
+
+    /// G3k (5d33a REVIEW-g3 be9077a6 L1): only a row addressed to this web seat sends the
+    /// letter to message_done; a mirror posted to a thread, or another seat's row, does not.
+    #[test]
+    fn only_this_seats_own_row_sends_a_letter_to_the_web_inbox() {
+        assert!(web_row_for("seat:seat_web1", "seat_web1"));
+        for other in [
+            "thread:t_1",
+            "seat:seat_web2",
+            "legacy:a9136",
+            "seat_web1",
+            "",
+        ] {
+            assert!(
+                !web_row_for(other, "seat_web1"),
+                "reason: mirror_row_counted {other}"
+            );
+        }
     }
 
     /// G3f: the seat code is aibd's, never a field of the request.

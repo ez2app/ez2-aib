@@ -53,3 +53,6 @@ dm '    for (id, rev) in items {' '    for (id, rev) in items.iter().map(|(i, _)
 # G3j (DECISION-council-webinbox §5) a letter in the web inbox is closed in the ledger too
 dm '    if in_web(id) {' '    if in_web(id) && id.is_empty() { // knife' \
    a_letter_in_the_web_inbox_is_closed_there
+# G3k (5d33a REVIEW-g3 be9077a6 L1) a mirror row on a thread sends the letter to message_done
+dm '    to_key.strip_prefix("seat:") == Some(seat_id)' '    !to_key.is_empty() || seat_id.is_empty() // knife' \
+   only_this_seats_own_row_sends_a_letter_to_the_web_inbox
