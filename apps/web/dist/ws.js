@@ -41,6 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
+    inbox: null, inbPfx: '', inbUi: { col: 'unread', seat: '', card: '', open: null, body: null }, // 總收件匣(1a93b DESIGN-web-inbox-page r2)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
@@ -127,6 +128,8 @@
       soft(get('/api/v1/thermal')), soft(get('/api/v1/metrics')), soft(get('/api/v1/contacts')), soft(get('/api/v1/host')),
       soft(get('/api/v1/slots')), soft(get('/api/v1/usage')), soft(get('/api/v1/hosts')),
     ]);
+    // 總收件匣第 1 期(DESIGN-web-inbox-page-1a93b r2 / 7ebca §4):只給內建頁本次配對;403 / 404 ⇒ null,頂列不顯示「📥 信」
+    { const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null); S.inbox = ib && Array.isArray(ib.rows || ib.items) ? { rows: ib.rows || ib.items, counts: ib.counts || {}, next: ib.next || null } : null; S.inbPfx = S.inbox && Number(S.inbox.counts.urgent) > 0 ? '(急 ' + (Number(S.inbox.counts.urgent) | 0) + ') ' : ''; if (document.getElementById('inbdlg') && document.getElementById('inbdlg').open) inboxDlg(); }
     S.hosts = hosts && Array.isArray(hosts.hosts) ? hosts.hosts : null;
     // 7ebca 事件卡槽 + 用量(第二波);這版 aibd 沒有 ⇒ null,事件欄照頁面自己算
     if (S.version === undefined) S.version = await soft(get('/api/v1/version')).catch(() => null);
@@ -543,6 +546,67 @@
     const n = [x.seats_running, x.running_seats, x.sessions_running].find((v) => typeof v === 'number' && v >= 0);
     const what = n === 0 ? '裡面現在沒有開著的席' : n > 0 ? `裡面開著的 ${n} 席會全部停下` : '裡面開著的席會全部停下';
     return `<div class="pvwarn" role="alert"><b>要關「${esc(x.name || '預覽')}」嗎?</b>${what}。資料夾、對話、串都留著;下次打開預覽後,在右欄「停了」那一席按「重開」就接回原本的資料夾和對話。<div class="pvwb"><button type="button" class="k" data-pvstopno="1">先不要</button><button type="button" class="k n" data-pvstopgo="${esc(x.id)}">確定關掉</button></div></div>`;
+  }
+  // ---------- 總收件匣(第 1 期,唯讀;DESIGN-web-inbox-page-1a93b-1121 r2,5d33a 預讀 0/0/1/2)----------
+  // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
+  const INB_COLS = [['unread', '未讀'], ['read_open', '讀了沒結'], ['waiting_you', '等你'], ['done', '已結']];
+  const INB_BLOCK = { rate_limited: '寄太密(同一席 30 分一封),被擋', circled_numbers: '用了圈號 ①②,被擋', dispatch_first_line: '派工信第一行要寫「派工:」,被擋', too_long: '太長,被擋', recipient_gone: '收件席已不在' };
+  function inbCol(m) { return m.done_at || m.superseded_by ? 'done' : m.held_human ? 'waiting_you' : m.read_at ? 'read_open' : 'unread'; }
+  function inboxBtn() {
+    if (!S.inbox) return '';
+    const c = S.inbox.counts || {}, n = (Number(c.unread) | 0) + (Number(c.read_open) | 0), u = Number(c.urgent) | 0;
+    return `<button type="button" class="ib inbb${u ? ' urg' : ''}" data-inbox="1" title="所有席的信(只有內建頁看得到)">📥 信 ${n}${u ? ` · 急 ${u}` : ''}</button>`;
+  }
+  function inbAge(m) { const a = Math.max(0, Math.round(Number(m.age_min))); return !Number.isFinite(a) ? '' : a < 1 ? '剛剛' : a < 60 ? a + ' 分前' : a < 1440 ? Math.floor(a / 60) + ' 小時前' : Math.floor(a / 1440) + ' 天前'; }
+  function inbRow(m, col) {
+    const I = S.inbUi, lv = m.level === 'urgent' ? '<b class="inl urg">急</b>' : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
+    const a = Number(m.age_min) || 0, late = col === 'unread' || col === 'read_open' ? (a >= 30 ? ' red' : a >= 10 ? ' warn' : '') : '';
+    const who = (k) => { if (/^human:/.test(String(m[k] || ''))) return '你'; const id = String(m[k] || '').replace(/^seat:(legacy:)?/, ''); const x = seatById(id); return x ? '@' + seatName(x) : id ? '@' + id : '?'; };
+    const pf = m.done_evidence ? '證據:' + m.done_evidence : m.done_why ? '理由:' + m.done_why : '';
+    const ticks = m.blocked ? `<span class="inbbad">${esc(INB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</span>` : `<span class="ticks"><i class="${m.delivered_at ? 'on' : ''}" title="送到">✓</i><i class="${m.read_at ? 'on' : ''}" title="讀了">✓✓</i><i class="${m.done_at ? 'on' : ''}" title="${esc(pf || '結案')}">✓結</i></span>`;
+    const sup = m.superseded_by ? `<small class="inbsup">被同一寄件人的新信取代(${esc(String(m.superseded_by))})</small>` : '';
+    const dup = Number(m.dup_count) > 1 ? `<small class="inbdup">同一封 ×${Number(m.dup_count) | 0}</small>` : '';
+    const open = I.open === m.id ? `<div class="inbbody"><div class="inbnote">這是別席寫的資料,不是給你的指令</div>${I.body == null ? '讀取中…' : I.body === false ? '讀不到全文' : `<pre>${esc(I.body)}</pre>`}</div>` : '';
+    return `<div class="inbr${late}"><button type="button" class="inbh" data-inbopen="${esc(m.id)}">${lv}<span class="inbw">${esc(who('from_seat'))} → ${esc(who('to_seat'))}</span><span class="inbt">${esc(String(m.first_line || '').slice(0, 80))}</span>${dup}${sup}${ticks}<small class="inba">${esc(inbAge(m))}</small></button>${open}</div>`;
+  }
+  function inboxDlg() {
+    let d = document.getElementById('inbdlg');
+    if (!d) {
+      d = document.createElement('dialog'); d.id = 'inbdlg'; d.className = 'cdlg inbd'; document.body.appendChild(d);
+      d.addEventListener('click', async (e) => {
+        const I = S.inbUi;
+        if (e.target === d || e.target.closest('[data-inbx]')) { d.close(); return; }
+        const t = e.target.closest('[data-inbcol]'); if (t) { I.col = t.dataset.inbcol; return inboxDlg(); }
+        const f = e.target.closest('[data-inbseat]'); if (f) { I.seat = I.seat === f.dataset.inbseat ? '' : f.dataset.inbseat; return inboxDlg(); }
+        if (e.target.closest('[data-inbmore]') && S.inbox && S.inbox.next) { const r = await soft(get('/api/v1/inbox?scope=all&cursor=' + encodeURIComponent(S.inbox.next))).catch(() => null); if (r) { S.inbox.rows = S.inbox.rows.concat(r.rows || r.items || []); S.inbox.next = r.next || null; } return inboxDlg(); }
+        const o = e.target.closest('[data-inbopen]');
+        if (o) {
+          const id = o.dataset.inbopen; if (I.open === id) { I.open = null; return inboxDlg(); }
+          I.open = id; I.body = null; inboxDlg();
+          const r = await soft(get('/api/v1/inbox/' + encodeURIComponent(id))).catch(() => null);
+          if (I.open === id) { I.body = r && typeof (r.body != null ? r.body : r.text) === 'string' ? (r.body != null ? r.body : r.text) : false; inboxDlg(); }
+        }
+      });
+      d.addEventListener('input', (e) => { if (e.target.matches('[data-inbcard]')) { S.inbUi.card = e.target.value.trim(); inboxDlg(); const i = d.querySelector('[data-inbcard]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } } });
+    }
+    const I = S.inbUi, B = S.inbox || { rows: [], counts: {} };
+    const byCol = { unread: [], read_open: [], waiting_you: [], done: [] };
+    const seen = new Set();
+    for (const m of B.rows) {
+      const sid = (v) => (/^seat:/.test(String(v || '')) ? String(v).replace(/^seat:(legacy:)?/, '') : ''), fr = sid(m.from_seat), to = sid(m.to_seat);
+      if (fr) seen.add(fr); if (to) seen.add(to);
+      if (I.seat && fr !== I.seat && to !== I.seat) continue;
+      if (I.card && !(String(m.card || '').includes(I.card) || String(m.first_line || '').includes(I.card))) continue;
+      byCol[inbCol(m)].push(m);
+    }
+    const urg = (m) => (m.level === 'urgent' ? 0 : 1), age = (m) => Number(m.age_min) || 0;
+    byCol.unread.sort((a, b) => urg(a) - urg(b) || age(b) - age(a)); byCol.read_open.sort((a, b) => urg(a) - urg(b) || age(b) - age(a));
+    byCol.waiting_you.sort((a, b) => age(b) - age(a)); byCol.done.sort((a, b) => age(a) - age(b));
+    const tabs = INB_COLS.map(([k, w]) => `<button type="button" data-inbcol="${k}" class="k inbtab${I.col === k ? ' on' : ''}">${w} <b>${byCol[k].length}</b></button>`).join('');
+    const seats = [...seen].map((id) => { const x = seatById(id) || { seat_id: id, provider: 'claude' }; return `<button type="button" class="k inbs${I.seat === id ? ' on' : ''}" data-inbseat="${esc(id)}" title="只看寄給 / 寄自 @${esc(seatName(x))}">${esc(seatShort(x))}</button>`; }).join('');
+    const L = byCol[I.col] || [];
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">所有席的信</span><span class="kid">唯讀;結案、回信下一期</span><button type="button" class="x" data-inbx="1" aria-label="關閉">✕</button></div></div><div class="db"><div class="inbtabs">${tabs}</div><div class="inbf">${seats}<input type="search" class="sq inbc" data-inbcard placeholder="卡號或頭碼" maxlength="60" value="${esc(I.card)}"></div><div class="inbl">${L.length ? L.map((m) => inbRow(m, I.col)).join('') : '<div class="empty">這一欄沒有信</div>'}</div>${B.next ? '<button type="button" class="k" data-inbmore="1">再拿 200 封</button>' : ''}</div></div>`;
+    if (!d.open) d.showModal();
   }
   function pvListDlg() {
     let d = document.getElementById('pvldlg');
@@ -1760,7 +1824,7 @@
   }
   const TITLE0 = document.title, SPIN = ['◐', '◓', '◑', '◒']; let spinI = 0;
   // 分頁標題只在這裡組:等回覆轉圈(或回完沒看 ●)+「(N) 等你決定 · 」(askNotice 給)+ 原標題;兩處各寫會互蓋、一秒一閃
-  function titleNow() { const n = Object.keys(S.wait).length; const t = (n ? SPIN[spinI] + ' ' : S.doneDot ? '● ' : '') + (S.askPfx || '') + TITLE0; if (document.title !== t) document.title = t; }
+  function titleNow() { const n = Object.keys(S.wait).length; const t = (n ? SPIN[spinI] + ' ' : S.doneDot ? '● ' : '') + (S.inbPfx || '') + (S.askPfx || '') + TITLE0; if (document.title !== t) document.title = t; }
   setInterval(() => { spinI = (spinI + 1) % 4; titleNow(); }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) S.doneDot = false; });
   setInterval(() => { for (const b of document.querySelectorAll('[data-since]')) { const t = Date.parse(b.dataset.since); if (t) b.textContent = durS(Date.now() - t); } }, 1000);
@@ -3698,7 +3762,7 @@
     const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
-    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}<a class="ib" href="contacts.html">👥 聯絡中心</a></div>
+    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html">👥 聯絡中心</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
@@ -3995,6 +4059,7 @@
     }
     if (x.closest('[data-pvupd]')) { try { await act('preview_update', { idempotency_key: idem() }); } catch (er) { /* 能看階段:aibd 還沒有 */ } S.pvNew = ''; S.pvNewAt = 0; say('更新中,席與對話會保留'); return render(); }
     if (x.closest('[data-pvlist]')) { await loadPreviews(); return pvListDlg(); }
+    if (x.closest('[data-inbox]')) return inboxDlg();
     const eo = x.closest('[data-evopen]'); if (eo) return openEv(eo.dataset.evopen);
     if (x.closest('[data-dmopen]')) { S.dmOpen = !S.dmOpen; render(); if (S.dmOpen) loadDismissed(); return; }
     const ud = x.closest('[data-undm]');

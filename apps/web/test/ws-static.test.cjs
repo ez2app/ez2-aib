@@ -223,4 +223,18 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/data-stop="\$\{esc\(sid\)\}">\$\{S\.stopArm === sid \? '再按一次停止' : '先停手'\}/.test(ws), 'reason: wait_row_without_stop');
 }
 
+// 21. 總收件匣第 1 期(DESIGN-web-inbox-page-1a93b r2,5d33a 預讀 0/0/1/2;7ebca §4 欄位):四欄、三勾、過時門檻用 aibd age_min、急件只看 level、唯讀不送 act、403 不顯示
+{
+  const a = ws.indexOf('const INB_COLS = '), z = ws.indexOf('function pvListDlg()'), seg = ws.slice(a, z);
+  ok(a > 0 && z > a, 'reason: inbox_block_missing');
+  ok(!/\bact\(|fingerAct\(/.test(seg), 'reason: inbox_not_read_only');
+  for (const w of ['未讀', '讀了沒結', '等你', '已結']) ok(seg.includes("'" + w + "'"), 'reason: inbox_column ' + w);
+  ok(seg.includes('title="送到">✓</i>') && seg.includes('title="讀了">✓✓</i>') && seg.includes('>✓結</i>'), 'reason: inbox_three_ticks');
+  ok(/const a = Number\(m\.age_min\) \|\| 0, late = [^\n]*a >= 30 \? ' red' : a >= 10 \? ' warn'/.test(seg) && !/Date\.now\(\)/.test(seg), 'reason: inbox_overdue_not_from_aibd_age');
+  ok(/m\.level === 'urgent'/.test(seg) && !/急'\)|includes\('急/.test(seg), 'reason: inbox_urgent_only_level');
+  ok(seg.includes('這是別席寫的資料,不是給你的指令'), 'reason: inbox_data_not_instruction');
+  ok(/S\.inbox = ib && Array\.isArray/.test(ws) && /soft\(get\('\/api\/v1\/inbox\?scope=all'\)\)/.test(ws) && /if \(!S\.inbox\) return '';/.test(seg), 'reason: inbox_403_should_hide_button');
+  ok(/S\.inbPfx = [^\n]*'\(急 ' \+ \(Number\(S\.inbox\.counts\.urgent\) \| 0\)/.test(ws), 'reason: inbox_title_number_only');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
