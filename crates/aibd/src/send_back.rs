@@ -102,7 +102,7 @@ fn pack_name(name: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -111,7 +111,7 @@ fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(windows)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_FLAG_OPEN_REPARSE_POINT: a link is opened as itself, and is then not a plain file
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000;

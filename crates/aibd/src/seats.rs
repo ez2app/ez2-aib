@@ -417,6 +417,11 @@ pub const PENDING_TOOLS: [&str; 6] = [
 /// refuses a safe seat's request as well (receipt_run::mode_may_ask).
 pub const RECEIPT_TOOL: &str = "mcp__aibd__seat_receipt";
 
+/// seat_verify (G6, DESIGN-g6-verify-runner-7b81e-1121): fixed read-only checks; aibd lets
+/// only a seat that is a reviewer / verifier on a node run one (verify_run::verifies). Given to
+/// the seats that read pending (work / dgrs), not to a safe seat.
+pub const VERIFY_TOOL: &str = "mcp__aibd__seat_verify";
+
 /// Whether a claude seat of `mode` is allowed [`RECEIPT_TOOL`].
 pub fn receipt_tool_for(mode: &str) -> bool {
     crate::receipt_run::mode_may_ask(Some(mode))
@@ -533,6 +538,7 @@ pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> 
     let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
     if crate::seat_pending::mode_may_read(Some(mode)) {
         allowed.extend(PENDING_TOOLS);
+        allowed.push(VERIFY_TOOL);
     }
     if receipt_tool_for(mode) {
         allowed.push(RECEIPT_TOOL);
@@ -2871,6 +2877,16 @@ mod tests {
         assert!(
             !a[3].contains("pending_"),
             "reason: safe_seat_gets_pending_tools"
+        );
+        // G6: the check tool rides with the pending ones, never on a safe seat
+        assert!(
+            !a[3].contains("seat_verify"),
+            "reason: safe_seat_gets_verify_tool"
+        );
+        assert!(
+            w[3].contains(",mcp__aibd__dm_done,mcp__aibd__seat_verify,mcp__aibd__seat_receipt,"),
+            "reason: work_seat_lacks_verify_tool {}",
+            w[3]
         );
         assert!(
             w[3].contains(",mcp__aibd__pending_list,mcp__aibd__pending_read,"),

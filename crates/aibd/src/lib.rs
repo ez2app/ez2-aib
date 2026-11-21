@@ -108,6 +108,8 @@ pub mod trusted_hosts;
 pub mod trusted_seats;
 pub mod turns;
 pub mod usage;
+pub mod verify_preview;
+pub mod verify_run;
 pub mod wake;
 pub mod work_audit;
 pub mod workspace;
