@@ -894,6 +894,11 @@ fn a_work_seat_adds_files_by_name_and_is_told_what_it_may_run() {
         assert!(note.contains(&shown), "reason: not_told {shown}");
     }
     assert!(note.contains("直接被拒"), "reason: refusal_not_said");
+    // 0eed7 VERIFY-integ3 A1: a seat chained printf && git add && git commit and was refused
+    assert!(
+        note.contains("一次只下一個指令:不要用 &&、;、| 串接"),
+        "reason: chaining_not_said"
+    );
     assert!(!note.contains("Bash("), "reason: rule_syntax_shown");
 }
 
