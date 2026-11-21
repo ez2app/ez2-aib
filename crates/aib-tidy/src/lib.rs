@@ -114,14 +114,22 @@ impl Item {
     }
 }
 
+/// The §4 never-list classes this version tells apart (5d33a L1: the decision has
+/// [`NEVER_TOTAL`]); an item of any other class is `unverified`, not `excluded`, so build
+/// evidence must not make anything a candidate until all are here.
+pub const NEVER_CHECKED: [&str; 2] = ["knife_anchor", "glob_called"];
+pub const NEVER_TOTAL: usize = 16;
+
 /// §6: the board shows how many wait and how many are unverified, never lines removed.
 pub fn summary(items: &[Item]) -> String {
     let n = |s: &str| items.iter().filter(|i| i.status() == s).count();
     format!(
-        "TIDY candidate={} unverified={} excluded={}",
+        "TIDY candidate={} unverified={} excluded={} never_checked={}/{}",
         n("candidate"),
         n("unverified"),
-        n("excluded")
+        n("excluded"),
+        NEVER_CHECKED.len(),
+        NEVER_TOTAL
     )
 }
 
@@ -129,6 +137,8 @@ pub fn to_json(items: &[Item]) -> Value {
     json!({
         "items": items.iter().map(Item::to_value).collect::<Vec<_>>(),
         "summary": summary(items),
+        "never_checked": NEVER_CHECKED,
+        "never_total": NEVER_TOTAL,
     })
 }
 
@@ -249,7 +259,12 @@ pub fn names_crate(text: &str, id: &str) -> bool {
             return true;
         }
         let before = text[..s].trim_end();
-        if (before.ends_with("use") || before.ends_with("extern crate") || before.ends_with("#["))
+        let ends_word = |w: &str| {
+            before.ends_with(w)
+                && !before[..before.len() - w.len()]
+                    .ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        };
+        if (ends_word("use") || ends_word("extern crate") || before.ends_with("#["))
             && !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
         {
             return true;
@@ -605,6 +620,10 @@ mod tests {
         assert!(items.iter().all(|i| i.status() != "candidate"));
         let s = summary(&items);
         assert!(s.starts_with("TIDY candidate=0 unverified="), "{s}");
+        assert!(
+            s.ends_with(" never_checked=2/16"),
+            "reason: never_list_scope_hidden: {s}"
+        );
         let i = items.iter_mut().find(|i| i.symbol == "tempfile").unwrap();
         i.mac = true;
         assert_eq!(i.status(), "unverified", "reason: one_platform_is_enough");
@@ -628,6 +647,10 @@ mod tests {
         assert!(!names_crate("// tempfile here", "tempfile"));
         assert!(!names_crate("use tempfiles::x;", "tempfile"));
         assert!(!names_crate("use my_tempfile::x;", "tempfile"));
+        assert!(
+            !names_crate("reuse serde;", "serde"),
+            "reason: use_inside_a_word"
+        );
         assert_eq!(
             deps_of(
                 "[dependencies]\n# why\nfoo = \"1\"\nbar.workspace = true\n\n[features]\nx = []\n"

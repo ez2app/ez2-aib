@@ -37,3 +37,9 @@ td '        if s > 0 && word(b[s - 1]) {' '        if s > 0 && word(b[s - 1]) &&
 # TD10 an absolute path is read as a repository path
 td '                && !w.starts_with('"'"'/'"'"')' '                && !w.starts_with("//")' \
    crate_names_are_read_as_words
+# TD11 (5d33a L1) the summary hides how few never-list classes were checked
+td '        "TIDY candidate={} unverified={} excluded={} never_checked={}/{}",' '        "TIDY candidate={} unverified={} excluded={} {}{}",' \
+   nothing_is_a_candidate_without_both_platforms
+# TD12 (5d33a N1) "use" inside a longer word counts as a use
+td "                    .ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')" '                    .ends_with(|c: char| c.is_ascii_control())' \
+   crate_names_are_read_as_words
