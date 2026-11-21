@@ -6,7 +6,7 @@ tt() { python3 -I scripts/knife.py crates/aibd/src/touch.rs "$1" "$2" --expect-f
         -- cargo test -p aibd --locked --lib "touch::tests::$3"; }
 # TP1 the code on top is not the one given (the countdown beside would show another)
 tt '        "{}({until},過了這張就作廢)對照碼 {code}\n{}",' \
-   '        "{}({until},過了這張就作廢)對照碼 {short_code}\n{}",' \
+   '        "{}({until},過了這張就作廢)對照碼 {code:.0}{short_code}\n{}",' \
    a_pairing_window_says_it_plainly_first_and_then_what_it_always_said
 # TP2 the top line says the old words instead of plain ones
 tt '        plain(who, user_page),' \
