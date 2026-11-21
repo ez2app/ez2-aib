@@ -191,6 +191,13 @@ fn a_held_folder_lock_holds_the_python_writer() {
         std::time::Duration::from_secs(1),
     )
     .expect("lock");
+    // the lock is on the folder itself, the one Python's atomic_json flocks (f1fae #871 CI: SD3
+    // bit nothing; a slow Python start alone kept it from writing for 2 s)
+    let folder = std::fs::File::open(&dir).expect("folder");
+    assert!(
+        matches!(folder.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        "reason: lock_not_on_the_folder"
+    );
     let mut kid = python(&script, d.path(), "held");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < until {
