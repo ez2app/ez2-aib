@@ -1039,7 +1039,7 @@ label.rvr{cursor:pointer}
 .snh{color:var(--dim);font-size:12px;margin-bottom:2px}
 .snl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 0}
 .snn{background:none;border:0;color:var(--text);font-weight:600;cursor:pointer;padding:0}
-.snl b.w{color:var(--gold)}
+.snl b.snw{color:var(--gold)}
 .snl b.bad,.body.bad{color:var(--red)}
 .body.ok{color:var(--green)}
 .pbx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}

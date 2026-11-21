@@ -1247,16 +1247,16 @@
     const n = nowOf(s.seat_id), se = lastSession(s.seat_id), run = se && se.state === 'running';
     const bits = [];
     if (!run) bits.push(se ? '沒在跑' : '還沒開');
-    else if (n && n.state === 'reply') bits.push('<b class="w">等回應</b>');
-    else if (n && n.state === 'decide') bits.push('<b class="w">等你決定</b>');
+    else if (n && n.state === 'reply') bits.push('<b class="snw">等回應</b>');
+    else if (n && n.state === 'decide') bits.push('<b class="snw">等你決定</b>');
     else if (n && n.state === 'busy') { const st = stallOf(s.seat_id); bits.push(st && st.none ? '<b class="bad">這一輪模型沒有回應</b>' : '在做'); }
     else bits.push('在跑');
     if (n && n.item) bits.push(esc(String(n.item).slice(0, 80)) + (n.total ? ` <small>${Number(n.done) | 0}/${Number(n.total) | 0}</small>` : ''));
     const mail = (S.aslots || []).filter((c) => c && c.seat_id === s.seat_id && (c.kind === 'message.unclosed' || c.kind === 'message.unread'));
     const m = mail.map((c) => { const k = String(c.item || ''); const d = /(\d+)\s*封/.exec(k); return { n: d ? Number(d[1]) : 1, open: c.kind === 'message.unclosed' }; });
     const nOpen = m.filter((x) => x.open).reduce((a, x) => a + x.n, 0), nUnread = m.filter((x) => !x.open).reduce((a, x) => a + x.n, 0);
-    if (nOpen) bits.push(`<b class="w">${nOpen} 封信沒結</b>`);
-    if (nUnread) bits.push(`<b class="w">${nUnread} 封信沒讀</b>`);
+    if (nOpen) bits.push(`<b class="snw">${nOpen} 封信沒結</b>`);
+    if (nUnread) bits.push(`<b class="snw">${nUnread} 封信沒讀</b>`);
     const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
     if (u && u.pct != null) bits.push('用量 ' + (Number(u.pct) | 0) + '%');
     const tu = trustUntil(s); if (tu) bits.push('受信任到 ' + esc(hhmm(tu * 1000)));

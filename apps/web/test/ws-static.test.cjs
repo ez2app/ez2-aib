@@ -196,4 +196,11 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/function repoTag\(s\)/.test(ws) && /\$\{repoTag\(s\)\}/.test(ws), 'reason: seat_card_without_repo_tag');
 }
 
+// 17. Andy 10:26 截圖:「各席現在」兩條橫線 = 列內 <b class="w"> 吃到流程站點的 .w::before(position:absolute、left:-50%、width:100%)
+{
+  ok(!/<b class="w">/.test(ws), 'reason: seat_now_word_takes_station_line');
+  const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8');
+  ok(/\.w::before\{/.test(css) && [...ws.matchAll(/<(?:b|span|i|em|small) class="w[ "]/g)].length === 0, 'reason: inline_w_class_besides_station');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
