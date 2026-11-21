@@ -1092,15 +1092,29 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "seat_done",
-            "description": "Close a message from seat_inbox once you have dealt with it: say why, or give evidence (a message id you replied with, or a PR url).",
+            "description": "Close messages from seat_inbox once you have dealt with them: say why, or give evidence (a message id you replied with, or a PR url). Give the rev seat_inbox showed: a message that changed since is not closed (run seat_inbox again). Up to 20 at once with messages.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "message_id": {"type": "string", "description": "the id from seat_inbox"},
+                    "revision": {"type": "integer", "description": "the rev seat_inbox showed for it"},
+                    "messages": {
+                        "type": "array",
+                        "maxItems": SEAT_DONE_MAX,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "message_id": {"type": "string"},
+                                "revision": {"type": "integer"},
+                            },
+                            "required": ["message_id"],
+                            "additionalProperties": false,
+                        },
+                        "description": "several at once, each with the rev seat_inbox showed; one why / evidence for all",
+                    },
                     "why": {"type": "string", "description": "what you did about it"},
                     "evidence": {"type": "string", "description": "a reply's message id or a PR url"},
                 },
-                "required": ["message_id"],
                 "additionalProperties": false,
             },
         },
@@ -1724,22 +1738,73 @@ fn inbox_text(r: &Value) -> String {
         .join("\n\n")
 }
 
-/// `seat_done`: find the message in the inbox, mark it read when it is not yet (the dm queue
-/// core closes only what was read), then close it at the revision it has now.
+/// At most this many messages in one `seat_done` (as `dm_done`'s items, 5d33a 0/0/0/2).
+const SEAT_DONE_MAX: usize = 20;
+
+/// `seat_done`: one `message_id` (with the `revision` seat_inbox showed) or up to
+/// [`SEAT_DONE_MAX`] `messages`, each closed on its own ([`seat_done_one`]); one that fails
+/// leaves the others (0eed7 VERIFY-integ3 M1: a moved seat's letters close here, so the rev
+/// check and the batch of dm_done must be here too). An error only when none closed.
 fn seat_done(c: &Client, args: &Value) -> Result<String, String> {
-    let id = args["message_id"]
-        .as_str()
-        .ok_or("seat_done needs message_id")?;
+    let asked: Vec<(&str, Option<i64>)> = match (args["message_id"].as_str(), &args["messages"]) {
+        (Some(id), Value::Null) => vec![(id, args["revision"].as_i64())],
+        (None, Value::Array(a)) if !a.is_empty() && a.len() <= SEAT_DONE_MAX => a
+            .iter()
+            .map(|m| {
+                m["message_id"]
+                    .as_str()
+                    .map(|id| (id, m["revision"].as_i64()))
+                    .ok_or("seat_done: each of messages needs message_id")
+            })
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(format!(
+                "seat_done needs message_id, or messages (1 to {SEAT_DONE_MAX}), not both"
+            ))
+        }
+    };
     let inbox = c.request(
         "POST",
         "/api/v1/act",
         Some(json!({"type": "message_inbox"})),
     )?;
+    let lines: Vec<Result<String, String>> = asked
+        .iter()
+        .map(|(id, seen)| seat_done_one(c, args, &inbox, id, *seen))
+        .collect();
+    let any_ok = lines.iter().any(Result::is_ok);
+    let text = lines
+        .into_iter()
+        .map(|l| l.unwrap_or_else(|e| e))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if any_ok {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
+/// One message of [`seat_done`]: find it in the inbox; a `seen` rev it no longer has is not
+/// closed (it changed since seat_inbox: read it again); mark it read when it is not yet (the
+/// dm queue core closes only what was read), then close it at the revision the read left.
+fn seat_done_one(
+    c: &Client,
+    args: &Value,
+    inbox: &Value,
+    id: &str,
+    seen: Option<i64>,
+) -> Result<String, String> {
     let m = inbox["messages"]
         .as_array()
         .and_then(|a| a.iter().find(|m| m["message_id"] == id))
         .ok_or_else(|| format!("{id} 不在你的未結案訊息裡"))?;
     let mut rev = m["revision"].as_i64().unwrap_or(0);
+    if let Some(s) = seen.filter(|s| *s != rev) {
+        return Err(format!(
+            "{id} 沒結:你看到的是 rev {s},現在是 rev {rev}(信改過),請重跑 seat_inbox 再看一次"
+        ));
+    }
     if m["status"] != "read" {
         let r = c.request(
             "POST",
@@ -3738,6 +3803,80 @@ mod tests {
             "reason: shared_thread_not_passed"
         );
         assert_eq!(body_of(&req[2])["expected_revision"], 2);
+    }
+
+    fn seat_done_call(c: &Client, args: &str) -> Value {
+        let mut out = Vec::new();
+        let input = format!(
+            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"seat_done","arguments":{args}}}}}"#
+        ) + "\n";
+        mcp(c, &mut input.as_bytes(), &mut out).unwrap();
+        serde_json::from_slice(&out).unwrap()
+    }
+
+    /// 0eed7 VERIFY-integ3 M1: a message that changed since seat_inbox showed it is not
+    /// closed (and not read); the seat is told to look again.
+    #[test]
+    fn seat_done_leaves_a_message_whose_rev_moved_since_it_was_seen() {
+        let (mut c, server) = fake(vec![
+            r#"{"messages":[{"message_id":"q_1","thread_id":"seat:a~seat:b","from_seat":"seat:a","status":"read","revision":4,"body":"改過"}]}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let line = seat_done_call(&c, r#"{"message_id":"q_1","revision":3,"why":"看完了"}"#);
+        assert_eq!(
+            line["result"]["isError"], true,
+            "reason: closed_a_moved_rev {line}"
+        );
+        let t = line["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.contains("rev 3") && t.contains("seat_inbox"), "{t}");
+        assert_eq!(
+            server.join().unwrap().len(),
+            1,
+            "reason: read_or_closed_anyway"
+        );
+    }
+
+    /// 0eed7 VERIFY-integ3 M1: several at once, each at its own rev; one that moved is left
+    /// and the others close.
+    #[test]
+    fn seat_done_closes_several_and_leaves_the_one_that_moved() {
+        let (mut c, server) = fake(vec![
+            r#"{"messages":[{"message_id":"q_1","thread_id":"seat:a~seat:b","from_seat":"seat:a","status":"read","revision":3,"body":"一"},{"message_id":"q_2","thread_id":"seat:a~seat:b","from_seat":"seat:a","status":"read","revision":5,"body":"二"},{"message_id":"q_3","thread_id":"seat:a~seat:b","from_seat":"seat:a","status":"read","revision":7,"body":"三"}]}"#,
+            r#"{"message":{"message_id":"q_1","status":"done","revision":4}}"#,
+            r#"{"message":{"message_id":"q_3","status":"done","revision":8}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let line = seat_done_call(
+            &c,
+            r#"{"messages":[{"message_id":"q_1","revision":3},{"message_id":"q_2","revision":4},{"message_id":"q_3"}],"why":"一起結"}"#,
+        );
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        let t = line["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            t.contains("已結案 q_1") && t.contains("q_2 沒結") && t.contains("已結案 q_3"),
+            "{t}"
+        );
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 3, "reason: the_moved_one_was_sent");
+        let revs: Vec<(Option<i64>, bool)> = req[1..]
+            .iter()
+            .map(|r| {
+                let b = body_of(r);
+                (b["expected_revision"].as_i64(), b["why"] == "一起結")
+            })
+            .collect();
+        assert_eq!(
+            revs,
+            [(Some(3), true), (Some(7), true)],
+            "reason: not_each_at_its_rev"
+        );
+        let too_many: Vec<String> = (0..=SEAT_DONE_MAX)
+            .map(|n| format!(r#"{{"message_id":"q_{n}"}}"#))
+            .collect();
+        let (c2, server2) = fake(vec![]);
+        let line = seat_done_call(&c2, &format!(r#"{{"messages":[{}]}}"#, too_many.join(",")));
+        assert_eq!(line["result"]["isError"], true, "reason: more_than_twenty");
+        assert!(server2.join().unwrap().is_empty());
     }
 
     /// S89-live-4 (0eed7 C): a seat opened while every slot is in use says it is queued, with
