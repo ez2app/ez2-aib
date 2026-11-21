@@ -1235,17 +1235,13 @@ pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::p
 
 /// Where every work seat's folder lives: `<data>/seat-work`, next to the sessions folder.
 pub fn seat_work_root(sessions: &std::path::Path) -> std::path::PathBuf {
-    sessions.parent().unwrap_or(sessions).join("seat-work")
+    crate::folders::folder(sessions.parent().unwrap_or(sessions), "seat-work")
 }
 
 /// aibd's empty hooks folder for the git a work seat and aibd run there; its parent is the
 /// git HOME aibd gives its own git (seat_worktree).
 pub fn seat_git_hooks(sessions: &std::path::Path) -> std::path::PathBuf {
-    sessions
-        .parent()
-        .unwrap_or(sessions)
-        .join("seat-git")
-        .join("hooks")
+    crate::folders::folder(sessions.parent().unwrap_or(sessions), "seat-git").join("hooks")
 }
 
 /// 5d33a M1 on ecf54f91d / CHECK-preview-work-seat 2: a work seat given a folder by path works

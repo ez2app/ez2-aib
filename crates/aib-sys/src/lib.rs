@@ -69,6 +69,7 @@ pub mod list;
 mod macos;
 #[cfg(target_os = "macos")]
 pub mod presence_macos;
+pub mod noindex;
 pub mod procargs;
 pub mod selfcheck;
 #[cfg(windows)]

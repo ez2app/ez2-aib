@@ -66,6 +66,7 @@ pub mod revive;
 pub mod runinfo;
 pub mod runtime;
 pub mod search;
+pub mod folders;
 pub mod seat_carry;
 pub mod seat_clear;
 pub mod seat_input;
