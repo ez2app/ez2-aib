@@ -464,6 +464,13 @@ pub fn pending_receipt(
         return Err("receipt_too_large");
     }
     let v = crate::receipt_check::check(&bytes, head, knives);
+    // what the receipt itself says it ran (5d33a REVIEW-g6verify r2 N1): with knives 0 its knife
+    // lines are not checked, so the asker sees when it had some
+    let knives_expected = String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|l| l.strip_prefix("KNIVES-EXPECTED "))
+        .filter_map(|n| n.trim().parse::<u64>().ok())
+        .last();
     let sealed = !v
         .reasons
         .iter()
@@ -476,6 +483,7 @@ pub fn pending_receipt(
         "tests_total": v.tests,
         "knives": v.knives,
         "sealed": sealed,
+        "knives_expected": knives_expected,
     }))
 }
 
@@ -1308,6 +1316,16 @@ mod tests {
             !v.to_string().contains("RC test"),
             "reason: receipt_line_told {v}"
         );
+        assert_eq!(v["knives_expected"], Value::Null);
+        let mut with = format!("HEAD {h}\nRC test=0\n").into_bytes();
+        with.extend_from_slice(b"KNIVES-EXPECTED 7\n");
+        std::fs::write(
+            d.path().join("RECEIPT-knives.out"),
+            crate::receipt_check::seal(&with),
+        )
+        .unwrap();
+        let v = pending_receipt(d.path(), "RECEIPT-knives.out", &h, 0).unwrap();
+        assert_eq!(v["knives_expected"], 7, "reason: knives_hidden {v}");
         let mut edited = receipt_body(&h);
         edited[0] = b'X';
         std::fs::write(d.path().join("RECEIPT-edited.out"), edited).unwrap();
