@@ -1400,6 +1400,9 @@
     if (!pr) return '';
     if (pr.isDraft) return 'pg';
     const roll = Array.isArray(ck) ? ck.map((c) => c.bucket) : Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup.map((c) => (/FAIL|ERROR|CANCEL/i.test(String(c.conclusion || c.state || '')) ? 'fail' : '')) : [];
+    // a9136 d82d98a48:list 的每張帶 checks = 按結果計數 {SUCCESS:30, FAILURE:1, …}(完整 rollup 會超過 64 KB)
+    const cnt = pr.checks && typeof pr.checks === 'object' && !Array.isArray(pr.checks) ? pr.checks : null;
+    if (cnt && Object.keys(cnt).some((k) => /FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED/i.test(k) && Number(cnt[k]) > 0)) return 'pr';
     if (roll.includes('fail')) return 'pr';
     if (String(pr.state || '').toUpperCase() === 'MERGED') return 'pg';
     return pr.reviewDecision === 'APPROVED' && String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'pok' : 'po';
@@ -2522,13 +2525,13 @@
       back(/Mac|iPhone|iPad/.test(navigator.platform || '') ? '已選取,按 ⌘C' : '已選取,按 Ctrl+C');
     }
   }
-  // ---------- 對話工具:📸 截圖 + 標註 / 🎨 取色 / ↑ 送出紀錄 / ☆ 收藏(519d0 SPEC-web-capture-history-fav r0,Andy 13:0x;介面 IFACE-chat-tools-page-1a93b-1121)----------
+  // ---------- 對話工具:📸 截圖 + 標註 / 🎨 取色 / ↑ 送出紀錄 / ☆ 收藏(519d0 SPEC-web-capture-history-fav r0,Andy 13:0x;頁面提案 IFACE-chat-tools-page-1a93b-1121,aibd 實際形狀 a9136 IFACE-chat-tools-aibd-a9136-1121 r1:讀寫都是 act)----------
   // 存放都在 aibd(換電腦、換瀏覽器都在);aibd 還沒有對應 act ⇒ 只在本頁有效(不寫瀏覽器儲存),工具列寫一句
   const CT = { hist: null, histOpen: false, histSel: 0, favs: null, favOpen: false, favQ: '', colors: [], pick: null, note: '' };
   const SECRETISH = /(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|[A-Za-z0-9+/_-]{40,})/;
   const ctHas = (t) => hasAct(t) === true;
   function chatTools() {
-    const miss = ['send_history_add', 'favorite_add', 'screen_shot'].filter((t) => !ctHas(t));
+    const miss = ['send_history_list', 'fav_add', 'screen_capture'].filter((t) => !ctHas(t));
     const hist = CT.histOpen ? ctHistHtml() : '';
     return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(aibd),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">aibd 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
   }
@@ -2536,15 +2539,22 @@
   async function ctHistLoad() {
     if (CT.hist) return CT.hist;
     CT.hist = [];
-    if (ctHas('send_history_add')) { try { const r = await soft(get('/api/v1/send_history')); if (r && Array.isArray(r.items)) CT.hist = r.items.filter((x) => x && typeof x.text === 'string').slice(0, 100); } catch (e) { /* 讀不到:本頁先記 */ } }
+    if (ctHas('send_history_list')) { try { const r = await act('send_history_list', {}); if (r && Array.isArray(r.history)) CT.hist = r.history.filter((x) => x && typeof x.text === 'string').map((x) => ({ id: x.n, text: x.text, at: x.at, to: '' })).slice(0, 100); } catch (e) { /* 讀不到:本頁先記 */ } }
     return CT.hist;
   }
+  // 送出後先放進本頁清單(aibd 在 seat_input 成功時自己記;下次開頁從 aibd 讀)
   async function ctHistAdd(text, to) {
     const t = String(text || '').trim(); if (!t || SECRETISH.test(t)) return;
     await ctHistLoad();
     if (CT.hist[0] && CT.hist[0].text === t) return;
-    CT.hist.unshift({ id: '', text: t, to: String(to || ''), at: new Date().toISOString() }); CT.hist.length = Math.min(CT.hist.length, 100);
-    if (ctHas('send_history_add')) act('send_history_add', { text: t, to: String(to || '') }).then((r) => { if (r && r.id && CT.hist[0] && CT.hist[0].text === t) CT.hist[0].id = r.id; }).catch(() => {});
+    CT.hist.unshift({ id: null, text: t, to: String(to || ''), at: new Date().toISOString() }); CT.hist.length = Math.min(CT.hist.length, 100);
+    if (ctHas('send_history_list')) CT.histStale = true; // 號碼(n)要重讀才有,刪單則前重讀
+  }
+  // 刪單則:aibd 用號碼 n;本頁剛加、還沒號碼的先重讀一次找同字那則
+  async function ctHistDel(h) {
+    let n = h.id;
+    if (n == null) { try { const r = await act('send_history_list', {}); const m = r && Array.isArray(r.history) && r.history.find((x) => x && x.text === h.text); n = m ? m.n : null; } catch (e) { n = null; } }
+    if (n != null) act('send_history_delete', { n }).catch((e) => say(errText(e), 'err'));
   }
   function ctHistHtml() {
     const L = CT.hist || [];
@@ -2562,10 +2572,10 @@
   async function ctFavLoad() {
     if (CT.favs) return CT.favs;
     CT.favs = [];
-    if (ctHas('favorite_add')) { try { const r = await soft(get('/api/v1/favorites')); if (r && Array.isArray(r.items)) CT.favs = r.items.filter((x) => x && typeof x.text === 'string'); } catch (e) { /* 本頁先記 */ } }
+    if (ctHas('fav_list')) { try { const r = await act('fav_list', {}); if (r && Array.isArray(r.favorites)) CT.favs = r.favorites.filter((x) => x && typeof x.text === 'string').map((x) => ({ id: x.fav_id, key: '', text: x.text, from: x.seat_id ? 'seat:' + x.seat_id : '', at: x.at, tag: x.tag || '', ref: { message_id: x.message_id, seat_id: x.seat_id } })); } catch (e) { /* 本頁先記 */ } }
     render(); return CT.favs;
   }
-  const favOf = (key) => (CT.favs || []).find((f) => f.key === key || (f.ref && f.ref.key === key));
+  const favOf = (key) => { const m = FAVM.get(key), mid = m && m.ref && m.ref.message_id; return (CT.favs || []).find((f) => f.key === key || (mid && f.ref && f.ref.message_id === mid)); };
   function favBtn(key, txt, from, at, ref) {
     if (typeof txt !== 'string' || !txt.trim()) return '';
     FAVM.set(String(key), { text: txt, from: String(from || ''), at: String(at || ''), ref: Object.assign({ key: String(key) }, ref || {}) });
@@ -2575,10 +2585,12 @@
   async function ctFavToggle(key) {
     await ctFavLoad();
     const f = favOf(key);
-    if (f) { CT.favs = CT.favs.filter((x) => x !== f); if (f.id && ctHas('favorite_add')) act('favorite_del', { id: f.id }).catch((e) => say(errText(e), 'err')); return render(); }
+    if (f) { CT.favs = CT.favs.filter((x) => x !== f); if (f.id && ctHas('fav_delete')) act('fav_delete', { fav_id: f.id }).catch((e) => say(errText(e), 'err')); return render(); }
     const m = FAVM.get(key); if (!m) return;
     const nf = { id: '', key, text: m.text, from: m.from, at: m.at, ref: m.ref, tag: '' }; CT.favs.unshift(nf);
-    if (ctHas('favorite_add')) act('favorite_add', { text: m.text, from: m.from, at: m.at, ref: m.ref }).then((r) => { if (r && r.id) nf.id = r.id; }).catch((e) => say(errText(e), 'err'));
+    // aibd 要 seat_id + message_id:寫的人是席就用它;你自己在共同對話寫的用這串的對象席(沒有就只在本頁)
+    const sid = String(m.ref.seat_id || m.from || '').replace(/^seat:/, '');
+    if (ctHas('fav_add') && sid && !/^human:/.test(sid) && m.ref.message_id) act('fav_add', { message_id: String(m.ref.message_id), seat_id: sid, text: m.text.slice(0, 65536) }).then((r) => { if (r && r.fav_id) nf.id = r.fav_id; }).catch((e) => say(errText(e), 'err'));
     render();
   }
   const favList = () => { const q = CT.favQ.trim().toLowerCase(); return (CT.favs || []).filter((f) => !q || (f.text + ' ' + (f.tag || '') + ' ' + f.from).toLowerCase().includes(q)); };
@@ -2586,7 +2598,7 @@
     if (!CT.favOpen) return '';
     const L = favList();
     const rows = L.slice(0, 50).map((f, i) => `<div class="fvr"><div class="fvm"><b>${esc(f.from ? f.from.replace(/^seat:/, '@').replace(/^human:.*/, '你') : '')}</b>${esc(hhmm(f.at))}${f.tag ? ' · ' + esc(f.tag) : ''}</div><div class="fvt" title="${esc(f.text)}">${esc(String(f.text).slice(0, 160))}</div><div class="fvb"><button type="button" class="k sm2" data-fvput="${i}">貼回輸入框</button><button type="button" class="k sm2" data-fvjump="${i}">跳到原對話</button><button type="button" class="k sm2" data-fav="${esc(f.key || f.ref && f.ref.key || '')}" data-fvid="${esc(f.id || '')}">☆ 取消</button></div></div>`).join('');
-    return `<div class="evbox fvbox"><div class="bh"><span class="ek kfav">收藏</span> <span class="st">${(CT.favs || []).length} 則</span><button type="button" class="ghx" data-ct="fav" aria-label="收起">×</button></div><input class="apq fvq" data-fvq type="search" placeholder="搜尋收藏…" value="${esc(CT.favQ)}">${rows || '<div class="empty">還沒有收藏;每則對話右上的 ☆ 可以收</div>'}<div class="cthf">${ctHas('favorite_add') ? '收藏存在 aibd,換電腦、換瀏覽器都在' : 'aibd 還沒有收藏:只在這一頁有效'}</div></div>`;
+    return `<div class="evbox fvbox"><div class="bh"><span class="ek kfav">收藏</span> <span class="st">${(CT.favs || []).length} 則</span><button type="button" class="ghx" data-ct="fav" aria-label="收起">×</button></div><input class="apq fvq" data-fvq type="search" placeholder="搜尋收藏…" value="${esc(CT.favQ)}">${rows || '<div class="empty">還沒有收藏;每則對話右上的 ☆ 可以收</div>'}<div class="cthf">${ctHas('fav_add') ? '收藏存在 aibd,換電腦、換瀏覽器都在' : 'aibd 還沒有收藏:只在這一頁有效'}</div></div>`;
   }
   // ---- 取色 ----
   const hex2 = (n) => n.toString(16).padStart(2, '0').toUpperCase();
@@ -2600,31 +2612,32 @@
     const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '')); if (!m) return;
     const n = parseInt(m[1], 16); CT.pick = ctColor(n >> 16, (n >> 8) & 255, n & 255);
     CT.colors = [CT.pick.hex].concat(CT.colors.filter((c) => c !== CT.pick.hex)).slice(0, 12);
-    if (ctHas('color_add')) act('color_add', { hex: CT.pick.hex }).catch(() => {});
+    if (ctHas('color_push')) act('color_push', { hex: CT.pick.hex.toLowerCase() }).then((r) => { if (r && Array.isArray(r.colors)) { CT.colors = r.colors.map((c) => String(c).toUpperCase()).slice(0, 12); render(); } }).catch(() => {});
     render();
   }
   function ctPickHtml() {
     const P = CT.pick;
     const val = P.hex ? ['hex', 'rgb', 'hsl'].map((k) => `<button type="button" class="pkv" data-pkcopy="${esc(P[k])}">${esc(P[k])}</button>`).join('') : `<div class="cthf">${esc(P.msg || '')}</div>`;
-    return `<div class="pkbox" data-pkbox><div class="pkh">取色 · ${'EyeDropper' in window ? '吸管可點螢幕任何地方' : '這個瀏覽器沒有吸管:在截圖上點'}<button type="button" class="ghx" data-pkx="1" aria-label="關">×</button></div>${P.hex ? `<i class="pksw" data-bg="${esc(P.hex)}"></i>` : ''}<div class="pkvs">${val}</div><div class="pkrec">${CT.colors.map((c) => `<button type="button" class="pkc" data-pkput="${esc(c)}" title="${esc(c)} 放進輸入框" data-bg="${esc(c)}"></button>`).join('')}</div><div class="cthf">最近 12 色 ·${ctHas('color_add') ? ' 記在 aibd' : ' 只在這一頁'} · 點色塊放進輸入框</div></div>`;
+    return `<div class="pkbox" data-pkbox><div class="pkh">取色 · ${'EyeDropper' in window ? '吸管可點螢幕任何地方' : '這個瀏覽器沒有吸管:在截圖上點'}<button type="button" class="ghx" data-pkx="1" aria-label="關">×</button></div>${P.hex ? `<i class="pksw" data-bg="${esc(P.hex)}"></i>` : ''}<div class="pkvs">${val}</div><div class="pkrec">${CT.colors.map((c) => `<button type="button" class="pkc" data-pkput="${esc(c)}" title="${esc(c)} 放進輸入框" data-bg="${esc(c)}"></button>`).join('')}</div><div class="cthf">最近 12 色 ·${ctHas('color_push') ? ' 記在 aibd' : ' 只在這一頁'} · 點色塊放進輸入框</div></div>`;
   }
+  async function ctColorsLoad() { if (CT.colorsTried || !ctHas('color_list')) return; CT.colorsTried = true; try { const r = await act('color_list', {}); if (r && Array.isArray(r.colors)) { CT.colors = r.colors.map((c) => String(c).toUpperCase()).slice(0, 12); render(); } } catch (e) { /* 只在本頁 */ } }
   async function ctPick() {
+    ctColorsLoad();
     if ('EyeDropper' in window) { try { const r = await new window.EyeDropper().open(); return ctPicked(r && r.sRGBHex); } catch (e) { return; } } // 取消(Esc)
     CT.pick = { msg: '先按 📸 截圖或貼一張圖,在標註窗裡按「🎨 從圖上取色」再點圖' }; render();
   }
   // ---- 圖:截圖 / 貼上 / 拖入 / 選檔 ⇒ 標註窗 ----
+  const b64Blob = (b64, mime) => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: mime }); };
   async function ctShot() {
-    if (!ctHas('screen_shot')) { CT.note = 'aibd 還沒有截圖:先用 ⌘⇧4(Mac)或 Win+Shift+S(Windows)截好,在輸入框貼上就會開標註窗'; return render(); }
+    if (!ctHas('screen_capture')) { CT.note = 'aibd 還沒有截圖:先用 ⌘⇧4(Mac)或 Win+Shift+S(Windows)截好,在輸入框貼上就會開標註窗'; return render(); }
     CT.note = '截圖中…'; render();
     try {
-      const r = await act('screen_shot', {}); const m = r && r.media;
-      if (!m || !m.id) throw new Error('aibd 沒回圖');
-      const res = await fetch('/api/v1/media/' + encodeURIComponent(m.id), { headers: { Authorization: 'Bearer ' + token() }, credentials: 'omit', cache: 'no-store' });
-      if (!res.ok) throw new Error('讀圖 ' + res.status);
-      CT.note = ''; render(); annOpen(await res.blob(), true);
+      const r = await act('screen_capture', {}); if (!r || !r.media_id) throw new Error('aibd 沒回圖');
+      const g = await act('media_get', { media_id: r.media_id }); if (!g || typeof g.data_base64 !== 'string') throw new Error('aibd 沒回圖');
+      CT.note = ''; render(); annOpen(b64Blob(g.data_base64, g.mime || 'image/png'), true);
     } catch (e) {
       const code = e && (e.code || e.reason);
-      CT.note = code === 'screen_permission_needed' ? 'Mac 要先在「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 aibd(你自己按),再按一次 📸' : '截圖失敗:' + (errText ? errText(e) : String(e && e.message || e));
+      CT.note = code === 'screen_permission_needed' ? 'Mac 要先在「系統設定 → 隱私權與安全性 → 螢幕錄製」允許 aibd(你自己按),再按一次 📸' : code === 'capture_rate' ? '截太快了:一分鐘最多 6 張' : code === 'screen_capture_unsupported' ? '這台的 aibd 不能截圖' : '截圖失敗:' + errText(e);
       render();
     }
   }
@@ -2650,7 +2663,7 @@
   function annBuild(img, fromShot) {
     annClose();
     const d = document.createElement('div'); d.className = 'anndlg'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', '截圖標註');
-    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>⌘Z</button><button type="button" class="k" data-annredo="1" disabled>⇧⌘Z</button><button type="button" class="go annok" data-annok="1" disabled>放進對話</button></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
+    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>⌘Z</button><button type="button" class="k" data-annredo="1" disabled>⇧⌘Z</button><span class="annouts"><button type="button" class="k annout" data-annclip="1" disabled>複製到剪貼簿</button><button type="button" class="k annout" data-annwebp="1" disabled>存成 webp</button><button type="button" class="go annok" data-annok="1" disabled>送進對話</button></span></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
     document.body.appendChild(d); ANN.el = d; ctPaint(d);
     Object.assign(ANN, { img, crop: null, drag: null, ops: [], redo: [], tool: 'rect', col: ANN_COLORS[0], picking: false, work: null });
     const cv = d.querySelector('[data-annv]');
@@ -2696,7 +2709,7 @@
     for (const b of d.querySelectorAll('[data-anntool]')) { b.disabled = !ANN.crop; b.classList.toggle('on', ANN.crop && b.dataset.anntool === ANN.tool); }
     d.querySelector('[data-annpick]').disabled = false; d.querySelector('[data-annpick]').classList.toggle('on', ANN.picking);
     d.querySelector('[data-annundo]').disabled = !ANN.ops.length; d.querySelector('[data-annredo]').disabled = !ANN.redo.length;
-    d.querySelector('[data-annok]').disabled = !ANN.crop; d.querySelector('[data-annall]').hidden = !!ANN.crop;
+    for (const b of d.querySelectorAll('[data-annok],[data-annclip],[data-annwebp]')) b.disabled = !ANN.crop; d.querySelector('[data-annall]').hidden = !!ANN.crop;
   }
   // 把清單畫到一張 2d 上(k = 縮放;匯出時 k = 1)
   function annPaint(x, k) {
@@ -2740,6 +2753,8 @@
     if (x.closest('[data-annundo]')) return annUndo(false);
     if (x.closest('[data-annredo]')) return annUndo(true);
     if (x.closest('[data-annok]')) return annDone();
+    if (x.closest('[data-annclip]')) return annClip(x.closest('[data-annclip]'));
+    if (x.closest('[data-annwebp]')) return annWebp(x.closest('[data-annwebp]'));
   }
   function annUndo(redo) { const A = redo ? ANN.redo : ANN.ops, B = redo ? ANN.ops : ANN.redo; if (A.length) { B.push(A.pop()); annDraw(); annBtns(); } }
   function annKey(e) {
@@ -2751,19 +2766,44 @@
     if (e.key === 'Escape') { e.preventDefault(); return annClose(); }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); annUndo(e.shiftKey); }
   }
+  // 三個出口都用標註後的圖(馬賽克已蓋上),不給原圖(7b81e ADDENDUM-web-capture-webp-clip)
+  function annCanvas() { const s = annSrc(), c = document.createElement('canvas'); c.width = s.width || s.naturalWidth; c.height = s.height || s.naturalHeight; annPaint(c.getContext('2d'), 1); return c; }
+  const annB64 = (c) => { const u = c.toDataURL('image/png'); return u.slice(u.indexOf(',') + 1); };
+  const annSay = (w, bad) => { const st = ANN.el && ANN.el.querySelector('[data-annst]'); if (st) { st.textContent = w; st.classList.toggle('bad', !!bad); } };
+  const saveBlob = (blob, name) => { const fr = new FileReader(); fr.onload = () => { const a = document.createElement('a'); a.href = String(fr.result); a.download = name; document.body.appendChild(a); a.click(); a.remove(); }; fr.readAsDataURL(blob); };
+  const shotName = (ext) => { const d0 = new Date(), p2 = (n) => String(n).padStart(2, '0'); return `截圖-${d0.getFullYear()}${p2(d0.getMonth() + 1)}${p2(d0.getDate())}-${p2(d0.getHours())}${p2(d0.getMinutes())}-${Math.random().toString(36).slice(2, 6)}.${ext}`; }; // 本機時間 + 4 碼(同舊版)
+  // 剪貼簿:瀏覽器只收 png;要在點擊裡呼叫(Safari),所以 ClipboardItem 直接收 Promise
+  function annClip(btn) {
+    const c = annCanvas();
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === 'undefined') throw new Error('no clipboard');
+      const p = new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error('png'))), 'image/png'));
+      Promise.race([navigator.clipboard.write([new ClipboardItem({ 'image/png': p })]), new Promise((ok, no) => setTimeout(() => no(new Error('clipboard_timeout')), 3000))])
+        .then(() => { btn.textContent = '已複製'; setTimeout(() => { if (btn.isConnected) btn.textContent = '複製到剪貼簿'; }, 1500); annSay('已放進剪貼簿(png)'); })
+        .catch(() => annSay('複製沒成功,改按存成 webp', true));
+    } catch (e) { annSay('複製沒成功,改按存成 webp', true); }
+  }
+  // 存成 webp:aibd 轉(media_put → media_webp → media_get,無損);aibd 沒有就存 png
+  async function annWebp(btn) {
+    const c = annCanvas(); btn.disabled = true; const w0 = btn.textContent; btn.textContent = '存檔中…';
+    try {
+      if (!ctHas('media_webp') || !ctHas('media_put')) { c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png'); annSay('aibd 還沒有 webp 轉檔:先存成 png', true); return; }
+      const p = await act('media_put', { png_base64: annB64(c) }); const w = await act('media_webp', { media_id: p.media_id });
+      const g = await act('media_get', { media_id: w.media_id });
+      saveBlob(b64Blob(g.data_base64, g.mime || 'image/webp'), g.download_name || shotName('webp')); annSay('已存成 webp(瀏覽器的「下載」夾)');
+    } catch (e) { annSay('存 webp 沒成功:' + errText(e), true); }
+    finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = w0; } }
+  }
+  // 送進對話:先存進 aibd;交給席(media:[id])aibd 下一顆才有,在那之前不送 media 欄、寫清楚
   async function annDone() {
-    const s = annSrc(), c = document.createElement('canvas'); c.width = s.width; c.height = s.height; annPaint(c.getContext('2d'), 1);
-    const url = c.toDataURL('image/png'), b64 = url.slice(url.indexOf(',') + 1);
-    const btn = ANN.el.querySelector('[data-annok]'); btn.disabled = true; btn.textContent = '存圖中…';
+    const c = annCanvas(), btn = ANN.el.querySelector('[data-annok]'); btn.disabled = true; btn.textContent = '存圖中…';
     if (ctHas('media_put')) {
       try {
-        const r = await act('media_put', { name: '截圖.png', png_b64: b64 }); const m = r && r.media;
-        if (!m || !m.path) throw new Error('aibd 沒回路徑');
-        annClose(); ctInsert(`〔附圖:${m.path}〕`); return;
-      } catch (e) { btn.disabled = false; btn.textContent = '放進對話'; CT.note = '存圖失敗:' + errText(e); return render(); }
+        const r = await act('media_put', { png_base64: annB64(c) }); if (!r || !r.media_id) throw new Error('aibd 沒回圖');
+        annClose(); CT.note = '圖已存進 aibd(' + r.media_id + ');交給席要等 aibd 下一版(附圖 media),現在先按「存成 webp」或「複製到剪貼簿」貼給席'; return render();
+      } catch (e) { btn.disabled = false; btn.textContent = '送進對話'; annSay('存圖失敗:' + errText(e), true); return; }
     }
-    // aibd 還收不了圖:給下載,讓人自己拖給席
-    const a = document.createElement('a'); a.href = url; const d0 = new Date(), p2 = (n) => String(n).padStart(2, '0'); a.download = `截圖-${d0.getFullYear()}${p2(d0.getMonth() + 1)}${p2(d0.getDate())}-${p2(d0.getHours())}${p2(d0.getMinutes())}-${Math.random().toString(36).slice(2, 6)}.png`; // 本機時間 + 4 碼(同舊版) a.click();
+    c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png');
     annClose(); CT.note = 'aibd 還收不了圖(沒有 media_put):已下載成 png,先自己拖給那一席'; render();
   }
   // aibd 頁 CSP style-src 'self':標籤裡的 style="…" 會被擋 ⇒ 畫完後用 CSSOM 上色,只收 #RRGGBB
@@ -4739,12 +4779,12 @@
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
     const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
     const ctb = x.closest('[data-ct]'); if (ctb) { const k = ctb.dataset.ct; CT.note = ''; if (k === 'shot') return ctShot(); if (k === 'pick') return ctPick(); if (k === 'file') return ctFile(); if (k === 'fav') { CT.favOpen = !CT.favOpen; if (CT.favOpen) ctFavLoad(); return render(); } }
-    const fvb = x.closest('[data-fav]'); if (fvb) { if (!fvb.dataset.fav && fvb.dataset.fvid) { CT.favs = (CT.favs || []).filter((f) => f.id !== fvb.dataset.fvid); act('favorite_del', { id: fvb.dataset.fvid }).catch(() => {}); return render(); } return ctFavToggle(fvb.dataset.fav); }
+    const fvb = x.closest('[data-fav]'); if (fvb) { if (!fvb.dataset.fav && fvb.dataset.fvid) { CT.favs = (CT.favs || []).filter((f) => f.id !== fvb.dataset.fvid); act('fav_delete', { fav_id: fvb.dataset.fvid }).catch(() => {}); return render(); } return ctFavToggle(fvb.dataset.fav); }
     const fvp = x.closest('[data-fvput]'); if (fvp) { const f = favList()[Number(fvp.dataset.fvput)]; if (f) ctInsert(f.text); return; }
     const fvj = x.closest('[data-fvjump]'); if (fvj) { const f = favList()[Number(fvj.dataset.fvjump)]; const pid = f && f.ref && f.ref.message_id; const n = pid && [...document.querySelectorAll('[data-pid]')].find((m) => m.dataset.pid === pid); if (n) { S.hlPid = pid; n.scrollIntoView({ block: 'center', behavior: 'smooth' }); n.classList.add('hl'); } else say('原對話不在現在這一頁:先切到那一席或那一串'); return; }
-    const hd = x.closest('[data-cthdel]'); if (hd) { e.stopPropagation(); const i = Number(hd.dataset.cthdel), h = (CT.hist || [])[i]; if (h) { CT.hist.splice(i, 1); if (h.id && ctHas('send_history_add')) act('send_history_del', { id: h.id }).catch(() => {}); } return render(); }
+    const hd = x.closest('[data-cthdel]'); if (hd) { e.stopPropagation(); const i = Number(hd.dataset.cthdel), h = (CT.hist || [])[i]; if (h) { CT.hist.splice(i, 1); render(); if (ctHas('send_history_delete')) ctHistDel(h); } return; }
     const hr2 = x.closest('[data-cthist]'); if (hr2) return ctHistPut(Number(hr2.dataset.cthist));
-    if (x.closest('[data-cthclear]')) { CT.hist = []; CT.histOpen = false; if (ctHas('send_history_add')) act('send_history_clear', {}).catch(() => {}); return render(); }
+    if (x.closest('[data-cthclear]')) { CT.hist = []; CT.histOpen = false; if (ctHas('send_history_delete')) act('send_history_delete', { all: true }).catch((err) => say(errText(err), 'err')); return render(); }
     const pkc = x.closest('[data-pkcopy]'); if (pkc) { const v = pkc.dataset.pkcopy; (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(v) : Promise.reject()).then(() => { pkc.textContent = '已複製 ' + v; setTimeout(() => { pkc.textContent = v; }, 1500); }).catch(() => ctInsert(v)); return; }
     const pkp = x.closest('[data-pkput]'); if (pkp) { ctInsert(pkp.dataset.pkput); return; }
     if (x.closest('[data-pkx]')) { CT.pick = null; return render(); }

@@ -52,8 +52,8 @@ for (const t of acts) {
   if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
   // b4297 feat/add-test-host-b4297-1121(62fd9f9690)才有 test_host_*;頁面看 version.acts 沒有就不畫。合進來後拿掉這行
   if (/^test_host_(list|add|remove)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('b4297 CARD-add-test-host r0(62fd9f9690)') && ws.includes("hasAct('test_host_list') !== true"), 'branch-only act is marked: ' + t); continue; }
-  // a9136 寫中(IFACE-chat-tools-page-1a93b-1121):截圖 / 存圖 / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
-  if (/^(screen_shot|media_put|send_history_(add|del|clear)|favorite_(add|del|tag)|color_add)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('IFACE-chat-tools-page-1a93b-1121') && ws.includes('const ctHas = (t) => hasAct(t) === true;'), 'branch-only act is marked: ' + t); continue; }
+  // a9136 feat/web-capture-a9136-1121(21a22431c / 9348a45c9,IFACE-chat-tools-aibd-a9136-1121 r1)才有:截圖 / 存圖 / webp / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
+  if (/^(screen_capture|media_(get|put|webp|list|delete)|send_history_(list|delete)|fav_(add|list|tag|delete)|color_(push|list))$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('IFACE-chat-tools-page-1a93b-1121') && ws.includes('const ctHas = (t) => hasAct(t) === true;'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -365,6 +365,12 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(!/style="background:\$\{/.test(ws) && /n\.style\.background = n\.dataset\.bg/.test(ws), 'reason: inline_style_blocked_by_csp');
   // 取色:EyeDropper 有就用;HEX / RGB / HSL
   ok(/'EyeDropper' in window/.test(seg) && /\['hex', 'rgb', 'hsl'\]/.test(seg), 'reason: color_pick');
+  // 截完三個出口(7b81e ADDENDUM):送進對話 / 存成 webp(aibd 轉)/ 複製到剪貼簿(image/png,點擊裡呼叫,失敗有一句)
+  ok(/data-annclip="1"/.test(seg) && /data-annwebp="1"/.test(seg) && /data-annok="1"/.test(seg), 'reason: three_exits');
+  ok(/new ClipboardItem\(\{ 'image\/png': p \}\)/.test(seg) && /複製沒成功,改按存成 webp/.test(seg), 'reason: clipboard_png');
+  ok(/act\('media_webp', \{ media_id: p\.media_id \}\)/.test(seg) && /g\.download_name/.test(seg), 'reason: webp_via_aibd');
+  // 附圖給席 aibd 還沒有:不送 media 欄
+  ok(!/media: \[/.test(ws), 'reason: media_field_sent_before_aibd_has_it');
   ok(/\.anndlg\{position:fixed/.test(css) && /\.fvq\{[^}]*background:#0c0c10/.test(css), 'reason: chat_tools_css');
 }
 

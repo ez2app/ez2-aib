@@ -1193,5 +1193,7 @@ label.rvr{cursor:pointer}
 .annt .k.on{border-color:var(--gold);color:var(--gold)}
 .annsw{width:20px;height:20px;border-radius:50%;border:2px solid #fff3;cursor:pointer;padding:0}
 .annsw.on{border-color:#fff;box-shadow:0 0 0 2px var(--gold)}
-.annt .annok{margin-left:auto}
+
 @media (max-width:700px){.anndlg{inset:6px}.cth{display:none}}
+.annouts{margin-left:auto;display:flex;gap:6px}
+.annst.bad{color:#f6c48b}
