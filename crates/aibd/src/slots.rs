@@ -46,7 +46,9 @@
 //!   裁定 3): a user folder page gets `slot_built_in_page_only`, a pairing carried over an update
 //!   `carried_pair_read_and_safe_only` (seat_input). A user folder page reads a 待人決策 card's
 //!   words as length and SHA-256 only ([`hide_words`], the tree's `need` rule; N1).
-//! - What was answered or dismissed is kept in memory (gone on restart, like the seats' lines)
+//! - What was answered or dismissed is kept in memory; a dismissal is replayed from its
+//!   `slot.dismissed` / `slot.restored` events at start, so it stays off after a restart
+//!   (N-ws-dismiss-persist); an answer is not (its source closes the card)
 //!   and journaled as `decision.answered` (lengths and SHA-256, never the answer) /
 //!   `slot.dismissed`.
 
@@ -71,6 +73,13 @@ pub const ANSWER: &str = "decision_answer";
 pub const DISMISS: &str = "slot_dismiss";
 /// act type: put a dismissed card back (043dd 11-18 22:34, 「先收起」還原).
 pub const RESTORE: &str = "slot_restore";
+/// act type: hang an event card on a plan item, or take it off (N-ws-event-pin, 519d0 11-19
+/// 07:22; 043dd's 「掛到項目」).
+pub const PIN: &str = "slot_pin";
+/// act type: 同意 / 不同意 an idea that needs a person ([`crate::consent_cards`]).
+pub const IDEA_ANSWER: &str = "idea_answer";
+/// act type: 看過 one line of the 真人未審 list ([`crate::consent_cards`]).
+pub const REVIEW_SEEN: &str = "review_seen";
 /// Slot `n` is `NAMES[n - 1]`.
 pub const NAMES: [&str; 6] = ["decide", "broken", "low_power", "stuck", "next", "done"];
 /// How many of the newest events are looked at.
@@ -92,12 +101,30 @@ pub const ANDY_PREFIX: &str = "andy:";
 /// left to the notification levels.
 pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
     Some(match kind {
-        "session.spawn_failed"
-        | "session.spawn_rejected"
-        | "session.stop_unconfirmed"
-        | "session.timeout" => Some(2),
+        "session.spawn_failed" | "session.spawn_rejected" | "session.timeout" => Some(2),
+        // a stop whose every candidate is another coalition's service is seen clean: a done
+        // notice, not broken (a9136 11-19 09:49, 0eed7 VERIFY-humanpath d95f4ab3f L1 r1; the
+        // same predicate as aibd ctl)
+        "session.stop_unconfirmed" => {
+            if stop_clean(payload) {
+                Some(6)
+            } else {
+                Some(2)
+            }
+        }
         // a seat brought back at aibd's start that ended at once (L7; 0eed7 8843ef5f N1)
         "seat.rejoin_failed" => Some(2),
+        // G13: a seat called in a conversation did not get its turn done (519d0 05:2x)
+        "seat.turn_failed" => Some(2),
+        // 合回 stopped on a conflict (taken back): who resolves it is the person's call
+        "seat.merge_conflict" => Some(1),
+        // 合回 refused: the author's repository has settings aibd does not run git with
+        "seat.merge_unsafe" => Some(2),
+        // 合回 refused: the seat's commits change AI settings files (N-webonly-c23): the person
+        // reads them and merges by hand, or not
+        "seat.merge_settings" => Some(1),
+        // an archived seat's tree not collected: a repository's settings are not plain (N7)
+        "seat.collect_unsafe" => Some(2),
         // a crash is broken; a clean exit (0) or a stop by signal is a notice
         "session.exited" => {
             if payload
@@ -111,6 +138,10 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
             }
         }
         "thermal.would_nogo" | "thermal.would_reap" => Some(3),
+        // N-ws-slot-sources 6 號: a preview swapped to a new build (519d0 11-19 07:22); a failed
+        // swap is broken
+        "preview.swapped" => Some(6),
+        "preview.swap_failed" => Some(2),
         // ⑥ 換站 (SPEC §2): a tree item moved to another station; an edit that keeps the
         // station, and a new item, are no card
         "node.set" => text_of(payload.get("to")).map(|_| 6),
@@ -119,10 +150,17 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.opened" | "session.killed" | "session.cancelled" | "message.done" => Some(6),
         // the seats' lines are read from the board, not from their events; the slots' own
         // events and the high-volume ones are never cards
+        // an ask's card is built from the open asks (crate::asks::cards), not from the event
         "seat.now"
+        | "seat.asked"
         | "decision.answered"
         | "slot.dismissed"
         | "slot.restored"
+        | "slot.pinned"
+        | "idea.answered"
+        | "review.seen"
+        | "idea.pressed"
+        | "review.pressed"
         | "session.output"
         | "session.output_closed"
         | "session.output_truncated"
@@ -200,6 +238,10 @@ pub struct Card {
     pub src: Option<String>,
     /// SPEC §14: the label when it is not the slot's own (a 待人決策 item's kind).
     pub tag: Option<String>,
+    /// Where the page opens what the card is about (a 1.x letter's `{thread_id, message_id}`,
+    /// [`crate::dm_cards`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<Value>,
     pub actions: &'static [&'static str],
 }
 
@@ -207,14 +249,203 @@ pub struct Card {
 /// (Andy 11-18 22:2x「壞了 要改成 注意」): slot 2 reads 注意, its code stays `broken`.
 pub const TAGS: [&str; 6] = ["決定", "注意", "用量", "卡住", "可推進", "知道"];
 
+/// Why a seat's session ended, read from its last output lines (N-ws-slot-sources 3 號,
+/// 519d0 11-19 07:22): its usage ran out (`額度`) or it must log in again (`登入`). Only these
+/// fixed words reach a card, never the output itself.
+pub fn end_reason(lines: &[&str]) -> Option<&'static str> {
+    const USAGE: [&str; 8] = [
+        "usage limit",
+        "limit reached",
+        "hit your limit",
+        "rate limit",
+        "5-hour limit",
+        "weekly limit",
+        "quota",
+        "額度",
+    ];
+    const LOGIN: [&str; 8] = [
+        "/login",
+        "not logged in",
+        "please log in",
+        "log in again",
+        "invalid api key",
+        "token has expired",
+        "authentication",
+        "登入",
+    ];
+    let low: Vec<String> = lines.iter().map(|l| l.to_lowercase()).collect();
+    let any = |words: &[&str]| low.iter().any(|l| words.iter().any(|w| l.contains(w)));
+    if any(&LOGIN) {
+        Some("登入")
+    } else if any(&USAGE) {
+        Some("額度")
+    } else {
+        None
+    }
+}
+
+/// How many of a session's last output lines [`end_reason`] reads.
+pub const END_LINES: usize = 30;
+
+/// Session id → why it ended, for each `session.exited` among `events` whose last output lines
+/// (in the same events) say so.
+fn end_reasons(events: &[StoredEvent]) -> BTreeMap<String, &'static str> {
+    let mut out = BTreeMap::new();
+    for e in events.iter().filter(|e| e.event_type == "session.exited") {
+        let agg = crate::session_output::aggregate_id(&e.aggregate_id);
+        let mut tail: Vec<&str> = events
+            .iter()
+            .filter(|o| o.global_seq < e.global_seq && o.aggregate_id == agg)
+            .filter_map(|o| o.payload.get("line").and_then(Value::as_str))
+            .collect();
+        let cut = tail.len().saturating_sub(END_LINES);
+        tail.drain(..cut);
+        if let Some(r) = end_reason(&tail) {
+            out.insert(e.aggregate_id.clone(), r);
+        }
+    }
+    // a seat's turn that failed (seat.turn_failed, a9136 G13): its reason is the line to read;
+    // keyed by the event id, the card's id (0eed7 VERIFY-evcards 93d26f1b3 L2: 「Not logged in」
+    // arrives here, the session never exits)
+    for e in events.iter().filter(|e| e.event_type == "seat.turn_failed") {
+        let reason = e
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(r) = end_reason(&[reason]) {
+            out.insert(e.event_id.clone(), r);
+        }
+    }
+    out
+}
+
+/// When a usage limit says it resets (519d0 11-21 06:45 point 2, 0eed7 VERIFY-pv6 M4): the time
+/// after the word `reset` (`5pm`, `3:30am`, `15:00`), digits and am / pm only, never the
+/// rest of the line.
+pub fn reset_time(lines: &[&str]) -> Option<String> {
+    for l in lines.iter().rev() {
+        let low = l.to_lowercase();
+        let Some(at) = low.find("reset") else {
+            continue;
+        };
+        let words: Vec<String> = low[at..]
+            .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '|' | '·'))
+            .filter(|w| !w.is_empty())
+            .map(|w| w.trim_end_matches('.').to_owned())
+            .collect();
+        for (i, w) in words.iter().enumerate().skip(1).take(4) {
+            let (num, mut half) = match w.strip_suffix("am").or_else(|| w.strip_suffix("pm")) {
+                Some(n) => (n, w[n.len()..].to_owned()),
+                None => (w.as_str(), String::new()),
+            };
+            if half.is_empty() && matches!(words.get(i + 1).map(String::as_str), Some("am" | "pm"))
+            {
+                half = words[i + 1].clone();
+            }
+            let (h, m) = num.split_once(':').unwrap_or((num, ""));
+            let digits = |x: &str, n: std::ops::RangeInclusive<usize>| {
+                n.contains(&x.len()) && x.bytes().all(|b| b.is_ascii_digit())
+            };
+            let hour_ok = digits(h, 1..=2) && h.parse::<u8>().is_ok_and(|v| v <= 23);
+            let min_ok = m.is_empty() || digits(m, 2..=2);
+            if hour_ok && min_ok && (!half.is_empty() || !m.is_empty()) {
+                return Some(format!("{num}{half}"));
+            }
+        }
+    }
+    None
+}
+
+/// Session id / card id → when its usage resets, keyed as [`end_reasons`].
+fn end_resets(events: &[StoredEvent]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for e in events.iter().filter(|e| e.event_type == "session.exited") {
+        let agg = crate::session_output::aggregate_id(&e.aggregate_id);
+        let mut tail: Vec<&str> = events
+            .iter()
+            .filter(|o| o.aggregate_id == agg && o.global_seq < e.global_seq)
+            .filter_map(|o| o.payload.get("line").and_then(Value::as_str))
+            .collect();
+        let cut = tail.len().saturating_sub(END_LINES);
+        tail.drain(..cut);
+        if let Some(t) = reset_time(&tail) {
+            out.insert(e.aggregate_id.clone(), t);
+        }
+    }
+    for e in events.iter().filter(|e| e.event_type == "seat.turn_failed") {
+        let reason = e
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(t) = reset_time(&[reason]) {
+            out.insert(e.event_id.clone(), t);
+        }
+    }
+    out
+}
+
+/// A usage card says when it comes back, on its 狀態 line (SPEC §14 `state`) and in its text.
+fn with_reset(mut c: Card, resets: &BTreeMap<String, String>) -> Card {
+    if c.slot != 3 || c.why.as_deref() != Some("額度") {
+        return c;
+    }
+    let key = match c.kind.as_str() {
+        "session.exited" => c.session_id.clone(),
+        "seat.turn_failed" => Some(c.card_id.clone()),
+        _ => None,
+    };
+    if let Some(t) = key.as_ref().and_then(|k| resets.get(k)) {
+        c.state = Some(format!("{t} 恢復;可換模型接著做"));
+    }
+    c
+}
+
+/// A session that ended for its usage or a login is slot 3 (低電量), not a plain notice.
+fn low_power_end(mut c: Card, ended: &BTreeMap<String, &'static str>) -> Card {
+    let key = match c.kind.as_str() {
+        "session.exited" => c.session_id.clone(),
+        "seat.turn_failed" => Some(c.card_id.clone()),
+        _ => None,
+    };
+    let Some(r) = key.as_ref().and_then(|k| ended.get(k)) else {
+        return c;
+    };
+    c.slot = 3;
+    c.name = NAMES[2];
+    c.actions = actions(3);
+    c.why = Some((*r).to_owned());
+    c
+}
+
+fn end_reason_line(c: &Card) -> String {
+    match c.why.as_deref() {
+        Some("登入") => "結束:要重新登入".to_owned(),
+        _ => match c.state.as_deref().and_then(|s| s.split_once(' ')) {
+            Some((t, _)) => format!("結束:額度用完,{t} 恢復"),
+            None => "結束:額度用完".to_owned(),
+        },
+    }
+}
+
+/// A stop that was not confirmed but was seen clean ([`crate::platform::session::stop_seen_clean`]
+/// on an `observed_clean` reason).
+pub fn stop_clean(payload: &Value) -> bool {
+    payload.get("reason").and_then(Value::as_str) == Some("observed_clean")
+        && crate::platform::session::stop_seen_clean(payload)
+}
+
 /// The one line of a card that has no text of its own.
 fn line_of(c: &Card) -> String {
     let t = match c.kind.as_str() {
         "seat.usage" => return format!("上下文用了 {}%", c.pct.unwrap_or(0)),
         "session.spawn_failed" => "開不起來",
         "session.spawn_rejected" => "開啟被拒",
+        "session.stop_unconfirmed" if c.slot == 6 => "已停(看得到的都停了)",
         "session.stop_unconfirmed" => "停不確定",
         "session.timeout" => "逾時",
+        "session.exited" if c.slot == 3 => return end_reason_line(c),
         "session.exited" if c.slot == 2 => "結束碼不是 0",
         "session.exited" => "已結束",
         "thermal.would_nogo" => "太熱:會拒開新席",
@@ -225,6 +456,8 @@ fn line_of(c: &Card) -> String {
         "session.killed" => "已停止",
         "session.cancelled" => "已取消",
         "message.done" => "訊息已結案",
+        "preview.swapped" => "預覽已換上新版",
+        "preview.swap_failed" => "預覽換版失敗",
         other => other,
     };
     t.to_owned()
@@ -245,8 +478,49 @@ impl Card {
             let text = self.item.clone().unwrap_or_else(|| line_of(self));
             o.insert("text".into(), json!(text));
             o.insert("since".into(), json!(self.at));
+            o.insert("origin".into(), json!(self.origin()));
+            // the plan item the person hung this card on (N-ws-event-pin), beside `card`
+            if let Some(n) = pins().get(&self.card_id) {
+                o.insert("pin".into(), json!(n));
+            }
         }
         v
+    }
+}
+
+/// Where a card comes from (ORDER-autodrive-webdev-519d0-1120, a9136 3; Andy's run 11-20 00:06:
+/// the 待人決策 count mixed old letters with the one card he had to press): `history` is what the
+/// 1.x system wrote and the import brought over (its 待人決策 list, letters in its queue, its
+/// review list, its idea consents), shown apart and not counted as waiting on the person;
+/// `now` is everything else (a seat's ask, a seat's decide line, a session, aibd itself).
+/// 519d0 11-20 12:36 / a9136 12:38: the 待人決策 list's open items (`andy.open`) are `now` — the
+/// list is the lead's live ledger, and an item already done or answered there never becomes a
+/// card ([`andy_cards`] keeps open items only); what 00:06 kept apart was the whole 1.x import
+/// with rows that were answered but never marked done.
+pub fn origin_of(kind: &str) -> &'static str {
+    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");
+    if old {
+        "history"
+    } else {
+        "now"
+    }
+}
+
+impl Card {
+    /// [`origin_of`] its kind, and a `decide` line (`seat.now`) of a 1.x terminal seat (its id
+    /// is not aibd's `seat_…`) is `history` too: the old system asking, not a 2.0 seat (5d33a
+    /// PREREAD-nx 2dda591e N2; the page had put those with 以前的題目).
+    pub fn origin(&self) -> &'static str {
+        let old_seat = self.kind == "seat.now"
+            && !self
+                .seat_id
+                .as_deref()
+                .is_some_and(|s| s.starts_with("seat_"));
+        if old_seat {
+            "history"
+        } else {
+            origin_of(&self.kind)
+        }
     }
 }
 
@@ -310,6 +584,42 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
         })
         .flatten();
     let (card, item) = moved.map_or((None, None), |(n, i)| (Some(n), Some(i)));
+    let item = item.or_else(|| {
+        (e.event_type == "seat.turn_failed")
+            .then(|| text_of(e.payload.get("reason")).map(|r| format!("沒做成:{r}")))
+            .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_unsafe")
+            .then(|| text_of(e.payload.get("why")).map(|w| format!("合回停住:作者倉設定 {w}")))
+            .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.collect_unsafe")
+            .then(|| {
+                text_of(e.payload.get("why"))
+                    .map(|w| format!("收樹停住:先修好倉的 git 設定再收({w})"))
+            })
+            .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_settings").then(|| {
+            let files: Vec<&str> = e.payload["files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).take(3).collect())
+                .unwrap_or_default();
+            format!("合回停住:提交改了 AI 設定檔 {}", files.join("、"))
+        })
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_conflict").then(|| {
+            let files: Vec<&str> = e.payload["files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).take(3).collect())
+                .unwrap_or_default();
+            format!("合回衝突:{}", files.join("、"))
+        })
+    });
     Some(Card {
         card_id: e.event_id.clone(),
         slot,
@@ -327,6 +637,13 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
         state: None,
         src: seat_id.clone(),
         tag: None,
+        // 0eed7 VERIFY-turnfail L2: a turn not done opens the thread at the post that called it
+        open: (e.event_type == "seat.turn_failed")
+            .then(|| {
+                Some(json!({"thread_id": text_of(e.payload.get("thread_id"))?,
+                    "message_id": text_of(e.payload.get("reply_to"))?}))
+            })
+            .flatten(),
         actions: actions(slot),
     })
 }
@@ -367,6 +684,7 @@ pub fn andy_cards(
                 state: field("state"),
                 src: field("src"),
                 tag: Some(i.item_kind.clone()).filter(|k| !k.is_empty()),
+                open: None,
                 actions: actions(slot),
             }
         })
@@ -382,6 +700,9 @@ pub fn next_slot(kind: &str) -> Option<u8> {
     match kind {
         "fix" => Some(2),
         "merge" | "push" => Some(5),
+        // N-ws-slot-sources 5 號: a head reviewed, receipt green and verified, ready to be put in
+        // (換上); aib-drive's row (a9136), same fields as merge
+        "install" => Some(5),
         _ => None,
     }
 }
@@ -419,6 +740,7 @@ pub fn next_cards(next: &aib_drive::next::Next) -> Vec<Card> {
                 state: Some(r.needs.clone()).filter(|n| !n.is_empty() && n != "none"),
                 src: r.to.clone(),
                 tag: None,
+                open: None,
                 actions: actions(slot),
             }
         })
@@ -460,6 +782,7 @@ pub fn mail_cards(rows: &[aib_store::MessageRow], cutoff_unix: i64) -> Vec<Card>
                 state: Some(format!("最舊一封排了超過 {STUCK_MIN} 分鐘")),
                 src: oldest.from_key.strip_prefix("seat:").map(str::to_owned),
                 tag: None,
+                open: None,
                 actions: actions(4),
             })
         })
@@ -503,6 +826,7 @@ pub fn unread_cards(rows: &[aib_store::MessageRow], cutoff_unix: i64) -> Vec<Car
                 state: Some(format!("最舊一封送到超過 {STUCK_MIN} 分鐘還沒讀")),
                 src: oldest.from_key.strip_prefix("seat:").map(str::to_owned),
                 tag: None,
+                open: None,
                 actions: actions(4),
             })
         })
@@ -571,7 +895,7 @@ pub fn next_list() -> Option<aib_drive::next::Next> {
 }
 
 /// The 1.x state root the 待人決策 list lives under (aib-drive's rule).
-fn state_root() -> Option<std::path::PathBuf> {
+pub(crate) fn state_root() -> Option<std::path::PathBuf> {
     aib_drive::observe::state_root(
         std::env::var("EZ2_AIB_STATE_ROOT").ok().as_deref(),
         std::env::var("EZ2_AIB_HOME").ok().as_deref(),
@@ -649,6 +973,7 @@ pub fn live_cards(
             state: None,
             src: u.seat_id.clone(),
             tag: None,
+            open: None,
             actions: actions(3),
         });
     }
@@ -698,6 +1023,7 @@ pub fn live_cards(
             ),
             src: Some(seat.clone()),
             tag: None,
+            open: None,
             actions: actions(4),
         });
     }
@@ -714,6 +1040,8 @@ pub fn cards(
     rules: Option<&aib_notify::Rules>,
 ) -> Vec<Card> {
     let back = rejoins_since_back(events);
+    let ended = end_reasons(events);
+    let resets = end_resets(events);
     let mut out: Vec<Card> = lines
         .iter()
         .filter(|(_, n)| n.state == "decide")
@@ -734,10 +1062,13 @@ pub fn cards(
             state: n.why.clone(),
             src: Some(seat.clone()),
             tag: None,
+            open: None,
             actions: actions(1),
         })
         .chain(live.iter().cloned())
         .chain(events.iter().filter_map(|e| event_card(e, rules)))
+        .map(|c| low_power_end(c, &ended))
+        .map(|c| with_reset(c, &resets))
         .filter(|c| !taken.contains(&c.card_id))
         .filter(|c| !back.contains(&c.card_id))
         .collect();
@@ -818,6 +1149,47 @@ impl Taken {
         true
     }
 
+    /// Replay journaled `slot.dismissed` / `slot.restored` (oldest first) so a card taken off
+    /// stays off after aibd restarts (N-ws-dismiss-persist). Returns how many stay dismissed.
+    pub fn replay(&self, events: &[StoredEvent]) -> usize {
+        for e in events {
+            if e.event_type == "review.seen" {
+                if let Some(l) = e.payload.get("line_id").and_then(Value::as_str) {
+                    crate::consent_cards::see(l);
+                }
+                continue;
+            }
+            let Some(card) = e.payload.get("card_id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !valid_card_id(card) {
+                continue;
+            }
+            match e.event_type.as_str() {
+                "slot.dismissed" => {
+                    self.dismiss(card);
+                }
+                "slot.restored" => {
+                    self.restore(card);
+                }
+                "idea.answered" => {
+                    self.take(card);
+                }
+                "slot.pinned" => {
+                    let node = e.payload.get("node_id").and_then(Value::as_str);
+                    pins().set(card, node.filter(|n| valid_card_id(n)));
+                }
+                _ => {}
+            }
+        }
+        self.dismissed().len()
+    }
+
+    /// Forget everything (a start begins from the journal, as a new process would).
+    fn clear(&self) {
+        self.lock().clear();
+    }
+
     /// Put a card back (the answer could not be typed).
     pub fn give_back(&self, card_id: &str) {
         self.lock().remove(card_id);
@@ -832,6 +1204,73 @@ static TAKEN: LazyLock<Taken> = LazyLock::new(Taken::default);
 
 pub fn taken() -> &'static Taken {
     &TAKEN
+}
+
+/// The plan item each pinned card hangs on (N-ws-event-pin; replayed at start from
+/// `slot.pinned`).
+#[derive(Default)]
+pub struct Pins {
+    inner: Mutex<BTreeMap<String, String>>,
+}
+
+impl Pins {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Hang `card` on `node`, or take it off (`None`).
+    pub fn set(&self, card: &str, node: Option<&str>) {
+        let mut g = self.lock();
+        match node {
+            Some(n) => {
+                if g.len() >= MAX_TAKEN && !g.contains_key(card) {
+                    let drop: Vec<String> = g.keys().take(MAX_TAKEN / 8).cloned().collect();
+                    for d in drop {
+                        g.remove(&d);
+                    }
+                }
+                g.insert(card.to_owned(), n.to_owned());
+            }
+            None => {
+                g.remove(card);
+            }
+        }
+    }
+
+    pub fn get(&self, card: &str) -> Option<String> {
+        self.lock().get(card).cloned()
+    }
+
+    fn clear(&self) {
+        self.lock().clear();
+    }
+}
+
+static PINS: LazyLock<Pins> = LazyLock::new(Pins::default);
+
+pub fn pins() -> &'static Pins {
+    &PINS
+}
+
+/// The slot events [`Taken::replay`] reads at start.
+pub const TAKEN_EVENTS: [&str; 5] = [
+    "slot.dismissed",
+    "slot.restored",
+    "slot.pinned",
+    "idea.answered",
+    "review.seen",
+];
+
+/// At start: the dismissals journaled before, back in [`taken`] (twice [`MAX_TAKEN`] events at
+/// most, the newest).
+pub fn reload_taken(store: &aib_store::Store) -> aib_store::Result<usize> {
+    let max = u32::try_from(MAX_TAKEN * 2).unwrap_or(u32::MAX);
+    let events = store.events_of_types(&TAKEN_EVENTS, max)?;
+    // one process may start aibd again (the tests do): begin from the journal only
+    taken().clear();
+    pins().clear();
+    crate::consent_cards::clear_seen();
+    Ok(taken().replay(&events))
 }
 
 fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
@@ -855,11 +1294,19 @@ pub async fn list(
     let words = crate::workspace::gives_words(&c).await;
     let st2 = st.clone();
     let read = tokio::task::spawn_blocking(move || {
-        st2.store
-            .events_last(SCAN)
-            .map(|e| (e, andy_list(), next_list(), tree_ids(), waiting_mail(&st2)))
+        st2.store.events_last(SCAN).map(|e| {
+            let ids = tree_ids();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            let mut dm = crate::dm_cards::cards(&st2.messages, now);
+            dm.extend(crate::ledger_cards::cards(now));
+            dm.extend(crate::consent_cards::cards());
+            dm.extend(crate::seat_send::cards());
+            (e, andy_list(), next_list(), ids, waiting_mail(&st2), dm)
+        })
     });
-    let (events, andy, next, ids, mail) = match read.await {
+    let (events, andy, next, ids, mail, dm) = match read.await {
         Ok(Ok(v)) => v,
         _ => {
             return refuse(
@@ -879,6 +1326,14 @@ pub async fn list(
     live.extend(andy_cards(&andy.0, &andy.1));
     live.extend(next.as_ref().map(next_cards).unwrap_or_default());
     live.extend(mail_cards(&mail, now.saturating_sub(STUCK_MIN * 60)));
+    // N-webonly-c32: open messages a seat was reminded of and still has not closed
+    live.extend(crate::mail_nudge::cards(
+        &mail,
+        now,
+        now.saturating_sub(STUCK_MIN * 60),
+    ));
+    live.extend(dm);
+    live.extend(crate::asks::cards(&events));
     if paging.dismissed {
         // 「先收起」還原 (043dd 11-18 22:34): the cards the page took off, as they would show
         let off = taken().dismissed();
@@ -1013,7 +1468,16 @@ pub fn page_of<'a>(all: &'a [Card], p: &Paging) -> (Vec<&'a Card>, Value) {
         .max()
         .unwrap_or("")
         .to_owned();
-    let mut meta = json!({"counts": counts, "total": all.len()});
+    // the same per slot, `now` cards only: what the person is waiting on (history apart)
+    let mut counts_now = serde_json::Map::new();
+    for s in 1..=6u8 {
+        let n = all
+            .iter()
+            .filter(|c| c.slot == s && c.origin() == "now")
+            .count();
+        counts_now.insert(s.to_string(), json!(n));
+    }
+    let mut meta = json!({"counts": counts, "counts_now": counts_now, "total": all.len()});
     let Some(page) = p.page else {
         meta["as_of"] = json!(newest);
         return (all.iter().collect(), meta);
@@ -1056,7 +1520,17 @@ pub const ANDY_WORDS: [&str; 6] = ["item", "text", "rec", "state", "src", "why"]
 /// person's built-in page only.
 pub fn hide_words(v: &mut Value) {
     if v.get("kind").and_then(Value::as_str) != Some("andy.open") {
-        return;
+        // a 1.x letter's first line is a seat's words too (7ebca 11-19, dm_cards)
+        let dm = v.get("kind").and_then(Value::as_str).is_some_and(|k| {
+            k.starts_with("dm.") || k.starts_with("ledger.") || k.starts_with("idea.")
+        });
+        if v.get("kind").and_then(Value::as_str) == Some("andy.review_list") {
+            crate::consent_cards::hide_list(v);
+            return;
+        }
+        if !dm {
+            return;
+        }
     }
     let Some(o) = v.as_object_mut() else { return };
     for k in ANDY_WORDS {
@@ -1076,7 +1550,7 @@ fn only_fields(body: &Value, allowed: &[&str]) -> bool {
         .is_some_and(|o| o.keys().all(|k| allowed.contains(&k.as_str())))
 }
 
-async fn journal(st: &AppState, kind: &str, payload: Value) -> bool {
+pub(crate) async fn journal(st: &AppState, kind: &str, payload: Value) -> bool {
     let Ok(event_id) = crate::sessions::new_id("ev_") else {
         return false;
     };
@@ -1120,6 +1594,14 @@ pub async fn answer(st: AppState, page: PageAccess, body: Value) -> Response {
         .and_then(|c| c.strip_prefix(ANDY_PREFIX))
     {
         return answer_andy(st, page, seat, text, item.to_owned()).await;
+    }
+    // 519d0 11-19 (5): a seat's ask_person card takes one of two fixed answers
+    if let Some(card) = body
+        .get("card_id")
+        .and_then(Value::as_str)
+        .filter(|c| c.starts_with(crate::asks::PREFIX))
+    {
+        return crate::asks::answer(st, page, card, seat, text).await;
     }
     let Some(seat_id) = seat else {
         return refuse(
@@ -1314,6 +1796,45 @@ pub async fn dismiss(st: AppState, body: Value) -> Response {
         .into_response()
 }
 
+/// act `slot_pin {card_id, node_id}` (a confirmed built-in page, like `slot_dismiss`): hangs a
+/// card on a plan item; `node_id: null` takes it off. 404 `node_not_found` when the item is not
+/// on the tree. GET slots then gives the card `pin: <node_id>`.
+pub async fn pin(st: AppState, body: Value) -> Response {
+    let card = body.get("card_id").and_then(Value::as_str);
+    let node = match body.get("node_id") {
+        Some(Value::Null) => Some(None),
+        Some(Value::String(n)) if valid_card_id(n) => Some(Some(n.clone())),
+        _ => None,
+    };
+    let (Some(card), Some(node)) = (
+        card.filter(|c| valid_card_id(c) && only_fields(&body, &["type", "card_id", "node_id"])),
+        node,
+    ) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "body must be {type, card_id, node_id} with node_id a plan item id or null",
+        );
+    };
+    if let Some(n) = &node {
+        let n2 = n.clone();
+        let on_tree = tokio::task::spawn_blocking(move || tree_ids().contains(&n2))
+            .await
+            .unwrap_or(false);
+        if !on_tree {
+            return refuse(StatusCode::NOT_FOUND, "node_not_found", "no such plan item");
+        }
+    }
+    pins().set(card, node.as_deref());
+    let journaled = journal(
+        &st,
+        "slot.pinned",
+        json!({ "card_id": card, "node_id": node }),
+    )
+    .await;
+    Json(json!({ "card_id": card, "node_id": node, "journaled": journaled })).into_response()
+}
+
 /// act `slot_restore {card_id}` (a confirmed built-in page, like `slot_dismiss`): puts a dismissed
 /// card back on the list. 404 `slot_not_dismissed` when that card is not dismissed (never was,
 /// was answered, or is back already).
@@ -1362,6 +1883,162 @@ mod tests {
             occurred_at: at.into(),
             payload,
         }
+    }
+
+    /// N-ws-slot-sources 3 號: an exit whose last output says the usage ran out or a login is
+    /// needed is slot 3 with fixed words; other exits stay notices; the output never shows.
+    #[test]
+    fn a_session_that_ended_for_its_usage_or_a_login_is_low_power() {
+        let at = "2026-11-19T00:00:00.000Z";
+        let out = |seq, sid: &str, line: &str| {
+            ev(
+                seq,
+                "session.output",
+                "session_output",
+                &format!("{sid}/output"),
+                at,
+                json!({"line": line, "stream": "stdout", "cut": false}),
+            )
+        };
+        let exit = |seq, sid: &str| {
+            ev(
+                seq,
+                "session.exited",
+                "session",
+                sid,
+                at,
+                json!({"exit_code": 0}),
+            )
+        };
+        let es = [
+            out(1, "s_a", "working… sk-secret-in-output"),
+            out(
+                2,
+                "s_a",
+                "Claude usage limit reached. Your limit will reset at 5pm",
+            ),
+            exit(3, "s_a"),
+            out(4, "s_b", "Invalid API key · Please run /login"),
+            exit(5, "s_b"),
+            out(6, "s_c", "all done"),
+            exit(7, "s_c"),
+        ];
+        let c = cards(&BTreeMap::new(), &es, &[], &BTreeSet::new(), None);
+        let by = |sid: &str| {
+            c.iter()
+                .find(|c| c.session_id.as_deref() == Some(sid))
+                .unwrap_or_else(|| panic!("reason: no_card {sid}"))
+        };
+        assert_eq!(
+            (by("s_a").slot, by("s_a").why.as_deref()),
+            (3, Some("額度"))
+        );
+        // 519d0 11-21 06:45 point 2: and when it comes back
+        assert_eq!(by("s_a").view()["text"], "結束:額度用完,5pm 恢復");
+        assert_eq!(by("s_a").state.as_deref(), Some("5pm 恢復;可換模型接著做"));
+        assert_eq!(by("s_b").state, None, "reason: login_card_says_reset");
+        assert_eq!(
+            (by("s_b").slot, by("s_b").why.as_deref()),
+            (3, Some("登入")),
+            "reason: login_first"
+        );
+        assert_eq!(by("s_b").view()["text"], "結束:要重新登入");
+        assert_eq!(by("s_c").slot, 6, "reason: plain_exit_low_power");
+        let all = serde_json::to_string(&c.iter().map(Card::view).collect::<Vec<_>>()).unwrap();
+        // the raw lines never reach a card (the reset time is shown on purpose)
+        assert!(
+            !all.contains("sk-secret")
+                && !all.contains("usage limit reached")
+                && !all.contains("Invalid API key"),
+            "reason: output_shown"
+        );
+        assert_eq!(end_reason(&["你的額度已用完"]), Some("額度"));
+        // a failed turn's reason is read too (its card id is the event id)
+        let tf = ev(
+            9,
+            "seat.turn_failed",
+            "seat_message",
+            "ev_9",
+            at,
+            json!({"seat_id": "a9136", "reason": "Not logged in · Please run /login"}),
+        );
+        let ended = end_reasons(&[tf]);
+        let card = Card {
+            kind: "seat.turn_failed".into(),
+            card_id: "ev_9".into(),
+            ..by("s_c").clone()
+        };
+        let low = low_power_end(card, &ended);
+        assert_eq!(
+            (low.slot, low.why.as_deref()),
+            (3, Some("登入")),
+            "reason: turn_failed_not_low_power"
+        );
+        assert_eq!(end_reason(&["all good"]), None);
+    }
+
+    /// N-ws-dismiss-persist: dismissals replayed in order; a restore after a dismissal puts
+    /// the card back, a dismissal after a restore takes it off again.
+    #[test]
+    fn dismissals_come_back_from_their_events_in_order() {
+        let at = "2026-11-19T00:00:00.000Z";
+        let t = Taken::default();
+        let es = [
+            ev(
+                1,
+                "slot.dismissed",
+                "slot",
+                "e1",
+                at,
+                json!({"card_id": "a"}),
+            ),
+            ev(
+                2,
+                "slot.dismissed",
+                "slot",
+                "e2",
+                at,
+                json!({"card_id": "b"}),
+            ),
+            ev(
+                3,
+                "slot.restored",
+                "slot",
+                "e3",
+                at,
+                json!({"card_id": "a"}),
+            ),
+            ev(
+                4,
+                "slot.restored",
+                "slot",
+                "e4",
+                at,
+                json!({"card_id": "c"}),
+            ),
+            ev(
+                5,
+                "slot.dismissed",
+                "slot",
+                "e5",
+                at,
+                json!({"card_id": "c"}),
+            ),
+            ev(
+                6,
+                "slot.dismissed",
+                "slot",
+                "e6",
+                at,
+                json!({"card_id": "bad\nid"}),
+            ),
+            ev(7, "slot.dismissed", "slot", "e7", at, json!({})),
+        ];
+        assert_eq!(t.replay(&es), 2);
+        let off: Vec<String> = t.dismissed().into_iter().collect();
+        assert_eq!(off, ["b", "c"], "reason: order_or_bad_id");
+        // a replayed dismissal can still be put back by the page
+        assert!(t.restore("b"));
     }
 
     /// 5d33a PREREAD 04e74d1c L2: a failed rejoin is a card until the same seat is back.
@@ -1447,6 +2124,8 @@ mod tests {
             ("session.cancelled", Some(6)),
             ("message.done", Some(6)),
             ("session.exited", Some(6)),
+            ("preview.swapped", Some(6)),
+            ("preview.swap_failed", Some(2)),
             ("session.output", None),
             ("seat.now", None),
             ("decision.answered", None),
@@ -1462,6 +2141,46 @@ mod tests {
             slot_of("session.exited", &json!({"exit_code": 1}), rules()),
             Some(2),
             "reason: crash_not_broken"
+        );
+        // a stop seen clean (every candidate another coalition's service) is a done notice;
+        // a survivor, an unreadable one or another reason keeps it broken (0eed7 L1 r1)
+        let clean = json!({"reason": "observed_clean", "survivors": [],
+            "candidates": {"count": 15, "other_coalition": [1, 2, 3], "other_coalition_more": 12,
+                           "unreadable": [], "unreadable_more": 0}});
+        assert_eq!(
+            slot_of("session.stop_unconfirmed", &clean, rules()),
+            Some(6),
+            "reason: clean_stop_broken"
+        );
+        let mut survivor = clean.clone();
+        survivor["survivors"] = json!([42]);
+        assert_eq!(
+            slot_of("session.stop_unconfirmed", &survivor, rules()),
+            Some(2),
+            "reason: survivor_done"
+        );
+        let mut other = clean.clone();
+        other["reason"] = json!("late_exec_candidates");
+        assert_eq!(
+            slot_of("session.stop_unconfirmed", &other, rules()),
+            Some(2),
+            "reason: other_reason_done"
+        );
+        // the count is every candidate found, also one that ended before it was read: more than
+        // listed is still clean (a9136 fdd75dd52, 0eed7 1f7fed004 H6: 14 found, 13 listed)
+        let mut more = clean.clone();
+        more["candidates"]["count"] = json!(16);
+        assert_eq!(
+            slot_of("session.stop_unconfirmed", &more, rules()),
+            Some(6),
+            "reason: uncounted_candidate_broken"
+        );
+        let mut unreadable = clean.clone();
+        unreadable["candidates"]["unreadable"] = json!([7]);
+        assert_eq!(
+            slot_of("session.stop_unconfirmed", &unreadable, rules()),
+            Some(2),
+            "reason: unreadable_done"
         );
         assert_eq!(
             slot_of("session.exited", &json!({"exit_code": 0}), rules()),
@@ -1847,6 +2566,89 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_back_conflict_is_a_decide_card_naming_its_files() {
+        let e = ev(
+            1,
+            "seat.merge_conflict",
+            "worktree",
+            "ev_1",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "files": ["x.txt", "y.rs"]}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 1, "reason: merge_conflict_not_decide");
+        assert_eq!(c.card_id, "ev_1");
+        assert_eq!(c.view()["text"], "合回衝突:x.txt、y.rs");
+        let e = ev(
+            2,
+            "seat.merge_unsafe",
+            "worktree",
+            "ev_2",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "why": ".git/config has filter.x.clean"}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 2, "reason: merge_unsafe_not_broken");
+        assert_eq!(
+            c.view()["text"],
+            "合回停住:作者倉設定 .git/config has filter.x.clean"
+        );
+        let e = ev(
+            4,
+            "seat.merge_settings",
+            "worktree",
+            "ev_4",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "files": [".codex/config.toml"]}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 1, "reason: merge_settings_not_decide");
+        assert_eq!(
+            c.view()["text"],
+            "合回停住:提交改了 AI 設定檔 .codex/config.toml"
+        );
+        // 5d33a N7: an archive whose tree was not collected over a repository's settings
+        let e = ev(
+            3,
+            "seat.collect_unsafe",
+            "worktree",
+            "ev_3",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "why": "repo_unsafe: .git/commondir"}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 2, "reason: collect_unsafe_not_broken");
+        assert_eq!(
+            c.view()["text"],
+            "收樹停住:先修好倉的 git 設定再收(repo_unsafe: .git/commondir)"
+        );
+    }
+
+    #[test]
+    fn a_turn_not_done_is_a_notice_card_with_its_reason() {
+        let e = ev(
+            1,
+            "seat.turn_failed",
+            "seat_message",
+            "ev_1",
+            "2026-11-19T00:00:00.000Z",
+            json!({"seat_id": "a9136", "thread_id": "t_1", "reply_to": "q_call",
+                "reason": "Not logged in"}),
+        );
+        let t = event_card(&e, rules()).unwrap().view();
+        assert_eq!(
+            (t["tag"].as_str(), t["text"].as_str(), t["seat_id"].as_str()),
+            (Some("注意"), Some("沒做成:Not logged in"), Some("a9136")),
+            "reason: turn_failed_card"
+        );
+        assert_eq!(
+            t["open"],
+            json!({"thread_id": "t_1", "message_id": "q_call"}),
+            "reason: card_does_not_open_the_thread"
+        );
+    }
+
+    #[test]
     fn merge_and_push_rows_of_the_next_list_are_slot_5_cards() {
         let next: aib_drive::next::Next = serde_json::from_value(json!({
             "schema": "aib-drive.next.v1", "as_of": "2026-11-18T04:15:32Z", "complete": true,
@@ -1892,6 +2694,7 @@ mod tests {
         for k in ["review", "receipt", "collect"] {
             assert_eq!(next_slot(k), None, "reason: {k}_carded");
         }
+        assert_eq!(next_slot("install"), Some(5), "reason: install_not_carded");
         let mut other = next.clone();
         other.schema = "aib-drive.next.v2".into();
         assert!(next_cards(&other).is_empty(), "reason: unknown_schema_read");
@@ -1958,6 +2761,50 @@ mod tests {
             Paging::of(&q("yes")).is_err(),
             "reason: bad_dismissed_taken"
         );
+    }
+
+    /// a9136 ORDER-autodrive 3 (Andy's run 11-20): what the 1.x system wrote is `history`, apart
+    /// from what a 2.0 seat asks now, and `counts_now` counts only the latter.
+    #[test]
+    fn old_system_cards_are_history_and_not_counted_as_waiting() {
+        let mut all = andy_cards(&[andy("A1", false)], &BTreeMap::new());
+        // 519d0 / a9136 11-20 12:3x: an open item of the 待人決策 list is now (waiting on him)
+        let open_item = all[0].view();
+        assert_eq!(open_item["origin"], "now", "reason: open_andy_item_history");
+        // the history example is an old letter in the 1.x queue
+        all[0].card_id = "dmhold:q_1".into();
+        all[0].kind = "dm.hold".into();
+        let mut ask = all[0].clone();
+        ask.card_id = "ask:x".into();
+        ask.kind = crate::asks::EVENT.into();
+        all.push(ask);
+        for k in ["dm.hold", "dm.task", "andy.review_list", "idea.consent"] {
+            assert_eq!(origin_of(k), "history", "{k}");
+        }
+        for k in [
+            crate::asks::EVENT,
+            "now.decide",
+            "session.failed",
+            "andy.open",
+        ] {
+            assert_eq!(origin_of(k), "now", "{k}");
+        }
+        let (_, m) = page_of(&all, &Paging::default());
+        assert_eq!(m["counts"]["1"], 2, "{m}");
+        assert_eq!(
+            m["counts_now"]["1"], 1,
+            "reason: history_counted_as_waiting {m}"
+        );
+        let v: Vec<Value> = all.iter().map(Card::view).collect();
+        assert_eq!(v[0]["origin"], "history");
+        assert_eq!(v[1]["origin"], "now");
+        // a decide line: a 1.x terminal seat's is history, a 2.0 seat's is now (5d33a N2)
+        let mut line = all[1].clone();
+        line.kind = "seat.now".into();
+        line.seat_id = Some("a9136".into());
+        assert_eq!(line.origin(), "history", "reason: old_seat_decide_counted");
+        line.seat_id = Some("seat_0123abcd".into());
+        assert_eq!(line.origin(), "now", "reason: new_seat_decide_history");
     }
 
     /// SPEC §21 (Andy 11-18 21:0x): counts per class, one class a page of 10, and a page being
@@ -2175,6 +3022,45 @@ mod tests {
         assert!(
             all.iter().any(|c| c.kind == "message.unread"),
             "reason: unread_not_in_mail_cards"
+        );
+    }
+
+    #[test]
+    fn the_reset_time_is_only_the_time_after_reset() {
+        assert_eq!(
+            reset_time(&["Claude usage limit reached. Your limit will reset at 5pm"]).as_deref(),
+            Some("5pm")
+        );
+        assert_eq!(
+            reset_time(&["You've hit your limit · resets 3am (Asia/Taipei)"]).as_deref(),
+            Some("3am")
+        );
+        assert_eq!(
+            reset_time(&["limit reached, resets 3:30 pm"]).as_deref(),
+            Some("3:30pm")
+        );
+        assert_eq!(
+            reset_time(&["weekly limit, resets at 15:00"]).as_deref(),
+            Some("15:00")
+        );
+        assert_eq!(
+            reset_time(&["Claude AI usage limit reached|1763700000"]),
+            None,
+            "reason: epoch_read_as_time"
+        );
+        assert_eq!(
+            reset_time(&["reset 7 seats and go"]),
+            None,
+            "reason: bare_number_read_as_time"
+        );
+        assert_eq!(
+            reset_time(&["resets at 99pm"]),
+            None,
+            "reason: bad_hour_taken"
+        );
+        assert_eq!(
+            reset_time(&["resets <script>alert(1)</script> 5pm"]).as_deref(),
+            Some("5pm")
         );
     }
 }

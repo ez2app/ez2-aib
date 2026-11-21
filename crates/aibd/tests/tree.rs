@@ -297,7 +297,12 @@ fn marker_sweep_finds_the_reparented_orphan_without_any_scan() {
 #[test]
 fn reused_pid_with_other_start_time_is_never_signalled() {
     // An unrelated process (not in any session) that we own and clean up.
-    let mut bystander = Command::new("sleep").arg("30").spawn().unwrap();
+    // b4297 11-20 (7ebca fix6 receipt, lin, restored run 31.75 s): it was
+    // `sleep 30` and was found gone while no step had targeted it; a loaded
+    // machine can take 30 s here, so it lives far longer than the test and,
+    // if it is gone, how it ended (a signal vs its own exit) is said.
+    let t0 = std::time::Instant::now();
+    let mut bystander = Command::new("sleep").arg("600").spawn().unwrap();
     let bpid = bystander.id();
     let mut h = spawn_tree(&spec("complete", "s-reuse")).unwrap();
     let _ = lines(&mut h);
@@ -309,9 +314,15 @@ fn reused_pid_with_other_start_time_is_never_signalled() {
         rep.steps.iter().all(|s| !s.targets.contains(&bpid)),
         "{rep:?}"
     );
-    assert_eq!(still_running(&[bpid]), vec![bpid], "bystander must survive");
-    bystander.kill().unwrap();
-    bystander.wait().unwrap();
+    let ended = bystander.try_wait().unwrap();
+    let _ = bystander.kill();
+    let _ = bystander.wait();
+    assert!(
+        ended.is_none(),
+        "bystander must survive: it ended {ended:?} after {:?}; steps {:?}",
+        t0.elapsed(),
+        rep.steps
+    );
 }
 
 /// `/bin/sh` that starts `sleep 60`, prints its pid and exits 0.3 s later
@@ -993,4 +1004,35 @@ fn hold_gc_root_exits_with_its_code_and_its_child_stays() {
     let alive = nix::sys::signal::kill(p, None).is_ok();
     let _ = nix::sys::signal::kill(p, nix::sys::signal::Signal::SIGKILL);
     assert!(alive, "child {pid} ended with its root");
+}
+
+/// 5d33a PREREAD-stdioonly L1: a descriptor this process holds without close-on-exec does not
+/// reach a session's program.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_gets_only_its_stdio() {
+    let p = std::env::temp_dir().join(format!("aibd-tree-fd-{}", std::process::id()));
+    let f = std::fs::File::create(&p).unwrap();
+    // a copy at a number far above what `ls /dev/fd` opens for itself (it lists its own 3 and
+    // 4: #869 round 3, job 136197489561, the file had number 4 and read as leaked). F_DUPFD
+    // gives a descriptor without close-on-exec, which is the kind under test
+    let high = nix::fcntl::fcntl(&f, nix::fcntl::FcntlArg::F_DUPFD(200)).unwrap();
+    assert!(high >= 200, "reason: no_high_descriptor {high}");
+    let fd = high.to_string();
+    let mut h = spawn_tree(&SpawnSpec {
+        program: "/bin/ls".into(),
+        args: vec!["/dev/fd".into()],
+        ..spec_watch("unused", "stdio-only", false)
+    })
+    .unwrap();
+    let out = h.take_stdout().unwrap();
+    let names: Vec<String> = BufReader::new(out).lines().map_while(Result::ok).collect();
+    let _ = nix::unistd::close(high);
+    drop(f);
+    let _ = std::fs::remove_file(&p);
+    assert!(!names.is_empty(), "reason: no_listing");
+    assert!(
+        !names.iter().any(|n| n.trim() == fd),
+        "reason: fd_reached_session {names:?} (fd {fd})"
+    );
 }

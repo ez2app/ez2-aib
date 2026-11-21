@@ -157,7 +157,101 @@ pub fn object(row: &MessageRow, me: &str, with_body: bool) -> Value {
             m.insert("body".into(), json!(b));
         }
     }
+    if let (Some(item), Some(m)) = (imported_item(row, with_body), o.as_object_mut()) {
+        m.insert("item".into(), item);
+    }
     o
+}
+
+/// The ledger fields an imported or mirrored 1.x letter shows (043dd EVID-sharedthread r3: the
+/// page's state filter and card marks read them): an allow-list, never the whole item. The
+/// words in it (what a seat waits for, why and with what it closed, the original sender) follow
+/// the body rule: a page that reads no bodies gets their length and SHA-256.
+/// The rest of the 043dd 05:23 list (a9136 da7bfca2b: 校正 `correction` and 每日 `seat_day`
+/// records): a seat's judgement (`track`, `judge`), its counts this goal, the day.
+pub const IMPORTED_KEYS: [&str; 16] = [
+    "imported",
+    "dm_id",
+    "dm_status",
+    "dm_view",
+    "dm_superseded_by",
+    "card",
+    "card_rule",
+    "dm_reply",
+    "track",
+    "seat",
+    "judge",
+    "corrections",
+    "summaries",
+    "handoffs",
+    "day",
+    // a pull back's score before (a9136 f05f3d088: correction = back on the axis only)
+    "from_track",
+];
+/// The word fields of [`IMPORTED_KEYS`]' list.
+pub const IMPORTED_WORDS: [&str; 7] = [
+    "dm_wait",
+    "dm_done_why",
+    "dm_done_evidence",
+    "sender_label",
+    "why",
+    "idea",
+    "card_said",
+];
+/// The record kinds (`item.source.kind`) whose rows carry the list.
+pub const IMPORTED_KINDS: [&str; 4] = ["dm", "judgement", "correction", "seat_day"];
+
+/// An imported row's allow-listed item (`None` for any other row).
+pub fn imported_item(row: &MessageRow, with_body: bool) -> Option<Value> {
+    let imported = row.item.get("imported").and_then(Value::as_bool) == Some(true)
+        || row
+            .item
+            .get("source")
+            .and_then(|s| s.get("kind"))
+            .and_then(Value::as_str)
+            .is_some_and(|k| IMPORTED_KINDS.contains(&k));
+    if !imported {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    // values, not texts: a field the list names as a value never carries an object or a list
+    for k in IMPORTED_KEYS {
+        if let Some(v) = row
+            .item
+            .get(k)
+            .filter(|v| !v.is_null() && !v.is_object() && !v.is_array())
+        {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    // a goal: when it was written, and its words
+    for k in ["first_goal", "goal"] {
+        if let Some(g) = row.item.get(k).filter(|g| g.is_object()) {
+            let mut o = serde_json::Map::new();
+            if let Some(at) = g.get("at").filter(|v| v.is_string() || v.is_number()) {
+                o.insert("at".into(), at.clone());
+            }
+            if let Some(s) = g.get("item").and_then(Value::as_str) {
+                o.insert("item".into(), crate::workspace::words_or_hash(s, with_body));
+            }
+            out.insert(k.into(), Value::Object(o));
+        }
+    }
+    for k in IMPORTED_WORDS {
+        if let Some(s) = row.item.get(k).and_then(Value::as_str) {
+            out.insert(k.into(), crate::workspace::words_or_hash(s, with_body));
+        }
+    }
+    if let Some(src) = row.item.get("source").filter(|s| s.is_object()) {
+        let mut s = serde_json::Map::new();
+        for k in ["kind", "id", "via", "reply"] {
+            if let Some(v) = src.get(k).filter(|v| !v.is_null()) {
+                s.insert(k.into(), v.clone());
+            }
+        }
+        out.insert("source".into(), Value::Object(s));
+    }
+    Some(Value::Object(out))
 }
 
 /// Whether this page reads texts: the built-in page only (see the module doc).
@@ -495,7 +589,11 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
             "body must be {type, thread_id, message_id}",
         );
     };
-    if !ends(thread_id).is_some_and(|(a, b)| a == me || b == me) {
+    // a shared conversation (t_…) has no two ends: what a reader reads there are the rows sent
+    // to it (0eed7 VERIFY-pv6 M2: seat_done on a post that named the seat was 404 every time);
+    // the thread's own read mark is the timeline's (thread_read, catch-up) and is not moved here
+    let shared = thread_id.starts_with("t_");
+    if !shared && !ends(thread_id).is_some_and(|(a, b)| a == me || b == me) {
         return refuse(StatusCode::NOT_FOUND, "thread_not_found", "no such thread");
     }
     let (db, t, u, m) = (
@@ -505,7 +603,10 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
         me.clone(),
     );
     let found = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
-        let Some(last) = db.get(&u)?.filter(|r| r.thread_id == t) else {
+        let Some(last) = db
+            .get(&u)?
+            .filter(|r| r.thread_id == t && (!shared || r.to_key == m))
+        else {
             return Ok(None);
         };
         let rows = db.to_reader_upto(&t, &m, &last)?;
@@ -544,16 +645,20 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
             moved.push(*after);
         }
     }
+    // a shared conversation's mark stays the timeline's
+    let keep_mark = !shared;
     let (db, t, m, u) = (
         st.messages.clone(),
         thread_id.to_string(),
         me.clone(),
         upto.to_string(),
     );
-    if !matches!(
-        tokio::task::spawn_blocking(move || db.set_read_mark(&t, &m, &u)).await,
-        Ok(Ok(()))
-    ) {
+    if keep_mark
+        && !matches!(
+            tokio::task::spawn_blocking(move || db.set_read_mark(&t, &m, &u)).await,
+            Ok(Ok(()))
+        )
+    {
         return internal("read mark not kept");
     }
     let n = moved.len();
@@ -816,6 +921,136 @@ pub fn scratch_db() -> Arc<MessageDb> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 043dd EVID-sharedthread r3: an imported letter carries its ledger fields from an
+    /// allow-list; their words are hashed for a page that reads no bodies; any other row has none.
+    #[test]
+    fn an_imported_letter_shows_its_allow_listed_ledger_fields() {
+        let mut item = serde_json::Map::new();
+        for (k, v) in [
+            ("imported", json!(true)),
+            ("dm_id", json!("q_1")),
+            ("dm_view", json!("in_progress")),
+            ("dm_wait", json!("等 Andy")),
+            ("card", json!("N-web-dmbridge")),
+            ("human_id", json!("page:0123abcd")),
+            (
+                "source",
+                json!({"kind": "dm", "id": "q_1", "to": "7ebca", "via": "bridge"}),
+            ),
+        ] {
+            item.insert(k.into(), v);
+        }
+        let row = MessageRow {
+            message_id: "m1".into(),
+            thread_id: "T".into(),
+            from_key: "seat:519d0".into(),
+            to_key: "T".into(),
+            created: String::new(),
+            created_unix: 0,
+            updated: String::new(),
+            rev: 1,
+            item,
+            body: Some("x".into()),
+            body_sha256: String::new(),
+            len: 1,
+            idem_owner: None,
+            idem_key: None,
+            journaled: false,
+        };
+        let o = object(&row, "seat:7ebca", true);
+        assert_eq!(o["item"]["dm_view"], "in_progress");
+        assert_eq!(o["item"]["dm_wait"], "等 Andy");
+        assert_eq!(o["item"]["card"], "N-web-dmbridge");
+        assert_eq!(
+            o["item"]["source"],
+            json!({"kind": "dm", "id": "q_1", "via": "bridge"})
+        );
+        assert!(
+            o["item"].get("human_id").is_none(),
+            "reason: not_allow_listed"
+        );
+        let hidden = object(&row, "seat:7ebca", false);
+        assert_eq!(
+            hidden["item"]["dm_wait"]["len"], 6,
+            "reason: words_shown_without_bodies"
+        );
+        assert_eq!(hidden["item"]["dm_view"], "in_progress");
+        let mut plain = row.clone();
+        plain.item.remove("imported");
+        plain.item.remove("source");
+        assert!(
+            object(&plain, "seat:7ebca", true).get("item").is_none(),
+            "reason: item_on_plain_row"
+        );
+    }
+
+    /// 043dd 05:23: a 校正 / 每日 record (a9136 da7bfca2b) carries its judgement and counts;
+    /// its words follow the body rule; a listed value never brings an object.
+    #[test]
+    fn a_correction_record_shows_its_judgement_and_hides_its_words() {
+        let mut item = serde_json::Map::new();
+        for (k, v) in [
+            ("source", json!({"kind": "correction", "id": "x"})),
+            ("track", json!(72)),
+            ("from_track", json!(40)),
+            ("seat", json!("7ebca")),
+            ("corrections", json!(1)),
+            ("why", json!("收據綠")),
+            ("judge", json!({"secret": "x"})),
+            (
+                "goal",
+                json!({"at": "2026-11-19T05:00:00Z", "item": "能用", "x": 1}),
+            ),
+        ] {
+            item.insert(k.into(), v);
+        }
+        let row = MessageRow {
+            message_id: "m2".into(),
+            thread_id: "T".into(),
+            from_key: "seat:7ebca".into(),
+            to_key: "T".into(),
+            created: String::new(),
+            created_unix: 0,
+            updated: String::new(),
+            rev: 1,
+            item,
+            body: None,
+            body_sha256: String::new(),
+            len: 0,
+            idem_owner: None,
+            idem_key: None,
+            journaled: false,
+        };
+        let o = object(&row, "seat:7ebca", true);
+        assert_eq!(o["item"]["track"], 72);
+        assert_eq!(o["item"]["from_track"], 40);
+        let mut j = row.clone();
+        j.item.insert("source".into(), json!({"kind": "judgement"}));
+        j.item.remove("imported");
+        assert_eq!(
+            object(&j, "seat:7ebca", true)["item"]["track"],
+            72,
+            "reason: judgement_hidden"
+        );
+        assert_eq!(o["item"]["source"]["kind"], "correction");
+        assert_eq!(o["item"]["why"], "收據綠");
+        assert_eq!(
+            o["item"]["goal"],
+            json!({"at": "2026-11-19T05:00:00Z", "item": "能用"})
+        );
+        assert!(
+            o["item"].get("judge").is_none(),
+            "reason: object_value_shown"
+        );
+        let h = object(&row, "seat:7ebca", false);
+        assert_eq!(
+            h["item"]["why"]["len"], 3,
+            "reason: words_shown_without_bodies"
+        );
+        assert_eq!(h["item"]["goal"]["item"]["len"], 2);
+        assert_eq!(h["item"]["corrections"], 1);
+    }
 
     #[test]
     fn a_thread_is_the_two_keys_sorted_and_only_real_keys_make_one() {

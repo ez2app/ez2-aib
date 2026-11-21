@@ -47,8 +47,12 @@ kq '            .filter(|(k, _)| !allowlist::seat_owned(k))' \
    '            .filter(|(k, _)| !k.is_empty()) // knife' \
    a_queued_seat_session_starts_when_a_slot_frees
 # WD1 (S89-live-workdir) a folder with project settings is opened anyway
-ks '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {' \
-   '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) { // knife' \
+ks '            project_settings_in(std::path::Path::new(c), home.as_deref())' \
+   '            project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD1b a folder with project settings is let through as if aibd had opened it as a seat's tree (b4297 11-19)
+ks '        let listed = if req.tree {' \
+   '        let listed = if req.tree || true { // knife' \
    a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
 # WD2 a seat without a folder works in aibd's sessions folder instead of its own
 ks '            let d = seat_home(st.sessions.private_dir(), &seat_id);' \
@@ -69,8 +73,8 @@ kl '    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf(
    '    let dir = dir.to_path_buf(); // knife' \
    project_settings_in_the_folder_or_above_are_found_up_to_home
 # WD6 a project's .claude folder (agents / commands / skills) does not refuse the folder (0eed7 L1)
-kl '        if !at_home && d.join(PROJECT_DIR).exists() {' \
-   '        if false && !at_home && d.join(PROJECT_DIR).exists() { // knife' \
+kl '        if !at_home && project_dir_loads(d) {' \
+   '        if false && !at_home && project_dir_loads(d) { // knife' \
    project_settings_in_the_folder_or_above_are_found_up_to_home
 # WD7 the search stops before the home folder's own CLAUDE.md (0eed7 N1)
 kl '        let at_home = home.as_deref().is_some_and(|h| d == h);' \

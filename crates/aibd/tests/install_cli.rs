@@ -326,3 +326,30 @@ fn an_adopted_install_reads_as_installed_and_uninstall_removes_only_its_two_file
     assert!(!t.plist().exists());
     assert!(t.p("data/seats/s1.json").exists(), "data stays");
 }
+
+/// §20 (5d33a PREREAD-integws2 M2 / r2 L8): the real binary, run as a preview build, refuses
+/// every command that changes the installed aibd before it looks at anything, update included.
+#[cfg(unix)] // Windows: the same list is held by preview::tests (no service manager here)
+#[test]
+fn a_preview_binary_refuses_install_start_stop_and_update() {
+    let t = T::new();
+    for cmd in ["install", "uninstall", "start", "stop", "update"] {
+        // 5d33a N9: a test label and plist folder, so with the refusal gone it still never
+        // reaches the real launchd job
+        let (label, agents) = (t.label(), t.p("agents"));
+        let o = Command::new(env!("CARGO_BIN_EXE_aibd"))
+            .args([cmd, "--label", &label, "--plist-dir"])
+            .arg(&agents)
+            .env("AIBD_PREVIEW", "1")
+            .env("AIBD_DATA_DIR", t.p("data"))
+            .env("HOME", t.p("data"))
+            .output()
+            .expect("run aibd");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(3), "reason: preview_{cmd}_ran {err}");
+        assert!(
+            err.contains("refused in the preview"),
+            "reason: preview_{cmd}_not_refused {err}"
+        );
+    }
+}

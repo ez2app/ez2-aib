@@ -25,8 +25,8 @@ pu '            let user_page = held_as_user_page(&page).await;' \
    '            let user_page = false && held_as_user_page(&page).await; // knife' \
    a_user_folder_page_opens_no_seat
 # PO2 the page opens a dgrs seat with the switch off
-pi '            let opens_safe = body.get("mode").and_then(Value::as_str) == Some("safe");' \
-   '            let opens_safe = body.get("mode").and_then(Value::as_str) != Some("dgrs"); // knife' \
+pi '            let opens_safe = mode == Some("safe")' \
+   '            let opens_safe = mode != Some("dgrs") // knife' \
    a_page_cannot_open_what_it_may_not
 # PO3 the page gives the seat's folder, cabin or argv (they are dropped, not refused)
 po '    let req: PageOpen = match serde_json::from_value(body) {' \

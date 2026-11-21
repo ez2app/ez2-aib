@@ -180,6 +180,104 @@ impl Store {
         })
     }
 
+    /// 1a93b 11-21 (519d0 06:45 point 2): the seat runs on `model` from its next start (a seat
+    /// whose usage ran out is moved to another model and goes on in the same conversation).
+    /// Pinned: a restart keeps it. One `seat.model_set` event in the same transaction. Answers
+    /// whether the seat had revive data.
+    pub fn set_model(
+        &self,
+        seat_id: &str,
+        model: &str,
+        event_id: &str,
+        occurred_at: &str,
+    ) -> Result<bool> {
+        if model.is_empty() {
+            return Err(StoreError::Invalid("an empty model is not a value"));
+        }
+        let (seat_id, model) = (seat_id.to_string(), model.to_string());
+        let (event_id, occurred_at) = (event_id.to_string(), occurred_at.to_string());
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let n = tx.execute(
+                "UPDATE seat_meta SET model = ?2, model_pinned = 1, updated_at = ?3 WHERE seat_id = ?1",
+                params![seat_id, model, occurred_at],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            let last: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
+                params![seat_id],
+                |r| r.get(0),
+            )?;
+            insert_event(
+                &tx,
+                &NewEvent {
+                    event_id,
+                    aggregate_type: "seat".into(),
+                    aggregate_id: seat_id.clone(),
+                    sequence: last + 1,
+                    event_type: "seat.model_set".into(),
+                    correlation_id: None,
+                    occurred_at,
+                    payload: serde_json::json!({ "model": model }),
+                },
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
+    /// seat_clear (1a93b DESIGN-seat-clear r1 §5 step 4): put `new` in place of `old` (the id
+    /// read before the clear; `None` = none was kept), with a `seat.resume_id_swapped` event
+    /// that does not carry either id. `false` (nothing written) when the seat has no revive row
+    /// or holds another id now.
+    pub fn swap_resume_id(
+        &self,
+        seat_id: &str,
+        old: Option<&str>,
+        new: &str,
+        event_id: &str,
+        occurred_at: &str,
+    ) -> Result<bool> {
+        if new.is_empty() {
+            return Err(StoreError::Invalid("an empty resume id is not a value"));
+        }
+        let (seat_id, new) = (seat_id.to_string(), new.to_string());
+        let old = old.map(str::to_string);
+        let (event_id, occurred_at) = (event_id.to_string(), occurred_at.to_string());
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let n = tx.execute(
+                "UPDATE seat_meta SET resume_id = ?2, updated_at = ?3 WHERE seat_id = ?1 AND resume_id IS ?4",
+                params![seat_id, new, occurred_at, old],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            let last: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
+                params![seat_id],
+                |r| r.get(0),
+            )?;
+            insert_event(
+                &tx,
+                &NewEvent {
+                    event_id,
+                    aggregate_type: "seat".into(),
+                    aggregate_id: seat_id.clone(),
+                    sequence: last + 1,
+                    event_type: "seat.resume_id_swapped".into(),
+                    correlation_id: None,
+                    occurred_at,
+                    payload: serde_json::json!({ "field": "resume_id" }),
+                },
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     pub fn seat_meta(&self, seat_id: &str) -> Result<Option<SeatMeta>> {
         let c = self.read()?;
         Ok(c.query_row(

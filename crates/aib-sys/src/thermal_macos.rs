@@ -308,6 +308,22 @@ fn die_temps_with(spi: &Result<Spi, SysError>) -> Result<DieTemps, SysError> {
     read_die_temps(&hid)
 }
 
+/// Finishes libnotify's one-time start in this process; called before a fork
+/// ([`crate::held::spawn_held`]). libSystem's fork runs `_notify_fork_child` in the child; if
+/// another thread of the parent was inside that one-time start at the moment of the fork
+/// (the first `notify_register_check`, here the thermal reading's), the child aborts inside
+/// `fork` itself (`os_once_t is corrupt`, "crashed on child side of fork pre-exec") before
+/// any `pre_exec` hook runs, and `std` reports the spawn as started. lin 11-21, 6f1cb-so50:
+/// 5 test runs in 100, one crash report each. Once this returned the start is over for the
+/// life of the process; later calls cost one atomic read.
+pub(crate) fn notify_started() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // registers and cancels one token; the value is not used
+        let _ = pressure_raw();
+    });
+}
+
 /// A registered notify token; cancelled on drop.
 struct Token(c_int);
 

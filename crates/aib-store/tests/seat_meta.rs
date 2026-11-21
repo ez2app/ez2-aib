@@ -269,6 +269,8 @@ fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
     };
     assert!(opened("mode", "dgrs").is_ok());
     assert!(opened("mode", "safe").is_ok());
+    // 0006 (W1, 0eed7 a2cd0ccc4 H): a work seat is written too
+    assert!(opened("mode", "work").is_ok(), "reason: work_mode_refused");
     assert!(opened("mode", "root").is_err(), "a role is not a mode");
     assert!(opened("mode", "").is_err());
     assert!(opened("axis_id", "").is_err());
@@ -348,4 +350,85 @@ fn a_fill_whose_event_cannot_be_written_changes_nothing() {
         .is_err());
     assert_eq!(s.seat_meta("seat_a").unwrap(), Some(meta("seat_a", None)));
     assert_eq!(s.events_of("seat_a", 0, 10).unwrap().len(), 1);
+}
+
+/// 1a93b seat_clear: the resume id is swapped only from the one read before (or from none),
+/// with an event that carries no id.
+#[test]
+fn the_resume_id_is_swapped_only_from_the_one_read_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(&s, "seat_a", "t1", meta("seat_a", None)).unwrap();
+    // none kept: swapped from none
+    assert!(s
+        .swap_resume_id("seat_a", None, "conv-1", "ev_s1", "t2")
+        .unwrap());
+    // another id was read: nothing written
+    assert!(
+        !s.swap_resume_id("seat_a", Some("conv-x"), "conv-2", "ev_s2", "t3")
+            .unwrap(),
+        "reason: swapped_over_another_id"
+    );
+    assert!(
+        !s.swap_resume_id("seat_a", None, "conv-2", "ev_s3", "t4")
+            .unwrap(),
+        "reason: swapped_over_another_id"
+    );
+    assert!(s
+        .swap_resume_id("seat_a", Some("conv-1"), "conv-2", "ev_s4", "t5")
+        .unwrap());
+    assert_eq!(
+        s.seat_meta("seat_a").unwrap().unwrap().resume_id.as_deref(),
+        Some("conv-2")
+    );
+    let evs = s.events_of("seat_a", 0, 10).unwrap();
+    let swapped: Vec<_> = evs
+        .iter()
+        .filter(|e| e.event_type == "seat.resume_id_swapped")
+        .collect();
+    assert_eq!(swapped.len(), 2, "reason: one_event_per_swap");
+    assert!(
+        !evs.iter().any(|e| e.payload.to_string().contains("conv-")),
+        "reason: id_in_event"
+    );
+    assert!(!s
+        .swap_resume_id("seat_nope", None, "conv-3", "ev_s5", "t6")
+        .unwrap());
+    assert!(matches!(
+        s.swap_resume_id("seat_a", Some("conv-2"), "", "ev_s6", "t7"),
+        Err(StoreError::Invalid(_))
+    ));
+}
+
+#[test]
+fn a_seats_model_is_changed_pinned_and_journaled() {
+    // 1a93b 11-21 (519d0 06:45 point 2): a seat whose usage ran out goes on on another model
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(
+        &s,
+        "seat_a",
+        "2026-11-13T00:00:01.000Z",
+        meta("seat_a", Some("r1")),
+    )
+    .unwrap();
+    assert!(s
+        .set_model("seat_a", "sonnet", "ev_m1", "2026-11-13T00:00:02.000Z")
+        .unwrap());
+    let m = s.seat_meta("seat_a").unwrap().unwrap();
+    assert_eq!(m.model.as_deref(), Some("sonnet"), "reason: model_not_set");
+    assert!(m.model_pinned, "reason: model_not_pinned");
+    assert_eq!(
+        m.resume_id.as_deref(),
+        Some("r1"),
+        "reason: conversation_lost"
+    );
+    assert!(
+        !s.set_model("nope", "sonnet", "ev_m2", "t").unwrap(),
+        "reason: unknown_seat_set"
+    );
+    assert!(
+        s.set_model("seat_a", "", "ev_m3", "t").is_err(),
+        "reason: empty_model_set"
+    );
 }

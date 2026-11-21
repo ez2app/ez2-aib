@@ -220,7 +220,14 @@ async fn the_web_build_serves_the_workspace_page() {
     if option_env!("AIBD_WEB_DIST").is_some() {
         return;
     }
-    for f in ["index.html", "contacts.html", "ws.js", "ws.css"] {
+    for f in [
+        "index.html",
+        "contacts.html",
+        "ws.js",
+        "ws.css",
+        "tree.js",
+        "tree.css",
+    ] {
         assert!(
             aibd::static_files::ASSETS.iter().any(|a| a.path == f),
             "{f} is not built in"
@@ -301,7 +308,8 @@ fn every_route_sits_under_api_and_has_handlers() {
 #[tokio::test]
 async fn every_route_but_the_public_ones_wants_the_token() {
     for p in aibd::guard::ROUTES {
-        if *p == aibd::guard::HEALTH || *p == aibd::guard::PAIR_REDEEM {
+        // the public ones (health, and the code page's redeem / prefs / next before pairing)
+        if aibd::guard::PUBLIC_PATHS.contains(p) {
             continue;
         }
         let path = p.replace("{id}", "x");

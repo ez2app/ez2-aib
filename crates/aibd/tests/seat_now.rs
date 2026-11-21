@@ -167,3 +167,50 @@ async fn a_stopped_seat_leaves_the_board() {
     assert!(gone.is_empty(), "reason: stopped_seat_on_board {gone}");
     d.shutdown().await;
 }
+
+/// 1a93b GAP-web-backend §6: a seat says its handoff note is written with its own token; a page
+/// reads the path in `GET /api/v1/now` `handoffs`; the journal keeps `seat.handoff_written` with
+/// the path's length and hash only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_says_its_handoff_is_written_and_only_the_hash_is_journaled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let seat = "seat_handoff_e2e";
+    let tok = aibd::seat_token::tokens().issue(seat).unwrap();
+    let cred = d.page(true).await;
+    let path = "/Users/x/.ez2-aib/pending/HANDOFF-秘密交接-1120.md";
+    let ask = serde_json::json!({"type": "seat_handoff", "path": path}).to_string();
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(&ask)).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(
+        r.json["seat_id"], seat,
+        "reason: not_the_tokens_seat {}",
+        r.body
+    );
+    let bad = r#"{"type":"seat_handoff","path":"HANDOFF.md"}"#;
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(bad)).await;
+    assert_eq!(r.code, 400, "reason: relative_path_taken {}", r.body);
+
+    let r = d.call("GET", "/api/v1/now", Some(&cred), None).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let rows = r.json["handoffs"].as_array().expect("reason: no_handoffs");
+    let mine = rows
+        .iter()
+        .find(|x| x["seat_id"] == seat)
+        .expect("reason: handoff_lost");
+    assert_eq!(mine["path"], path, "reason: handoff_lost {}", r.body);
+    assert!(mine["at"].is_string());
+
+    let r = d.call("GET", "/api/v1/events?limit=500", None, None).await;
+    assert!(
+        r.body.contains("seat.handoff_written"),
+        "reason: not_journaled {}",
+        r.body
+    );
+    assert!(
+        !r.body.contains("秘密交接"),
+        "reason: path_in_journal {}",
+        r.body
+    );
+    d.shutdown().await;
+}

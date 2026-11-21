@@ -77,9 +77,9 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
    --expect-fail a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does \
    -- cargo test -p aibd --locked --lib seat_input::tests::a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does
 # SI14 a stop with a survivor is also reported as done
-python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
-   '        && empty(&stop["survivors"])' \
-   '        && (empty(&stop["survivors"]) || true) // knife' \
+python3 -I scripts/knife.py crates/aibd/src/platform/session.rs \
+   '    stop["survivors"].as_array().is_some_and(Vec::is_empty)' \
+   '    stop["survivors"].as_array().is_some() // knife' \
    --expect-fail a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not \
    -- cargo test -p aibd --locked --bin aibd a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not
 # SI15 ctl pair keeps a credential without the person's y

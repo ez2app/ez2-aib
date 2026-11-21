@@ -73,6 +73,7 @@ extern "C" {
     static kCFTypeDictionaryKeyCallBacks: CallBacks;
     static kCFTypeDictionaryValueCallBacks: CallBacks;
     static kCFBooleanFalse: CFTypeRef;
+    static kCFBooleanTrue: CFTypeRef;
     fn CFRelease(cf: CFTypeRef);
     fn CFDictionaryCreateMutable(
         alloc: CFTypeRef,
@@ -110,6 +111,15 @@ extern "C" {
     static kSecAttrAccessibleWhenUnlockedThisDeviceOnly: CFTypeRef;
     static kSecUseAuthenticationContext: CFTypeRef;
     static kSecKeyAlgorithmECDSASignatureMessageX962SHA256: CFTypeRef;
+    static kSecClass: CFTypeRef;
+    static kSecClassGenericPassword: CFTypeRef;
+    static kSecAttrService: CFTypeRef;
+    static kSecAttrAccount: CFTypeRef;
+    static kSecMatchLimit: CFTypeRef;
+    static kSecMatchLimitOne: CFTypeRef;
+    static kSecReturnAttributes: CFTypeRef;
+    static kSecReturnData: CFTypeRef;
+    fn SecItemCopyMatching(query: CFTypeRef, result: *mut CFTypeRef) -> i32;
     fn SecAccessControlCreateWithFlags(
         alloc: CFTypeRef,
         protection: CFTypeRef,
@@ -156,6 +166,9 @@ pub enum SeError {
     /// The person cancelled (or the system did).
     #[error("cancelled")]
     Cancel,
+    /// [`sign_until`]'s limit passed with no answer: its own watcher closed the window.
+    #[error("no answer within the limit")]
+    Timeout,
     /// No biometry / no passcode / locked out.
     #[error("biometry not available")]
     NoBiometry,
@@ -182,6 +195,7 @@ impl SeError {
         match self {
             SeError::BadArg(_) => "bad_arg",
             SeError::Cancel => "cancel",
+            SeError::Timeout => "timeout",
             SeError::NoBiometry => "no_biometry",
             SeError::AuthFailed => "auth_failed",
             SeError::WeakKey => "weak_key",
@@ -555,6 +569,74 @@ pub fn sign(blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, SeError> {
     sign_key(&key, msg)
 }
 
+/// An `LAContext` reference a second thread may hold to cancel the window.
+struct WatchedCtx(Retained<LAContext>);
+// SAFETY: the only thing the holding thread does with it is `-[LAContext invalidate]`, which
+// LocalAuthentication provides for ending an evaluation in progress on another thread (the
+// signing call blocks its own thread, so the cancel can only come from a second one). The
+// value is its own strong reference (`Retained::clone` retains), so the context outlives
+// both threads' use whichever ends first.
+unsafe impl Send for WatchedCtx {}
+
+/// [`sign`] with a limit: when the person has not answered within `limit`, the window is
+/// closed (`-[LAContext invalidate]` from a watcher thread) and the answer is
+/// [`SeError::Timeout`]. `Timeout` is said only when the watcher itself fired — never read
+/// off the system's error code, which a person's cancel may share — and it is said even if a
+/// signature came back at that very moment: past the limit nothing is a yes.
+/// A zero `limit` opens no window.
+pub fn sign_until(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, SeError> {
+    // the same two refusals as `sign`, spelled apart (each knife anchor is once in this file)
+    let no_reason = reason.trim().is_empty();
+    if no_reason {
+        return Err(SeError::BadArg("empty reason"));
+    }
+    let size_ok = (1..=SIGN_MAX).contains(&msg.len());
+    if !size_ok {
+        return Err(SeError::BadArg("message size"));
+    }
+    if limit.is_zero() {
+        return Err(SeError::Timeout);
+    }
+    let ctx = la_context();
+    let r = NSString::from_str(reason);
+    // SAFETY: `ctx` is live and `r` a live NSString for the call's duration.
+    unsafe { ctx.setLocalizedReason(&r) };
+    // SAFETY: `ctx` is live; 0 = never reuse an earlier unlock for this signature.
+    unsafe { ctx.setTouchIDAuthenticationAllowableReuseDuration(0.0) };
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (watched, fired2) = (WatchedCtx(ctx.clone()), fired.clone());
+    let watcher = std::thread::Builder::new()
+        .name("aib-touch-limit".into())
+        .spawn(move || {
+            // the whole wrapper moves in (a closure would otherwise capture only its field)
+            let watched = watched;
+            // one wake-up: the signing thread is done (the sender dropped) or the limit
+            // passed; not a periodic timer (ADR 0005 named exception)
+            #[allow(clippy::disallowed_methods)]
+            let waited = done_rx.recv_timeout(limit);
+            if waited == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                fired2.store(true, std::sync::atomic::Ordering::SeqCst);
+                // SAFETY: `watched.0` is this thread's own strong reference to a live
+                // LAContext; `invalidate` takes no arguments and ends its evaluation.
+                unsafe { watched.0.invalidate() };
+            }
+        })
+        .map_err(|_| SeError::KeyProbeFailed)?;
+    let signed = restore(blob, Some(&*ctx)).and_then(|key| sign_key(&key, msg));
+    drop(done_tx);
+    let _ = watcher.join();
+    if fired.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(SeError::Timeout);
+    }
+    signed
+}
+
 /// Check an ECDSA P-256 / SHA-256 / DER signature against an X9.63 public key. Needs no
 /// Secure Enclave.
 pub fn verify(public: &[u8], msg: &[u8], der: &[u8]) -> Result<bool, SeError> {
@@ -591,6 +673,101 @@ pub fn verify(public: &[u8], msg: &[u8], der: &[u8]) -> Result<bool, SeError> {
 }
 
 /// A key with **no** owner ACL, for tests that must show [`probe`] calls it weak.
+/// `errSecItemNotFound`.
+const ITEM_NOT_FOUND: i32 = -25300;
+
+/// `text` as a CFString we own; none when it holds a NUL or CoreFoundation gives none.
+fn cf_string(text: &str) -> Option<Owned> {
+    let c = std::ffi::CString::new(text).ok()?;
+    // SAFETY: `c` is NUL-terminated and lives across the call; CoreFoundation copies it and
+    // returns a new CFString we own (or null).
+    let s = Owned(unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), UTF8) });
+    (!s.is_null()).then_some(s)
+}
+
+/// The query for one generic password of the login keychain, asking for `want` (one of the
+/// `kSecReturn…` keys). The strings are returned too: they live as long as the query is used.
+fn password_query(
+    service: &str,
+    account: &str,
+    want: *const CFTypeRef,
+) -> Option<(Owned, Owned, Owned)> {
+    let (s, a) = (cf_string(service)?, cf_string(account)?);
+    let q = new_dict();
+    if q.is_null() {
+        return None;
+    }
+    set(
+        &q,
+        k(&raw const kSecClass),
+        k(&raw const kSecClassGenericPassword),
+    );
+    set(&q, k(&raw const kSecAttrService), s.ptr());
+    set(&q, k(&raw const kSecAttrAccount), a.ptr());
+    set(
+        &q,
+        k(&raw const kSecMatchLimit),
+        k(&raw const kSecMatchLimitOne),
+    );
+    set(&q, k(want), k(&raw const kCFBooleanTrue));
+    Some((q, s, a))
+}
+
+/// K1 (DESIGN-pr-api-7b81e-1121; 5d33a PREREAD-prapi-7b81e 2): is there a generic password
+/// `service` / `account`? Only its attributes are asked for, never its value. An error is the
+/// `OSStatus` (0 when the query could not be built).
+///
+/// UNVERIFIED: that asking for attributes never raises the keychain's "allow" window for an
+/// item whose access list names another program.
+pub fn password_there(service: &str, account: &str) -> Result<bool, i32> {
+    let Some((q, _s, _a)) = password_query(service, account, &raw const kSecReturnAttributes)
+    else {
+        return Err(0);
+    };
+    let mut out: CFTypeRef = std::ptr::null();
+    // SAFETY: `q` is a live dictionary of live CF objects; `out` is a writable out-parameter
+    // that receives an object we own (Copy rule) or stays null.
+    let status = unsafe { SecItemCopyMatching(q.ptr(), &raw mut out) };
+    let _got = Owned(out);
+    match status {
+        0 => Ok(true),
+        ITEM_NOT_FOUND => Ok(false),
+        e => Err(e),
+    }
+}
+
+/// K2: the value of the generic password `service` / `account`; `None` when there is none.
+/// The keychain decides who may read it (the item's access list): for a program the list
+/// does not name, the system asks the person, and this call waits for the answer.
+///
+/// The CFData the system hands back is released as it is, not wiped: the caller's copy is
+/// the one it can clear.
+pub fn password(service: &str, account: &str) -> Result<Option<Vec<u8>>, i32> {
+    let Some((q, _s, _a)) = password_query(service, account, &raw const kSecReturnData) else {
+        return Err(0);
+    };
+    let mut out: CFTypeRef = std::ptr::null();
+    // SAFETY: as in `password_there`.
+    let status = unsafe { SecItemCopyMatching(q.ptr(), &raw mut out) };
+    let got = Owned(out);
+    match status {
+        0 if !got.is_null() => {
+            // SAFETY: `got` is a live CF object returned by the call above.
+            let ty = unsafe { CFGetTypeID(got.ptr()) };
+            // SAFETY: no arguments; returns CFData's type id.
+            let data_ty = unsafe { CFDataGetTypeID() };
+            if ty == data_ty {
+                Ok(Some(data_bytes(got.ptr())))
+            } else {
+                Err(0)
+            }
+        }
+        0 => Err(0),
+        ITEM_NOT_FOUND => Ok(None),
+        e => Err(e),
+    }
+}
+
 #[cfg(test)]
 fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
     create_with(None)
@@ -599,6 +776,19 @@ fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No item of this name exists on any machine: both calls say "none" and raise nothing.
+    #[test]
+    fn a_password_nobody_stored_is_not_there() {
+        let (service, account) = ("ez2-aib-sys-test-no-such-item-7b81e", "nobody");
+        assert_eq!(password_there(service, account), Ok(false));
+        assert_eq!(password(service, account), Ok(None));
+        assert_eq!(
+            password_there("a\0b", account),
+            Err(0),
+            "reason: nul_in_a_name"
+        );
+    }
 
     #[test]
     fn errors_map_like_the_1x_helper() {

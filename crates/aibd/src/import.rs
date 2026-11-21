@@ -76,6 +76,11 @@ pub fn thread_of(kind: &str) -> String {
     format!("t_{}", &h[..16])
 }
 
+/// A text's sha256 (hex).
+pub fn digest_of(t: &str) -> String {
+    digest(t)
+}
+
 fn digest(t: &str) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(t.as_bytes())
@@ -92,16 +97,46 @@ fn cut(text: &str) -> String {
     s
 }
 
+/// 519d0 21:42 (乙), 0eed7 REVIEW-integ2-ui-daaafb770 H1 M1–M5: the regroup and the four other
+/// records have only been dry-run; in this build they still dry-run, but write nothing until
+/// those are fixed. `Err` = what to say.
+pub fn held(args: &[&str]) -> Result<(), String> {
+    let new_kind = args.first() == Some(&"regroup")
+        || args.iter().any(|a| crate::import_more::KINDS.contains(a));
+    if new_kind && !args.contains(&"--dry-run") {
+        return Err(
+            "this build only dry-runs `aibd import regroup` and dm / council / drive / shadow (add --dry-run); writing them comes with the next build"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// `aibd import ...`: the arguments after `import`.
 pub fn run(args: &[&str], data_dir: &Path) -> Result<Done, String> {
-    let (kind, dry, undo) = match args {
-        [k] => (*k, false, false),
-        [k, "--dry-run"] | ["--dry-run", k] => (*k, true, false),
-        [k, "--undo"] | ["--undo", k] => (*k, false, true),
-        _ => return Err("usage: aibd import <summary|handoff> [--dry-run | --undo]".into()),
-    };
+    held(args)?;
+    // Andy 11-19 04:3x: the records put by card (import_regroup.rs)
+    if args.first() == Some(&"regroup") {
+        return crate::import_regroup::run(&args[1..], data_dir);
+    }
+    let (kind, dry, undo) =
+        match args {
+            [k] => (*k, false, false),
+            [k, "--dry-run"] | ["--dry-run", k] => (*k, true, false),
+            [k, "--undo"] | ["--undo", k] => (*k, false, true),
+            _ => return Err(
+                "usage: aibd import <summary|handoff|dm|council|drive|shadow> [--dry-run | --undo]"
+                    .into(),
+            ),
+        };
+    // Andy 11-19 01:1x: the four other real records (import_more.rs)
+    if crate::import_more::KINDS.contains(&kind) {
+        return crate::import_more::run(kind, dry, undo, data_dir);
+    }
     let Some(&(_, prefix, category, title)) = KINDS.iter().find(|(a, ..)| *a == kind) else {
-        return Err(format!("unknown kind {kind:?}: summary or handoff"));
+        return Err(format!(
+            "unknown kind {kind:?}: summary, handoff, dm, council, drive or shadow"
+        ));
     };
     if undo {
         let db =
@@ -167,7 +202,7 @@ pub fn import_from(
             c.skipped += 1;
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = crate::import_more::read_text(&path) else {
             c.skipped += 1;
             continue;
         };
@@ -248,6 +283,29 @@ pub fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 519d0 21:42 (乙): the new imports dry-run, write nothing, and the old kinds are as before.
+    #[test]
+    fn the_new_imports_only_dry_run_in_this_build() {
+        for a in [
+            &["regroup"][..],
+            &["regroup", "--undo"],
+            &["dm"],
+            &["council", "--undo"],
+            &["drive"],
+            &["--undo", "shadow"],
+        ] {
+            assert!(held(a).is_err(), "reason: writes {a:?}");
+        }
+        for a in [
+            &["regroup", "--dry-run"][..],
+            &["dm", "--dry-run"],
+            &["summary"],
+            &["handoff", "--undo"],
+        ] {
+            assert!(held(a).is_ok(), "reason: held {a:?}");
+        }
+    }
 
     #[test]
     fn a_files_seat_and_title_are_read_from_it() {

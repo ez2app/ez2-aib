@@ -50,6 +50,12 @@ fn raw(addr: SocketAddr, method: &str, path: &str, headers: &str, body: Option<&
 
 impl Daemon {
     pub async fn start(dir: &Path) -> Daemon {
+        Self::start_max(dir, 4).await
+    }
+
+    /// `start` with room for `max` running sessions (a test that opens more seats than four and
+    /// needs the later ones running, not queued).
+    pub async fn start_max(dir: &Path, max: usize) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
         let cards = dir.join("cards.json");
@@ -86,7 +92,7 @@ impl Daemon {
             bind: "127.0.0.1:0".parse().unwrap(),
             data_dir: dir.join("data"),
             allowed_origins: vec![],
-            max_sessions: 4,
+            max_sessions: max,
             session_policy: policy,
             persona_cards: Some(cards),
         };
@@ -192,6 +198,24 @@ impl Daemon {
         cred
     }
 
+    /// A form POST with no token, from `origin` (`None`: this aibd's own; `Some("")`: none),
+    /// as the code page sends its redeem.
+    #[allow(dead_code)] // not every test binary that includes the harness uses it
+    pub async fn form(&self, path: &str, body: &str, origin: Option<&str>) -> Reply {
+        let addr = self.addr;
+        // Some("") sends no Origin at all
+        let o = match origin {
+            Some("") => String::new(),
+            Some(o) => format!("Origin: {o}\r\n"),
+            None => format!("Origin: http://127.0.0.1:{}\r\n", addr.port()),
+        };
+        let headers = format!("{o}Content-Type: application/x-www-form-urlencoded\r\n");
+        let (p, b) = (path.to_string(), body.to_string());
+        tokio::task::spawn_blocking(move || raw(addr, "POST", &p, &headers, Some(&b)))
+            .await
+            .unwrap()
+    }
+
     /// Open a seat in `mode` working in `cwd`: `(seat_id, session_id)`.
     pub async fn open(&self, mode: &str, cwd: &Path) -> (String, String) {
         self.open_as("claude", mode, cwd).await
@@ -249,12 +273,56 @@ impl Drop for Daemon {
             return;
         };
         let _ = stop.send(());
+        // b4297 RECEIPT-lin-pvwt3 note: a test failing (a knife biting) while its seats still
+        // run must fail, not hang: waiting for aibd's stop under a panic held 12 knives to the
+        // 300 s knife limit (INVALID, not counted as bites). The process ends the rest.
+        if std::thread::panicking() {
+            // b4297 RECEIPT-andymini-a0e-65be8029a: returning was not enough for three knives
+            // (TR held_as_user_page, knives-34 own_tree, knives-15 set_data_dir): the test's
+            // runtime, dropped after the panic, waits for aibd's blocking threads, and with
+            // seats still open those never end, so the binary sat to the 300 s limit again.
+            // A failed test ends its binary within 30 s instead (rc 101, as a failed test
+            // does); the failure is already printed above this line. The wait is always the
+            // full 30 s (nothing sends on the channel): if the binary is gone by then, so is
+            // this thread. So a test using this Daemon must not be #[should_panic] (5d33a
+            // PREREAD-harnessexit N2): its expected panic would end the binary 101.
+            //
+            // #869 round 2, crate knives 3/3 (knives-04-seat-input.sh, second knife on
+            // a_provider_that_stops_reading_gets_busy_not_a_hang: MISSES rc=101 failed=[]): the
+            // exit came before the test runner printed the failed test's line, and
+            // scripts/knife.py counts a bite only when it reads `test <name> ... FAILED`. So
+            // the line is written here before the exit: the name is this thread's (the test
+            // runner names a test's thread after the test), written to stdout itself, which
+            // the runner's capture of `print!` does not hold back.
+            let name = std::thread::current()
+                .name()
+                .unwrap_or("unnamed_test")
+                .to_owned();
+            std::thread::spawn(move || {
+                let (_keep, rx) = std::sync::mpsc::channel::<()>();
+                if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
+                    use std::io::Write;
+                    let mut out = std::io::stdout();
+                    let _ = writeln!(
+                        out,
+                        "\nharness: the test binary still runs 30 s after a test failed; \
+                         it exits 101\ntest {name} ... FAILED"
+                    );
+                    let _ = out.flush();
+                    std::process::exit(101);
+                }
+            });
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         rt.spawn(async move {
             let _ = h.await;
             let _ = tx.send(());
         });
-        let _ = rx.recv();
+        if rx.recv_timeout(std::time::Duration::from_secs(60)).is_err() {
+            // 5d33a N: say so, a stop that never ends is worth seeing in the test output
+            eprintln!("harness: aibd did not stop within 60 s; the test goes on");
+        }
     }
 }
 

@@ -34,6 +34,12 @@ pub const CHECK: &str = "seat_now_check";
 /// Slice 3: when a seat opens, or its conversation is cleared or compacted, its SessionStart
 /// hook reads its own line back (`{"type":"seat_now_mine"}`; [`crate::now_gate::session_start`]).
 pub const MINE: &str = "seat_now_mine";
+/// 1a93b GAP-web-backend §6 (519d0 11-20 22:34): the seat says its handoff note is written
+/// (`{"type":"seat_handoff","path":"<absolute path of the .md>"}`), so a page shows "written,
+/// here" without reading the seat's words. aibd never opens the path (no file probe for a seat).
+pub const HANDOFF: &str = "seat_handoff";
+/// The longest handoff path taken, in characters.
+pub const MAX_PATH: usize = 512;
 pub const MAX_ITEM: usize = 120;
 pub const MAX_NOTE: usize = 300;
 pub const MAX_STEPS: u16 = 99;
@@ -62,6 +68,19 @@ struct Lines {
     lines: BTreeMap<String, Now>,
     /// When each seat last wrote (a `clear` too): what the Stop hook checks.
     written: BTreeMap<String, String>,
+    /// Each seat's last handoff note ([`HANDOFF`]).
+    handoffs: BTreeMap<String, Handoff>,
+}
+
+/// One seat's last handoff note: where it says it wrote it, and when it said so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Handoff {
+    pub path: String,
+    /// The note's SHA-256 as the seat counted it (64 lowercase hex), when it gave one: the new
+    /// conversation after a clear is told to check it (5d33a PREREAD-seatclear N1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    pub at: String,
 }
 
 impl Board {
@@ -90,6 +109,7 @@ impl Board {
         let mut g = self.lock();
         g.lines.retain(|k, _| k != seat_id);
         g.written.retain(|k, _| k != seat_id);
+        g.handoffs.retain(|k, _| k != seat_id);
     }
 
     pub fn get(&self, seat_id: &str) -> Option<Now> {
@@ -103,6 +123,111 @@ impl Board {
     pub fn all(&self) -> BTreeMap<String, Now> {
         self.lock().lines.clone()
     }
+
+    pub fn set_handoff(&self, seat_id: &str, h: Handoff) {
+        self.lock().handoffs.insert(seat_id.to_owned(), h);
+    }
+
+    pub fn handoffs(&self) -> BTreeMap<String, Handoff> {
+        self.lock().handoffs.clone()
+    }
+}
+
+/// The body of a [`HANDOFF`] ⇒ the path: `type` and `path` only; the path one line of at most
+/// [`MAX_PATH`] characters, absolute (`/…`, `C:\…`, `C:/…` or `\\…`) and ending in `.md`.
+/// Refused, never trimmed. Nothing is read from disk.
+pub fn parse_handoff(body: &Value) -> Result<String, Refused> {
+    let obj = body.as_object().ok_or(Refused("body"))?;
+    if obj
+        .keys()
+        .any(|k| k != "type" && k != "path" && k != "sha256")
+    {
+        return Err(Refused("unknown_handoff_field"));
+    }
+    let p = one_line(obj.get("path"), "path", MAX_PATH)?.ok_or(Refused("path"))?;
+    let b = p.as_bytes();
+    let drive = b.len() > 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/');
+    let absolute = p.starts_with('/') || p.starts_with("\\\\") || drive;
+    if !absolute || !p.to_ascii_lowercase().ends_with(".md") {
+        return Err(Refused("path"));
+    }
+    Ok(p)
+}
+
+/// The optional `sha256` of a [`HANDOFF`] body: 64 lowercase hex, or refused.
+pub fn handoff_sha(body: &Value) -> Result<Option<String>, Refused> {
+    match body.get("sha256") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(h))
+            if h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            Ok(Some(h.clone()))
+        }
+        Some(_) => Err(Refused("sha256")),
+    }
+}
+
+/// One handoff as a page sees it; a user folder page gets the path as `{len, sha256}` (the
+/// same rule as [`view`]).
+pub fn handoff_view(seat_id: &str, h: &Handoff, user_page: bool) -> Value {
+    let path = if user_page {
+        json!({"len": h.path.chars().count(), "sha256": sha(&h.path)})
+    } else {
+        json!(h.path)
+    };
+    json!({"seat_id": seat_id, "path": path, "at": h.at})
+}
+
+/// act [`HANDOFF`] with a seat token (dispatched from `seat_input::act` by `type`).
+pub async fn handoff_act(st: AppState, key: crate::seat_token::Key, body: Value) -> Response {
+    let Some(seat_id) = crate::seat_token::tokens().seat(&key) else {
+        return refuse(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "this seat has stopped",
+        );
+    };
+    let parsed = parse_handoff(&body).and_then(|p| Ok((p, handoff_sha(&body)?)));
+    let (path, sha256) = match parsed {
+        Ok(p) => p,
+        Err(Refused(field)) => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("{field}: seat_handoff takes path (the absolute path of the .md, one line, ≤ {MAX_PATH} characters) and sha256 (64 lowercase hex) only"),
+            )
+        }
+    };
+    let at = crate::sessions::now_rfc3339();
+    let h = Handoff {
+        path,
+        sha256,
+        at: at.clone(),
+    };
+    board().set_handoff(&seat_id, h.clone());
+    let Ok(event_id) = crate::sessions::new_id("ev_") else {
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no event id");
+    };
+    let event = NewEvent {
+        event_id: event_id.clone(),
+        aggregate_type: "seat_now".into(),
+        aggregate_id: event_id,
+        sequence: 1,
+        event_type: "seat.handoff_written".into(),
+        correlation_id: None,
+        occurred_at: at,
+        // the path as length + hash only, like the words of seat.now
+        payload: json!({"seat_id": seat_id, "path": {"len": h.path.chars().count(), "sha256": sha(&h.path)}}),
+    };
+    let store = st.store.clone();
+    let journaled = matches!(
+        tokio::task::spawn_blocking(move || store.append(vec![event])).await,
+        Ok(Ok(_))
+    );
+    Json(json!({"seat_id": seat_id, "handoff": h, "journaled": journaled})).into_response()
 }
 
 /// `seat_now_check`: was the seat's line written at or after `since` (second resolution, both
@@ -366,12 +491,91 @@ pub async fn list(
         .iter()
         .map(|(seat_id, n)| view(seat_id, n, user_page))
         .collect();
-    Json(json!({ "now": rows })).into_response()
+    let handoffs: Vec<Value> = board()
+        .handoffs()
+        .iter()
+        .map(|(seat_id, h)| handoff_view(seat_id, h, user_page))
+        .collect();
+    Json(json!({ "now": rows, "handoffs": handoffs })).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_handoff_may_carry_its_sha256_and_nothing_else() {
+        let h = "ab".repeat(32);
+        assert_eq!(
+            handoff_sha(&json!({"type": HANDOFF, "path": "/a.md", "sha256": h})),
+            Ok(Some(h.clone()))
+        );
+        assert_eq!(
+            handoff_sha(&json!({"type": HANDOFF, "path": "/a.md"})),
+            Ok(None)
+        );
+        assert!(parse_handoff(&json!({"type": HANDOFF, "path": "/a.md", "sha256": h})).is_ok());
+        for bad in [json!("AB".repeat(32)), json!("ab"), json!(7)] {
+            assert_eq!(
+                handoff_sha(&json!({"type": HANDOFF, "sha256": bad})),
+                Err(Refused("sha256")),
+                "reason: bad_sha_taken {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handoff_is_one_absolute_md_path_and_nothing_else() {
+        for ok in [
+            "/Users/a/.ez2-aib/pending/HANDOFF-a1.md",
+            "C:\\Users\\a\\HANDOFF.MD",
+            "C:/Users/a/handoff.md",
+            "\\\\host\\share\\h.md",
+        ] {
+            assert_eq!(
+                parse_handoff(&json!({"type": HANDOFF, "path": ok})),
+                Ok(ok.to_owned()),
+                "reason: refused_{ok}"
+            );
+        }
+        for (bad, why) in [
+            (json!({"type": HANDOFF}), "path"),
+            (json!({"type": HANDOFF, "path": "HANDOFF.md"}), "path"),
+            (json!({"type": HANDOFF, "path": "/a/notes.txt"}), "path"),
+            (json!({"type": HANDOFF, "path": "/a/b\n.md"}), "path"),
+            (
+                json!({"type": HANDOFF, "path": format!("/{}.md", "x".repeat(MAX_PATH))}),
+                "path",
+            ),
+            (
+                json!({"type": HANDOFF, "path": "/a.md", "seat_id": "seat_other"}),
+                "unknown_handoff_field",
+            ),
+        ] {
+            assert_eq!(parse_handoff(&bad), Err(Refused(why)), "reason: took {bad}");
+        }
+    }
+
+    #[test]
+    fn a_handoff_is_shown_to_the_built_in_page_and_hashed_for_a_user_page_and_forgotten_on_stop() {
+        let b = Board::default();
+        let h = Handoff {
+            path: "/u/HANDOFF-x.md".into(),
+            sha256: None,
+            at: AT.into(),
+        };
+        b.set_handoff("seat_a", h.clone());
+        assert_eq!(handoff_view("seat_a", &h, false)["path"], "/u/HANDOFF-x.md");
+        let hidden = handoff_view("seat_a", &h, true);
+        assert_eq!(hidden["path"]["len"], 15, "reason: user_page_sees_the_path");
+        assert!(
+            !hidden.to_string().contains("HANDOFF-x"),
+            "reason: user_page_sees_the_path"
+        );
+        assert_eq!(b.handoffs().get("seat_a"), Some(&h));
+        b.forget("seat_a");
+        assert!(b.handoffs().is_empty(), "reason: handoff_outlives_the_seat");
+    }
 
     const AT: &str = "2026-11-18T07:00:00.000Z";
 

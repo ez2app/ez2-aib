@@ -338,6 +338,95 @@ fn jstr(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
+/// `--fail` 的值 ⇒ 節點的 `verify_fail`:`H` / `M` 開一筆;`closed` 把現有那筆關掉(沒有就拒)。
+pub fn fail_record(
+    v: &str,
+    old: &serde_json::Value,
+    at: &str,
+    seat: &str,
+    reviewer: Option<&str>,
+    author: Option<&str>,
+) -> Result<String, String> {
+    // 5d33a REVIEW-wsdisp-be9d8ab0 L1: an open record is closed or changed only by the seat that
+    // opened it or the card's reviewer; an open H is never turned into M (close, then open);
+    // a closed record stays as it was
+    let open_sev = old
+        .get("sev")
+        .and_then(serde_json::Value::as_str)
+        .filter(|_| old.get("closed").and_then(serde_json::Value::as_bool) == Some(false));
+    if let Some(sev) = open_sev {
+        let by = old
+            .get("by")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        // a reviewer who is also the card's author does not count (5d33a REVIEW-wsdisp-36dba2ae L1,
+        // same as the station check refusing reviewer == author)
+        let reviewer = reviewer.filter(|r| Some(*r) != author);
+        let may = seat == by || reviewer == Some(seat);
+        if !may {
+            return Err(format!(
+                "bad_value: 只有 {by}(開的席)或卡上 reviewer 能關 / 改這筆驗不通過"
+            ));
+        }
+        if sev == "H" && v.trim() == "M" {
+            return Err("bad_value: H 不能直接改成 M;先 --close 再開".into());
+        }
+    } else if old.get("closed").and_then(serde_json::Value::as_bool) == Some(true)
+        && v.trim() == "closed"
+    {
+        return Err("already_closed: 這筆驗不通過已經結了".into());
+    }
+    let rec = match v.trim() {
+        s @ ("H" | "M") => serde_json::json!({"sev": s, "closed": false, "at": at, "by": seat}),
+        "closed" => {
+            let Some(sev) = old.get("sev").and_then(serde_json::Value::as_str) else {
+                return Err("bad_value: --close 這張卡沒有驗不通過紀錄".into());
+            };
+            serde_json::json!({"sev": sev, "closed": true, "at": at, "by": seat})
+        }
+        s => return Err(format!("bad_value: --sev {s}(只收 H / M)")),
+    };
+    Ok(rec.to_string())
+}
+
+/// Most ids one card's 「要靠誰」 lists.
+const NEEDS_MAX: usize = 50;
+
+/// `--needs` 的值 ⇒ 項目編號(順序照給的、重複只留一個);`none` = 空。每個都要是樹上有的項目,
+/// 不能是自己(SPEC-workspace-multiseat §23-1)。
+pub fn needs_of(
+    raw: &str,
+    own: &str,
+    exists: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, String> {
+    if raw.trim() == "none" {
+        return Ok(Vec::new());
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for x in raw
+        .split([',', '，', ' '])
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+    {
+        if x == own {
+            return Err(format!("bad_value: --needs {x} 是這張卡自己"));
+        }
+        if !exists(x) {
+            return Err(format!("bad_value: --needs {x} 樹上沒有這個項目"));
+        }
+        if !ids.iter().any(|i| i == x) {
+            ids.push(x.to_string());
+        }
+    }
+    if ids.is_empty() {
+        return Err("bad_value: --needs 要給項目編號(逗號分開),清空寫 none".into());
+    }
+    if ids.len() > NEEDS_MAX {
+        return Err(format!("bad_value: --needs 最多 {NEEDS_MAX} 個"));
+    }
+    Ok(ids)
+}
+
 /// 換掉一個節點的幾個欄位(沒有的加在最後),其他成員原樣
 pub fn patch_node(obj: &str, changes: &[(&str, String)]) -> Result<String, String> {
     let mut m: Vec<(String, String, String)> = members(obj)?;
@@ -1080,6 +1169,12 @@ pub enum Op {
         need: Option<String>,
         /// SPEC-plan-fields r4 的 touches / branch / verifier(S107-assist 片 1)
         fields: Fields,
+        /// 「要靠誰」欄 `needs`(SPEC-workspace-multiseat §23-1):項目編號,逗號分開;
+        /// 給了就整份換掉,`none` = 清空
+        needs: Option<String>,
+        /// 驗不通過紀錄 `verify_fail`(N-workspace-c3,519d0 11-18 23:52):`H` / `M` 開一筆,
+        /// `closed` 關掉;站不動(11-17 裁定:驗不過站不動)
+        fail: Option<String>,
     },
     Note {
         id: String,
@@ -1290,6 +1385,8 @@ pub fn apply_with(
             reviewer,
             need,
             fields,
+            needs,
+            fail,
         } => {
             if fact.trim().is_empty() {
                 return Err("missing: --add 要寫這一段的事實".into());
@@ -1435,6 +1532,25 @@ pub fn apply_with(
             }
             if let Some(x) = need.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                 changes.push(("need", jstr(x)));
+            }
+            if let Some(raw) = needs {
+                let ids = needs_of(raw, id, |x| plan.nodes.iter().any(|n| n.id == x))?;
+                changes.push(("needs", render_str_array(&ids)));
+            }
+            if let Some(x) = fail {
+                let (a, b) = sp.nodes[i];
+                let old: serde_json::Value = serde_json::from_str(&text[a..b]).unwrap_or_default();
+                changes.push((
+                    "verify_fail",
+                    fail_record(
+                        x,
+                        &old["verify_fail"],
+                        &full,
+                        seat,
+                        n.reviewer.as_deref(),
+                        author(n).as_deref(),
+                    )?,
+                ));
             }
             changes.push((
                 "evidence",
@@ -1964,13 +2080,13 @@ pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
 }
 
 pub const USAGE: &str = "usage:
-  aib-plan mine [--seat 席] [--json] [--data FILE]
-  aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
-  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
-  aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
-  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
-  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
-  aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
+  aib-plan mine [--seat 席位] [--json] [--data FILE]
+  aib-plan judge [--seat 席位] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
+  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席位] [--need \"Andy 原話\"] [--needs 編號,編號|none] [--by 席位] [--repo DIR] [--data FILE]
+  aib-plan note <編號> \"事實\" [--by 席位] [--data FILE]
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席位] --add \"事實\" [--by 席位]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
+  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席位] [--data FILE]   舊站名轉七站 + 負責席位欄拆欄(預設只印對照表)
+  aib-plan add <父編號> --title 標題 [--seat 負責席位] [--why 說明] [--id 編號] [--reviewer 席位] [--need \"Andy 原話\"] [--by 席位] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
 rc:0 寫了 / 1 讀不到資料 / 2 參數或進入條件不對 / 4 被鎖著";
 
@@ -2008,7 +2124,7 @@ pub fn cli(
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
             | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need"
             | "--touches" | "--branch" | "--verifier" | "--overrides" | "--issue"
-            | "--level" | "--fixer") => flag(k, it.next(), &mut kv),
+            | "--level" | "--fixer" | "--needs") => flag(k, it.next(), &mut kv),
             "--write" => {
                 kv.push(("--write".into(), String::new()));
                 Ok(())
@@ -2271,6 +2387,8 @@ pub fn cli(
                         branch: get("--branch"),
                         verifier: get("--verifier"),
                     },
+                    needs: get("--needs"),
+                    fail: None,
                 },
                 "fail" => Op::Fail {
                     id: first,
@@ -2499,6 +2617,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 "a9136",
                 NOW,
@@ -2631,6 +2751,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 "5d33a",
                 NOW,
@@ -2683,6 +2805,8 @@ mod tests {
                 reviewer: None,
                 need: None,
                 fields,
+                needs: None,
+                fail: None,
             },
             seat,
             NOW,
@@ -2750,6 +2874,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 seat,
                 NOW,
@@ -2775,6 +2901,8 @@ mod tests {
                     branch: Some("feat/x-7b81e-1117".into()),
                     ..Fields::default()
                 },
+                needs: None,
+                fail: None,
             },
             "7b81e",
             NOW,
@@ -2839,6 +2967,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 seat,
                 NOW,
@@ -2870,6 +3000,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 seat,
                 NOW,
@@ -2890,6 +3022,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 seat,
                 NOW,
@@ -2936,6 +3070,8 @@ mod tests {
                             touches,
                             ..Fields::default()
                         },
+                        needs: None,
+                        fail: None,
                     },
                     "043dd",
                     NOW,
@@ -2961,6 +3097,130 @@ mod tests {
     }
 
     #[test]
+    fn fail_opens_and_closes_a_record_and_never_moves_the_station() {
+        let op = |fail: &str| Op::Set {
+            id: "S3".into(),
+            status: None,
+            fact: "驗不過:頁面沒更新".into(),
+            head: None,
+            wait: None,
+            reviewer: None,
+            need: None,
+            needs: None,
+            fail: Some(fail.into()),
+            fields: Fields::default(),
+        };
+        let node = |text: &str| -> serde_json::Value {
+            let (x, y) = spans(text).unwrap().nodes[2];
+            serde_json::from_str(&text[x..y]).unwrap()
+        };
+        let a = apply(DATA, &op("M"), "0eed7", NOW, &none()).unwrap();
+        let v = node(&a.text);
+        assert_eq!(v["verify_fail"]["sev"], "M");
+        assert_eq!(v["verify_fail"]["closed"], false);
+        assert_eq!(v["verify_fail"]["by"], "0eed7");
+        assert_eq!(v["status"], "未驗", "reason: station_moved");
+        assert!(a.to.is_none());
+        assert!(verify(DATA, &a.text, false, None).is_ok());
+        // the author closes nor lowers what 0eed7 opened (5d33a L1)
+        for x in ["closed", "M", "H"] {
+            assert!(
+                apply(&a.text, &op(x), "7b81e", NOW, &none())
+                    .unwrap_err()
+                    .contains("只有 0eed7"),
+                "reason: author_closed_others_record {x}"
+            );
+        }
+        let h = apply(DATA, &op("H"), "0eed7", NOW, &none()).unwrap();
+        assert!(
+            apply(&h.text, &op("M"), "0eed7", NOW, &none())
+                .unwrap_err()
+                .contains("H 不能直接改成 M"),
+            "reason: h_lowered"
+        );
+        let b = apply(&a.text, &op("closed"), "0eed7", NOW, &none()).unwrap();
+        let v = node(&b.text);
+        assert_eq!(v["verify_fail"]["closed"], true, "reason: not_closed");
+        assert_eq!(v["verify_fail"]["sev"], "M");
+        assert_eq!(v["verify_fail"]["by"], "0eed7");
+        assert!(apply(&b.text, &op("closed"), "0eed7", NOW, &none())
+            .unwrap_err()
+            .starts_with("already_closed"));
+        // the author who names themself reviewer still does not close it (5d33a 36dba2ae L1);
+        // a reviewer who is not the author does
+        let still_open = node(&a.text);
+        let open = &still_open["verify_fail"];
+        assert!(
+            fail_record(
+                "closed",
+                open,
+                "2026-11-17 08:00",
+                "7b81e",
+                Some("7b81e"),
+                Some("7b81e")
+            )
+            .unwrap_err()
+            .contains("只有 0eed7"),
+            "reason: author_as_reviewer_closed"
+        );
+        assert!(fail_record(
+            "closed",
+            open,
+            "2026-11-17 08:00",
+            "5d33a",
+            Some("5d33a"),
+            Some("7b81e")
+        )
+        .is_ok());
+        // once closed, anyone may open a new one
+        let c = apply(&b.text, &op("M"), "7b81e", NOW, &none()).unwrap();
+        assert_eq!(node(&c.text)["verify_fail"]["closed"], false);
+        // nothing to close, or a severity that is not H / M: refused
+        assert!(apply(DATA, &op("closed"), "7b81e", NOW, &none())
+            .unwrap_err()
+            .contains("沒有"));
+        assert!(apply(DATA, &op("L"), "7b81e", NOW, &none()).is_err());
+    }
+
+    #[test]
+    fn needs_lands_as_a_list_of_the_trees_own_ids() {
+        let set = |needs: &str| {
+            apply(
+                DATA,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: None,
+                    fact: "要靠 S3".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    needs: Some(needs.into()),
+                    fail: None,
+                    fields: Fields::default(),
+                },
+                "043dd",
+                NOW,
+                &none(),
+            )
+        };
+        let a = set("S3, S1,S3").unwrap();
+        let sp = spans(&a.text).unwrap();
+        let (x, y) = sp.nodes[1];
+        let v: serde_json::Value = serde_json::from_str(&a.text[x..y]).unwrap();
+        assert_eq!(v["needs"], serde_json::json!(["S3", "S1"]));
+        assert!(verify(DATA, &a.text, false, None).is_ok());
+        // none empties it; an id not on the tree, or the card itself, is refused
+        let a = set("none").unwrap();
+        let (x, y) = spans(&a.text).unwrap().nodes[1];
+        let v: serde_json::Value = serde_json::from_str(&a.text[x..y]).unwrap();
+        assert_eq!(v["needs"], serde_json::json!([]));
+        assert!(set("S9").unwrap_err().contains("S9"));
+        assert!(set("S2").unwrap_err().contains("自己"));
+        assert!(set(" , ").is_err());
+    }
+
+    #[test]
     fn set_head_and_wait_land_in_the_record_and_after() {
         let a = apply(
             DATA,
@@ -2973,6 +3233,8 @@ mod tests {
                 reviewer: Some("5d33a".into()),
                 need: Some(" Andy:「今天要可用」 ".into()),
                 fields: Fields::default(),
+                needs: None,
+                fail: None,
             },
             "043dd",
             NOW,
@@ -3003,6 +3265,8 @@ mod tests {
                 reviewer: None,
                 need: None,
                 fields: Fields::default(),
+                needs: None,
+                fail: None,
             },
             "043dd",
             NOW,
@@ -3195,6 +3459,8 @@ mod tests {
                 reviewer: None,
                 need: None,
                 fields: Fields::default(),
+                needs: None,
+                fail: None,
             },
             "5d33a",
             NOW,
@@ -3265,6 +3531,8 @@ mod tests {
             reviewer: None,
             need: None,
             fields: Fields::default(),
+            needs: None,
+            fail: None,
         };
         assert!(write(&data, &bad, "043dd", NOW, &none()).is_err());
         assert_eq!(std::fs::read_to_string(&data).unwrap(), a.text);
@@ -3305,6 +3573,8 @@ mod tests {
                     reviewer: None,
                     need: None,
                     fields: Fields::default(),
+                    needs: None,
+                    fail: None,
                 },
                 "a9136",
                 NOW,
@@ -3351,6 +3621,8 @@ mod tests {
                 touches: Some(vec![]),
                 ..Fields::default()
             },
+            needs: None,
+            fail: None,
         };
         let a = apply_with(DATA, &op, "043dd", NOW, &none(), &w).unwrap();
         assert_eq!(a.to.as_deref(), Some("dev"));

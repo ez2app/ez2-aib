@@ -408,3 +408,86 @@ async fn a_post_naming_a_seat_is_written_after_its_turn_as_the_persons() {
     assert_eq!(blocks[1]["text"], "@b 看一下這項");
     d.shutdown().await;
 }
+
+/// 0eed7 VERIFY-pv6 M2 (預覽真資料 10 次 404): a post in a shared conversation that names a
+/// seat is a row to that seat; the seat reads and closes it like any message (seat_done sends
+/// message_read with the t_ thread first). Only the seat it was sent to reads it, and the
+/// conversation's read mark (the timeline's) is not moved by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_closes_a_post_that_named_it_in_a_shared_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let (a, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let (b, _) = d.open("safe", &seat_dir(dir.path(), "b")).await;
+    let (ta, tb) = (
+        aibd::seat_token::tokens().issue(&a).unwrap(),
+        aibd::seat_token::tokens().issue(&b).unwrap(),
+    );
+    let cred = d.page(true).await;
+    let r = act(
+        &mut d,
+        &cred,
+        serde_json::json!({"type": "thread_open", "title": "共同串",
+            "members": [{"seat": a, "role": "author"}, {"seat": b, "role": "reviewer"}]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let t = r.json["thread"]["thread_id"].as_str().unwrap().to_string();
+    assert!(t.starts_with("t_"), "{}", r.body);
+    let r = act(
+        &mut d,
+        &cred,
+        serde_json::json!({"type": "thread_send", "thread_id": t, "body": "請 @b 看", "to": [b]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+
+    let r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let m = r.json["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["thread_id"] == t.as_str())
+        .unwrap_or_else(|| panic!("reason: post_not_in_inbox {}", r.body))
+        .clone();
+    let id = m["message_id"].as_str().unwrap().to_string();
+
+    // another member is not who it was sent to: it does not read it
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "message_read", "thread_id": t, "message_id": id}),
+    )
+    .await;
+    assert_eq!(r.code, 404, "reason: other_member_read {}", r.body);
+
+    let r = act(
+        &mut d,
+        &tb,
+        serde_json::json!({"type": "message_read", "thread_id": t, "message_id": id}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "reason: shared_thread_read_refused {}", r.body);
+    assert_eq!(r.json["read"], 1, "reason: not_read {}", r.body);
+    let rev = r.json["message"]["revision"].as_i64().unwrap();
+    let lib = aib_store::MessageDb::open(&dir.path().join("data").join("messages.sqlite")).unwrap();
+    assert_ne!(
+        lib.read_mark(&t, &format!("seat:{b}")).unwrap().as_deref(),
+        Some(id.as_str()),
+        "reason: timeline_mark_moved_to_a_delivery_row"
+    );
+
+    let r = act(
+        &mut d,
+        &tb,
+        serde_json::json!({"type": "message_done",
+        "message_id": id, "expected_revision": rev, "why": "看完了"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(r.json["message"]["status"], "done");
+    aibd::seat_token::tokens().revoke(&a);
+    aibd::seat_token::tokens().revoke(&b);
+    d.shutdown().await;
+}

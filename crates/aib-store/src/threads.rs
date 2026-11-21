@@ -46,7 +46,11 @@ CREATE INDEX IF NOT EXISTS thread_category_cat ON thread_category (category);
 /// The kinds of thread (SPEC-workspace-multiseat §17-1): AI 遇事不決 / 總結 / 交接 / 自動推進 /
 /// 影子續跑. A thread with none is an ordinary one. Kept in a table of its own (only ever
 /// added), so an older aibd opening the file reads nothing new.
-pub const CATEGORIES: [&str; 5] = ["council", "summary", "handoff", "drive", "shadow"];
+/// 519d0 06:08: `seat_day` (a seat's day rows) and `system` (system letters) come with the
+/// import that puts records on cards.
+pub const CATEGORIES: [&str; 7] = [
+    "council", "summary", "handoff", "drive", "shadow", "seat_day", "system",
+];
 
 /// Add the thread tables when they are missing (every open; nothing when they are there).
 pub(crate) fn add_tables(conn: &Connection) -> Result<()> {
@@ -86,6 +90,31 @@ pub struct Member {
 }
 
 const THREAD_COLS: &str = "thread_id, node, title, opened_by, created, created_unix, last_unix";
+
+/// At most this many threads come back from [`MessageDb::search_threads`].
+pub const SEARCH_MAX: usize = 500;
+
+/// A thread [`MessageDb::search_threads`] found: where it matched first (`title`, `member`,
+/// `body`) and, for `body`, the post (message id, text).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadHit {
+    pub thread: ThreadRow,
+    pub hit: &'static str,
+    pub post: Option<(String, String)>,
+}
+
+/// `q` as a LIKE pattern that matches it anywhere, its own `%` `_` `\\` taken literally.
+fn like_pattern(q: &str) -> String {
+    let mut p = String::from("%");
+    for ch in q.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            p.push('\\');
+        }
+        p.push(ch);
+    }
+    p.push('%');
+    p
+}
 
 fn thread_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRow> {
     Ok(ThreadRow {
@@ -130,9 +159,31 @@ impl MessageDb {
     /// new is opened, the members not in it yet are added and it comes back
     /// ([`Opened::Existing`]); checked in the same transaction, so two opens make one thread.
     pub fn thread_open(&self, t: ThreadRow, members: Vec<Member>) -> Result<Opened> {
+        self.open_inner(t, members, false)
+    }
+
+    /// A free thread (no node) found by its title (the earliest with exactly that title): when
+    /// there is one, the members not in it yet are added and it comes back
+    /// ([`Opened::Existing`]); otherwise it is opened. One transaction, so two opens make one
+    /// thread (043dd 02:42: the page's 「共同對話」 thread gains a seat it calls).
+    pub fn thread_open_by_title(&self, t: ThreadRow, members: Vec<Member>) -> Result<Opened> {
+        self.open_inner(t, members, true)
+    }
+
+    fn open_inner(&self, t: ThreadRow, members: Vec<Member>, by_title: bool) -> Result<Opened> {
         self.write(move |c| {
             let tx = c.transaction()?;
             let found = match &t.node {
+                None if by_title => tx
+                    .query_row(
+                        &format!(
+                            "SELECT {THREAD_COLS} FROM threads WHERE node IS NULL AND title = ?1
+                             ORDER BY created_unix, thread_id LIMIT 1"
+                        ),
+                        params![t.title],
+                        thread_from,
+                    )
+                    .optional()?,
                 Some(n) => tx
                     .query_row(
                         &format!(
@@ -190,7 +241,7 @@ impl MessageDb {
     pub fn thread_set_category(&self, thread_id: &str, category: &str) -> Result<bool> {
         if !CATEGORIES.contains(&category) {
             return Err(crate::StoreError::Invalid(
-                "a thread kind is one of the five",
+                "a thread kind is one of CATEGORIES",
             ));
         }
         let (t, c) = (thread_id.to_owned(), category.to_owned());
@@ -302,6 +353,36 @@ impl MessageDb {
         ))?;
         let rows = st.query_map(
             params![node, member, i64::from(limit.clamp(1, PAGE_MAX))],
+            thread_from,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The threads of one seat, newest post first, at most `limit` ([`PAGE_MAX`] at most): those
+    /// `seat:<seat>` is a member of, and the mail-import threads named after it (opened by
+    /// `seat:import`, titled `<a> ↔ <b>(信件匯入)`, N-web-dmbridge). `seat` is a seat code the
+    /// caller has checked (letters and digits only), so it is safe inside a LIKE pattern.
+    pub fn threads_of_seat(&self, seat: &str, limit: u32) -> Result<Vec<ThreadRow>> {
+        if !seat.bytes().all(|b| b.is_ascii_alphanumeric()) || seat.is_empty() {
+            return Err(crate::StoreError::Invalid(
+                "a seat code is letters and digits",
+            ));
+        }
+        let c = self.read()?;
+        let mut st = c.prepare(&format!(
+            "SELECT {THREAD_COLS} FROM threads t
+             WHERE EXISTS (SELECT 1 FROM thread_members m
+                           WHERE m.thread_id = t.thread_id AND m.member = ?1)
+                OR (t.opened_by = 'seat:import' AND (t.title LIKE ?2 OR t.title LIKE ?3))
+             ORDER BY last_unix DESC, thread_id DESC LIMIT ?4"
+        ))?;
+        let rows = st.query_map(
+            params![
+                format!("seat:{seat}"),
+                format!("{seat} ↔ %(信件匯入)"),
+                format!("% ↔ {seat}(信件匯入)"),
+                i64::from(limit.clamp(1, PAGE_MAX))
+            ],
             thread_from,
         )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -586,6 +667,18 @@ impl MessageDb {
     /// posts of `thread_id` written under the idempotency owner `owner` with a key starting
     /// `key_prefix`, the read marks left on them, and the thread itself (members, kind) when no
     /// post is left in it. Other posts stay. Returns (posts removed, thread removed).
+    /// The threads holding any post under `owner` whose key starts with `key_prefix` (0eed7
+    /// REVIEW-integ2-ui daaafb770 M2: an undo that does not depend on today's routing).
+    pub fn threads_with_keys(&self, owner: &str, key_prefix: &str) -> Result<Vec<String>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT DISTINCT thread_id FROM messages WHERE idem_owner = ?1
+               AND substr(idem_key, 1, length(?2)) = ?2 ORDER BY thread_id",
+        )?;
+        let rows = st.query_map(params![owner, key_prefix], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn undo_import(
         &self,
         thread_id: String,
@@ -625,6 +718,84 @@ impl MessageDb {
             tx.commit()?;
             Ok((posts, gone))
         })
+    }
+
+    /// §18 search (Andy 11-18 「要有一個 搜尋框 搜尋出來 要分類」): the threads whose title,
+    /// a member's key or (with `bodies`) a post's text has `q` (SQLite LIKE: any case for
+    /// ASCII), each once where it matched first (title, member, body; for body the newest post
+    /// with it), newest post first, at most [`SEARCH_MAX`].
+    pub fn search_threads(&self, q: &str, bodies: bool) -> Result<Vec<ThreadHit>> {
+        let c = self.read()?;
+        let pat = like_pattern(q);
+        let t_cols = THREAD_COLS
+            .split(", ")
+            .map(|x| format!("t.{x}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut out: Vec<ThreadHit> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut take = |t: ThreadRow, hit: &'static str, post: Option<(String, String)>| {
+            if seen.insert(t.thread_id.clone()) {
+                out.push(ThreadHit {
+                    thread: t,
+                    hit,
+                    post,
+                });
+            }
+        };
+        let mut st = c.prepare(&format!(
+            "SELECT {THREAD_COLS} FROM threads WHERE title LIKE ?1 ESCAPE '\\'
+             ORDER BY last_unix DESC LIMIT {SEARCH_MAX}"
+        ))?;
+        for t in st.query_map(params![pat], thread_from)? {
+            take(t?, "title", None);
+        }
+        let mut st = c.prepare(&format!(
+            "SELECT {t_cols} FROM threads t WHERE EXISTS (SELECT 1 FROM thread_members m
+               WHERE m.thread_id = t.thread_id AND m.member LIKE ?1 ESCAPE '\\')
+             ORDER BY t.last_unix DESC LIMIT {SEARCH_MAX}"
+        ))?;
+        for t in st.query_map(params![pat], thread_from)? {
+            take(t?, "member", None);
+        }
+        if bodies {
+            let mut st = c.prepare(&format!(
+                "SELECT {t_cols}, m.message_id, m.body FROM messages m
+                   JOIN threads t ON t.thread_id = m.thread_id
+                 WHERE m.to_key = m.thread_id AND m.body LIKE ?1 ESCAPE '\\'
+                 ORDER BY m.created_unix DESC, m.message_id DESC LIMIT {}",
+                SEARCH_MAX * 4
+            ))?;
+            let rows = st.query_map(params![pat], |r| {
+                Ok((
+                    thread_from(r)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (t, id, body) = row?;
+                take(t, "body", Some((id, body.unwrap_or_default())));
+            }
+        }
+        out.sort_by_key(|r| std::cmp::Reverse(r.thread.last_unix));
+        out.truncate(SEARCH_MAX);
+        Ok(out)
+    }
+
+    /// §18: the posts that carry a document link (`doc` in the item), newest first, at most
+    /// `limit`: (thread id, message id, item).
+    pub fn posts_with_docs(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT thread_id, message_id, item FROM messages
+             WHERE to_key = thread_id AND item LIKE '%\"doc\":[%'
+             ORDER BY created_unix DESC, message_id DESC LIMIT ?1",
+        )?;
+        let rows = st.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn read_marks_of(&self, thread_id: &str) -> Result<Vec<(String, String, i64)>> {

@@ -64,3 +64,6 @@ ao '                    new.push(event(ctx, "close", now_ms, id, own, None));' '
 # AO19 check is silent about a done row whose close never got written
 ao '        if unclosed {' '        if false && unclosed { // knife' \
    an_import_stopped_half_way_goes_on_where_it_stopped
+# AO20 an --item-kind outside 決定 / 出手 / 知道 is written (1a93b 11-20, 519d0 18:26)
+ao '.filter(|k| !ITEM_KINDS.contains(&k.as_str()))' '.filter(|_| false) // knife' \
+   an_item_kind_outside_the_three_words_is_refused

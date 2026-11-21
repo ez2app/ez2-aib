@@ -1,0 +1,920 @@
+//! Slice 3b-2b (DESIGN-g1-receipt-origacct-b4297-1120 r3 §3 §4 §7): serving a request. This
+//! is the part that starts programs and writes files; what it starts is [`crate::plan`]'s
+//! data and what it says is [`crate::run`]'s words.
+//!
+//! - `run` checks the machine (the pinned settings, receipt-run's digest, the toolchain,
+//!   sandbox-exec, free disk), receives the bundle from stdin, starts the supervisor (this
+//!   same program with `--supervise`, in its own process group, nothing inherited) and
+//!   answers at once. The same run id again answers how that run stands; it is never
+//!   started twice.
+//! - The supervisor takes the machine's lease like any receipt, brings the tree, judges it
+//!   before anything of it runs, fetches crates with the pinned cargo, runs receipt-run whole
+//!   inside the sandbox, keeps the `.out` ([`crate::run::keep_out`]) and removes the run
+//!   folder. Whatever step fails, the reason is written to the run's note and the run ends.
+//! - `cancel` stops the supervisor's process group (the pid file is beside the run folder,
+//!   where the tested code cannot write) and cleans up as the supervisor would have.
+//!
+//! macOS only: the profile is `sandbox-exec`'s. On another system `run` answers
+//! `no_sandbox` (design r3 §8: Windows results are GitHub CI's).
+
+use crate::plan::{self, Config, Repo};
+use crate::run::{self, Layout, State};
+use crate::sandbox::{self, Places, Step};
+use crate::Request;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// The pinned settings, under the home.
+pub const CONF: &str = ".ez2-aib/receipt-gate.conf";
+/// The base bare repository, under the runs.
+pub const BASE: &str = "web-base.git";
+/// A run is not started with less free disk than this (KiB): a cold build is about 20 GB.
+pub const MIN_FREE_KB: u64 = 30 * 1024 * 1024;
+/// receipt-run is stopped after this long.
+pub const RUN_SECS: u64 = 3 * 3600;
+/// The longest a fetch (the base from its origin, the crates) may take.
+pub const FETCH_SECS: u64 = 15 * 60;
+/// The lease is given up after this long in the queue.
+pub const QUEUE_SECS: u64 = 8 * 3600;
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+fn command(s: &Step) -> Command {
+    let mut c = Command::new(&s.argv[0]);
+    c.args(&s.argv[1..])
+        .env_clear()
+        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .current_dir(&s.cwd)
+        .stdin(Stdio::null());
+    c
+}
+
+fn ok(s: &Step) -> bool {
+    command(s)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|x| x.success())
+}
+
+fn printed(s: &Step) -> Option<Vec<u8>> {
+    let o = command(s).stderr(Stdio::null()).output().ok()?;
+    o.status.success().then_some(o.stdout)
+}
+
+fn quiet(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|x| x.success())
+}
+
+/// Whether a process's command line (as `ps -o command=` prints it) is a process of this
+/// run: the supervisor (`--supervise <run id> <head>`) and receipt-run (`<run id> ws …`) both
+/// carry the run id as a word of their own.
+pub fn of_run(command: &str, run_id: &str) -> bool {
+    command.split_whitespace().any(|w| w == run_id)
+}
+
+/// Whether `pid` is, now, a process of `run_id`: a pid file outlives its process (the
+/// machine started again, the supervisor died) and the number is given to another program
+/// (5d33a PREREAD-receiptrunner2 M2), so a number alone is never signalled or believed.
+fn ours(pid: u32, run_id: &str) -> bool {
+    Command::new("/bin/ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .is_some_and(|line| of_run(&line, run_id))
+}
+
+/// The process groups a cancel stops: those of the pid file whose leader is still a process
+/// of this run, and only for a run under way (a lost run's numbers are nobody's).
+pub fn groups_to_stop(state: &State, pids: &[u32], ours: &dyn Fn(u32) -> bool) -> Vec<String> {
+    if !matches!(state, State::UnderWay(_)) {
+        return Vec::new();
+    }
+    pids.iter()
+        .filter(|p| ours(**p))
+        .map(|p| format!("-{p}"))
+        .collect()
+}
+
+/// The processes that name the run's folder in their command line (`ps -x -o pid=,command=`:
+/// this account's): a test program built in the tree, or anything started with a path of
+/// it. A program outside the tree started with no such path is not found, said plainly
+/// (5d33a PREREAD-receiptrunner2 L1).
+pub fn leftovers_of(ps: &str, work: &str) -> Vec<u32> {
+    let mark = format!("{work}/");
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, command) = line.trim_start().split_once(' ')?;
+            let pid = pid.parse::<u32>().ok().filter(|p| *p > 1)?;
+            command.contains(&mark).then_some(pid)
+        })
+        .collect()
+}
+
+/// Stops them (not this process) and says how many there were.
+fn stop_leftovers(l: &Layout, run_id: &str) -> usize {
+    let Ok(work) = word(&l.work(run_id)) else {
+        return 0;
+    };
+    let Some(ps) = Command::new("/bin/ps")
+        .args(["-x", "-o", "pid=,command="])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+    else {
+        return 0;
+    };
+    let pids: Vec<u32> = leftovers_of(&ps, &work)
+        .into_iter()
+        .filter(|p| *p != std::process::id())
+        .collect();
+    for p in &pids {
+        let _ = quiet("/bin/kill", &["-KILL", &p.to_string()]);
+    }
+    pids.len()
+}
+
+/// Runs a step that reaches the network, at most `secs`: one that is still going then is
+/// stopped and has failed (a fetch on a network that hangs would hold the machine's lease
+/// until it expires).
+fn ok_within(s: &Step, secs: u64) -> bool {
+    let mut c = command(s);
+    c.stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut child) = c.spawn() else {
+        return false;
+    };
+    let mut waited = 0;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if waited < secs => {
+                wait_secs(1);
+                waited += 1;
+            }
+            _ => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
+fn sha256_of(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(p).ok()?;
+    Some(
+        Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
+/// The free KiB `df -k` prints for the file system of `dir` (the fourth field of its last
+/// line).
+pub fn free_kb_of(df: &str) -> Option<u64> {
+    df.lines()
+        .last()?
+        .split_whitespace()
+        .nth(3)?
+        .parse::<u64>()
+        .ok()
+}
+
+fn free_kb(dir: &Path) -> Option<u64> {
+    let o = Command::new("/bin/df")
+        .arg("-k")
+        .arg(dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    free_kb_of(std::str::from_utf8(&o.stdout).ok()?)
+}
+
+/// The ports something on this machine listens on or is bound to, from `netstat -an -p tcp`
+/// and `-p udp` (every user's sockets, which `lsof` does not show): the port after the last
+/// `.` of the local address of each TCP `LISTEN` line and of each UDP line that names a
+/// port (the profile's `localhost:<port>` is for both). Such a line that cannot be read is
+/// no answer at all.
+pub fn listening_of(netstat: &str) -> Option<Vec<u16>> {
+    let mut ports = std::collections::BTreeSet::new();
+    for line in netstat.lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let proto = w.first().copied().unwrap_or_default();
+        let tcp = proto.starts_with("tcp") && w.last() == Some(&"LISTEN");
+        // a UDP socket with no port yet (`*.*`) is bound to nothing
+        let udp = proto.starts_with("udp") && w.get(3).is_some_and(|a| !a.ends_with(".*"));
+        if tcp || udp {
+            let port = w.get(3)?.rsplit('.').next()?.parse::<u16>().ok()?;
+            ports.insert(port);
+        }
+    }
+    Some(ports.into_iter().collect())
+}
+
+fn netstat(proto: &str) -> Option<String> {
+    let o = Command::new("/usr/sbin/netstat")
+        .args(["-an", "-p", proto])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    String::from_utf8(o.stdout).ok()
+}
+
+fn listening() -> Option<Vec<u16>> {
+    listening_of(&format!("{}\n{}", netstat("tcp")?, netstat("udp")?))
+}
+
+/// The ports closed to one run: the pinned ones and whatever listens as the run starts
+/// (5d33a 11-21: a machine's list is from the day it was set up; a development server
+/// started since is not on it). What starts listening while the run is under way is not
+/// closed, said plainly. Ports that cannot be read: `listen_unread`, nothing runs.
+pub fn closed_for_run(pinned: &[u16], now: Option<Vec<u16>>) -> Result<Vec<u16>, &'static str> {
+    let mut all = now.ok_or("listen_unread")?;
+    all.extend_from_slice(pinned);
+    all.sort_unstable();
+    all.dedup();
+    Ok(all)
+}
+
+#[allow(clippy::disallowed_methods)] // not aibd: the gate's supervisor is its own process on a test machine (ADR 0005 is aibd's timers)
+fn wait_secs(secs: u64) {
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+}
+
+/// What one run is made of on this machine, as words for [`plan`] and [`sandbox`].
+struct Site {
+    home: String,
+    layout: Layout,
+    cfg: Config,
+    toolchain: String,
+    base: String,
+}
+
+fn word(p: &Path) -> Result<String, &'static str> {
+    p.to_str()
+        .filter(|s| sandbox::place_ok(s))
+        .map(str::to_owned)
+        .ok_or("bad_place")
+}
+
+/// Reads and checks the machine: the home is a plain path, the settings are whole,
+/// receipt-run is the pinned one, the toolchain and the sandbox are there.
+fn site(home: &Path) -> Result<Site, &'static str> {
+    let home_s = word(home)?;
+    let text = std::fs::read_to_string(home.join(CONF)).map_err(|_| "config_bad")?;
+    let cfg = plan::config(&text)?;
+    if sha256_of(Path::new(&cfg.receipt_run)).as_deref() != Some(cfg.receipt_run_sha256.as_str()) {
+        return Err("receipt_tool_changed");
+    }
+    let toolchain = format!("{home_s}/.rustup/toolchains/{}", cfg.toolchain);
+    if !Path::new(&toolchain).join("bin").join("cargo").is_file() {
+        return Err("no_toolchain");
+    }
+    if !cfg!(target_os = "macos") || !Path::new(SANDBOX_EXEC).is_file() {
+        return Err("no_sandbox");
+    }
+    let layout = Layout::new(home);
+    let base = word(&home.join("wt.noindex").join(BASE))?;
+    Ok(Site {
+        home: home_s,
+        layout,
+        cfg,
+        toolchain,
+        base,
+    })
+}
+
+fn gh_of() -> Option<String> {
+    ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"]
+        .iter()
+        .find(|p| Path::new(p).is_file())
+        .map(|p| (*p).to_owned())
+}
+
+/// Serves one request; what is returned goes to stdout as it is. `me` is this program's own
+/// path (the supervisor is started from it).
+pub fn serve(req: &Request, home: &Path, me: &Path, stdin: &mut dyn Read) -> Vec<u8> {
+    let layout = Layout::new(home);
+    match req {
+        Request::Status { run_id } => {
+            run::status_text(&run::state(&layout, run_id, &|p| ours(p, run_id))).into_bytes()
+        }
+        Request::Fetch { run_id } => {
+            let s = run::state(&layout, run_id, &|p| ours(p, run_id));
+            run::fetch_bytes(&layout, run_id, &s)
+        }
+        Request::Cancel { run_id } => cancel(home, run_id).into_bytes(),
+        Request::Run {
+            run_id,
+            head,
+            krate,
+            bundle_len,
+            bundle_sha256,
+            knives_len,
+            ..
+        } => {
+            let got = start(
+                home,
+                me,
+                run_id,
+                head,
+                krate,
+                *bundle_len,
+                bundle_sha256,
+                *knives_len,
+                stdin,
+            );
+            match got {
+                Ok(text) => text.into_bytes(),
+                Err(code) => format!("ERR {code}\n").into_bytes(),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the fields of one request, already checked by parse
+fn start(
+    home: &Path,
+    me: &Path,
+    run_id: &str,
+    head: &str,
+    krate: &str,
+    bundle_len: u64,
+    bundle_sha256: &str,
+    knives_len: u64,
+    stdin: &mut dyn Read,
+) -> Result<String, &'static str> {
+    let layout = Layout::new(home);
+    // asked again (a retry after a timeout): how it stands, never a second start
+    let now = run::state(&layout, run_id, &|p| ours(p, run_id));
+    if now != State::None {
+        return Ok(run::status_text(&now).replacen("OK status", "OK run", 1));
+    }
+    // first version: the whole workspace and no knife table (knives are CI's)
+    if krate != "ws" || knives_len != 0 {
+        return Err("only_ws_no_knives");
+    }
+    let site = site(home)?;
+    if !free_kb(home).is_some_and(|kb| kb >= MIN_FREE_KB) {
+        return Err("disk_low");
+    }
+    run::note(&layout, run_id, run::STEPS[0])?;
+    if let Err(code) = crate::recv::receive(
+        stdin,
+        bundle_len,
+        bundle_sha256,
+        &site.layout.bundle(run_id),
+    ) {
+        let _ = run::refuse(&layout, run_id, code);
+        return Err(code);
+    }
+    let mut sup = Command::new(me);
+    sup.args(["--supervise", run_id, head])
+        .env_clear()
+        .env("HOME", home)
+        .current_dir(home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        sup.process_group(0);
+    }
+    let Ok(child) = sup.spawn() else {
+        let _ = run::refuse(&layout, run_id, "not_started");
+        return Err("not_started");
+    };
+    if std::fs::write(layout.pid(run_id), format!("{}\n", child.id())).is_err() {
+        let _ = quiet("/bin/kill", &["-KILL", &child.id().to_string()]);
+        let _ = run::refuse(&layout, run_id, "not_started");
+        return Err("not_started");
+    }
+    Ok(format!("OK run\nSTARTED {run_id}\n"))
+}
+
+fn remove(p: &Path) {
+    let is_dir = std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    let _ = if is_dir {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    };
+}
+
+/// Removes what a run leaves: its folder (tree, target, temporary files), the bundle, the
+/// profile, the empty folder and the pid file. The note and the kept `.out` stay.
+fn clean(l: &Layout, run_id: &str) {
+    // what left the run's process group (a second fork, a new session) is still this
+    // account's and still in the sandbox: it could hold cargo's lock or a local port
+    let left = stop_leftovers(l, run_id);
+    if left > 0 {
+        let _ = run::note(l, run_id, &format!("leftovers {left}"));
+    }
+    for p in [
+        l.work(run_id),
+        l.bundle(run_id),
+        l.profile(run_id),
+        l.fetch_profile(run_id),
+        l.empty(run_id),
+        l.pid(run_id),
+    ] {
+        remove(&p);
+    }
+}
+
+fn cancel(home: &Path, run_id: &str) -> String {
+    let layout = Layout::new(home);
+    let state = run::state(&layout, run_id, &|p| ours(p, run_id));
+    match state {
+        State::None => return "ERR no_such_run\n".to_owned(),
+        State::Done | State::Refused(_) => return "OK cancel\nstate ended\n".to_owned(),
+        State::UnderWay(_) | State::Lost => {}
+    }
+    // the supervisor with what it started outside the sandbox is one process group,
+    // receipt-run with everything inside the sandbox another
+    let groups = groups_to_stop(&state, &run::pids(&layout, run_id), &|p| ours(p, run_id));
+    for g in &groups {
+        let _ = quiet("/bin/kill", &["-TERM", "--", g]);
+    }
+    if !groups.is_empty() {
+        wait_secs(2);
+    }
+    for g in &groups {
+        let _ = quiet("/bin/kill", &["-KILL", "--", g]);
+    }
+    let _ = run::refuse(&layout, run_id, "withdrawn");
+    if let Ok(site) = site(home) {
+        let [_, _, release] = plan::lease_steps(&site.cfg, &site.home, run_id, 0);
+        let mut off = release.clone();
+        off.argv = vec![
+            site.cfg.aib.clone(),
+            "lease".into(),
+            "queue".into(),
+            "remove".into(),
+            "--run-id".into(),
+            run_id.to_owned(),
+        ];
+        let _ = ok(&off);
+        let _ = ok(&release);
+    }
+    clean(&layout, run_id);
+    "OK cancel\nstate withdrawn\n".to_owned()
+}
+
+/// The supervisor of one run (`--supervise <run id> <head>`): every step in order; the
+/// first that fails writes its reason to the note. Always cleans up and releases the lease.
+pub fn supervise(home: &Path, run_id: &str, head: &str) {
+    let layout = Layout::new(home);
+    let site = match site(home) {
+        Ok(s) => s,
+        Err(code) => {
+            let _ = run::refuse(&layout, run_id, code);
+            clean(&layout, run_id);
+            return;
+        }
+    };
+    let [add, acquire, release] =
+        plan::lease_steps(&site.cfg, &site.home, run_id, std::process::id());
+    let leased = queue(&layout, run_id, &add, &acquire);
+    let ended = if leased {
+        steps(&site, run_id, head)
+    } else {
+        Err("lost")
+    };
+    if let Err(code) = ended {
+        let _ = run::refuse(&layout, run_id, code);
+    }
+    clean(&layout, run_id);
+    let _ = ok(&release);
+}
+
+/// Waits for the machine: registers, asks every two minutes, registers again every half
+/// hour (a registration that expired drops the run from the queue without a word).
+fn queue(l: &Layout, run_id: &str, add: &Step, acquire: &Step) -> bool {
+    let _ = run::note(l, run_id, run::STEPS[1]);
+    let mut waited = 0;
+    loop {
+        if waited % 1800 == 0 {
+            let _ = ok(add);
+        }
+        if ok(acquire) {
+            return true;
+        }
+        if waited >= QUEUE_SECS {
+            return false;
+        }
+        wait_secs(120);
+        waited += 120;
+    }
+}
+
+fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
+    let l = &site.layout;
+    let work = word(&l.work(run_id))?;
+    let tree = word(&l.tree(run_id))?;
+    let bundle = word(&l.bundle(run_id))?;
+    let empty = word(&l.empty(run_id))?;
+    let profile_file = word(&l.profile(run_id))?;
+    let fetch_file = word(&l.fetch_profile(run_id))?;
+    let gh = gh_of();
+    let closed = closed_for_run(&site.cfg.closed_ports, listening())?;
+    let places = Places {
+        home: &site.home,
+        work: &work,
+        toolchain: &site.toolchain,
+        gh: gh.as_deref(),
+        closed: &closed,
+    };
+    let repo = Repo {
+        base: &site.base,
+        tree: &tree,
+        bundle: &bundle,
+        empty: &empty,
+    };
+    let profile = sandbox::profile(&places)?;
+    let fetch_profile = sandbox::fetch_profile(&places, &empty)?;
+    let _ = run::note(l, run_id, run::STEPS[2]);
+    std::fs::create_dir(&empty).map_err(|_| "cannot_write")?;
+    std::fs::create_dir(&work).map_err(|_| "cannot_write")?;
+    // the base is rebuilt when it is not as the gate made it (the last run could not write
+    // there, but a base nobody checked is not used)
+    if !crate::recv::base_clean(Path::new(&site.base)) {
+        remove(Path::new(&site.base));
+        if !plan::base_init(&repo).iter().all(ok) {
+            return Err("base_unavailable");
+        }
+    }
+    let bring = plan::bring(&repo);
+    if !ok_within(&bring[0], FETCH_SECS) {
+        return Err("base_unavailable");
+    }
+    if !ok(&bring[1]) || !ok(&bring[2]) {
+        return Err("bundle_refused");
+    }
+    let got = printed(&plan::head_of(&repo)).ok_or("bundle_refused")?;
+    if std::str::from_utf8(&got).map(str::trim) != Ok(head) {
+        return Err("bundle_not_head");
+    }
+    // judged from git's objects, before anything of the tree is on disk or run: no link or
+    // submodule anywhere in it, nothing changed that picks a toolchain or cargo's settings,
+    // every crate from crates.io
+    let modes = printed(&plan::modes(&repo)).ok_or("tree_refused")?;
+    sandbox::tree_modes_ok(&modes)?;
+    let changed = printed(&plan::changed(&repo)).ok_or("tree_refused")?;
+    sandbox::changed_refused(plan::paths(&changed)?)?;
+    let lock = printed(&plan::lock_at(&repo)).ok_or("tree_refused")?;
+    if !std::str::from_utf8(&lock).is_ok_and(sandbox::lock_ok) {
+        return Err("tree_refused");
+    }
+    if !ok(&plan::checkout(&repo)) {
+        return Err("tree_refused");
+    }
+    // the fetch under its own profile; what it prints is not kept (a manifest that does not
+    // parse is quoted in cargo's message)
+    std::fs::create_dir(l.tmp(run_id)).map_err(|_| "cannot_write")?;
+    std::fs::write(&fetch_file, fetch_profile).map_err(|_| "cannot_write")?;
+    if !ok_within(&sandbox::fetch(&places, &fetch_file, &empty), FETCH_SECS) {
+        return Err("fetch_failed");
+    }
+    std::fs::write(&profile_file, profile).map_err(|_| "cannot_write")?;
+    let _ = run::note(l, run_id, run::STEPS[3]);
+    run_inside(
+        &plan::receipt(&site.cfg, &places, &profile_file, run_id),
+        &l.pid(run_id),
+    );
+    run::keep_out(l, run_id)
+}
+
+/// Runs receipt-run inside the sandbox in a process group of its own (written as the second
+/// line of the pid file), waits for it (at most [`RUN_SECS`]) and then stops whatever of the
+/// group is left.
+fn run_inside(s: &Step, pid_file: &Path) {
+    let mut c = command(s);
+    c.stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    let Ok(mut child) = c.spawn() else {
+        return;
+    };
+    let group = format!("-{}", child.id());
+    // a cancel stops this group too (second line of the pid file)
+    {
+        use std::io::Write;
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .open(pid_file)
+            .and_then(|mut f| writeln!(f, "{}", child.id()));
+    }
+    let mut waited = 0;
+    while waited < RUN_SECS && matches!(child.try_wait(), Ok(None)) {
+        wait_secs(5);
+        waited += 5;
+    }
+    let _ = quiet("/bin/kill", &["-KILL", "--", &group]);
+    let _ = child.wait();
+}
+
+/// The place this program's supervisor finds things: the home sshd gave.
+pub fn home_of(env_home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let p = PathBuf::from(env_home?);
+    (p.is_absolute() && p.is_dir()).then_some(p)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    use super::*;
+
+    const ID: &str = "web-a9136-012345678";
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+    const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn home() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("wt.noindex")).unwrap();
+        d
+    }
+
+    fn run_req(krate: &str, knives: u64) -> Request {
+        Request::Run {
+            run_id: ID.into(),
+            head: HEAD.into(),
+            krate: krate.into(),
+            bundle_len: 3,
+            bundle_sha256: SHA.into(),
+            knives_len: knives,
+            knives_sha256: SHA.into(),
+        }
+    }
+
+    fn says(d: &tempfile::TempDir, req: &Request) -> String {
+        let me = d.path().join("no-such-gate");
+        let mut stdin: &[u8] = b"abc";
+        String::from_utf8(serve(req, d.path(), &me, &mut stdin)).unwrap()
+    }
+
+    #[test]
+    fn df_is_read_by_its_free_column() {
+        let df = "Filesystem   1024-blocks      Used Available Capacity iused      ifree %iused  Mounted on\n/dev/disk3s1   482797652 184239508 248632876    43% 2797292 2486328760    0%   /System/Volumes/Data\n";
+        assert_eq!(free_kb_of(df), Some(248_632_876));
+        assert_eq!(free_kb_of(""), None);
+        assert_eq!(free_kb_of("Filesystem 1024-blocks Used\n"), None);
+        const { assert!(MIN_FREE_KB > 20 * 1024 * 1024) };
+    }
+
+    #[test]
+    fn a_cancel_stops_only_what_is_still_this_run() {
+        assert!(of_run(
+            "/Users/owner/.ez2-aib/bin/aib-receipt-gate --supervise web-a9136-012345678 0123",
+            ID
+        ));
+        assert!(of_run(
+            "/opt/homebrew/bin/bash /x/receipt-run.sh web-a9136-012345678 ws - -",
+            ID
+        ));
+        // another program that got the number, or one that only has the id inside a word
+        assert!(!of_run("-zsh", ID));
+        assert!(!of_run("vim /tmp/web-a9136-012345678.out", ID));
+        assert!(!of_run("", ID));
+        let under_way = State::UnderWay(run::STEPS[0]);
+        let all = |_: u32| true;
+        assert_eq!(
+            groups_to_stop(&under_way, &[700, 701], &all),
+            ["-700", "-701"]
+        );
+        // the second number went to another program: only the first group is stopped
+        let first = |p: u32| p == 700;
+        assert_eq!(
+            groups_to_stop(&under_way, &[700, 701], &first),
+            ["-700"],
+            "reason: reused_pid_stopped"
+        );
+        // a lost run's pid file names nobody's processes
+        assert!(
+            groups_to_stop(&State::Lost, &[700, 701], &all).is_empty(),
+            "reason: lost_run_signalled"
+        );
+    }
+
+    #[test]
+    fn what_left_the_runs_group_is_found_by_the_run_folder() {
+        let work = "/Users/owner/wt.noindex/web-runs/web-a9136-012345678";
+        let ps = format!(
+            "  501 /sbin/launchd\n\
+             7001 {work}/tree/target/debug/deps/sessions-0123 --nocapture\n\
+             7002 /bin/sleep 900\n\
+             7003 /bin/bash -c cd {work}/tree && sleep 900\n\
+             7004 vim /Users/owner/wt.noindex/web-runs/web-a9136-0123456789/notes\n\
+             x {work}/tree/odd\n"
+        );
+        assert_eq!(
+            leftovers_of(&ps, work),
+            [7001, 7003],
+            "reason: leftover_not_found"
+        );
+        assert!(leftovers_of("", work).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_fetch_that_hangs_is_stopped_at_its_limit() {
+        let step = |program: &str, arg: &str| Step {
+            argv: vec![program.into(), arg.into()],
+            env: Vec::new(),
+            cwd: "/".into(),
+        };
+        assert!(ok_within(&step("/bin/sleep", "0"), 5));
+        assert!(
+            !ok_within(&step("/bin/sleep", "4"), 1),
+            "reason: hung_fetch_waited_for"
+        );
+        assert!(!ok_within(&step("/bin/sleep", "not-a-number"), 5));
+    }
+
+    #[test]
+    fn what_listens_as_a_run_starts_is_closed_to_it() {
+        let netstat = "Active Internet connections (including servers)\n\
+            Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n\
+            tcp4       0      0  127.0.0.1.49652        127.0.0.1.49700        ESTABLISHED\n\
+            tcp4       0      0  *.5000                 *.*                    LISTEN\n\
+            tcp46      0      0  *.80                   *.*                    LISTEN\n\
+            tcp6       0      0  ::1.10019              *.*                    LISTEN\n\
+            tcp4       0      0  127.0.0.1.10019        *.*                    LISTEN\n\
+            tcp4       0      0  192.168.1.20.57518     *.*                    LISTEN\n\
+            udp4       0      0  *.*                    *.*\n\
+            udp46      0      0  *.5353                 *.*\n\
+            udp4       0      0  192.168.1.20.64969     *.*\n";
+        assert_eq!(
+            listening_of(netstat),
+            Some(vec![80, 5000, 5353, 10019, 57518, 64969])
+        );
+        assert_eq!(listening_of("udp4  0  0  *.mdns  *.*\n"), None);
+        assert_eq!(listening_of(""), Some(Vec::new()));
+        // a listening line that cannot be read is not passed over
+        let odd = "tcp4       0      0  *.http                 *.*                    LISTEN\n";
+        assert_eq!(listening_of(odd), None, "reason: unread_line_skipped");
+        assert_eq!(
+            closed_for_run(&[631, 5000], listening_of(netstat)),
+            Ok(vec![80, 631, 5000, 5353, 10019, 57518, 64969]),
+            "reason: listening_port_left_open"
+        );
+        assert_eq!(closed_for_run(&[631], None), Err("listen_unread"));
+    }
+
+    #[test]
+    fn a_machine_that_is_not_set_up_runs_nothing() {
+        let d = home();
+        // no pinned settings: refused, and nothing was received or noted
+        // (a temp folder whose path holds characters a place cannot is bad_place: a refusal too)
+        let got = says(&d, &run_req("ws", 0));
+        assert!(
+            ["ERR config_bad\n", "ERR bad_place\n"].contains(&got.as_str()),
+            "reason: unpinned_ran ({got})"
+        );
+        assert!(!Layout::new(d.path()).note(ID).exists());
+        assert!(
+            !Layout::new(d.path()).bundle(ID).exists(),
+            "reason: bundle_taken"
+        );
+        // settings that pin another receipt-run than the one on disk
+        std::fs::create_dir_all(d.path().join(".ez2-aib")).unwrap();
+        let rr = d.path().join("rr.sh");
+        std::fs::write(&rr, b"echo other\n").unwrap();
+        // (the test's temp folder may hold characters a place cannot: then it is bad_place,
+        // which is a refusal too)
+        let conf = format!(
+            "receipt_run={}\nreceipt_run_sha256={SHA}\ntoolchain=1.99.1-x\naib=/usr/bin/true\nbash=/bin/bash\nclosed_ports=\n",
+            rr.display()
+        );
+        std::fs::write(d.path().join(CONF), conf).unwrap();
+        let got = says(&d, &run_req("ws", 0));
+        assert!(
+            [
+                "ERR receipt_tool_changed\n",
+                "ERR bad_place\n",
+                "ERR config_bad\n"
+            ]
+            .contains(&got.as_str()),
+            "reason: changed_tool_ran ({got})"
+        );
+        assert!(!Layout::new(d.path()).bundle(ID).exists());
+    }
+
+    #[test]
+    fn the_first_version_takes_the_whole_workspace_and_no_knives() {
+        let d = home();
+        assert_eq!(says(&d, &run_req("aibd", 0)), "ERR only_ws_no_knives\n");
+        assert_eq!(says(&d, &run_req("ws", 10)), "ERR only_ws_no_knives\n");
+    }
+
+    #[test]
+    fn a_run_asked_again_is_told_how_it_stands_and_not_started() {
+        let d = home();
+        let l = Layout::new(d.path());
+        run::note(&l, ID, "received").unwrap();
+        run::refuse(&l, ID, "tree_refused").unwrap();
+        // no settings on this machine: a second start would answer config_bad
+        assert_eq!(
+            says(&d, &run_req("ws", 0)),
+            "OK run\nstate refused\nreason tree_refused\n",
+            "reason: started_twice"
+        );
+        assert_eq!(
+            says(&d, &Request::Status { run_id: ID.into() }),
+            "OK status\nstate refused\nreason tree_refused\n"
+        );
+        assert_eq!(
+            says(&d, &Request::Fetch { run_id: ID.into() }),
+            "ERR tree_refused\n"
+        );
+        assert_eq!(
+            says(&d, &Request::Cancel { run_id: ID.into() }),
+            "OK cancel\nstate ended\n"
+        );
+        let other = "web-a9136-987654321";
+        assert_eq!(
+            says(
+                &d,
+                &Request::Cancel {
+                    run_id: other.into()
+                }
+            ),
+            "ERR no_such_run\n"
+        );
+        assert_eq!(
+            says(
+                &d,
+                &Request::Fetch {
+                    run_id: other.into()
+                }
+            ),
+            "ERR no_such_run\n"
+        );
+    }
+
+    #[test]
+    fn cleaning_leaves_the_note_and_the_kept_out() {
+        let d = home();
+        let l = Layout::new(d.path());
+        std::fs::create_dir_all(l.tree(ID)).unwrap();
+        std::fs::write(l.out(ID), b"x\n").unwrap();
+        run::keep_out(&l, ID).unwrap();
+        run::note(&l, ID, "run").unwrap();
+        for f in [l.bundle(ID), l.profile(ID), l.fetch_profile(ID), l.pid(ID)] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        std::fs::create_dir_all(l.empty(ID)).unwrap();
+        clean(&l, ID);
+        for gone in [
+            l.work(ID),
+            l.bundle(ID),
+            l.profile(ID),
+            l.fetch_profile(ID),
+            l.pid(ID),
+            l.empty(ID),
+        ] {
+            assert!(!gone.exists(), "reason: {gone:?} left");
+        }
+        assert!(
+            l.note(ID).is_file() && l.kept_out(ID).is_file(),
+            "reason: receipt_removed"
+        );
+        assert_eq!(run::state(&l, ID, &|_| false), State::Done);
+    }
+
+    #[test]
+    fn a_home_is_an_absolute_folder_that_is_there() {
+        let d = home();
+        assert_eq!(home_of(Some(d.path().into())), Some(d.path().to_path_buf()));
+        assert_eq!(home_of(None), None);
+        assert_eq!(home_of(Some("relative".into())), None);
+        assert_eq!(home_of(Some(d.path().join("missing").into())), None);
+    }
+}

@@ -61,10 +61,12 @@ pub fn body_of(op: &Op, seat: Option<&str>) -> Value {
             reviewer,
             need,
             fields,
+            needs,
+            fail,
         } => {
             let mut v = json!({
                 "op": "set", "id": id, "status": status, "fact": fact, "head": head,
-                "wait": wait, "reviewer": reviewer, "need": need,
+                "wait": wait, "reviewer": reviewer, "need": need, "needs": needs, "fail": fail,
             });
             // SPEC-plan-fields (main's S107-assist 片 1): only the ones given, as `set` reads them
             if let Some(t) = &fields.touches {
@@ -223,6 +225,8 @@ mod tests {
             reviewer: None,
             need: None,
             fields: crate::card::Fields::default(),
+            needs: Some("S1,S2".into()),
+            fail: Some("M".into()),
         };
         let b = body_of(&set, None);
         assert!(b.get("touches").is_none(), "reason: fields_not_given_sent");
@@ -239,12 +243,17 @@ mod tests {
                 branch: Some("feat/x".into()),
                 verifier: Some("human".into()),
             },
+            needs: None,
+            fail: None,
         };
         let w = body_of(&with, None);
         assert_eq!(w["touches"], json!([]), "reason: empty_touches_dropped");
         assert_eq!(w["branch"], "feat/x");
         assert_eq!(w["verifier"], "human");
         assert_eq!(b["status"], "開發中");
+        // §23-1: the 「要靠誰」 list goes to aibd as given (aib-plan's writer checks it there)
+        assert_eq!(b["needs"], "S1,S2");
+        assert_eq!(b["fail"], "M");
         assert!(b.get("head").is_none());
     }
 

@@ -37,6 +37,10 @@ pub const FLOWS: &str = "/api/v1/flows";
 pub const VERSION: &str = "/api/v1/version";
 /// The persona cards a seat can be opened with (N-workspace wave 3, the page's add-a-seat).
 pub const PERSONAS: &str = "/api/v1/personas";
+/// N-ws-open-bind: the roles and second brains a page picks when it adds a seat.
+pub const ROLES: &str = "/api/v1/roles";
+pub const BRAINS: &str = "/api/v1/brains";
+pub const BRAIN_CANDIDATES: &str = "/api/v1/brains/candidates";
 pub const HOST: &str = "/api/v1/host";
 pub const TREE: &str = "/api/v1/tree";
 /// N-workspace second wave (7b81e): node × seat × role.
@@ -48,7 +52,19 @@ pub const NODES_PLAN: &str = "/api/v1/nodes/plan";
 pub const HOSTS: &str = "/api/v1/hosts";
 /// N-workspace 第四波 (SPEC §15): one node's tokens, per seat per hour (the board's own count).
 pub const NODE_USAGE: &str = "/api/v1/nodes/{id}/usage";
+/// §23 上預覽 (a9136 N-pv-up): an item's tree with each 支點's light.
+pub const NODE_PREVIEW_TREE: &str = "/api/v1/nodes/{id}/preview-tree";
+/// The same tree in 043dd's page shape (`?node=<id>`).
+pub const PREVIEW_UP: &str = "/api/v1/preview_up";
 pub const DOC: &str = "/api/v1/doc";
+/// §18 search (a9136 IFACE-search-a9136-1118).
+pub const SEARCH: &str = "/api/v1/search";
+/// §20 / §20b 預覽清單 (a9136 DESIGN-preview-a9136-1118; Andy 23:2x 不能寫死一個).
+pub const PREVIEW: &str = "/api/v1/previews";
+/// `aibd ctl preview swap` (Andy 11-21 06:1x; PREREAD-previewswap): the start-up token only.
+pub const PREVIEW_SWAP: &str = "/api/v1/previews/{id}/swap";
+/// Inside a preview: its parent asks the running seats for their handoff before a swap.
+pub const PREVIEW_HANDOFF: &str = "/api/v1/preview/handoff";
 pub const PREFS: &str = "/api/v1/prefs/{name}";
 /// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
 pub const NOW: &str = "/api/v1/now";
@@ -62,6 +78,10 @@ pub const SLOTS: &str = "/api/v1/slots";
 pub const USAGE: &str = "/api/v1/usage";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
+/// N-web-worktree r3: the reviewer reads the author seat's tree (tree_read).
+pub const SEAT_TREE: &str = "/api/v1/seats/{id}/tree";
+pub const SEAT_TREE_LOG: &str = "/api/v1/seats/{id}/tree/log";
+pub const SEAT_TREE_DIFF: &str = "/api/v1/seats/{id}/tree/diff";
 pub const SESSIONS: &str = "/api/v1/sessions";
 pub const SESSION: &str = "/api/v1/sessions/{id}";
 pub const SESSION_OUTPUT: &str = "/api/v1/sessions/{id}/output";
@@ -71,6 +91,17 @@ pub const PAIR_CONFIRM: &str = "/api/v1/pair/codes/{id}/confirm";
 pub const PAIR_REDEEM: &str = "/api/v1/pair/redeem";
 pub const PAIR_STATUS: &str = "/api/v1/pair/status";
 pub const PAIR_REVOKE: &str = "/api/v1/pair/revoke";
+/// BOUNDARY r3 §3: the owner's finger for a pairing carried over an update, before one action.
+pub const PAIR_RECONFIRM: &str = "/api/v1/pair/reconfirm";
+/// The code page's box default (SPEC §19b-2): public, read before the page is paired.
+pub const PAIR_PREFS: &str = "/api/v1/pair/prefs";
+/// SPEC §19f: the code page asks for the code that replaced its expired one (form `code=`).
+pub const PAIR_NEXT: &str = "/api/v1/pair/next";
+/// A preview's page shows the pass its parent's paired page opened it with (Andy 11-19).
+pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
+/// GAP-repo-register G2 (043dd): a fingerprint ticket's state, so the page tells "not pressed
+/// yet" from "refused" without resending the act.
+pub const OWNER_TICKET: &str = "/api/v1/owner/tickets/{id}";
 
 /// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
 /// `api::handlers` has no route of its own). The guard skips the bearer check for paths
@@ -89,6 +120,9 @@ pub const ROUTES: &[&str] = &[
     FLOWS,
     VERSION,
     PERSONAS,
+    ROLES,
+    BRAINS,
+    BRAIN_CANDIDATES,
     HOST,
     TREE,
     ASSIGNMENTS,
@@ -97,7 +131,13 @@ pub const ROUTES: &[&str] = &[
     NODE,
     HOSTS,
     NODE_USAGE,
+    NODE_PREVIEW_TREE,
+    PREVIEW_UP,
     DOC,
+    SEARCH,
+    PREVIEW,
+    PREVIEW_SWAP,
+    PREVIEW_HANDOFF,
     PREFS,
     NOW,
     THREAD_LIST,
@@ -106,6 +146,9 @@ pub const ROUTES: &[&str] = &[
     USAGE,
     SEAT,
     SEAT_SESSIONS,
+    SEAT_TREE,
+    SEAT_TREE_LOG,
+    SEAT_TREE_DIFF,
     SESSIONS,
     SESSION,
     SESSION_OUTPUT,
@@ -115,11 +158,17 @@ pub const ROUTES: &[&str] = &[
     PAIR_REDEEM,
     PAIR_STATUS,
     PAIR_REVOKE,
+    PAIR_RECONFIRM,
+    PAIR_PREFS,
+    PAIR_NEXT,
+    PAIR_PREVIEW,
+    OWNER_TICKET,
 ];
 
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
 /// authenticated by the pairing code in its body.
-const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM];
+/// Routes answered without any token (the code page runs before pairing).
+pub const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM, PAIR_PREFS, PAIR_NEXT, PAIR_PREVIEW];
 
 /// What an unconfirmed page credential may call (ADR 0006 §7); health is public anyway.
 const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE];
@@ -136,6 +185,9 @@ pub const LOGGED_ROUTES: &[&str] = &[
     PAIR_REDEEM,
     PAIR_STATUS,
     PAIR_REVOKE,
+    PAIR_PREFS,
+    PAIR_NEXT,
+    PAIR_PREVIEW,
 ];
 pub const UNMATCHED_PATH: &str = "<unmatched>";
 
@@ -205,6 +257,18 @@ impl GuardConfig {
 /// Under `/api` (bearer rules, `no-store`); everything else is a static file.
 pub fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
+}
+
+/// `/api/v1/seats/<one name>/tree`, `…/tree/log` or `…/tree/diff` (a seat token may read these;
+/// tree_read decides whether this seat may read that one).
+pub fn is_seat_tree(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/v1/seats/") else {
+        return false;
+    };
+    let Some((id, tail)) = rest.split_once('/') else {
+        return false;
+    };
+    !id.is_empty() && matches!(tail, "tree" | "tree/log" | "tree/diff")
 }
 
 pub fn request_id() -> String {
@@ -388,7 +452,7 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     let path = req.uri().path();
     let origin = single_header(h, header::ORIGIN)
         .map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
-    if path == PAIR_REDEEM {
+    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW {
         // W1: the person types the code into a page aibd serves, so the form comes from our
         // own origin. `null` (the P2 local-file form) is not taken until P2 is built: today
         // it would only let any web page's sandboxed frame fill the failure limit (043dd L1)
@@ -467,6 +531,9 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         let ok = (path == SEATS && matches!(*req.method(), Method::GET | Method::HEAD))
             // N-workspace-c4 A (5d33a L1): a seat writes the tree as itself through aib-plan
             || (path == NODES_PLAN && *req.method() == Method::POST)
+            // N-web-worktree r3: a seat reads another seat's tree (tree_read checks it is the
+            // reviewer on a node both are on)
+            || (is_seat_tree(path) && matches!(*req.method(), Method::GET | Method::HEAD))
             || (path == ACT && *req.method() == Method::POST);
         if !ok {
             return Err((
@@ -497,6 +564,10 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     // S89-input: and type to a seat (`POST /api/v1/act`, seat_input only; the handler checks
     // the kind and the confirmation again).
     let reads = matches!(*req.method(), Method::GET | Method::HEAD);
+    // BOUNDARY r3 §3: the re-confirm ask (the handler takes carried pairings only)
+    if path == PAIR_RECONFIRM && *req.method() == Method::POST {
+        return Ok(Caller::Page(page));
+    }
     if !reads && path != PAIR_REVOKE && path != ACT {
         return Err((
             ErrorCode::PageWriteNotAllowed,

@@ -31,3 +31,7 @@ tt '                            "SELECT {THREAD_COLS} FROM threads WHERE node = 
 tt '             ORDER BY rowid DESC LIMIT ?3"' \
    '             ORDER BY created_unix DESC, message_id DESC LIMIT ?3"' \
    posts_in_one_second_keep_the_order_written
+# MS19 a free thread opened by title is always new (043dd 02:42)
+tt '                None if by_title => tx' \
+   '                None if by_title && false => tx' \
+   a_tree_item_has_one_thread_and_opening_it_again_adds_members

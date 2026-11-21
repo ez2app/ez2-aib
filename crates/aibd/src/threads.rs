@@ -5,7 +5,9 @@
 //! - `thread_open {node?, title, members: [{seat, role}]}`: a page or a seat opens a thread.
 //!   A tree item has one thread (§1.3, second wave): opening an item that has one answers 200
 //!   with it (`existing: true`) and adds the members it did not have; the page does this when
-//!   an item of the tree is clicked. Without `node` it is a free thread, always new (201).
+//!   an item of the tree is clicked. Without `node` it is a free thread, always new (201);
+//!   a page sending `reuse: "title"` gets the earliest free thread of that title instead
+//!   (200 `existing: true`, the members it lacked added), new only when there is none.
 //!   A seat may only put seats of its own cabin in, and is a member itself (`author` unless
 //!   it lists itself). A person is never a member row: every paired page is the person.
 //! - `thread_send {thread_id, body, to?: [seat …] | "all", idem_key?}`: a post. The sender is
@@ -92,10 +94,14 @@ pub struct Sender {
     pub with_body: bool,
     /// A user folder page (its words are not the person's: shown as 用戶頁, 5d33a M1).
     pub user_page: bool,
+    /// G13: aibd brings this seat's turn answer back; the post that called it.
+    pub auto_reply_to: Option<String>,
+    /// G13: the turn was not done, and why (the post is 「沒做成」).
+    pub auto_failed: Option<String>,
 }
 
 impl Sender {
-    fn is_person(&self) -> bool {
+    pub(crate) fn is_person(&self) -> bool {
         self.key.starts_with("human:")
     }
 }
@@ -266,8 +272,56 @@ fn post_object(
         m.insert("calls".into(), json!(calls));
         m.insert("read_by".into(), json!(readers_of(pos, marks)));
         m.insert("sender_kind".into(), json!(p.item.get("sender_kind")));
+        // G13 (0eed7 VERIFY-g13 L1): a turn's answer brought back shows as one
+        for k in ["auto", "reply_to", "failed", "not_running"] {
+            if let Some(v) = p.item.get(k) {
+                m.insert(k.into(), v.clone());
+            }
+        }
+        // 0eed7 VERIFY-oneline2 M1: an imported summary / handoff / document names its file,
+        // so the page can open it (GET /api/v1/doc); the title follows the body rule
+        if let Some(d) = doc_of(p, with_body) {
+            m.insert("doc".into(), d);
+        }
     }
     o
+}
+
+/// A post's documents: `n` (its place, what GET /api/v1/doc takes), `kind` (the doc wall's
+/// name prefix), `root`, and with the words (not on the user page, 5d33a
+/// CHECK-userpage-docname: the name can say customer / members) `file`; the title follows the
+/// body rule. Only names the doc wall opens (0eed7 r2 N2). `None` when it names none.
+fn doc_of(p: &MessageRow, words: bool) -> Option<Value> {
+    // one `{…}` or a list, as docs::doc_of reads it
+    let docs: Vec<&Value> = match p.item.get("doc")? {
+        Value::Array(a) => a.iter().collect(),
+        d @ Value::Object(_) => vec![d],
+        _ => return None,
+    };
+    let out: Vec<Value> = docs
+        .into_iter()
+        .enumerate()
+        .filter_map(|(n, d)| {
+            // 0eed7 r2 N2: only a name the doc wall opens (no link that answers 403)
+            let file = d.get("file")?.as_str().filter(|f| crate::docs::listed(f))?;
+            let kind = crate::docs::DOC_KINDS
+                .iter()
+                .find(|k| file.starts_with(*k))?
+                .trim_end_matches('-');
+            let title = d.get("title").and_then(Value::as_str).unwrap_or("");
+            let mut o = json!({
+                "n": n,
+                "kind": kind,
+                "root": d.get("root").and_then(Value::as_str).unwrap_or("pending"),
+                "title": crate::workspace::words_or_hash(title, words),
+            });
+            if words {
+                o["file"] = json!(file);
+            }
+            Some(o)
+        })
+        .collect();
+    (!out.is_empty()).then(|| json!(out))
 }
 
 /// Who is in a thread now. A tree item's thread is that item's own assignments, read at each
@@ -454,8 +508,17 @@ pub async fn open_as(st: AppState, s: Sender, body: Value) -> Response {
     } else {
         members.clone()
     };
+    // 043dd 02:42: a page reopening its free thread by title adds the seats it lacks
+    let by_title = s.is_person() && t.node.is_none() && body.get("reuse") == Some(&json!("title"));
     let (db, t2, m2) = (st.messages.clone(), t.clone(), written);
-    match blocking(move || db.thread_open(t2, m2)).await {
+    let opened = blocking(move || {
+        if by_title {
+            db.thread_open_by_title(t2, m2)
+        } else {
+            db.thread_open(t2, m2)
+        }
+    });
+    match opened.await {
         Some(aib_store::Opened::New) => {}
         // the tree item's one thread (§1.3): the page clicked an item that has one
         Some(aib_store::Opened::Existing(found)) => {
@@ -512,7 +575,13 @@ pub async fn open_as(st: AppState, s: Sender, body: Value) -> Response {
     .await;
     let mut o = thread_object(&t, &shown);
     with_kind(&mut o, category.as_ref());
-    (StatusCode::CREATED, Json(json!({ "thread": o }))).into_response()
+    // 043dd 02:48: `existing` is said both ways, so a page tells this aibd from one without
+    // `reuse` (which leaves the key out)
+    (
+        StatusCode::CREATED,
+        Json(json!({ "thread": o, "existing": false })),
+    )
+        .into_response()
 }
 
 /// The thread, its members' keys, and whether `s` may read and post in it.
@@ -562,7 +631,10 @@ pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
     };
     // §17-4 / 5d33a CHECKLIST-doc-link D2: a post's doc and source are written by aibd and
     // its import only; a page or a seat cannot name a file for the person's page to read
-    if ["doc", "source"].iter().any(|k| body.get(*k).is_some()) {
+    if ["doc", "source", "auto", "reply_to"]
+        .iter()
+        .any(|k| body.get(*k).is_some())
+    {
         return refuse(
             StatusCode::BAD_REQUEST,
             "field_not_allowed",
@@ -597,7 +669,7 @@ pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 code,
-                "to is \"all\" or a list of the thread's member seats",
+                "to is \"all\" or a list of the thread's member seats; a seat that is not a member cannot be called in by a seat: ask the person in this thread to @ it in (the page puts it on the item)",
             )
         }
     };
@@ -693,6 +765,18 @@ pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
     // are not the person's
     post_item.insert("sender_safe".into(), json!(s.safe));
     post_item.insert("user_page".into(), json!(s.user_page));
+    if let Some(origin) = &s.auto_reply_to {
+        let auto = if s.auto_failed.is_some() {
+            "turn_failed"
+        } else {
+            "turn_end"
+        };
+        post_item.insert("auto".into(), json!(auto));
+        post_item.insert("reply_to".into(), json!(origin));
+        if let Some(why) = &s.auto_failed {
+            post_item.insert("failed".into(), json!(why));
+        }
+    }
     let post = row(post_id.clone(), t.thread_id.clone(), post_item, idem);
     let mut deliveries = Vec::new();
     for seat in &to {
@@ -739,9 +823,102 @@ pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
             let id = seat.trim_start_matches("seat:").to_owned();
             tokio::spawn(crate::seat_send::redeliver(st.clone(), id));
         }
+        // 0eed7 VERIFY-turnfail L1: a called seat that is not running says so in the thread;
+        // only for a new post (a resend of the same idem_key is not fresh: no second note)
+        let live = st.sessions.seats_up();
+        let asleep: Vec<String> = deliveries
+            .iter()
+            .filter(|d| d.item.get("delivery") == Some(&json!("pending")))
+            .map(|d| d.to_key.trim_start_matches("seat:").to_owned())
+            .filter(|id| !live.contains(id))
+            .collect();
+        if !asleep.is_empty() {
+            not_running(&st, &t.thread_id, &post.message_id, &asleep).await;
+        }
     }
     answer_post(&st, &s, post, StatusCode::CREATED).await
 }
+
+/// The words of the notice that called seats are not running.
+pub fn not_running_text(seats: &[String]) -> String {
+    let codes: Vec<String> = seats.iter().map(|s| crate::seats::seat_code(s)).collect();
+    format!("{} 沒在跑,開了才會收到", codes.join("、"))
+}
+
+/// A post from aibd itself (`system:aibd`, `auto: "not_running"`, calls nobody) under the post
+/// `reply_to`: the seats it called are not running, they get it when they start.
+async fn not_running(st: &AppState, thread_id: &str, reply_to: &str, seats: &[String]) {
+    let text = not_running_text(seats);
+    let _ = system_post(
+        st,
+        thread_id,
+        reply_to,
+        &text,
+        "not_running",
+        &[("not_running", json!(seats))],
+    )
+    .await;
+}
+
+/// A post from aibd itself (`system:aibd`, calls nobody) in `thread_id` under `reply_to`,
+/// marked `auto` (`not_running`; `decided`: a person answered a seat's ask_person card,
+/// [`crate::asks`]). `false` = not written.
+pub(crate) async fn system_post(
+    st: &AppState,
+    thread_id: &str,
+    reply_to: &str,
+    text: &str,
+    auto: &str,
+    extra: &[(&str, Value)],
+) -> bool {
+    let Ok(id) = crate::sessions::new_id("q_") else {
+        return false;
+    };
+    let (now, at) = (crate::sessions::now_rfc3339(), now_unix());
+    let mut item = aib_dmq::norm::v2_defaults();
+    for (k, v) in [
+        ("id", json!(id)),
+        ("status", json!("delivered")),
+        ("talk_kind", json!("say")),
+        ("sender_seat", json!(SYSTEM_KEY)),
+        ("sender_kind", json!("system")),
+        ("thread", json!(thread_id)),
+        ("sent_at", json!(at)),
+        ("to", json!([])),
+        ("auto", json!(auto)),
+        ("reply_to", json!(reply_to)),
+    ] {
+        item.insert(k.into(), v);
+    }
+    for (k, v) in extra {
+        item.insert((*k).into(), v.clone());
+    }
+    let sha = digest(text);
+    let row = MessageRow {
+        message_id: id,
+        thread_id: thread_id.to_owned(),
+        from_key: SYSTEM_KEY.into(),
+        to_key: thread_id.to_owned(),
+        created: now.clone(),
+        created_unix: at,
+        updated: now,
+        rev: 1,
+        item,
+        body: Some(text.to_owned()),
+        body_sha256: sha,
+        len: i64::try_from(text.len()).unwrap_or(i64::MAX),
+        idem_owner: None,
+        idem_key: None,
+        journaled: false,
+    };
+    let db = st.messages.clone();
+    blocking(move || db.post_insert(row, Vec::new()))
+        .await
+        .is_some()
+}
+
+/// The sender of aibd's own notices in a thread.
+pub const SYSTEM_KEY: &str = "system:aibd";
 
 async fn answer_post(st: &AppState, s: &Sender, post: MessageRow, status: StatusCode) -> Response {
     let (db, tid, pid) = (
@@ -920,6 +1097,7 @@ pub async fn list_as(
     node: Option<String>,
     limit: Option<u32>,
     category: Option<String>,
+    seat: Option<String>,
 ) -> Response {
     let Some(kind) = kind_asked(category.as_deref()) else {
         return refuse(
@@ -928,13 +1106,53 @@ pub async fn list_as(
             "category is council, summary, handoff, drive, shadow or none",
         );
     };
+    if let Some(code) = &seat {
+        if !seat_code_ok(code) {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "seat_unknown",
+                "seat is a seat code: five lower hex digits",
+            );
+        }
+    }
+    // a seat token reads only its own threads: no seat= there
+    let seat = seat.filter(|_| s.is_person());
     let member = (!s.is_person()).then(|| s.key.clone());
     let db = st.messages.clone();
     let lim = limit.unwrap_or(aib_store::PAGE_MAX);
     let got = blocking(move || {
-        let (ts, counts) = match &member {
+        let (ts, counts) = match (&member, &seat) {
+            // a page asking for one seat (N-web-dmbridge, 043dd 01:39): the threads it is in and
+            // its mail-import threads, kept and counted here
+            (None, Some(code)) => {
+                let all = db.threads_of_seat(code, aib_store::PAGE_MAX)?;
+                let all: Vec<ThreadRow> = all
+                    .into_iter()
+                    .filter(|t| node.is_none() || t.node == node)
+                    .collect();
+                let ids: Vec<String> = all.iter().map(|t| t.thread_id.clone()).collect();
+                let kinds = db.categories_of(&ids)?;
+                let mut counts: Vec<(String, u64)> = Vec::new();
+                for t in &all {
+                    let k = kinds.get(&t.thread_id).cloned().unwrap_or_default();
+                    match counts.iter_mut().find(|(x, _)| *x == k) {
+                        Some((_, n)) => *n += 1,
+                        None => counts.push((k, 1)),
+                    }
+                }
+                let kept = all
+                    .into_iter()
+                    .filter(|t| match &kind {
+                        Kind::Every => true,
+                        Kind::None => !kinds.contains_key(&t.thread_id),
+                        Kind::Of(k) => kinds.get(&t.thread_id) == Some(k),
+                    })
+                    .take(usize::try_from(lim.clamp(1, aib_store::PAGE_MAX)).unwrap_or(1))
+                    .collect();
+                (kept, counts)
+            }
             // a page reads every thread: the store picks and counts
-            None => {
+            (None, None) => {
                 let ts = match &kind {
                     Kind::Every => db.threads_list(node.as_deref(), None, lim)?,
                     Kind::None => db.threads_of_kind(node.as_deref(), None, lim)?,
@@ -943,7 +1161,7 @@ pub async fn list_as(
                 (ts, db.kind_counts(node.as_deref())?)
             }
             // a seat: only its own threads, then kept and counted here
-            Some(me) => {
+            (Some(me), _) => {
                 let mine = threads_of(&db, Some(me), node.as_deref(), aib_store::PAGE_MAX)?;
                 let ids: Vec<String> = mine.iter().map(|t| t.thread_id.clone()).collect();
                 let kinds = db.categories_of(&ids)?;
@@ -1006,6 +1224,8 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         cabin: meta.and_then(|m| m.cabin),
         with_body: true,
         user_page: false,
+        auto_reply_to: None,
+        auto_failed: None,
     };
     match body.get("type").and_then(Value::as_str) {
         Some(OPEN) => open_as(st, s, body).await,
@@ -1021,7 +1241,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
                 .get("category")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            list_as(st, s, node, limit, category).await
+            list_as(st, s, node, limit, category, None).await
         }
         _ => {
             let Some(t) = body
@@ -1038,6 +1258,30 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             view_as(st, s, &t, cursor).await
         }
     }
+}
+
+/// G13: post `body` (a thread_send) as `seat_id`, marked as its turn answer brought back for
+/// `reply_to` (aibd only; a seat or page cannot set it).
+pub async fn seat_act_auto(
+    st: AppState,
+    seat_id: &str,
+    body: Value,
+    reply_to: &str,
+    failed: Option<String>,
+) -> Response {
+    let store = st.store.clone();
+    let id = seat_id.to_owned();
+    let meta = blocking(move || store.seat_meta(&id)).await.flatten();
+    let s = Sender {
+        key: format!("seat:{seat_id}"),
+        safe: meta.as_ref().and_then(|m| m.mode.as_deref()) != Some("dgrs"),
+        cabin: meta.and_then(|m| m.cabin),
+        with_body: true,
+        user_page: false,
+        auto_reply_to: Some(reply_to.to_owned()),
+        auto_failed: failed,
+    };
+    send_as(st, s, body).await
 }
 
 /// Whether this page reads the two-seat thread `thread_id` (`seat:<a>~seat:<b>`): a
@@ -1080,6 +1324,8 @@ pub async fn page_sender(page: &crate::pairing::PageAccess) -> Sender {
         cabin: None,
         with_body: !user,
         user_page: user,
+        auto_reply_to: None,
+        auto_failed: None,
     }
 }
 
@@ -1088,9 +1334,16 @@ pub struct ListQuery {
     node: Option<String>,
     limit: Option<u32>,
     category: Option<String>,
+    /// N-web-dmbridge: one seat's threads (a seat code)
+    seat: Option<String>,
 }
 
-/// `GET /api/v1/threads?node=&limit=&category=` (a paired page).
+/// A seat code as the ledgers write it: five lower hex digits ([`crate::seats::is_code`]).
+fn seat_code_ok(s: &str) -> bool {
+    crate::seats::is_code(s)
+}
+
+/// `GET /api/v1/threads?node=&limit=&category=&seat=` (a paired page).
 pub async fn list(
     axum::extract::State(st): axum::extract::State<AppState>,
     axum::Extension(c): axum::Extension<crate::guard::Caller>,
@@ -1103,7 +1356,15 @@ pub async fn list(
             "threads are read by a paired page",
         );
     };
-    list_as(st, page_sender(&page).await, q.node, q.limit, q.category).await
+    list_as(
+        st,
+        page_sender(&page).await,
+        q.node,
+        q.limit,
+        q.category,
+        q.seat,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1178,6 +1439,130 @@ mod tests {
         ] {
             assert!(!thread_id_ok(bad), "{bad}");
         }
+    }
+
+    /// G13 (0eed7 VERIFY-g13 L1): a post brought back at a turn's end says so on the page.
+    #[test]
+    fn the_not_running_note_names_seats_by_their_code() {
+        assert_eq!(
+            not_running_text(&["seat_1bc99b1f0a".into(), "7ebca".into()]),
+            "1bc99、7ebca 沒在跑,開了才會收到"
+        );
+    }
+
+    #[test]
+    fn a_brought_back_answer_shows_auto_and_reply_to() {
+        let mut item = serde_json::Map::new();
+        item.insert("auto".into(), json!("turn_end"));
+        item.insert("reply_to".into(), json!("msg_0"));
+        item.insert("failed".into(), json!("Not logged in"));
+        let p = MessageRow {
+            message_id: "msg_1".into(),
+            thread_id: "t_1".into(),
+            from_key: "seat:a".into(),
+            to_key: "t_1".into(),
+            created: String::new(),
+            created_unix: 0,
+            updated: String::new(),
+            rev: 1,
+            item,
+            body: Some("x".into()),
+            body_sha256: String::new(),
+            len: 1,
+            idem_owner: None,
+            idem_key: None,
+            journaled: false,
+        };
+        let o = post_object(&p, None, &[], &[], "human:0123456789abcdef", true);
+        assert_eq!(o["auto"], json!("turn_end"), "reason: auto_not_shown");
+        assert_eq!(o["reply_to"], json!("msg_0"));
+        assert_eq!(
+            o["failed"],
+            json!("Not logged in"),
+            "reason: failed_not_shown"
+        );
+    }
+
+    /// 0eed7 VERIFY-oneline2 M1: an imported summary's post names its file for the page.
+    #[test]
+    fn an_imported_documents_post_names_its_file() {
+        let mut item = serde_json::Map::new();
+        item.insert(
+            "doc".into(),
+            // a name with a path in it is not one the doc wall opens (5d33a cc1: RG23)
+            json!([{"root": "pending", "file": "SUMMARY-1d-043dd-1113.md", "title": "一天總結"},
+                   {"root": "pending", "file": "SUMMARY-x/../../secret.md", "title": "x"}]),
+        );
+        let p = MessageRow {
+            message_id: "msg_1".into(),
+            thread_id: "t_1".into(),
+            from_key: "seat:a".into(),
+            to_key: "t_1".into(),
+            created: String::new(),
+            created_unix: 0,
+            updated: String::new(),
+            rev: 1,
+            item,
+            body: Some("x".into()),
+            body_sha256: String::new(),
+            len: 1,
+            idem_owner: None,
+            idem_key: None,
+            journaled: false,
+        };
+        let o = post_object(&p, None, &[], &[], "human:0123456789abcdef", true);
+        assert_eq!(
+            o["doc"].as_array().map(Vec::len),
+            Some(1),
+            "reason: path_name_listed {o}"
+        );
+        assert_eq!(
+            o["doc"][0]["file"],
+            json!("SUMMARY-1d-043dd-1113.md"),
+            "reason: doc_not_shown"
+        );
+        assert_eq!(o["doc"][0]["title"], json!("一天總結"));
+        let o = post_object(&p, None, &[], &[], "human:0123456789abcdef", false);
+        assert_eq!(
+            o["doc"][0]["title"]["len"],
+            json!(4),
+            "reason: title_words_shown"
+        );
+        assert_eq!(
+            (
+                o["doc"][0].get("file"),
+                &o["doc"][0]["n"],
+                &o["doc"][0]["kind"]
+            ),
+            (None, &json!(0), &json!("SUMMARY")),
+            "reason: file_name_on_user_page"
+        );
+        let mut other = p.clone();
+        other.item.insert(
+            "doc".into(),
+            json!([{"file": "notes-a9136.md", "title": "x"}, {"file": "SUMMARY-x.md"}, {"file": "SUMMARY-a/b.md"}]),
+        );
+        let o = post_object(&other, None, &[], &[], "x", true);
+        assert_eq!(
+            o["doc"].as_array().map(Vec::len),
+            Some(1),
+            "reason: unlisted_doc_shown"
+        );
+        let mut one = p.clone();
+        one.item.insert(
+            "doc".into(),
+            json!({"file": "HANDOFF-a9136-1117.md", "title": "交接"}),
+        );
+        assert_eq!(
+            post_object(&one, None, &[], &[], "x", true)["doc"][0]["kind"],
+            json!("HANDOFF"),
+            "reason: one_doc_object_dropped"
+        );
+        let mut bare = p.clone();
+        bare.item.clear();
+        assert!(post_object(&bare, None, &[], &[], "x", true)
+            .get("doc")
+            .is_none());
     }
 
     /// 5d33a 2feffc7b M1: a dgrs seat reads a post's text only from a sender that was not

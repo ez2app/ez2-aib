@@ -109,6 +109,15 @@ pub fn seat_id_ok(s: &str) -> bool {
 
 /// `(node_id, seat_id, role)` of an add / remove body; any other field is refused.
 pub fn parse(body: &Value) -> Result<(String, String, String), (&'static str, &'static str)> {
+    parse_with(body, &|_| false)
+}
+
+/// [`parse`], also taking a role the person added (`known`: N-ws-open-bind, 043dd 05:59 —
+/// a `rol_` uid in the registry); it carries no permission, only its name.
+pub fn parse_with(
+    body: &Value,
+    known: &dyn Fn(&str) -> bool,
+) -> Result<(String, String, String), (&'static str, &'static str)> {
     let Some(o) = body.as_object() else {
         return Err(("invalid_request", "body must be a JSON object"));
     };
@@ -133,10 +142,10 @@ pub fn parse(body: &Value) -> Result<(String, String, String), (&'static str, &'
     if !seat_id_ok(seat) {
         return Err(("seat_id", "seat_id is 1-64 of A-Z a-z 0-9 _ -"));
     }
-    if !ROLES.contains(&role) {
+    if !ROLES.contains(&role) && !known(role) {
         return Err((
             "role",
-            "role is author, reviewer, verifier, deployer, depends or observer",
+            "role is author, reviewer, verifier, deployer, depends, observer or one GET /api/v1/roles lists",
         ));
     }
     Ok((node.to_owned(), seat.to_owned(), role.to_owned()))
@@ -320,7 +329,9 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     let Some(db) = DB.get().cloned() else {
         return unavailable();
     };
-    let (node, seat, role) = match parse(&body) {
+    let added = crate::registry::load(&crate::registry::data_of(&st)).unwrap_or_default();
+    let known = |r: &str| added.roles.iter().any(|e| e.uid == r);
+    let (node, seat, role) = match parse_with(&body, &known) {
         Ok(p) => p,
         Err((code, msg)) => return refuse(StatusCode::BAD_REQUEST, code, msg),
     };
@@ -396,6 +407,109 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     }
 }
 
+/// Andy 11-20 00:0x (FINDING-andy-realrun-519d0-1120 1): a seat a page opens in another work
+/// seat's own folder (`with_seat`) works on what that seat works on, so it is put on that
+/// seat's own nodes as `observer` and is a member of their threads (a tree item's members are
+/// its assignments); as `reviewer` when the page opened it as the reviewer
+/// ([`with_seat_role`]), so it reads the author's tree (b4297 tree read). Any other role the
+/// page picks is still the page's own `assign_add`. Each row
+/// added leaves `assignment.added` (`by` = `with_seat:<code>`). How many were added.
+pub async fn join_nodes(
+    st: &AppState,
+    from: &str,
+    to: &str,
+    by: String,
+    role: &'static str,
+) -> usize {
+    let Some(db) = DB.get().cloned() else {
+        return 0;
+    };
+    // 5d33a PREREAD-withseat-items N2: only the items `from` works on, not those it only
+    // watches nor those it came to by with_seat itself, so a chain of with_seat opens does not
+    // spread a seat over ever more items
+    let Ok(rows) = db.list(None, Some(from)) else {
+        return 0;
+    };
+    let mut nodes: Vec<String> = Vec::new();
+    let own = |r: &AssignRow| r.role != "observer" && !r.by_key.starts_with("with_seat:");
+    for r in rows.into_iter().filter(own) {
+        if !nodes.contains(&r.node_id) {
+            nodes.push(r.node_id);
+        }
+    }
+    let wanted = join_rows(from, to, role, nodes);
+    let store = st.store.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut n = 0;
+        for (node, seat, role) in wanted {
+            let now = crate::sessions::now_rfc3339();
+            let row = AssignRow {
+                node_id: node.clone(),
+                seat_id: seat.clone(),
+                role: role.into(),
+                created: now.clone(),
+                by_key: by.clone(),
+            };
+            if !matches!(db.add(row), Ok(Added::New)) {
+                continue;
+            }
+            n += 1;
+            let ev = crate::sessions::new_id("ev_").ok().map(|id| NewEvent {
+                event_id: id.clone(),
+                aggregate_type: "assignment".into(),
+                aggregate_id: id,
+                sequence: 1,
+                event_type: "assignment.added".into(),
+                correlation_id: None,
+                occurred_at: now,
+                payload: json!({"node_id": node, "seat_id": seat, "role": role, "by": by}),
+            });
+            if !ev.is_some_and(|ev| store.append(vec![ev]).is_ok()) {
+                tracing::warn!(node = %node, "with_seat assignment not journaled");
+            }
+        }
+        n
+    })
+    .await
+    .unwrap_or(0)
+}
+
+/// The rows [`join_nodes`] adds: `to` in `role` on each of `from`'s own nodes. A reviewer
+/// opened on an author that is on no node yet (a new preview, a seat opened from the page:
+/// 0eed7 VERIFY-t4-4cfc63d5) gets a node of the pair, `R-<author code>`, with the author as
+/// `author` and itself as `reviewer`, so the author's tree reads ([`crate::tree_read::reviews`])
+/// and the review has a thread; otherwise the reviewer is on nothing and every read is 403. Only
+/// for a reviewer: an observer of a seat on no item has nothing to observe.
+pub fn join_rows(
+    from: &str,
+    to: &str,
+    role: &'static str,
+    nodes: Vec<String>,
+) -> Vec<(String, String, &'static str)> {
+    if nodes.is_empty() && role == "reviewer" {
+        let node = format!("R-{}", crate::seats::seat_code(from));
+        return vec![
+            (node.clone(), from.to_owned(), "author"),
+            (node, to.to_owned(), "reviewer"),
+        ];
+    }
+    nodes
+        .into_iter()
+        .map(|n| (n, to.to_owned(), role))
+        .collect()
+}
+
+/// The role a `with_seat` seat joins with: `reviewer` when the page's open says
+/// `role: "reviewer"` (DECISION-workseat-3plus-a9136-1120 4: the review seat reads the author's
+/// tree), else `observer`; no other role comes this way.
+pub fn with_seat_role(asked: Option<&str>) -> &'static str {
+    if asked == Some("reviewer") {
+        "reviewer"
+    } else {
+        "observer"
+    }
+}
+
 enum Fail {
     NoSeat,
     NoNode,
@@ -407,6 +521,28 @@ enum Fail {
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn a_reviewer_of_a_seat_on_no_node_gets_a_node_of_the_pair() {
+        let own = vec!["G3".to_owned()];
+        assert_eq!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "reviewer", own.clone()),
+            [("G3".to_owned(), "seat_bbbb2".to_owned(), "reviewer")]
+        );
+        assert_eq!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "reviewer", Vec::new()),
+            [
+                ("R-aaaa1".to_owned(), "seat_aaaa1".to_owned(), "author"),
+                ("R-aaaa1".to_owned(), "seat_bbbb2".to_owned(), "reviewer")
+            ],
+            "reason: reviewer_on_nothing"
+        );
+        assert!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "observer", Vec::new()).is_empty(),
+            "reason: observer_given_a_node"
+        );
+        assert!(node_id_ok("R-aaaa1"));
+    }
 
     #[test]
     fn a_seat_above_sees_the_whole_subtree_and_wakes_only_when_named_or_for_one_or_two() {
@@ -512,5 +648,18 @@ mod tests {
         );
         assert_eq!(ancestors(&t, "nope"), Vec::<String>::new());
         assert!(has_node(&t, "G7") && !has_node(&t, "G8"));
+    }
+
+    #[test]
+    fn a_role_the_person_added_is_taken_when_the_registry_lists_it() {
+        let b =
+            json!({"type": ADD, "node_id": "N-x", "seat_id": "seat_ab12", "role": "rol_u5mckt"});
+        assert_eq!(parse(&b).unwrap_err().0, "role");
+        let got = parse_with(&b, &|r| r == "rol_u5mckt").unwrap();
+        assert_eq!(got.2, "rol_u5mckt");
+        assert_eq!(
+            parse_with(&b, &|r| r == "rol_other0").unwrap_err().0,
+            "role"
+        );
     }
 }

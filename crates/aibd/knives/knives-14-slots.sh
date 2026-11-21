@@ -169,3 +169,26 @@ sl '.filter(|e| s(e, "outcome").as_deref() == Some("open"))' \
 sl '.get(&i.item)' \
    '.get(&String::new())' \
    an_andy_card_is_timed_by_the_event_that_opened_it
+
+# OH1 / OH2 the 1.x system's cards are history, apart and not counted as waiting on the person (a9136 ORDER-autodrive 3)
+#   (1a93b 11-20 16:1x: 0210983009 made an open andy.open item now, so OH1 now drops the dm.* half
+#   of the line instead of andy.open; OH4 puts andy.open back into history and must bite too)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");' '    let old = matches!(kind, "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+# OH4 an open item of the 待人決策 list (andy.open) is now, not history (519d0 11-20 12:36, a9136 12:38)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");' '    let old = kind.starts_with("dm.") || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '            .filter(|c| c.slot == s && c.origin() == "now")' '            .filter(|c| c.slot == s && !c.origin().is_empty()) // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+# OH3 a 1.x terminal seat's decide line counts as waiting on the person (5d33a N2)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '                .is_some_and(|s| s.starts_with("seat_"));' '                .is_some_and(|s| !s.is_empty()); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+# CU1 (5d33a N7) an archive's tree not collected over repo settings opens no 壞了 card
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.collect_unsafe" => Some(2),' '        "seat.collect_unsafe" => None, // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
+  -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files
+# CU2 the card does not say to fix the repo settings first
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '                    .map(|w| format!("收樹停住:先修好倉的 git 設定再收({w})"))' '                    .map(|w| format!("收樹停住({w})")) // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
+  -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files
+# CU3 a copy whose .git names no readable head is taken for a git failure (no card; 5d33a N7 L1)
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs 'pub const COPY_HEAD_UNREADABLE: &str = "repo_unsafe: the copy' 'pub const COPY_HEAD_UNREADABLE: &str = "the copy' --expect-fail a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure \
+  -- cargo test -p aibd --locked --lib seats::tests::a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure

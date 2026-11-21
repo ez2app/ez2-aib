@@ -823,6 +823,11 @@ pub struct ReviewPolicy {
     pub reviewers: Vec<String>,
     /// Heads, or their first 8+ hex, that are carried (RULES §20): no review row.
     pub carried: Vec<String>,
+    /// Fix heads already landed (head → where), from [`landed_heads`]: no fix row, said in
+    /// `skipped` (519d0 11-18 22:51, Andy 22:23 「還是有 壞了」).
+    pub landed: BTreeMap<String, String>,
+    /// Fix heads their card holds back (head → card), from [`held_heads`]: no fix row.
+    pub held: BTreeMap<String, String>,
 }
 
 impl ReviewPolicy {
@@ -869,6 +874,93 @@ pub fn carried_heads(files: &[(String, String)]) -> Vec<String> {
     }
     out.sort();
     out.dedup();
+    out
+}
+
+/// Which fix-row heads already landed, head → where ([`landed_heads`] with git bound).
+pub type LandedFn = dyn Fn(&[(String, String)]) -> BTreeMap<String, String>;
+
+/// Which of `heads` (fix rows' heads, `(branch, head)`) already landed (519d0 11-18 22:51):
+/// in `main` (an ancestor of it); in another row's head (an ancestor of it, f1fae 11-19); in a package (`fastbin/*`, a ref other than the row's own
+/// branch that contains it); or every commit of it is in `main` or the newest package by
+/// content (`git cherry` lists none with `+`). `newest` is that package's ref. A git call
+/// that fails says nothing (the row stays). Head → where.
+pub fn landed_heads(
+    heads: &[(String, String)],
+    main: &str,
+    newest: Option<&str>,
+    git: &dyn Fn(&[&str]) -> Result<String, String>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (branch, head) in heads {
+        if head.is_empty() || out.contains_key(head) {
+            continue;
+        }
+        if git(&["merge-base", "--is-ancestor", head, main]).is_ok() {
+            out.insert(head.clone(), "main".to_owned());
+            continue;
+        }
+        // f1fae 11-19 00:35: an older head of a row whose newer head is listed too
+        let newer = heads
+            .iter()
+            .filter(|(b, h)| !h.is_empty() && h != head && b != branch)
+            .find(|(_, h)| git(&["merge-base", "--is-ancestor", head, h]).is_ok());
+        if let Some((b, _)) = newer {
+            out.insert(head.clone(), format!("{b} 的頭"));
+            continue;
+        }
+        let pkg = git(&[
+            "for-each-ref",
+            "--contains",
+            head,
+            "--format=%(refname:short)",
+            "refs/heads/fastbin/",
+        ])
+        .ok()
+        .and_then(|o| {
+            o.lines()
+                .map(str::trim)
+                .find(|r| !r.is_empty() && *r != branch.as_str())
+                .map(str::to_owned)
+        });
+        if let Some(p) = pkg {
+            out.insert(head.clone(), p);
+            continue;
+        }
+        let same = |up: &str| {
+            git(&["cherry", up, head])
+                .is_ok_and(|o| o.lines().all(|l| !l.trim_start().starts_with('+')))
+        };
+        if same(main) {
+            out.insert(head.clone(), "main(內容相同)".to_owned());
+        } else if let Some(n) = newest.filter(|n| *n != branch.as_str() && same(n)) {
+            out.insert(head.clone(), format!("{n}(內容相同)"));
+        }
+    }
+    out
+}
+
+/// Heads a card holds back (519d0 11-18 23:0x): a plan node with a `head` whose status is
+/// 已定未做, or whose newest evidence line (`MM-DD HH:MM <seat> …`, lines joined by ` | `)
+/// says 先放 and was written by the card's owner or 519d0. Head → node id.
+pub fn held_heads(plan: &serde_json::Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(nodes) = plan.get("nodes").and_then(|n| n.as_array()) else {
+        return out;
+    };
+    for n in nodes {
+        let field = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let (head, id) = (field("head").trim(), field("id"));
+        if head.len() < 8 || !head.bytes().all(|b| b.is_ascii_hexdigit()) || id.is_empty() {
+            continue;
+        }
+        let last = field("evidence").rsplit(" | ").next().unwrap_or("");
+        let writer = last.split_whitespace().nth(2).unwrap_or("");
+        let said = last.contains("先放") && (writer == field("owner") || writer == "519d0");
+        if field("status") == "已定未做" || said {
+            out.insert(head.to_ascii_lowercase(), id.to_owned());
+        }
+    }
     out
 }
 
@@ -990,6 +1082,42 @@ pub fn rank_opts(
                 .unwrap_or_default(),
         ),
     ];
+    // a fix row whose head already landed (main, a package) or is another row's head is no
+    // fix: the page showed it as broken (519d0 11-18 22:51)
+    if let Some((_, rows)) = lists.first_mut() {
+        let others: BTreeSet<String> = rows
+            .iter()
+            .filter(|d| d.kind != "fix")
+            .map(|d| d.head.clone())
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut gone = Vec::new();
+        rows.retain(|d| {
+            if d.kind != "fix" || d.head.is_empty() {
+                return true;
+            }
+            let card = policy
+                .held
+                .iter()
+                .find(|(h, _)| h.len() >= 8 && d.head.starts_with(h.as_str()));
+            let why = match policy.landed.get(&d.head) {
+                Some(at) => format!("已在 {at} 裡"),
+                None if card.is_some() => {
+                    format!("卡 {} 寫了先放", card.map_or("", |(_, c)| c.as_str()))
+                }
+                None if others.contains(&d.head) || !seen.insert(d.head.clone()) => {
+                    "頭與另一列相同".to_owned()
+                }
+                None => return true,
+            };
+            gone.push(Skipped {
+                what: format!("{} 修({})", d.branch, short(&d.head)),
+                reason: format!("不算壞了:{why}"),
+            });
+            false
+        });
+        skipped.extend(gone);
+    }
     let held = match full.unwrap_or(sweep) {
         Ok(s) if !l4 => layer(s, 4).len() + s.branches.iter().filter(|b| b.abandonable).count(),
         _ => 0,
@@ -1730,6 +1858,20 @@ pub fn cli_carried(
     as_of: &str,
     carried: &[String],
 ) -> (String, i32) {
+    cli_landed(args, read, more, now, as_of, carried, None)
+}
+
+/// [`cli_carried`] with `landed`: given the fix rows' (branch, head), which already landed
+/// ([`landed_heads`] in the program).
+pub fn cli_landed(
+    args: &[String],
+    read: impl Fn(&str) -> Result<String, String>,
+    more: Option<&dyn MergedSource>,
+    now: u64,
+    as_of: &str,
+    carried: &[String],
+    landed: Option<&LandedFn>,
+) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
 [--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--reviewers FILE] [--json] \
 [--all] [--with-l4] [--seat XXXXX]\n";
@@ -1793,6 +1935,19 @@ pub fn cli_carried(
             .map(|t| crate::unblock::not_worker_codes(&t).into_iter().collect())
             .unwrap_or_default(),
         carried: carried.to_vec(),
+        landed: match (&due, landed) {
+            (Ok(d), Some(f)) => f(&d
+                .fix
+                .items
+                .iter()
+                .map(|i| (i.branch.clone(), i.head.clone()))
+                .collect::<Vec<_>>()),
+            _ => BTreeMap::new(),
+        },
+        held: match &plan {
+            Some(Ok(p)) => held_heads(p),
+            _ => BTreeMap::new(),
+        },
     };
     let opts = RankOpts {
         l4: with_l4,

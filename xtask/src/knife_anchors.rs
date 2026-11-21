@@ -28,6 +28,9 @@
 //! `unresolved`, never skipped;
 //! finding no knife at all is an error too (the scan is broken, not clean).
 //!
+//! Each knife's `--expect-fail` name is also looked up in the test target its command runs
+//! (`knife-testnames:` line, `NOTEST` rows, rc 1; [`crate::knife_testname`]).
+//!
 //! Not read: knives that patch files their own way (for example
 //! `scripts/check-win-job-knives.sh`, an inline Python replace on a fixed
 //! file). Those are listed in the PR, not guessed at here.
@@ -793,6 +796,37 @@ fn check(files: &[PathBuf], knives: &[Knife], unresolved: &[String], root: &Path
             }
         }
     }
+    // the second check: the --expect-fail name is a test the command reaches (7ebca 11-19,
+    // knife_testname.rs); its own line, the summary line above keeps its shape
+    let mut names = crate::knife_testname::Checker::new(root);
+    let (mut checked, mut skipped, mut missing) = (0usize, 0usize, 0usize);
+    for k in knives {
+        let Some(call) = k
+            .argv
+            .as_ref()
+            .ok()
+            .and_then(|a| crate::knife_spec::parse_argv(a).ok())
+        else {
+            skipped += 1;
+            continue;
+        };
+        match names.check(&call.cmd, &call.expect_fail) {
+            crate::knife_testname::Found::Ok => checked += 1,
+            crate::knife_testname::Found::NotChecked
+            | crate::knife_testname::Found::NoPackage(_) => skipped += 1,
+            crate::knife_testname::Found::NoTestFile(t) => {
+                missing += 1;
+                println!(
+                    "NOTEST  {}  {}  no test file for {t}",
+                    k.at, call.expect_fail
+                );
+            }
+            crate::knife_testname::Found::NoTest(t) => {
+                missing += 1;
+                println!("NOTEST  {}  {}  is no test in {t}", k.at, call.expect_fail);
+            }
+        }
+    }
     for u in unresolved {
         println!("UNRESOLVED  {u}");
     }
@@ -803,12 +837,13 @@ fn check(files: &[PathBuf], knives: &[Knife], unresolved: &[String], root: &Path
         bad,
         unresolved.len()
     );
+    println!("knife-testnames: {checked} found, {missing} not found, {skipped} not checked");
     if !unresolved.is_empty() || knives.is_empty() {
         if knives.is_empty() {
             println!("knife-anchors: no knife found; the scan is broken, not clean");
         }
         2
-    } else if bad > 0 {
+    } else if bad > 0 || missing > 0 {
         1
     } else {
         0
@@ -1049,6 +1084,34 @@ mod tests {
             let _ = std::fs::remove_dir_all(r);
         }
         assert_eq!(rcs, [0, 1, 1, 2]);
+    }
+
+    /// A knife whose --expect-fail name is no test its command reaches makes the run red, though
+    /// its anchor is there once (7ebca 11-19: knives-35 PN6 / PN7 ran --test slots_persist for a
+    /// unit test in slots.rs).
+    #[test]
+    fn run_is_red_when_a_knifes_test_is_not_in_the_binary_it_runs() {
+        let wf = |bin: &str| {
+            format!("      - name: k\n        run: |\n          python3 -I scripts/knife.py src/a.rs '    let x = 1;' 'y' --expect-fail unit_one -- cargo test -p p --locked {bin} unit_one\n")
+        };
+        let at = |tag: &str, bin: &str| {
+            let r = root_with(
+                tag,
+                &wf(bin),
+                "fn f() {\n    let x = 1;\n}\n#[test]\nfn unit_one() {}\n",
+            );
+            std::fs::write(r.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+            std::fs::create_dir_all(r.join("tests")).unwrap();
+            std::fs::write(r.join("tests/it.rs"), "#[test]\nfn other() {}\n").unwrap();
+            r
+        };
+        let lib = at("tn-lib", "--lib");
+        let wrong = at("tn-wrong", "--test it");
+        let rcs = [run(&lib), run(&wrong)];
+        for r in [&lib, &wrong] {
+            let _ = std::fs::remove_dir_all(r);
+        }
+        assert_eq!(rcs, [0, 1], "reason: test_name_not_checked");
     }
 
     /// A knife in `crates/<crate>/knives/*.sh` or `xtask/knives/*.sh` is read and checked like

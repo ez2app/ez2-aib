@@ -74,6 +74,8 @@ pub mod selfcheck;
 #[cfg(windows)]
 pub mod session;
 pub mod settle;
+#[cfg(target_os = "macos")]
+pub mod stdio_only;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;

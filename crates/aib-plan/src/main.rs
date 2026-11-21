@@ -1836,7 +1836,7 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if matches!(
         argv.first().map(String::as_str),
-        Some("mine" | "judge" | "set" | "note" | "add")
+        Some("mine" | "judge" | "set" | "note" | "add" | "fail")
     ) {
         let data = home()
             .join(".ez2-aib")

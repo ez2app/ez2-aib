@@ -53,6 +53,24 @@ async fn a_page_opens_a_thread_on_an_item_and_calls_one_member_in() {
     let t = r.json["thread"]["thread_id"].as_str().unwrap().to_string();
     assert!(t.starts_with("t_") && t.len() == 18, "{t}");
     assert_eq!(r.json["thread"]["members"].as_array().unwrap().len(), 2);
+    assert_eq!(r.json["existing"], false, "reason: new_not_said");
+
+    // 043dd 02:42: the page's free 「共同對話」 by title gains the seat it calls later
+    let shared = |m: &str| {
+        json!({"type": "thread_open", "title": "共同對話", "reuse": "title",
+               "members": [{"seat": m, "role": "observer"}]})
+    };
+    let first = act(&d, &cred, shared(&a)).await;
+    assert_eq!(first.code, 201, "{}", first.body);
+    assert_eq!(first.json["existing"], false);
+    let next = act(&d, &cred, shared(&b)).await;
+    assert_eq!(next.code, 200, "reason: free_not_reused {}", next.body);
+    assert_eq!(next.json["existing"], true);
+    assert_eq!(
+        next.json["thread"]["thread_id"],
+        first.json["thread"]["thread_id"]
+    );
+    assert_eq!(next.json["thread"]["members"].as_array().unwrap().len(), 2);
 
     // clicking the item again gives its one thread back
     let again = act(
@@ -90,6 +108,15 @@ async fn a_page_opens_a_thread_on_an_item_and_calls_one_member_in() {
     .await;
     assert_eq!(stranger.code, 400, "{}", stranger.body);
     assert_eq!(stranger.json["code"], "to_not_a_member");
+    // FINDING-andy-realrun 1 / 5d33a PREREAD f36f26a1 N4: the refusal says the next step
+    assert!(
+        stranger.json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("ask the person in this thread to @ it in"),
+        "reason: no_next_step {}",
+        stranger.body
+    );
 
     let l = d
         .call("GET", "/api/v1/threads?node=N-workspace", Some(&cred), None)
@@ -138,5 +165,106 @@ async fn a_page_opens_a_thread_on_an_item_and_calls_one_member_in() {
         )
         .await;
     assert_eq!(missing.code, 404, "{}", missing.body);
+    d.shutdown().await;
+}
+
+/// 0eed7 VERIFY-turnfail-0eed7-8680f0dbc L1: a called seat that is not running gets the post
+/// when it starts, and the thread says so at once (from aibd, calling nobody).
+#[tokio::test(flavor = "multi_thread")]
+async fn calling_a_seat_that_is_not_running_says_so_in_the_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let (a, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let (b, sb) = d.open("safe", &seat_dir(dir.path(), "b")).await;
+    let cred = d.page(true).await;
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "thread_open", "title": "叫已關的席",
+               "members": [{"seat": a, "role": "observer"}, {"seat": b, "role": "observer"}]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let t = r.json["thread"]["thread_id"].as_str().unwrap().to_string();
+    let r = d
+        .call("DELETE", &format!("/api/v1/sessions/{sb}"), None, None)
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let s = d
+            .call("GET", &format!("/api/v1/sessions/{sb}"), None, None)
+            .await;
+        if s.json["state"] != "running" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < end,
+            "reason: b_never_stopped {}",
+            s.body
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "thread_send", "thread_id": t, "body": "@b 看一下", "to": [b]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let v = d
+        .call("GET", &format!("/api/v1/threads/{t}"), Some(&cred), None)
+        .await;
+    let posts = v.json["posts"].as_array().unwrap();
+    let note = posts
+        .iter()
+        .find(|p| p["auto"] == "not_running")
+        .unwrap_or_else(|| panic!("reason: no_not_running_note {}", v.body));
+    assert_eq!(note["not_running"], json!([b]), "{}", v.body);
+    assert_eq!(
+        note["body"].as_str().unwrap_or(""),
+        format!("{} 沒在跑,開了才會收到", aibd::seats::seat_code(&b)),
+        "reason: note_text {}",
+        v.body
+    );
+    // the same post sent again (same idem_key) gives no second note
+    let again = act(
+        &d,
+        &cred,
+        json!({"type": "thread_send", "thread_id": t, "body": "@b 看一下", "to": [b],
+               "idem_key": "nr1"}),
+    )
+    .await;
+    assert_eq!(again.code, 201, "{}", again.body);
+    let resend = act(
+        &d,
+        &cred,
+        json!({"type": "thread_send", "thread_id": t, "body": "@b 看一下", "to": [b],
+               "idem_key": "nr1"}),
+    )
+    .await;
+    assert_eq!(resend.code, 200, "{}", resend.body);
+    // a running seat called later gets no such note
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "thread_send", "thread_id": t, "body": "@a 看", "to": [a]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let v = d
+        .call("GET", &format!("/api/v1/threads/{t}"), Some(&cred), None)
+        .await;
+    let notes = v.json["posts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["auto"] == "not_running")
+        .count();
+    assert_eq!(
+        notes, 2,
+        "reason: note_for_a_running_seat_or_resend {}",
+        v.body
+    );
     d.shutdown().await;
 }

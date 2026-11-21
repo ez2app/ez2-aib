@@ -36,6 +36,10 @@ pub enum Skip {
     PersonaGone,
     PersonaText,
     Start,
+    /// The start was refused for a reason the page can say in words: one of
+    /// [`START_REASONS`], read from the refusal aibd itself wrote (519d0 11-20 L1: the page
+    /// only said 開不起來).
+    Refused(&'static str),
     DgrsOff,
     StopUnconfirmed,
     Folder,
@@ -50,6 +54,7 @@ impl Skip {
             Skip::PersonaGone => "persona_missing",
             Skip::PersonaText => "persona_text_unreadable",
             Skip::Start => "start_failed",
+            Skip::Refused(code) => code,
             Skip::DgrsOff => "dgrs_input_off",
             Skip::StopUnconfirmed => "stop_unconfirmed",
             Skip::Folder => "folder_refused",
@@ -84,7 +89,13 @@ pub fn at_stop(
     if ended < last_stop? - STOP_WINDOW {
         return None;
     }
-    Some(match last.state.as_str() {
+    // a stop that kept its slot (not confirmed gone) is turned `interrupted` by the next
+    // start, keeping who ended it (0eed7 51ac92d9 M1): its recorded stop still decides
+    let state = match last.state.as_str() {
+        "interrupted" if last.stop_status.is_some() => "stop_unconfirmed",
+        s => s,
+    };
+    Some(match state {
         "killed" | "interrupted" => Ok(()),
         // macOS under launchd (measured 11-18 on the live aibd, every shutdown stop):
         // unverified only because other processes share the coalition; the seat's own tree was
@@ -96,6 +107,11 @@ pub fn at_stop(
         {
             Ok(())
         }
+        // 5d33a 11-18 (N-ws-revive-held): what kept it unverified were only processes that
+        // started before the seat's provider (pid and start time read together, against the
+        // provider's start recorded at the start), and the provider's own end was recorded:
+        // none of them can be the provider or its child. Said as seat.rejoin_ignored_older.
+        "stop_unconfirmed" if older_and_ended(last) => Ok(()),
         _ => Err(Skip::StopUnconfirmed),
     })
 }
@@ -111,6 +127,114 @@ pub fn claude_dir_for(config: &std::path::Path, cwd: &str) -> std::path::PathBuf
         .and_then(|p| p.to_str().map(str::to_owned))
         .unwrap_or_else(|| cwd.to_owned());
     aib_seatopen::claude_project_dir(config, &real)
+}
+
+/// The stop reason of a stop whose only unreadable candidates started before the session's
+/// root (`platform::tree`, 5d33a 11-18).
+pub const OLDER: &str = "candidates_unreadable_older";
+
+/// Only processes older than the provider kept the stop unverified, and the provider's own
+/// end was recorded (5d33a 11-18).
+fn older_and_ended(s: &SessionRow) -> bool {
+    s.stop_reason.as_deref() == Some(OLDER) && (s.exit_code.is_some() || s.signal.is_some())
+}
+
+/// The session a rejoin passes over older unreadable processes for (its last session, when
+/// that stop's reason is [`OLDER`]): said as `seat.rejoin_ignored_older`.
+pub fn ignored_older(sessions: &[SessionRow]) -> Option<&SessionRow> {
+    sessions
+        .last()
+        .filter(|s| s.stop_reason.as_deref() == Some(OLDER))
+}
+
+/// How many of a session's events are read to find its stop (a seat's session has a few).
+const OLDER_EVENTS_READ: u32 = 1000;
+
+/// The processes a rejoin lets go (519d0 11-18 23:04): of the session's last
+/// `session.stop_unconfirmed`, each unreadable candidate with the start the stop read, as
+/// `{session_id, pid, comm, started}` (no arguments). Its stop said nothing ⇒ none.
+pub fn older_processes(
+    session_id: &str,
+    events: &[aib_store::StoredEvent],
+) -> Vec<serde_json::Value> {
+    let Some(stop) = events
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "session.stop_unconfirmed")
+    else {
+        return Vec::new();
+    };
+    stop.payload["candidates"]["unreadable"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|c| c["started"].is_u64())
+                .map(|c| {
+                    serde_json::json!({"session_id": session_id, "pid": c["pid"],
+                        "comm": c["comm"], "started": c["started"]})
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The stop reason of a stop held only by processes it could not read (`platform::tree`).
+pub const UNREADABLE: &str = "candidates_unreadable";
+
+/// a9136 11-20 (c15: 519d0's self test, three restarts, three outcomes): a stop that only
+/// unreadable processes kept unverified, whose provider's own end was recorded and that left
+/// no survivor, is taken up again when every unreadable process its stop listed is gone by
+/// this start: none of them can still be the provider writing the conversation. `gone` says a
+/// pid no longer exists (a reused pid reads as present: the seat stays skipped). `None` when
+/// the stop's list is missing, empty, cut short (`unreadable_more`) or any listed one is
+/// still there. What it returns is said as `seat.rejoin_unreadable_gone`.
+pub fn unreadable_gone(
+    session_id: &str,
+    events: &[aib_store::StoredEvent],
+    gone: impl Fn(u32) -> bool,
+) -> Option<Vec<serde_json::Value>> {
+    let stop = events
+        .iter()
+        .rfind(|e| e.event_type == "session.stop_unconfirmed")?;
+    if stop.payload["survivors"]
+        .as_array()
+        .is_none_or(|a| !a.is_empty())
+    {
+        return None;
+    }
+    let c = &stop.payload["candidates"];
+    if c["unreadable_more"].as_u64().unwrap_or(0) > 0 {
+        return None;
+    }
+    let listed = c["unreadable"].as_array().filter(|a| !a.is_empty())?;
+    let mut out = Vec::new();
+    for x in listed {
+        let pid = x["pid"].as_u64().and_then(|p| u32::try_from(p).ok())?;
+        if !gone(pid) {
+            return None;
+        }
+        out.push(serde_json::json!({"session_id": session_id, "pid": pid, "comm": x["comm"]}));
+    }
+    Some(out)
+}
+
+/// `pid` no longer exists (unix: `kill(pid, 0)` answers ESRCH). pid 0 or one beyond `i32`
+/// never reads as gone. Windows lists no unreadable process, so nothing reads as gone.
+pub fn pid_gone(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(raw) = i32::try_from(pid) else {
+            return false;
+        };
+        raw > 0
+            && nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None)
+                == Err(nix::errno::Errno::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// How long one stop takes to end every seat (its sweep runs in seconds; this is wide).
@@ -258,9 +382,28 @@ pub async fn after_start(st: AppState) -> usize {
         let stop = last_stop(all.iter().flat_map(|(_, ss)| ss.iter()));
         let mut out = Vec::new();
         for (s, ss) in all {
-            if let Some(what) = at_stop(&s, &ss, stop) {
+            if let Some(mut what) = at_stop(&s, &ss, stop) {
                 let m = metas.iter().find(|m| m.seat_id == s.seat_id).cloned();
-                out.push((s, m, what));
+                let mut gone = Vec::new();
+                if let (Err(Skip::StopUnconfirmed), Some(last)) = (what, ss.last()) {
+                    if last.stop_reason.as_deref() == Some(UNREADABLE)
+                        && (last.exit_code.is_some() || last.signal.is_some())
+                    {
+                        let evs = store.events_of(&last.session_id, 0, OLDER_EVENTS_READ)?;
+                        if let Some(g) = unreadable_gone(&last.session_id, &evs, pid_gone) {
+                            gone = g;
+                            what = Ok(());
+                        }
+                    }
+                }
+                let older = match ignored_older(&ss).filter(|_| what.is_ok()) {
+                    Some(r) => {
+                        let evs = store.events_of(&r.session_id, 0, OLDER_EVENTS_READ)?;
+                        older_processes(&r.session_id, &evs)
+                    }
+                    None => Vec::new(),
+                };
+                out.push((s, m, what, older, gone));
             }
         }
         Ok(out)
@@ -271,7 +414,19 @@ pub async fn after_start(st: AppState) -> usize {
         return 0;
     };
     let mut started = 0;
-    for (seat, meta, what) in todo {
+    for (seat, meta, what, older, gone) in todo {
+        for mut p in gone {
+            tracing::info!(seat = %seat.seat_id, process = %p,
+                "rejoin: an unreadable process at the stop is gone now");
+            p["seat_id"] = serde_json::json!(seat.seat_id);
+            note(&st, "seat.rejoin_unreadable_gone", p).await;
+        }
+        for mut p in older {
+            tracing::info!(seat = %seat.seat_id, process = %p,
+                "rejoin: a process older than the seat's provider let go");
+            p["seat_id"] = serde_json::json!(seat.seat_id);
+            note(&st, "seat.rejoin_ignored_older", p).await;
+        }
         let done = match what {
             Ok(()) => rejoin(&st, &seat, meta).await,
             Err(why) => Err(why),
@@ -359,21 +514,8 @@ pub async fn restart(
 ) -> Result<String, NotRestarted> {
     // held for this restart and let go however it ends, a dropped request too (5d33a
     // PREREAD 532b54da L1: a page whose connection broke left the seat 409 for good)
-    struct Held(String);
-    impl Drop for Held {
-        fn drop(&mut self) {
-            restarting()
-                .lock()
-                .unwrap_or_else(|x| x.into_inner())
-                .remove(&self.0);
-        }
-    }
-    let _held = {
-        let mut r = restarting().lock().unwrap_or_else(|x| x.into_inner());
-        if !r.insert(seat_id.to_owned()) {
-            return Err(NotRestarted::Running);
-        }
-        Held(seat_id.to_owned())
+    let Some(_held) = hold(seat_id) else {
+        return Err(NotRestarted::Running);
     };
     let session_id = restart_once(st, seat_id).await?;
     note(
@@ -383,6 +525,58 @@ pub async fn restart(
     )
     .await;
     Ok(session_id)
+}
+
+/// The seat held for a restart or a clear (`None`: one is under way); let go when dropped.
+pub struct Held(String);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        restarting()
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Hold `seat_id` for a restart or a clear (1a93b seat_clear holds it from the stop to the
+/// start, so a 重開 in between gets 409).
+pub fn hold(seat_id: &str) -> Option<Held> {
+    let mut r = restarting().lock().unwrap_or_else(|x| x.into_inner());
+    r.insert(seat_id.to_owned())
+        .then(|| Held(seat_id.to_owned()))
+}
+
+/// 1a93b seat_clear: start a stopped seat as [`restart`] does but on the new conversation
+/// `conv` (`--session-id`, never `--resume`), leaving the kept resume id alone (the caller
+/// swaps it once the start went well). The caller holds the seat ([`hold`]).
+pub async fn start_fresh(
+    st: &AppState,
+    seat_id: &str,
+    conv: String,
+) -> Result<String, NotRestarted> {
+    let busy =
+        st.sessions.list().iter().any(|s| {
+            s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
+        });
+    if busy {
+        return Err(NotRestarted::Running);
+    }
+    let (store, id) = (st.store.clone(), seat_id.to_owned());
+    let got = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
+        Ok((store.seat(&id)?, store.seat_meta(&id)?))
+    })
+    .await;
+    let Ok(Ok((seat, meta))) = got else {
+        return Err(NotRestarted::Unread);
+    };
+    let seat = seat.ok_or(NotRestarted::Unknown)?;
+    if aib_store::ARCHIVED == seat.state {
+        return Err(NotRestarted::Archived);
+    }
+    rejoin_with(st, &seat, meta, Some(conv))
+        .await
+        .map_err(NotRestarted::Skip)
 }
 
 async fn restart_once(st: &AppState, seat_id: &str) -> Result<String, NotRestarted> {
@@ -409,6 +603,17 @@ async fn restart_once(st: &AppState, seat_id: &str) -> Result<String, NotRestart
 }
 
 async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<String, Skip> {
+    rejoin_with(st, seat, meta, None).await
+}
+
+/// [`rejoin`], or with `fresh` a new conversation of that id (seat_clear): no resume, and the
+/// kept id is not filled.
+async fn rejoin_with(
+    st: &AppState,
+    seat: &Seat,
+    meta: Option<SeatMeta>,
+    fresh: Option<String>,
+) -> Result<String, Skip> {
     let meta = meta.ok_or(Skip::NoConversationId)?;
     let mode = plan(&meta, crate::seat_input::dgrs_input_on())?;
     let personas = st.personas.clone();
@@ -440,18 +645,22 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         .or_else(|| home.map(|h| h.join(".claude")));
     let (kept, cwd) = (meta.resume_id.clone(), meta.cwd.clone());
     let own = crate::seats::seat_home(st.sessions.private_dir(), &seat.seat_id);
-    let picked = tokio::task::spawn_blocking(move || {
-        let canon =
-            |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let own_folder = canon(std::path::Path::new(&cwd)) == canon(&own);
-        let dir = config.map(|c| claude_dir_for(&c, &cwd));
-        conversation(kept.as_deref(), dir.as_deref(), own_folder, || {
-            crate::seats::new_uuid().ok()
+    let picked = if let Some(id) = fresh.clone() {
+        Some((id, false))
+    } else {
+        tokio::task::spawn_blocking(move || {
+            let canon =
+                |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            let own_folder = canon(std::path::Path::new(&cwd)) == canon(&own);
+            let dir = config.map(|c| claude_dir_for(&c, &cwd));
+            conversation(kept.as_deref(), dir.as_deref(), own_folder, || {
+                crate::seats::new_uuid().ok()
+            })
         })
-    })
-    .await
-    .ok()
-    .flatten();
+        .await
+        .ok()
+        .flatten()
+    };
     let (conv, resume) = picked.ok_or(Skip::NoConversationId)?;
     let argv = if resume {
         aib_seatopen::resume_argv(&meta.provider, &mode, meta.model.as_deref(), &conv)
@@ -460,7 +669,7 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
     };
     let mut argv = argv.map_err(|_| Skip::Provider)?;
     // a seat opened before this slice: keep the id now, so the next restart finds it
-    if meta.resume_id.is_none() {
+    if meta.resume_id.is_none() && fresh.is_none() {
         let (store, seat_id, id) = (st.store.clone(), seat.seat_id.clone(), conv.clone());
         let _ = tokio::task::spawn_blocking(move || {
             let ev = crate::sessions::new_id("ev_").ok()?;
@@ -479,15 +688,27 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         .and_then(|d| d.to_str())
         .map(str::to_owned)
         .ok_or(Skip::Start)?;
-    let (p2, c2) = (private.clone(), conv.clone());
-    let cfg =
-        tokio::task::spawn_blocking(move || crate::seats::keep_talk_config(&p2, &c2, &exe, &data))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|p| p.to_str().map(str::to_owned))
-            .ok_or(Skip::Start)?;
-    argv.extend(crate::seats::talk_args(&cfg));
+    if meta.provider == "codex" {
+        // N-ws-ask-codex: codex takes the server as settings; claude's --mcp-config is no
+        // codex flag
+        argv.extend(crate::seats::codex_talk_args(&exe, &data));
+    } else {
+        let work_gate = (crate::seats::now_gate_on() && mode == "work")
+            .then(|| crate::seats::gate_settings(&exe, &data));
+        let (p2, c2) = (private.clone(), conv.clone());
+        let cfg = tokio::task::spawn_blocking(move || {
+            crate::seats::keep_talk_config(&p2, &c2, &exe, &data)
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|p| p.to_str().map(str::to_owned))
+        .ok_or(Skip::Start)?;
+        argv.extend(crate::seats::talk_args(&cfg, &mode));
+        if let Some(g) = work_gate.as_deref() {
+            crate::seats::fold_gate_into_work_settings(&mut argv, g);
+        }
+    }
     if let Some(path) = card.text_path.clone() {
         let sha = card.persona_sha.clone();
         let file = tokio::task::spawn_blocking(move || {
@@ -505,13 +726,61 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
     }
     let session = crate::seats::start_session(st, &seat.seat_id, &card, Ok(argv), &meta.cwd, &mode)
         .await
-        .map_err(|_| Skip::Start)?;
+        .map_err(|e| start_skip(&e))?;
     Ok(session["id"].as_str().unwrap_or_default().to_owned())
+}
+
+/// The refusals a restart names instead of `start_failed` (the `(code)` aibd writes at the end
+/// of its own `session_error` message; nothing a program printed is read as a reason).
+pub const START_REASONS: &[&str] = &[
+    "codex_folder_settings",
+    "codex_mcp_unlisted",
+    "codex_mcp_unnamed",
+    "codex_mcp_aibd_taken",
+    "codex_version",
+];
+
+/// [`Skip::Refused`] when the start's `session_error` message ends with one of
+/// [`START_REASONS`] as `(code)`, else [`Skip::Start`].
+fn start_skip(e: &serde_json::Value) -> Skip {
+    // only the code aibd puts last (5d33a PREREAD-restartwhy L1: a folder path earlier in the
+    // message may hold any text)
+    let m = e["message"].as_str().unwrap_or_default().trim_end();
+    START_REASONS
+        .iter()
+        .copied()
+        .find(|c| m.ends_with(&format!("({c})")))
+        .map_or(Skip::Start, Skip::Refused)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 519d0 11-20 L1: a restart refused for a codex reason says which; anything else stays
+    /// start_failed, and only the code at the end counts (a folder path may hold any text).
+    #[test]
+    fn a_refused_restart_names_its_reason() {
+        let e = |m: &str| serde_json::json!({"code": "program_not_allowed", "message": m});
+        let said = |m: &str| start_skip(&e(m)).as_str();
+        assert_eq!(
+            said("codex seat not started: its MCP servers could not all be turned off (codex_mcp_unlisted)"),
+            "codex_mcp_unlisted"
+        );
+        assert_eq!(
+            said("codex version not measured for aibd (0.167.x only): codex-cli 9 (codex_mcp_unlisted) (codex_version)"),
+            "codex_version"
+        );
+        assert_eq!(
+            said("codex seat not started: the folder has codex project settings (/x/(codex_version)/.codex): codex would merge them under the seat's own (codex_folder_settings)"),
+            "codex_folder_settings",
+            "reason: path_text_taken"
+        );
+        assert_eq!(said("(codex_version) in front only"), "start_failed");
+        assert_eq!(said("program not on the allowlist"), "start_failed");
+        assert_eq!(said("codex_mcp_unlisted without brackets"), "start_failed");
+        assert_eq!(start_skip(&serde_json::json!({})).as_str(), "start_failed");
+    }
 
     fn seat(state: &str) -> Seat {
         Seat {
@@ -576,6 +845,80 @@ mod tests {
 
     /// G1: same mode back; a dgrs seat only where dgrs takes input; no id ⇒ not picked up.
     #[test]
+    fn a_stop_held_only_by_unreadable_processes_now_gone_is_taken_up() {
+        let ev = |kind: &str, payload: serde_json::Value| aib_store::StoredEvent {
+            global_seq: 1,
+            event_id: "ev_1".into(),
+            aggregate_type: "session".into(),
+            aggregate_id: "s_1".into(),
+            sequence: 1,
+            event_type: kind.into(),
+            schema_version: 1,
+            correlation_id: None,
+            occurred_at: String::new(),
+            payload,
+        };
+        // the shape of 519d0's self test stop (18:48:40, aibd.sqlite)
+        let stop = |survivors: serde_json::Value, more: u64| {
+            ev(
+                "session.stop_unconfirmed",
+                serde_json::json!({"ended_by": "shutdown", "exit_code": 143,
+                    "reason": "candidates_unreadable", "survivors": survivors,
+                    "candidates": {"count": 44, "unreadable_more": more,
+                        "unreadable": [{"comm": "MTLCompilerService", "pid": 17995},
+                                       {"comm": "PlugInLibraryService", "pid": 8530}]}}),
+            )
+        };
+        let all_gone = |_: u32| true;
+        let got = unreadable_gone("s_1", &[stop(serde_json::json!([]), 0)], all_gone);
+        assert_eq!(
+            got.as_ref().map(Vec::len),
+            Some(2),
+            "reason: gone_not_taken_up {got:?}"
+        );
+        assert_eq!(got.unwrap()[0]["pid"], 17995, "reason: pid_not_said");
+        let one_left = |p: u32| p != 8530;
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([]), 0)], one_left).is_none(),
+            "reason: one_still_there_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([]), 3)], all_gone).is_none(),
+            "reason: cut_short_list_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([4242]), 0)], all_gone).is_none(),
+            "reason: survivor_taken_up"
+        );
+        let empty = ev(
+            "session.stop_unconfirmed",
+            serde_json::json!({"survivors": [], "candidates": {"unreadable": []}}),
+        );
+        assert!(
+            unreadable_gone("s_1", &[empty], all_gone).is_none(),
+            "reason: empty_list_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[], all_gone).is_none(),
+            "reason: no_stop_taken_up"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_pid_that_no_longer_exists_reads_as_gone() {
+        assert!(!pid_gone(std::process::id()), "reason: self_gone");
+        assert!(!pid_gone(0), "reason: zero_gone");
+        // pid 1 exists and (not root) answers EPERM: only ESRCH is gone
+        assert!(!pid_gone(1), "reason: eperm_gone");
+        assert!(!pid_gone(u32::MAX), "reason: huge_gone");
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        assert!(pid_gone(pid), "reason: ended_not_gone");
+    }
+
+    #[test]
     fn a_dgrs_seat_comes_back_only_where_dgrs_takes_input() {
         let id = Some("0b9c8a2e-1f3d-4c5b-9a7e-6d5c4b3a2f10");
         assert_eq!(plan(&meta("safe", id), false).unwrap(), "safe");
@@ -613,6 +956,38 @@ mod tests {
             Some(Err(Skip::StopUnconfirmed)),
             "reason: root_end_unknown_picked_up"
         );
+        // only processes older than the provider kept it unverified, its end recorded
+        // (5d33a 11-18); without the end, or an interrupted one freed by the next start, the
+        // same rule
+        let mut older = ended_as(Some("shutdown"), "stop_unconfirmed");
+        older.stop_status = Some("unverified".into());
+        older.stop_reason = Some(OLDER.into());
+        older.signal = Some("SIGTERM".into());
+        assert_eq!(at(&s, &[older.clone()]), Some(Ok(())));
+        assert_eq!(
+            ignored_older(std::slice::from_ref(&older)).map(|r| r.session_id.as_str()),
+            Some("s")
+        );
+        older.state = "interrupted".into();
+        assert_eq!(at(&s, &[older.clone()]), Some(Ok(())));
+        older.signal = None;
+        assert_eq!(
+            at(&s, &[older]),
+            Some(Err(Skip::StopUnconfirmed)),
+            "reason: older_without_root_end_picked_up"
+        );
+        // the same held stop after the next start freed its slot (`interrupted`, ended_by
+        // kept): still decided by its stop, never taken up as a plain interrupted one
+        // (0eed7 51ac92d9 M1)
+        let mut freed = ended_as(Some("shutdown"), "interrupted");
+        freed.stop_status = Some("unverified".into());
+        freed.stop_reason = Some("candidates_unreadable".into());
+        freed.exit_code = Some(143);
+        assert_eq!(
+            at(&s, &[freed]),
+            Some(Err(Skip::StopUnconfirmed)),
+            "reason: freed_held_stop_picked_up"
+        );
         assert_eq!(at(&s, &[ended(Some("shutdown")), ended(Some("api"))]), None);
         assert_eq!(at(&s, &[ended(Some(aib_store::ENDED_BY_RESTART))]), None);
         assert_eq!(at(&s, &[]), None);
@@ -620,6 +995,48 @@ mod tests {
             at(&seat(aib_store::ARCHIVED), &[ended(Some("shutdown"))]),
             None
         );
+    }
+
+    /// What a rejoin lets go is read from the session's last stop: each unreadable candidate
+    /// with the start the stop read (519d0 11-18 23:04), `{session_id, pid, comm, started}`;
+    /// one without a start, or a session whose stop said nothing, gives none.
+    #[test]
+    fn the_processes_let_go_come_from_the_last_stop_with_their_start() {
+        let ev = |seq: i64, kind: &str, payload: serde_json::Value| aib_store::StoredEvent {
+            global_seq: seq,
+            event_id: format!("ev_{seq}"),
+            aggregate_type: "session".into(),
+            aggregate_id: "s_1".into(),
+            sequence: seq,
+            event_type: kind.into(),
+            schema_version: 1,
+            correlation_id: None,
+            occurred_at: String::new(),
+            payload,
+        };
+        let evs = [
+            ev(1, "session.started", serde_json::json!({})),
+            ev(
+                2,
+                "session.stop_unconfirmed",
+                serde_json::json!({"candidates": {"unreadable": [
+                    {"pid": 1, "comm": "old", "started": 100}]}}),
+            ),
+            ev(
+                3,
+                "session.stop_unconfirmed",
+                serde_json::json!({"candidates": {"unreadable": [
+                    {"pid": 12492, "comm": "PlugInLibraryService", "started": 1_794_990_000},
+                    {"pid": 7, "comm": "unread"}]}}),
+            ),
+            ev(4, "session.interrupted", serde_json::json!({})),
+        ];
+        assert_eq!(
+            older_processes("s_1", &evs),
+            vec![serde_json::json!({"session_id": "s_1", "pid": 12492,
+                "comm": "PlugInLibraryService", "started": 1_794_990_000})]
+        );
+        assert!(older_processes("s_1", &evs[..1]).is_empty());
     }
 
     /// Resume only a conversation claude kept a file for; a seat that never had a turn starts

@@ -1,0 +1,25 @@
+[package]
+name = "aib-receipt-gate"
+description = "The only program aibd's delegate key runs on a test machine (authorized_keys restrict,command=): reads SSH_ORIGINAL_COMMAND as plain words, serves run / status / fetch / cancel of one receipt. No shell; sha2 and (unix) libc are its dependencies (DESIGN-receipt-gate-a9136-1120)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-receipt-gate"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10.9"
+
+# run.rs keep_out: O_NOFOLLOW for the one file the gate reads that the tested code wrote
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -22,14 +22,14 @@ use std::thread::JoinHandle;
 pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
 pub use idem::{IdemClaim, IN_PROGRESS};
 pub use messages::{
-    Inserted, MessageDb, MessageFact, MessageRow, UnreadRow, Updated, BODY_KEEP_DAYS,
-    MESSAGES_FILE, MESSAGES_SCHEMA, PAGE_MAX,
+    Inserted, MessageDb, MessageFact, MessageRow, UnreadRow, Updated, BODY_KEEP_DAYS, IMPORTED_MAX,
+    MESSAGES_FILE, MESSAGES_SCHEMA, PAGE_MAX, PERSON_WORDS,
 };
 pub use migrate::{Migration, MIGRATIONS};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
-pub use sessions::{SessionRow, ENDED_BY_RESTART};
-pub use threads::{Member, Opened, ThreadRow, CATEGORIES};
+pub use sessions::{seat_sessions_running_at, SessionRow, ENDED_BY_RESTART};
+pub use threads::{Member, Opened, ThreadHit, ThreadRow, CATEGORIES, SEARCH_MAX};
 pub use workspace::{
     Added, AssignRow, NodeRow, NodeSet, WorkspaceDb, ASSIGN_PER_NODE_MAX, WORKSPACE_FILE,
     WORKSPACE_SCHEMA,
@@ -188,6 +188,36 @@ impl Store {
              FROM events WHERE global_seq > ?1 ORDER BY global_seq LIMIT ?2",
         )?;
         let rows = st.query_map(params![cursor, limit], |r| {
+            let payload: String = r.get(9)?;
+            Ok(StoredEvent {
+                global_seq: r.get(0)?,
+                event_id: r.get(1)?,
+                aggregate_type: r.get(2)?,
+                aggregate_id: r.get(3)?,
+                sequence: r.get(4)?,
+                event_type: r.get(5)?,
+                schema_version: r.get(6)?,
+                correlation_id: r.get(7)?,
+                occurred_at: r.get(8)?,
+                payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The last `limit` events of the given types, oldest first (N-ws-dismiss-persist: the
+    /// slots' dismissals replayed at start). No index on `type`: one scan, at start only.
+    pub fn events_of_types(&self, types: &[&str], limit: u32) -> Result<Vec<StoredEvent>> {
+        let c = self.read()?;
+        let list = serde_json::to_string(types).unwrap_or_else(|_| "[]".into());
+        let mut st = c.prepare(
+            "SELECT global_seq, event_id, aggregate_type, aggregate_id, sequence, type,
+                    schema_version, correlation_id, occurred_at, payload
+             FROM (SELECT * FROM events WHERE type IN (SELECT value FROM json_each(?1))
+                   ORDER BY global_seq DESC LIMIT ?2)
+             ORDER BY global_seq",
+        )?;
+        let rows = st.query_map(params![list, limit], |r| {
             let payload: String = r.get(9)?;
             Ok(StoredEvent {
                 global_seq: r.get(0)?,

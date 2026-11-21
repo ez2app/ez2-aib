@@ -95,6 +95,6 @@ gl 'let words = crate::workspace::gives_words(&c).await;' \
    'let words = { let _ = &c; true };' \
    only_a_built_in_page_paired_now
 # RS3 slot_restore skips the page checks
-gs 'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE)) => {' \
-   'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS)) => {' \
+gs 'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {' \
+   'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {' \
    only_a_built_in_page_paired_now

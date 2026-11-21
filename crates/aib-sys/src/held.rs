@@ -61,13 +61,28 @@ const CANCEL: u8 = 0;
 /// start a held spawn itself.
 static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// For a process that forks at all (short commands too, which do not come through
+/// [`spawn_held`]): call once at start, before its timers and readings begin. After it no
+/// child of this process can die in `fork` on libnotify's one-time start (5d33a
+/// PREREAD-heldfork L2). [`spawn_held`] calls it itself.
+pub fn fork_ready() {
+    crate::thermal_macos::notify_started();
+}
+
 /// Spawn `cmd` held before `exec`; `on_held(pid)` runs while it is held, and
 /// the program starts when it returns. `None` = no child was ever held
 /// (nothing ran `on_held`); the spawn error, if any, is the `Err`.
+///
+/// `Ok` with `None` is a child that died before it handed its pid over (killed, or
+/// aborted inside `fork`): `std` saw its status pipe close with no error and reports a
+/// started child. It never exec'd; the caller's `wait` gets its signal.
 pub fn spawn_held<R>(
     cmd: &mut Command,
     on_held: impl FnOnce(u32) -> R,
 ) -> std::io::Result<(Child, Option<R>)> {
+    // no fork while libnotify's one-time start may be under way in another thread: the
+    // child would die in `fork` itself, before the hook (5d33a PREREAD-heldfork L1)
+    fork_ready();
     // a panic in an earlier on_held poisons it; the () behind it has no state
     let _one_at_a_time = SPAWNING
         .lock()
@@ -242,8 +257,14 @@ mod tests {
     /// [`HOLD_LIMIT`] + 700 ms holds in the past-the-limit test). Run side by side
     /// under the test harness, another test then waited past its own 10 s bound
     /// for `on_held` (CI run 43702097334). Each test's bounds are about itself.
+    ///
+    /// And no fork before libnotify's one-time start is over (7ebca 11-21): a child forked
+    /// while another test's thread is inside it dies in `fork` itself, before the hook, and
+    /// `std` then reports a started child that was never held (3 held tests red that way,
+    /// lin 6f1cb-so50). That is the child's death, not a program let run: nothing execs.
     fn one_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
         static TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        crate::thermal_macos::notify_started();
         // a test that failed while holding it poisons it; the () has no state
         TESTS
             .lock()

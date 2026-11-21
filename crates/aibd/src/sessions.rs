@@ -81,7 +81,7 @@ pub const RESCAN_PASS_TIMEOUT: &str = "rescan_pass_timeout";
 /// The only stop reasons worth re-checking (a63ab 05:42, DECIDED #9): what
 /// another pass can change. `lineage_unavailable`, `root_identity_lost`,
 /// `job_error:*`… come out the same every time (bb7dc #546 (3)).
-pub const RESCAN_REASONS: &[&str] = &["candidates_unreadable"];
+pub const RESCAN_REASONS: &[&str] = &["candidates_unreadable", "candidates_unreadable_older"];
 
 fn worth_rescanning(stop: &Stop) -> bool {
     stop.survivors.is_empty()
@@ -468,15 +468,150 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             return Err(Refusal {
                 error: ApiError::new(
                     ErrorCode::ProgramNotAllowed,
-                    format!("codex version not measured for aibd (0.167.x only): {said}"),
+                    format!("codex version not measured for aibd (0.167.x only): {said} (codex_version)"),
                 ),
                 program: name(&real),
             });
         }
     }
+    // N-codex-user-mcp (7ebca 11-20): a codex seat loads no MCP server of the user's own (a
+    // server is a program codex starts outside the seat's sandbox, its tools the seat's): codex
+    // lists them with the seat's own flags, in the seat's folder, and each one on but aibd's is
+    // turned off; a list not read starts nothing. A work seat's folder is always trusted by
+    // codex: its thread/start under workspace-write writes `[projects."<folder>"] trust_level =
+    // "trusted"` into the user's ~/.codex/config.toml itself (a -c cannot stop it, it writes the
+    // file; never cleared when the seat closes), so the folder's .codex/config.toml is read: this
+    // list sees it, and the seat's sandbox cannot write .codex/ (MEASURE-codex-folder-config r1,
+    // 519d0 07:58 a: documented, not changed; aibd does not edit the user's codex settings)
+    if crate::codex_wire::is_codex(&real)
+        && req.argv.get(1).map(String::as_str) == Some("app-server")
+    {
+        // 0eed7 VERIFY-codexcfg-65be8029: the list and the settings folder are read with the
+        // environment the seat's codex runs with (a preview's seat HOME), not aibd's own
+        let env = codex_list_env(&req, p, std::env::vars_os());
+        let var = |k: &str| {
+            env.iter()
+                .find(|(n, _)| allowlist::env_name_eq(&n.to_string_lossy(), k))
+                .map(|(_, v)| std::path::PathBuf::from(v))
+                .filter(|v| v.is_absolute())
+        };
+        // MEASURE-codex-folder-config r2: a project's .codex is merged under aibd's -c
+        let codex_home = var("CODEX_HOME").or_else(|| {
+            var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| h.join(".codex"))
+        });
+        if let Some(found) = req
+            .cwd
+            .as_deref()
+            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))
+        {
+            return Err(Refusal {
+                error: ApiError::new(
+                    ErrorCode::ProgramNotAllowed,
+                    format!(
+                        "codex seat not started: the folder has codex project settings ({}): codex would merge them under the seat's own (codex_folder_settings)",
+                        found.display()
+                    ),
+                ),
+                program: name(&real),
+            });
+        }
+        let flags = crate::codex_wire::without_ours(&req.argv[2..]);
+        let listed = codex_mcp_listed(&real, &flags, req.cwd.as_deref(), &env);
+        match crate::codex_wire::mcp_off(&listed) {
+            Ok(off) => req.argv.extend(off),
+            Err(code) => {
+                return Err(Refusal {
+                    error: ApiError::new(
+                        ErrorCode::ProgramNotAllowed,
+                        format!("codex seat not started: its MCP servers could not all be turned off ({code})"),
+                    ),
+                    program: name(&real),
+                })
+            }
+        }
+    }
     req.argv[0] = real;
     Ok(req)
 }
+
+/// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
+/// than [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a codex stuck on a login or a version
+/// check would hold the seat's start; the list not read, the seat does not start).
+fn codex_mcp_listed(
+    real: &str,
+    flags: &[String],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> String {
+    let mut c = std::process::Command::new(real);
+    c.env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .args(flags)
+        .args(["mcp", "list", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(d) = cwd {
+        c.current_dir(d);
+    }
+    let Ok(mut child) = c.spawn() else {
+        return String::new();
+    };
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return String::new();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("aibd-codex-mcp-list".into())
+        .spawn(move || {
+            let mut b = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut b);
+            let _ = tx.send(b);
+        });
+    // one wake-up for the answer or at the end of a start request's bound: not a periodic
+    // timer (ADR 0005 named exception, as `sessions::wait_timeout`)
+    #[allow(clippy::disallowed_methods)]
+    let got = rx.recv_timeout(MCP_LIST_WAIT);
+    match got {
+        Ok(b) if child.wait().is_ok_and(|s| s.success()) => {
+            String::from_utf8_lossy(&b).into_owned()
+        }
+        Ok(_) => String::new(),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            String::new()
+        }
+    }
+}
+
+/// The environment `codex mcp list` runs with: the one the seat's own codex gets
+/// ([`crate::platform::session::child_env`]: aibd's inherited names, the request's env, a
+/// preview's seat HOME), without the `AIBD_SESSION` marker (the list is not the session).
+fn codex_list_env(
+    req: &Request,
+    p: &SessionPolicy,
+    parent: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let spec = Spec {
+        id: String::new(),
+        argv: Vec::new(),
+        cwd: std::path::PathBuf::new(),
+        env: req.env.clone(),
+        pass: without(p.env.clone(), &req.withhold),
+        input: false,
+    };
+    let mut env = crate::platform::session::child_env(&spec, parent);
+    env.retain(|(k, _)| {
+        !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)
+    });
+    env
+}
+
+/// How long a codex seat's start waits for `codex mcp list` (5d33a L1).
+pub const MCP_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct Entry {
     rec: Session,
@@ -889,6 +1024,23 @@ impl Sessions {
         live_seats_of(&lock(&self.inner))
     }
 
+    /// Seats that are running or on their way to it: a live session (any state still in
+    /// `live`), a start being spawned, a session waiting in the queue (0eed7 VERIFY-turnfail r2
+    /// 2: a seat just opened is not said to be not running).
+    pub fn seats_up(&self) -> Vec<String> {
+        let g = lock(&self.inner);
+        let mut v: Vec<String> = g
+            .live
+            .values()
+            .filter_map(|e| e.rec.seat_id.clone())
+            .chain(g.starting.iter().cloned())
+            .chain(g.queue.iter().filter_map(|q| q.rec.seat_id.clone()))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// The M1 policy the queue re-checks a waiting session against when it
     /// leaves the queue (the same one the POST gate used).
     pub fn set_policy(&self, p: Arc<SessionPolicy>) {
@@ -1004,6 +1156,17 @@ impl Sessions {
     /// Whether `seat_id` is in a turn now (a text was written, its result not printed yet).
     pub fn in_turn(&self, seat_id: &str) -> bool {
         self.turns.in_turn(seat_id)
+    }
+
+    /// 1a93b seat_clear: when a text was last written to the seat in this run (`None`: not
+    /// since aibd started).
+    pub fn last_input_at(&self, seat_id: &str) -> Option<String> {
+        self.turns.last_began(seat_id)
+    }
+
+    /// c44: the seat's turn under way (when it began, when its model last put anything out).
+    pub fn turn_of(&self, seat_id: &str) -> Option<crate::turns::Turn> {
+        self.turns.turn_of(seat_id)
     }
 
     /// The write runs on its own thread: a provider that stops reading fills the pipe and blocks
@@ -1127,6 +1290,17 @@ impl Sessions {
                 });
             }
         }
+    }
+
+    /// The seats whose session waits for a slot, with its place (1 = next) (519d0 自測 r3 M3:
+    /// the page said nothing about a fifth seat waiting).
+    pub fn queued_seats(&self) -> Vec<(String, usize)> {
+        let g = lock(&self.inner);
+        g.queue
+            .iter()
+            .enumerate()
+            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))
+            .collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Session> {
@@ -1352,6 +1526,9 @@ impl Sessions {
                     // the slot is free again: the next waiting one may start
                     self.kick(&mut g);
                 }
+                if let Some(sid) = &seat_id {
+                    crate::reply_back::failed(sid, &format!("這一席起不來:{}", f.tag));
+                }
                 let mut payload = serde_json::json!({"id": id, "tag": f.tag});
                 if let Some(pid) = f.left_running {
                     payload["left_running"] = pid.into();
@@ -1492,11 +1669,29 @@ impl Sessions {
                 let codex = pipe.as_ref().and_then(|p| p.codex.clone());
                 Box::new(move |line: &[u8], cut: bool| match &codex {
                     None => {
-                        if crate::turns::ends_turn(line, cut) && turns.ended(&seat) {
-                            wake(&tx);
+                        // c44: Claude prints an init line of its own at each turn's start;
+                        // only the model's lines are its output
+                        if crate::turns::claude_speaks(line, cut) {
+                            turns.output(&seat, &now_rfc3339());
+                        }
+                        // W1 condition 6: a work seat's file changes and commands
+                        crate::work_audit::heard(&seat, line, cut);
+                        if crate::turns::ends_turn(line, cut) {
+                            // G13: the answer goes back to the conversation that called it
+                            if !cut {
+                                crate::reply_back::heard(&seat, line);
+                            }
+                            if turns.ended(&seat) {
+                                wake(&tx);
+                            }
                         }
                     }
                     Some(c) => {
+                        // c44: codex prints lines of its own after a turn/start; only the
+                        // model's items are its output
+                        if crate::turns::codex_speaks(line, cut) {
+                            turns.output(&seat, &now_rfc3339());
+                        }
                         let h = c.heard(line, cut);
                         if let (Some(r), Some(p)) = (&h.reply, &pipe) {
                             // codex asked aibd something: answered "no" at once
@@ -1684,6 +1879,9 @@ impl Sessions {
         rec.ended_by = Some("policy_refused");
         let id = rec.id.clone();
         tracing::warn!(session = %id, code = code.as_str(), "queued session refused by the M1 gate at start");
+        if let Some(seat) = rec.seat_id.as_deref() {
+            crate::reply_back::failed(seat, &format!("這一席起不來:{}", code.as_str()));
+        }
         self.write(
             &rec,
             q.seq,
@@ -1813,6 +2011,13 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        // G13: a turn from a conversation that this end left unanswered says so there
+        if let Some(seat) = rec.seat_id.as_deref() {
+            crate::reply_back::failed(
+                seat,
+                &crate::reply_back::ended_why(rec.state, rec.exit_code),
+            );
+        }
         let back = self
             .rejoined
             .lock()
@@ -2803,6 +3008,90 @@ pub fn rejoin_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 5d33a PREREAD-codexmcp L1: a list that never ends is cut at MCP_LIST_WAIT and read as
+    /// nothing; a list that ends is what it printed.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_mcp_list_that_hangs_is_cut_and_read_as_nothing() {
+        let f = |c: &str| vec!["-c".to_owned(), c.to_owned()];
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &f("echo '[]'"), None, &[]).trim(),
+            "[]"
+        );
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &f("echo '[]'; exit 3"), None, &[]),
+            ""
+        );
+        // 0eed7 VERIFY-codexcfg-65be8029: only the environment it is given, none of aibd's
+        let home = f(r#"echo "[\"${HOME-unset}\"]""#);
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &home, None, &[]).trim(),
+            r#"["unset"]"#,
+            "reason: aibds_env_leaked"
+        );
+        let given = [(
+            std::ffi::OsString::from("HOME"),
+            std::ffi::OsString::from("/x"),
+        )];
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &home, None, &given).trim(),
+            r#"["/x"]"#
+        );
+        let t = std::time::Instant::now();
+        assert_eq!(codex_mcp_listed("/bin/sh", &f("sleep 40"), None, &[]), "");
+        assert!(
+            t.elapsed() < MCP_LIST_WAIT + std::time::Duration::from_secs(8),
+            "reason: list_not_cut {:?}",
+            t.elapsed()
+        );
+    }
+
+    /// 0eed7 VERIFY-codexcfg-65be8029: in a preview the list runs with the seat's HOME (the
+    /// one its codex logs in with), never aibd's own empty one, and without the session marker
+    /// or a name the seat would not get.
+    #[test]
+    fn a_codex_list_runs_with_the_seats_own_environment() {
+        let os = |k: &str, v: &str| (std::ffi::OsString::from(k), std::ffi::OsString::from(v));
+        // absolute on each platform (a preview hands over only an absolute seat HOME)
+        let real = if cfg!(windows) {
+            r"C:\real\home"
+        } else {
+            "/real/home"
+        };
+        let parent = vec![
+            os("HOME", "/preview/empty"),
+            os("USERPROFILE", "/preview/empty"),
+            os("PATH", "/usr/bin:/bin"),
+            os("AIBD_PREVIEW", "1"),
+            os(crate::platform::session::SEAT_HOME_ENV, real),
+            os(crate::platform::session::SESSION_ENV, "s_x"),
+            os("SECRET_TOKEN", "v-SECRET"),
+            os("MY_VAR", "passed"),
+        ];
+        let env = codex_list_env(&req(TRUE_ABS, &[("CODEX_X", "1")]), &policy(), parent);
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        assert_eq!(
+            get(home).as_deref(),
+            Some(real),
+            "reason: aibds_home {env:?}"
+        );
+        assert_eq!(get("CODEX_X").as_deref(), Some("1"), "{env:?}");
+        assert_eq!(get("MY_VAR").as_deref(), Some("passed"), "{env:?}");
+        assert!(
+            get("SECRET_TOKEN").is_none(),
+            "reason: secret_passed {env:?}"
+        );
+        assert!(
+            get(crate::platform::session::SESSION_ENV).is_none(),
+            "reason: list_marked_as_session {env:?}"
+        );
+    }
 
     /// S89-state (5d33a 853ee100 L2): an unreadable seat list is not an empty one.
     #[test]

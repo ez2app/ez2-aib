@@ -73,31 +73,164 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
 
 // ---------------------------------------------------------------- version
 
-/// The `GET /api/v1/version` answer.
-pub fn version_body(dgrs_input: bool) -> Value {
-    let providers: Vec<Value> = aib_seatopen::PROVIDERS
+/// Whether a seat of this brand can open on this machine, and if not why: aibd drives it
+/// (`not_built`), the session policy lists a program for it (`not_set_up`), and that program
+/// is there (`not_installed`). Only the code: never the path the policy names.
+pub fn brand_ready(
+    brand: &str,
+    policy: &crate::allowlist::SessionPolicy,
+) -> Result<(), &'static str> {
+    if !aib_seatopen::PIPE_PROVIDERS.contains(&brand) {
+        return Err("not_built");
+    }
+    let p = policy
+        .programs
+        .iter()
+        .find(|p| p.name == brand)
+        .ok_or("not_set_up")?;
+    if p.path.is_file() {
+        Ok(())
+    } else {
+        Err("not_installed")
+    }
+}
+
+/// The `GET /api/v1/version` answer. Brands: AIB 2.0's only (§22), each with whether it
+/// opens here and in which modes; the 1.x names of this machine's old set-up are not listed.
+/// 519d0 11-19 05:0x / 0eed7 VERIFY-brandhome M1: a brand whose program is there but has no
+/// login under the HOME its seats get answers `not_logged_in` (the page has the words). Only
+/// whether the login file is there is looked at, never what is in it; Claude on macOS keeps
+/// the token in the keychain, so `~/.claude.json` naming an account counts (its key only).
+pub fn logged_in(
+    brand: &str,
+    home: &std::path::Path,
+    codex_home: Option<&std::path::Path>,
+) -> bool {
+    match brand {
+        "claude" => {
+            home.join(".claude").join(".credentials.json").is_file()
+                || std::fs::read(home.join(".claude.json"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .is_some_and(|v| v.get("oauthAccount").is_some_and(Value::is_object))
+        }
+        "codex" => codex_home
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| home.join(".codex"))
+            .join("auth.json")
+            .is_file(),
+        _ => true,
+    }
+}
+
+/// The HOME a seat's provider runs with: the real one handed over inside a preview
+/// ([`crate::platform::session::SEAT_HOME_ENV`]), else this aibd's own.
+pub fn seat_login_home() -> Option<std::path::PathBuf> {
+    let handed = crate::preview::is_preview()
+        .then(|| std::env::var(crate::platform::session::SEAT_HOME_ENV).ok())
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute());
+    handed.or_else(|| crate::seats::home_dir(|k| std::env::var(k).ok()))
+}
+
+fn login_now(brand: &str) -> bool {
+    let codex_home = std::env::var("CODEX_HOME")
+        .ok()
+        .map(std::path::PathBuf::from);
+    seat_login_home().is_some_and(|h| logged_in(brand, &h, codex_home.as_deref()))
+}
+
+pub fn version_body(dgrs_input: bool, policy: &crate::allowlist::SessionPolicy) -> Value {
+    let mut v = version_body_with(dgrs_input, policy, &login_now);
+    let note = login_home_note(
+        crate::preview::is_preview(),
+        std::env::var(crate::platform::session::SEAT_HOME_ENV)
+            .ok()
+            .as_deref(),
+    );
+    note_login_home(&mut v, &note);
+    v
+}
+
+/// 519d0 N-pv-agree-drive (Andy at 47790): whose HOME a `not_logged_in` is about. Inside a
+/// preview the seats get the handed real HOME (`handed`); otherwise this aibd's own HOME
+/// (`own`), and an `AIBD_SEAT_HOME` it was started with is not used (`seat_home_ignored`), so
+/// the page can say "this aibd's own HOME has no login" rather than "this machine".
+pub fn login_home_note(preview: bool, seat_home: Option<&str>) -> Value {
+    let given = seat_home.is_some_and(|h| std::path::Path::new(h).is_absolute());
+    json!({
+        "login_home": if preview && given { "handed" } else { "own" },
+        "seat_home_ignored": !preview && seat_home.is_some(),
+    })
+}
+
+/// Adds [`login_home_note`] to every provider row that says `not_logged_in`.
+pub fn note_login_home(v: &mut Value, note: &Value) {
+    let Some(rows) = v["capabilities"]["providers"].as_array_mut() else {
+        return;
+    };
+    for r in rows.iter_mut().filter(|r| r["reason"] == "not_logged_in") {
+        for k in ["login_home", "seat_home_ignored"] {
+            r[k] = note[k].clone();
+        }
+    }
+}
+
+pub fn version_body_with(
+    dgrs_input: bool,
+    policy: &crate::allowlist::SessionPolicy,
+    login: &dyn Fn(&str) -> bool,
+) -> Value {
+    let providers: Vec<Value> = aib_seatopen::AIB2_BRANDS
         .iter()
         .map(|p| {
             // S89-live-2: and in which modes (codex: safe only)
             let modes = aib_seatopen::pipe_modes(p);
-            json!({"id": p, "open": aib_seatopen::PIPE_PROVIDERS.contains(p), "modes": modes})
+            match brand_ready(p, policy).and_then(|()| {
+                if login(p) {
+                    Ok(())
+                } else {
+                    Err("not_logged_in")
+                }
+            }) {
+                Ok(()) => json!({"id": p, "open": true, "modes": modes}),
+                Err(why) => json!({"id": p, "open": false, "modes": modes, "reason": why}),
+            }
         })
         .collect();
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "api_version": crate::api::API_VERSION,
+        "preview": crate::preview::is_preview(),
+        "preview_name": crate::preview::preview_name(),
         "capabilities": {
             "providers": providers,
-            "modes": aib_seatopen::MODES,
+            "modes": aib_seatopen::SEAT_MODES,
             // which modes a page may type into (seat_input / message_send)
-            "input_modes": if dgrs_input { json!(["safe", "dgrs"]) } else { json!(["safe"]) },
+            "input_modes": if dgrs_input { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) },
             "routes": crate::guard::ROUTES,
+            // 1a93b GAP §8: the act types a confirmed page may send (crate::seat_input::PAGE_ACTS)
+            "acts": crate::seat_input::PAGE_ACTS,
         },
+        // 519d0 11-21 06:45 point 1: what an open that names no model runs on, per brand
+        "default_models": crate::default_model::now(),
+        // N-workspace-c3: times are shown in this zone, not the machine's (043dd: display_tz)
+        "display_tz": crate::display::display_tz(),
     })
 }
 
-pub async fn version() -> Response {
-    Json(version_body(crate::seat_input::dgrs_input_on())).into_response()
+pub async fn version(State(st): State<AppState>) -> Response {
+    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.session_policy);
+    // N-web-worktree: the registered repos a dgrs seat may be opened with, names only
+    let p = st.sessions.private_dir();
+    body["repos"] = Value::Array(crate::repos::names(p.parent().unwrap_or(p)));
+    // 043dd 9ea086eb81: the seat modes a repo may be given to
+    body["repo_modes"] = json!(crate::repos::REPO_MODES);
+    // 043dd (519d0 自測 r3 M3): sessions running at once, so the page says a new seat will
+    // queue before it is opened
+    body["max_sessions"] = json!(st.sessions.max_running());
+    Json(body).into_response()
 }
 
 // ---------------------------------------------------------------- personas
@@ -308,7 +441,16 @@ fn node_view(n: &Value, order: usize, with_need: bool) -> Value {
             .cloned()
             .unwrap_or_else(|| json!([])),
     );
+    // SPEC-workspace-multiseat §23-1: 「要靠誰」, the ids aib-plan set --needs wrote (only text)
+    let needs: Vec<&str> = n
+        .get("needs")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    o.insert("needs".into(), json!(needs));
     o.insert("order".into(), json!(order));
+    // N-workspace-c3: the display station and its tag come from aibd (one copy of the rules)
+    crate::display::add_to(&mut o, n);
     let need = str_of(n, "need").map(|s| {
         if with_need {
             json!(s)
@@ -725,8 +867,14 @@ pub fn card(tree: &Value, id: &str, words: bool) -> Option<Map<String, Value>> {
         .iter()
         .take(CHILDREN_MAX)
         .map(|k| {
-            json!({"id": str_of(k, "id"), "title": str_of(k, "title"), "owner": str_of(k, "owner"),
-                   "station": k.get("status").cloned().unwrap_or(Value::Null)})
+            let mut c = Map::new();
+            c.insert("id".into(), json!(str_of(k, "id")));
+            c.insert("title".into(), json!(str_of(k, "title")));
+            c.insert("owner".into(), json!(str_of(k, "owner")));
+            let station = k.get("status").cloned().unwrap_or(Value::Null);
+            c.insert("station".into(), station);
+            crate::display::add_to(&mut c, k);
+            Value::Object(c)
         })
         .collect();
     o.insert("children".into(), json!(children));
@@ -745,6 +893,19 @@ pub async fn node(Extension(c): Extension<Caller>, UrlPath(id): UrlPath<String>)
                 .map(|mut n| {
                     if let (Value::Object(m), Some(more)) = (&mut n, card(&t, &id, words)) {
                         m.extend(more);
+                        // the ideas that went through on their own (519d0 11-19 09:20 §3)
+                        let ideas = crate::consent_cards::node_ideas_now(&id, words);
+                        if !ideas.is_empty() {
+                            let n_ideas = ideas.len();
+                            if let Some(Value::Array(r)) = m.get_mut("records") {
+                                let mut all = ideas;
+                                all.append(r);
+                                *r = all;
+                            }
+                            if let Some(t) = m.get("records_total").and_then(Value::as_u64) {
+                                m.insert("records_total".into(), json!(t + n_ideas as u64));
+                            }
+                        }
                     }
                     n
                 });
@@ -1032,6 +1193,27 @@ mod tests {
         assert_eq!(n["need"], "無條件");
     }
 
+    /// N-workspace-c3 + N-pv-needs: GET nodes / tree give the display station, its tag and the
+    /// 「要靠誰」 ids from aibd (the page and stations-gen do not work them out).
+    #[test]
+    fn a_node_carries_its_display_station_tag_and_needs() {
+        let tree = json!({"nodes": [
+            {"id": "A", "parent": null, "status": "實查不通過", "needs": ["B", 7, "C"]},
+            {"id": "B", "parent": "A", "status": "未驗", "verify_fail": {"sev": "H"}},
+            {"id": "C", "parent": "A", "status": "未驗", "verify_fail": {"sev": "H", "closed": true}}
+        ]});
+        let v = select(&tree, None, None, true).unwrap();
+        assert_eq!(v[0]["display_station"], "開發中");
+        assert_eq!(v[0]["tag"]["text"], "實查不通過");
+        assert_eq!(v[0]["station"], "實查不通過", "reason: station_rewritten");
+        assert_eq!(v[0]["needs"], json!(["B", "C"]), "reason: needs_lost");
+        assert_eq!(v[1]["display_station"], "未驗");
+        assert_eq!(v[1]["tag"]["text"], "驗不通過");
+        assert_eq!(v[1]["broken"], true);
+        assert_eq!(v[2]["tag"], Value::Null, "reason: closed_fail_tagged");
+        assert_eq!(v[2]["needs"], json!([]));
+    }
+
     #[test]
     fn a_tree_file_becomes_rows_once_per_id_and_reads_back_alike() {
         let (rows, dropped) = import_rows(&t(), "now");
@@ -1125,24 +1307,151 @@ mod tests {
         assert!(d.total > 0 && d.available <= d.total);
     }
 
+    fn policy_with(programs: &[(&str, std::path::PathBuf)]) -> crate::allowlist::SessionPolicy {
+        crate::allowlist::SessionPolicy {
+            programs: programs
+                .iter()
+                .map(|(n, p)| crate::allowlist::Program {
+                    name: (*n).to_owned(),
+                    path: p.clone(),
+                    signer: None,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn version_names_what_opens_and_what_a_page_types_into() {
-        let v = version_body(false);
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, b"").unwrap();
+        // codex listed where nothing is (a Windows-shaped name too: only is_file decides)
+        let pol = policy_with(&[
+            ("claude", claude),
+            ("codex", dir.path().join("bin").join("codex.exe")),
+        ]);
+        let v = version_body_with(false, &pol, &|_| true);
         let ps = v["capabilities"]["providers"].as_array().unwrap();
-        assert!(ps.contains(&json!({"id": "claude", "open": true, "modes": ["dgrs", "safe"]})));
-        assert!(
-            ps.contains(&json!({"id": "codex", "open": true, "modes": ["safe"]})),
-            "reason: codex_not_offered {ps:?}"
-        );
-        assert!(ps.contains(&json!({"id": "grok", "open": false, "modes": []})));
-        assert_eq!(v["capabilities"]["input_modes"], json!(["safe"]));
         assert_eq!(
-            version_body(true)["capabilities"]["input_modes"],
-            json!(["safe", "dgrs"])
+            ps,
+            &vec![
+                json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
+                json!({"id": "codex", "open": false, "modes": aib_seatopen::pipe_modes("codex"), "reason": "not_installed"}),
+            ],
+            "reason: brands_are_aib2_only_each_ready_or_why"
+        );
+        assert!(
+            !v.to_string().contains(&dir.path().display().to_string()),
+            "reason: version_names_a_path"
+        );
+        assert_eq!(v["capabilities"]["input_modes"], json!(["safe", "work"]));
+        let acts = v["capabilities"]["acts"]
+            .as_array()
+            .expect("reason: version_has_no_acts");
+        for a in ["seat_input", "node_set", "seat_send_back", "receipt_list"] {
+            assert!(acts.iter().any(|x| x == a), "reason: act_not_listed {a}");
+        }
+        assert_eq!(
+            acts.len(),
+            crate::seat_input::PAGE_ACTS.len(),
+            "reason: acts_not_the_list"
+        );
+        assert_eq!(
+            version_body_with(true, &pol, &|_| true)["capabilities"]["input_modes"],
+            json!(["safe", "work", "dgrs"])
         );
         assert!(v["capabilities"]["routes"]
             .as_array()
             .unwrap()
             .contains(&json!(crate::guard::TREE)));
+    }
+
+    #[test]
+    fn the_old_set_ups_names_are_never_brands() {
+        let v = version_body_with(false, &policy_with(&[]), &|_| true);
+        let ids: Vec<&str> = v["capabilities"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["claude", "codex"], "reason: brands_not_aib2_only");
+        for old in [
+            "openrouterjev",
+            "typesafe",
+            "nvidia",
+            "openrouter",
+            "deepseek",
+            "copilot",
+            "musebot",
+        ] {
+            assert!(!v.to_string().contains(old), "reason: old_name_shown {old}");
+        }
+        // nothing listed for them here: not set up
+        assert_eq!(brand_ready("claude", &policy_with(&[])), Err("not_set_up"));
+        assert_eq!(brand_ready("grok", &policy_with(&[])), Err("not_built"));
+    }
+
+    #[test]
+    fn a_brand_without_a_login_under_the_seat_home_is_not_logged_in() {
+        let h = tempfile::tempdir().unwrap();
+        assert!(!logged_in("claude", h.path(), None));
+        assert!(!logged_in("codex", h.path(), None));
+        // claude: the account named in ~/.claude.json (macOS keychain) or the credentials file
+        std::fs::write(
+            h.path().join(".claude.json"),
+            br#"{"oauthAccount": {"x": 1}}"#,
+        )
+        .unwrap();
+        assert!(logged_in("claude", h.path(), None));
+        std::fs::write(h.path().join(".claude.json"), br#"{"oauthAccount": null}"#).unwrap();
+        assert!(!logged_in("claude", h.path(), None));
+        std::fs::create_dir(h.path().join(".claude")).unwrap();
+        std::fs::write(h.path().join(".claude").join(".credentials.json"), b"{}").unwrap();
+        assert!(logged_in("claude", h.path(), None));
+        // codex: auth.json under ~/.codex, or under CODEX_HOME when that is set
+        std::fs::create_dir(h.path().join(".codex")).unwrap();
+        std::fs::write(h.path().join(".codex").join("auth.json"), b"{}").unwrap();
+        assert!(logged_in("codex", h.path(), None));
+        let other = tempfile::tempdir().unwrap();
+        assert!(!logged_in("codex", h.path(), Some(other.path())));
+        // the version answer says so
+        let prog = h.path().join("claude");
+        std::fs::write(&prog, b"").unwrap();
+        let v = version_body_with(false, &policy_with(&[("claude", prog)]), &|_| false);
+        assert_eq!(v["capabilities"]["providers"][0]["reason"], "not_logged_in");
+    }
+
+    /// 519d0 N-pv-agree-drive: a not_logged_in says whose HOME it looked in, and that a
+    /// hand-started (not preview) aibd does not use the AIBD_SEAT_HOME it was given.
+    #[test]
+    fn a_missing_login_says_whose_home_and_an_ignored_seat_home() {
+        // an absolute path in this platform's shape: `/real` has no drive, so on Windows
+        // `Path::is_absolute` says no and the handed HOME would read as not given
+        let real = if cfg!(windows) { r"C:\real" } else { "/real" };
+        let n = login_home_note(false, Some(real));
+        assert_eq!(n["login_home"], "own", "reason: not_preview_handed");
+        assert_eq!(n["seat_home_ignored"], true, "reason: ignored_not_said");
+        let n = login_home_note(true, Some(real));
+        assert_eq!(n["login_home"], "handed");
+        assert_eq!(n["seat_home_ignored"], false);
+        let n = login_home_note(true, Some("rel"));
+        assert_eq!(n["login_home"], "own", "reason: relative_home_taken");
+        let n = login_home_note(false, None);
+        assert_eq!(n["seat_home_ignored"], false);
+        let mut v = json!({"capabilities": {"providers": [
+            {"id": "claude", "open": false, "reason": "not_logged_in"},
+            {"id": "codex", "open": true}
+        ]}});
+        note_login_home(&mut v, &login_home_note(false, Some(real)));
+        assert_eq!(v["capabilities"]["providers"][0]["login_home"], "own");
+        assert_eq!(v["capabilities"]["providers"][0]["seat_home_ignored"], true);
+        assert!(
+            v["capabilities"]["providers"][1]
+                .get("login_home")
+                .is_none(),
+            "reason: open_row_noted"
+        );
     }
 }

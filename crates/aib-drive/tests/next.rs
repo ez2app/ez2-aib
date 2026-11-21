@@ -1811,6 +1811,7 @@ fn a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can() {
     let policy = ReviewPolicy {
         reviewers: vec![s("5d33a"), s("1ced7")],
         carried: vec![],
+        ..Default::default()
     };
     let all = [
         ("f1fae", "yes", "dev", "yes", Some(0)),
@@ -1901,6 +1902,7 @@ fn a_carried_head_gets_no_review_row() {
     let policy = ReviewPolicy {
         reviewers: vec![],
         carried: vec![s("002e8951")],
+        ..Default::default()
     };
     let all = [("1ced7", "yes", "dev", "yes", Some(0))];
     let n = ranked(
@@ -1917,6 +1919,7 @@ fn a_carried_head_gets_no_review_row() {
     let short = ReviewPolicy {
         reviewers: vec![],
         carried: vec![s("002e895")],
+        ..Default::default()
     };
     let n = ranked(&sweep(vec![b3], true), &facts(&all), &short);
     assert_eq!(n.rows.len(), 1, "{n:?}");
@@ -1945,4 +1948,195 @@ fn carried_heads_come_from_carried_names_and_carried_verdicts() {
         ),
     ]);
     assert_eq!(got, ["002e8951", "4a91ef64", "abcdef0123456789"]);
+}
+
+/// A fix row whose head already landed (main, a package) or is another row's head is no
+/// fix: it goes to `skipped` saying why (519d0 11-18 22:51, Andy 22:23 「還是有 壞了」: 12
+/// such rows, 4 of them already in the package on this machine).
+#[test]
+fn a_fix_row_already_landed_or_twice_listed_is_no_fix() {
+    let mut twice = fix_item(3, "7ebca");
+    twice["branch"] = json!("feat/z-3-7ebca-1118");
+    let mut same_as_merge = fix_item(4, "7b81e");
+    same_as_merge["head"] = json!(h(5));
+    let policy = ReviewPolicy {
+        landed: [(h(2), "fastbin/51ac92d95".to_owned())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    // the fix rows' own seats are in the seat facts, so a row is not dropped as unknown
+    let all = [
+        ("5d33a", "yes", "dev", "yes", Some(0)),
+        ("7ebca", "yes", "dev", "yes", Some(0)),
+        ("7b81e", "yes", "dev", "yes", Some(0)),
+    ];
+    let n = rank_opts(
+        &due(
+            vec![due_item(5, "ebb36", &["no_review"], 3)],
+            vec![
+                fix_item(2, "a9136"),
+                fix_item(3, "7ebca"),
+                twice,
+                same_as_merge,
+            ],
+            true,
+        ),
+        &sweep(vec![], true),
+        None,
+        &facts(&all),
+        NOW,
+        AT,
+        &RankOpts {
+            l4: false,
+            policy: &policy,
+        },
+    );
+    let fixes: Vec<_> = n.rows.iter().filter(|r| r.kind == "fix").collect();
+    assert_eq!(fixes.len(), 1, "{n:?}");
+    assert_eq!(fixes[0].head.as_deref(), Some(h(3).as_str()));
+    let why: Vec<&str> = n
+        .skipped
+        .iter()
+        .filter(|x| x.reason.starts_with("不算壞了"))
+        .map(|x| x.reason.as_str())
+        .collect();
+    assert_eq!(why.len(), 3, "{n:?}");
+    assert!(
+        why.contains(&"不算壞了:已在 fastbin/51ac92d95 裡"),
+        "{why:?}"
+    );
+    assert_eq!(
+        why.iter().filter(|w| w.contains("頭與另一列相同")).count(),
+        2
+    );
+}
+
+/// Where a fix head landed: an ancestor of main; contained by a package other than its own
+/// branch; every commit in main or the newest package by content; a failed git call says
+/// nothing.
+#[test]
+fn landed_heads_reads_main_packages_and_content() {
+    let git = |a: &[&str]| -> Result<String, String> {
+        match a {
+            ["merge-base", "--is-ancestor", "h_main", "origin/main"] => Ok(String::new()),
+            ["merge-base", ..] => Err("1".into()),
+            ["for-each-ref", "--contains", "h_pkg", ..] => {
+                Ok("fastbin/h_pkg\nfastbin/51ac92d95\n".into())
+            }
+            ["for-each-ref", "--contains", "h_own", ..] => Ok("fastbin/h_own\n".into()),
+            ["for-each-ref", ..] => Ok(String::new()),
+            ["cherry", "fastbin/new", "h_same"] => Ok("- abc\n- def\n".into()),
+            ["cherry", _, "h_own"] => Ok("+ abc\n".into()),
+            ["cherry", _, "h_new"] => Ok("- abc\n+ def\n".into()),
+            _ => Err("x".into()),
+        }
+    };
+    let rows: Vec<(String, String)> = [
+        ("feat/a", "h_main"),
+        ("fastbin/h_pkg", "h_pkg"),
+        ("fastbin/h_own", "h_own"),
+        ("feat/b", "h_same"),
+        ("feat/c", "h_new"),
+        ("feat/d", ""),
+    ]
+    .iter()
+    .map(|(b, h)| ((*b).to_owned(), (*h).to_owned()))
+    .collect();
+    let got = landed_heads(&rows, "origin/main", Some("fastbin/new"), &git);
+    let want: std::collections::BTreeMap<String, String> = [
+        ("h_main", "main"),
+        ("h_pkg", "fastbin/51ac92d95"),
+        ("h_same", "fastbin/new(內容相同)"),
+    ]
+    .iter()
+    .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+    .collect();
+    assert_eq!(got, want);
+}
+
+/// f1fae 11-19 00:35: a row whose head is an ancestor of another row's head is not a fix of
+/// its own; the newest row stays.
+#[test]
+fn an_older_head_under_another_rows_head_is_no_fix() {
+    let git = |a: &[&str]| -> Result<String, String> {
+        match a {
+            ["merge-base", "--is-ancestor", "h_old", "h_newer"] => Ok(String::new()),
+            ["cherry", ..] => Ok("+ abc\n".into()),
+            ["for-each-ref", ..] => Ok(String::new()),
+            _ => Err("1".into()),
+        }
+    };
+    let rows: Vec<(String, String)> = [
+        ("feat/x", "h_old"),
+        ("feat/y", "h_newer"),
+        ("feat/z", "h_other"),
+    ]
+    .iter()
+    .map(|(b, h)| ((*b).to_owned(), (*h).to_owned()))
+    .collect();
+    let got = landed_heads(&rows, "origin/main", None, &git);
+    assert_eq!(got.get("h_old").map(String::as_str), Some("feat/y 的頭"));
+    assert!(!got.contains_key("h_newer"), "reason: newest_row_dropped");
+    assert!(!got.contains_key("h_other"));
+}
+
+/// A card holds its head back (519d0 11-18 23:0x): status 已定未做, or the newest evidence
+/// line says 先放 and was written by the card's owner or 519d0; anyone else's 先放, an older
+/// line's, or a card with no head holds nothing.
+#[test]
+fn a_card_holds_its_head_back_by_its_status_or_its_owners_last_word() {
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    let c = "c".repeat(40);
+    let d = "d".repeat(40);
+    let e = "e".repeat(40);
+    let plan = json!({"nodes": [
+        {"id": "N-a", "owner": "a9136", "status": "已定未做", "head": a, "evidence": ""},
+        {"id": "N-b", "owner": "a9136", "status": "開發中", "head": b,
+         "evidence": "11-18 20:00 a9136 收據紅 | 11-18 21:00 a9136 先放,明天接"},
+        {"id": "N-c", "owner": "a9136", "status": "開發中", "head": c,
+         "evidence": "11-18 21:00 519d0 先放"},
+        {"id": "N-d", "owner": "a9136", "status": "開發中", "head": d,
+         "evidence": "11-18 20:00 a9136 先放 | 11-18 21:00 a9136 改好了"},
+        {"id": "N-e", "owner": "a9136", "status": "開發中", "head": e,
+         "evidence": "11-18 21:00 7b81e 先放"},
+        {"id": "N-f", "owner": "a9136", "status": "已定未做", "evidence": ""}
+    ]});
+    let got = held_heads(&plan);
+    let want: std::collections::BTreeMap<String, String> = [(a, "N-a"), (b, "N-b"), (c, "N-c")]
+        .into_iter()
+        .map(|(h, n)| (h, n.to_owned()))
+        .collect();
+    assert_eq!(got, want);
+    // the row goes to skipped saying which card
+    let policy = ReviewPolicy {
+        held: [(h(2), "N-a".to_owned())].into_iter().collect(),
+        ..Default::default()
+    };
+    // the fix row's own seat is in the seat facts, so the row is not dropped as unknown
+    let all = [
+        ("5d33a", "yes", "dev", "yes", Some(0)),
+        ("a9136", "yes", "dev", "yes", Some(0)),
+    ];
+    let n = rank_opts(
+        &due(vec![], vec![fix_item(2, "a9136")], true),
+        &sweep(vec![], true),
+        None,
+        &facts(&all),
+        NOW,
+        AT,
+        &RankOpts {
+            l4: false,
+            policy: &policy,
+        },
+    );
+    assert!(n.rows.iter().all(|r| r.kind != "fix"), "{n:?}");
+    assert!(n.unknown.is_empty(), "reason: dropped_as_unknown {n:?}");
+    assert!(
+        n.skipped
+            .iter()
+            .any(|x| x.reason == "不算壞了:卡 N-a 寫了先放"),
+        "{n:?}"
+    );
 }

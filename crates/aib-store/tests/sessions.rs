@@ -266,3 +266,87 @@ fn a_queued_session_that_starts_gets_its_pid_and_start_time() {
     );
     assert_eq!(got.state, "running");
 }
+
+/// A stop aibd made (`shutdown`) that could not show the tree gone keeps its slot; the next
+/// start frees it as `interrupted` but keeps who ended it and when, so the seat is still
+/// known as one that was running when aibd stopped (0eed7 51ac92d9 M1: it read
+/// `aibd_restart` and the seat was neither picked up nor said skipped). A row nobody ended
+/// is still ended by the restart.
+#[test]
+fn a_held_stop_keeps_who_ended_it_when_the_next_start_frees_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let mut held = row(
+        "s_held",
+        None,
+        "stop_unconfirmed",
+        true,
+        "2026-11-09T00:00:01.000Z",
+    );
+    held.ended_at = Some("2026-11-09T00:30:00.000Z".into());
+    held.ended_by = Some("shutdown".into());
+    held.stop_status = Some("unverified".into());
+    held.stop_reason = Some("candidates_unreadable".into());
+    s.session_event(held, ev("s_held", 1, "session.started"))
+        .unwrap();
+    s.session_event(
+        row("s_run", None, "running", true, "2026-11-09T00:00:02.000Z"),
+        ev("s_run", 1, "session.started"),
+    )
+    .unwrap();
+    // two rows are ended, so two event ids (7ebca 04:49: a fixed id hit UNIQUE)
+    let mut n = 0;
+    s.interrupt_open_sessions("2026-11-09T01:00:00.000Z".into(), move || {
+        n += 1;
+        format!("ev_r{n}")
+    })
+    .unwrap();
+    let h = s.session_row("s_held").unwrap().unwrap();
+    assert_eq!(h.state, "interrupted");
+    assert!(!h.holds_slot);
+    assert_eq!(h.ended_by.as_deref(), Some("shutdown"));
+    assert_eq!(h.ended_at.as_deref(), Some("2026-11-09T00:30:00.000Z"));
+    assert_eq!(h.stop_reason.as_deref(), Some("candidates_unreadable"));
+    let r = s.session_row("s_run").unwrap().unwrap();
+    assert_eq!(r.ended_by.as_deref(), Some("aibd_restart"));
+}
+
+/// a9136 ORDER-autodrive 4: the parent aibd counts a preview's running seats from the preview's
+/// own store, read only, while the preview keeps it open; a missing file is an error, never 0
+/// (0 would let a swap stop seats it could not see).
+#[test]
+fn a_store_another_aibd_owns_is_counted_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("aibd.sqlite");
+    assert!(
+        aib_store::seat_sessions_running_at(&db).is_err(),
+        "reason: missing_store_counted_as_none"
+    );
+    let s = Store::open(&db).unwrap();
+    seat(&s, "seat_a");
+    seat(&s, "seat_b");
+    let at = "2026-11-20T00:00:00.000Z";
+    s.session_event(
+        row("s_1", Some("seat_a"), "running", true, at),
+        ev("s_1", 1, "session.started"),
+    )
+    .unwrap();
+    s.session_event(
+        row("s_2", Some("seat_b"), "exited", false, at),
+        ev("s_2", 1, "session.exited"),
+    )
+    .unwrap();
+    s.session_event(
+        row("s_3", None, "running", true, at),
+        ev("s_3", 1, "session.started"),
+    )
+    .unwrap();
+    // the owner still has it open
+    assert_eq!(aib_store::seat_sessions_running_at(&db).unwrap(), 1);
+    s.session_event(
+        row("s_4", Some("seat_b"), "pending", false, at),
+        ev("s_4", 1, "session.queued"),
+    )
+    .unwrap();
+    assert_eq!(aib_store::seat_sessions_running_at(&db).unwrap(), 2);
+}
