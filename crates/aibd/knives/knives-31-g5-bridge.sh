@@ -102,7 +102,13 @@ br crates/aibd/src/dm_import.rs \
    '--lib dm_import::tests::a_handed_on_work_order_says_it_is_the_seats'
 # BR17 a work order is told as a plain letter (M4)
 br crates/aibd/src/dm_import.rs \
-   '    if dispatch {' \
-   '    if false && dispatch { // knife' \
+   '    if asks_work {' \
+   '    if false && asks_work { // knife' \
+   a_handed_on_work_order_says_it_is_the_seats \
+   '--lib dm_import::tests::a_handed_on_work_order_says_it_is_the_seats'
+# BR18 a bridged letter that asks for work is marked a work order (519d0 20:36: D3's rule)
+br crates/aibd/src/dm_import.rs \
+   '        dispatch: false,' \
+   '        dispatch: first.starts_with("派工"), // knife' \
    a_handed_on_work_order_says_it_is_the_seats \
    '--lib dm_import::tests::a_handed_on_work_order_says_it_is_the_seats'

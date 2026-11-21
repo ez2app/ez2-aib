@@ -641,22 +641,24 @@ pub fn inbox_row(letter: &Value, seat_id: &str, state_root: &Path) -> Result<Mes
     })
 }
 
-/// One letter a move handed on (519d0 派工 M4, 0eed7 VERIFY-integ3 M4): the seat is told which
-/// of them are work orders and that they are its own (the code moved into it).
+/// One letter a move handed on (519d0 派工 M4, 0eed7 VERIFY-integ3 M4): the seat is told the
+/// letters are its own (the code moved into it). `dispatch` is D3's mark: a work order only
+/// from a sender whose rank AIB has checked; a ledger letter's sender is a 1.x code with no
+/// rank here, so it is never one (519d0 20:36, DECISION-council-driveweb r1). `asks_work` is
+/// what the text says (first line 「派工:」): named, not trusted.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Handed {
     pub id: String,
     pub first_line: String,
     pub sender: String,
     pub dispatch: bool,
+    pub asks_work: bool,
 }
 
 /// The longest first line kept in [`Handed`].
 const FIRST_LINE_MAX: usize = 120;
 
-/// What a handed-on letter is: its first line, who sent it, whether it is a work order (the
-/// first line 「派工:」, as D3 reads a work order's text; a bridged letter never wakes a seat on
-/// its own, this only names it).
+/// What a handed-on letter is: its first line, who sent it, whether its text asks for work.
 pub fn handed(letter: &Value) -> Handed {
     let first = clean(
         text(letter, "msg")
@@ -682,17 +684,20 @@ pub fn handed(letter: &Value) -> Handed {
         id: text(letter, "id").to_owned(),
         first_line,
         sender,
-        dispatch: first.starts_with("派工:") || first.starts_with("派工："),
+        // a bridged letter is never a work order (D3: the sender's rank is not checked)
+        dispatch: false,
+        asks_work: first.starts_with("派工:") || first.starts_with("派工\u{ff1a}"),
     }
 }
 
 /// The line a handed-on letter carries at its end, read by the seat when it is written to it:
-/// it was the old code's, the code is this seat now, so a work order in it is this seat's.
-pub fn move_note(old_code: &str, dispatch: bool) -> String {
-    if dispatch {
-        format!("\n〔搬席轉來:這封原本寄給 {old_code},{old_code} 已搬進你這席;這張派工歸你,照派工做或回寄件席說明不接。〕")
+/// it was the old code's and the code is this seat now; a text asking for work is not taken as
+/// an order (its sender's right to give one is not checked).
+pub fn move_note(old_code: &str, asks_work: bool) -> String {
+    if asks_work {
+        format!("\n〔搬席轉來:這封原本寄給 {old_code},已搬進你這席;寄件人有沒有派工權 AIB 還沒核,先看內容再決定。〕")
     } else {
-        format!("\n〔搬席轉來:這封原本寄給 {old_code},{old_code} 已搬進你這席,這封歸你。〕")
+        format!("\n〔搬席轉來:這封原本寄給 {old_code},已搬進你這席,這封歸你。〕")
     }
 }
 
@@ -744,7 +749,7 @@ pub fn forward_open(
         }
         let key = format!("{KEY}{}", text(&letter, "id"));
         let h = handed(&letter);
-        let note = move_note(old_code, h.dispatch);
+        let note = move_note(old_code, h.asks_work);
         match db
             .by_idem(crate::import::OWNER, &key)
             .map_err(|e| e.to_string())?
@@ -1525,22 +1530,27 @@ mod tests {
         assert_eq!(got.len(), 3);
         assert_eq!(got[0].id, "q_job");
         assert!(
-            got[2].dispatch,
+            got[2].asks_work,
             "reason: wide_colon_not_a_work_order {:?}",
             got[2]
         );
-        assert!(got[0].dispatch, "reason: work_order_not_named");
+        assert!(got[0].asks_work, "reason: work_order_not_named");
+        assert!(
+            got.iter().all(|h| !h.dispatch),
+            "reason: unchecked_sender_a_work_order"
+        );
         assert_eq!(got[0].first_line, "派工: 修 M4 → 7ebca");
-        assert!(!got[1].dispatch, "reason: note_named_a_work_order");
+        assert!(!got[1].asks_work, "reason: note_named_a_work_order");
         let job = db
             .by_idem(crate::import::OWNER, "dm:q_job")
             .unwrap()
             .unwrap();
         let body = job.body.unwrap();
         assert!(
-            body.contains("這張派工歸你"),
-            "reason: not_told_it_is_its {body}"
+            body.contains("派工權 AIB 還沒核"),
+            "reason: not_told_unchecked {body}"
         );
+        assert!(!body.contains("照派工做"), "reason: told_to_follow {body}");
         assert_eq!(
             job.body_sha256,
             sha256_hex(&body),
