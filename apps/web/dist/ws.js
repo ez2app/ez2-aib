@@ -2527,13 +2527,13 @@
   }
   // ---------- 對話工具:📸 截圖 + 標註 / 🎨 取色 / ↑ 送出紀錄 / ☆ 收藏(519d0 SPEC-web-capture-history-fav r0,Andy 13:0x;頁面提案 IFACE-chat-tools-page-1a93b-1121,aibd 實際形狀 a9136 IFACE-chat-tools-aibd-a9136-1121 r1:讀寫都是 act)----------
   // 存放都在 aibd(換電腦、換瀏覽器都在);aibd 還沒有對應 act ⇒ 只在本頁有效(不寫瀏覽器儲存),工具列寫一句
-  const CT = { hist: null, histOpen: false, histSel: 0, favs: null, favOpen: false, favQ: '', colors: [], pick: null, note: '' };
+  const CT = { att: [], hist: null, histOpen: false, histSel: 0, favs: null, favOpen: false, favQ: '', colors: [], pick: null, note: '' };
   const SECRETISH = /(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|[A-Za-z0-9+/_-]{40,})/;
   const ctHas = (t) => hasAct(t) === true;
   function chatTools() {
     const miss = ['send_history_list', 'fav_add', 'screen_capture'].filter((t) => !ctHas(t));
     const hist = CT.histOpen ? ctHistHtml() : '';
-    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(aibd),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">aibd 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
+    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(aibd),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">aibd 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.att.length ? `<div class="atts">${CT.att.map((a, k) => `<span class="atc"><img class="atimg" src="${esc(a.thumb)}" alt="">圖 ${k + 1}<button type="button" class="ghx" data-attx="${k}" aria-label="拿掉這張">×</button></span>`).join('')}<span class="cth">送出時一起交給這一席(最多 4 張)</span></div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
   }
   // ---- 送出紀錄 100 則(↑ 叫回;同上一則不存;權杖樣字串不存)----
   async function ctHistLoad() {
@@ -2801,7 +2801,10 @@
     if (ctHas('media_put')) {
       try {
         const r = await act('media_put', { png_base64: annB64(c) }); if (!r || !r.media_id) throw new Error('aibd 沒回圖');
-        annClose(); CT.note = '圖已存進 aibd(' + r.media_id + ');交給席要等 aibd 下一版(附圖 media),現在先按「存成 webp」或「複製到剪貼簿」貼給席'; return render();
+        if (CT.att.length >= 4) { btn.disabled = false; btn.textContent = '送進對話'; annSay('一次最多 4 張,先送出或拿掉一張', true); return; }
+        const t = document.createElement('canvas'), k = Math.min(1, 96 / Math.max(c.width, c.height)); t.width = Math.max(1, Math.round(c.width * k)); t.height = Math.max(1, Math.round(c.height * k)); t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
+        CT.att.push({ id: String(r.media_id), thumb: t.toDataURL('image/png') });
+        annClose(); CT.note = ''; render(); const i2 = document.getElementById('inp'); if (i2) i2.focus(); return;
       } catch (e) { btn.disabled = false; btn.textContent = '送進對話'; annSay('存圖失敗:' + errText(e), true); return; }
     }
     c.toBlob((b) => { if (b) saveBlob(b, shotName('png')); }, 'image/png');
@@ -4349,7 +4352,10 @@
   async function sendSeat(seatId, text) {
     waitMark(seatId, text, false); render();
     let r;
-    try { r = await act('seat_input', { seat_id: seatId, text }); } catch (e) { delete S.wait[seatId]; (S.said[seatId] || []).pop(); throw e; }
+    // a9136 ba9112bd7:seat_input 加 media:[id](1–4 張),aibd 拷進席的 附圖/ 並把路徑接在字後;409 attach_failed = 整封沒打,附件留著
+    const media = CT.att.map((a) => a.id).slice(0, 4);
+    try { r = await act('seat_input', media.length ? { seat_id: seatId, text, media } : { seat_id: seatId, text }); } catch (e) { delete S.wait[seatId]; (S.said[seatId] || []).pop(); if (e && (e.code || e.reason) === 'attach_failed') e.message = '附圖沒交上去,整封沒送(附件還在,可以再按送出)'; throw e; }
+    if (media.length) CT.att = [];
     if (r.__status === 202 && S.wait[seatId]) S.wait[seatId].queued = true;
     return r.__status === 202 ? '它正在忙,這句排在後面;這一回合結束就收到' : '已送出';
   }
@@ -4471,8 +4477,9 @@
   }
   async function doSend(kind, code) {
     const i = document.getElementById('inp');
-    const text = i ? i.value.trim() : '';
+    const text = (i ? i.value.trim() : '') || (kind === 'seat' && CT.att.length ? '(附圖)' : '');
     if (!text || S.sending) return;
+    if (CT.att.length && kind !== 'seat') { CT.note = '附圖現在只能在單席對話送(共同對話、舊席寄信 aibd 還沒接);附件先留著'; render(); }
     S.sending = true; render();
     try {
       if (kind === 'seat') { say(await sendSeat(S.mode, text)); S.drafts[S.mode] = ''; }
@@ -4779,6 +4786,7 @@
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
     const cpy = x.closest('[data-copy]'); if (cpy) return doCopy(cpy);
+    const atx = x.closest('[data-attx]'); if (atx) { CT.att.splice(Number(atx.dataset.attx), 1); return render(); }
     const ctb = x.closest('[data-ct]'); if (ctb) { const k = ctb.dataset.ct; CT.note = ''; if (k === 'shot') return ctShot(); if (k === 'pick') return ctPick(); if (k === 'file') return ctFile(); if (k === 'fav') { CT.favOpen = !CT.favOpen; if (CT.favOpen) ctFavLoad(); return render(); } }
     const fvb = x.closest('[data-fav]'); if (fvb) { if (!fvb.dataset.fav && fvb.dataset.fvid) { CT.favs = (CT.favs || []).filter((f) => f.id !== fvb.dataset.fvid); act('fav_delete', { fav_id: fvb.dataset.fvid }).catch(() => {}); return render(); } return ctFavToggle(fvb.dataset.fav); }
     const fvp = x.closest('[data-fvput]'); if (fvp) { const f = favList()[Number(fvp.dataset.fvput)]; if (f) ctInsert(f.text); return; }

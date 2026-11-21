@@ -371,8 +371,9 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/data-annclip="1"/.test(seg) && /data-annwebp="1"/.test(seg) && /data-annok="1"/.test(seg), 'reason: three_exits');
   ok(/new ClipboardItem\(\{ 'image\/png': p \}\)/.test(seg) && /複製沒成功,改按存成 webp/.test(seg), 'reason: clipboard_png');
   ok(/act\('media_webp', \{ media_id: p\.media_id \}\)/.test(seg) && /g\.download_name/.test(seg), 'reason: webp_via_aibd');
-  // 附圖給席 aibd 還沒有:不送 media 欄
-  ok(!/media: \[/.test(ws), 'reason: media_field_sent_before_aibd_has_it');
+  // 附圖給席(a9136 ba9112bd7):只走 seat_input 的 media,1–4 張;成功才清附件
+  ok(/act\('seat_input', media\.length \? \{ seat_id: seatId, text, media \}/.test(ws) && /CT\.att\.map\(\(a\) => a\.id\)\.slice\(0, 4\)/.test(ws) && /if \(media\.length\) CT\.att = \[\];/.test(ws), 'reason: attach_media_rules');
+  ok((ws.match(/\bmedia\b(?=[,} ])/g) || []).length > 0 && !/act\('(thread_send|message_send)'[^)]*media/.test(ws), 'reason: media_on_unsupported_act');
   ok(/\.anndlg\{position:fixed/.test(css) && /\.fvq\{[^}]*background:#0c0c10/.test(css), 'reason: chat_tools_css');
 }
 

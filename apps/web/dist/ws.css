@@ -1197,3 +1197,6 @@ label.rvr{cursor:pointer}
 @media (max-width:700px){.anndlg{inset:6px}.cth{display:none}}
 .annouts{margin-left:auto;display:flex;gap:6px}
 .annst.bad{color:#f6c48b}
+.atts{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.atc{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);border-radius:8px;padding:2px 4px 2px 3px;font-size:12px;background:#1d1e24}
+.atimg{width:40px;height:28px;object-fit:cover;border-radius:4px;display:block}
