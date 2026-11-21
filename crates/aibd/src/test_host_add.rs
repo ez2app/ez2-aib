@@ -521,6 +521,7 @@ mod tests {
             "Host t\n HostName %h.example\n IdentityFile ~/k\n",
             "me",
             "/h",
+            "/d/trusted",
         );
         assert_eq!(token[0].1, Err("value_with_a_token"));
         for (half, why) in [
@@ -615,6 +616,106 @@ mod tests {
             assert_eq!(parse_read(&out), Err(why), "reason: {why}");
         }
         assert!(!READ.contains('\''), "reason: read_not_one_quoted_word");
+    }
+
+    fn machine(dir: &std::path::Path) -> Machine {
+        Machine {
+            name: "andymini".into(),
+            hostname: "192.0.2.7".into(),
+            port: 2222,
+            user: "owner".into(),
+            identity_file: dir.join("id_rsa").to_string_lossy().into_owned(),
+        }
+    }
+
+    #[test]
+    fn the_login_takes_no_config_and_spells_every_value_out() {
+        let dir = std::env::temp_dir();
+        let m = machine(&dir);
+        let kh = dir.join("known_hosts");
+        let a = login_args(&m, &kh, READ).unwrap();
+        assert_eq!(&a[..2], ["-F", "none"], "reason: config_read");
+        let o: Vec<&str> = a
+            .windows(2)
+            .filter(|w| w[0] == "-o")
+            .map(|w| w[1].as_str())
+            .collect();
+        for want in [
+            "IdentitiesOnly=yes",
+            "StrictHostKeyChecking=yes",
+            "UpdateHostKeys=no",
+            "BatchMode=yes",
+            "ForwardAgent=no",
+            "ClearAllForwardings=yes",
+            "PermitLocalCommand=no",
+            "ProxyCommand=none",
+            "ProxyJump=none",
+        ] {
+            assert!(o.contains(&want), "reason: missing {want}");
+        }
+        assert!(o.contains(&format!("IdentityFile={}", m.identity_file).as_str()));
+        assert!(o.contains(&format!("UserKnownHostsFile={}", kh.display()).as_str()));
+        let tail = &a[a.len() - 7..];
+        assert_eq!(
+            tail,
+            ["-l", "owner", "-p", "2222", "--", "192.0.2.7", READ],
+            "reason: address_not_spelled"
+        );
+        let mut bad = m.clone();
+        bad.hostname = "-oProxyCommand=x".into();
+        assert_eq!(login_args(&bad, &kh, READ), Err("machine_values"));
+        let mut bad = m.clone();
+        bad.identity_file = dir.join("a b").to_string_lossy().into_owned();
+        assert_eq!(login_args(&bad, &kh, READ), Err("path_not_one_word"));
+    }
+
+    #[test]
+    fn the_window_and_its_ticket_hold_the_real_address_and_host_key() {
+        assert_eq!(
+            fingerprint(KEY).as_deref(),
+            Some("SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"),
+            "reason: fingerprint_not_ssh_keygen"
+        );
+        let m = machine(&std::env::temp_dir());
+        let line = format!("restrict,command=\"/x/gate\" {KEY} aibd-delegate");
+        let ask = host_ask(OP_ADD, &m, KEY, &line, "page:p1".into());
+        assert_eq!(ask.resource, "owner@192.0.2.7:2222");
+        let words = crate::owner_ok::plain_words(ask.operation, &ask.params).unwrap();
+        assert!(
+            words.contains("owner@192.0.2.7 埠 2222"),
+            "reason: window_without_address {words}"
+        );
+        assert!(
+            words.contains("SHA256:+DiY3wvv"),
+            "reason: window_without_host_key {words}"
+        );
+        // each of the four and the line changes the ticket's parameters; the alias does not
+        let base = ask.params.clone();
+        let mut renamed = m.clone();
+        renamed.name = "other".into();
+        assert_eq!(
+            host_ask(OP_ADD, &renamed, KEY, &line, "p".into()).params,
+            base
+        );
+        let mut changed: Vec<Machine> = vec![m.clone(), m.clone(), m.clone()];
+        changed[0].hostname = "192.0.2.8".into();
+        changed[1].port = 22;
+        changed[2].user = "other".into();
+        for c in &changed {
+            assert_ne!(
+                host_ask(OP_ADD, c, KEY, &line, "p".into()).params,
+                base,
+                "reason: not_bound {c:?}"
+            );
+        }
+        assert_ne!(
+            host_ask(OP_ADD, &m, "ssh-ed25519 AAAA", &line, "p".into()).params,
+            base
+        );
+        assert_ne!(
+            host_ask(OP_ADD, &m, KEY, "restrict,command=\"/y\"", "p".into()).params,
+            base
+        );
     }
 
     #[test]
