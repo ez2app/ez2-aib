@@ -298,13 +298,18 @@ pub(crate) mod at {
     }
 }
 
+/// The files carried into a seat: `(name, bytes)` in order.
+pub type Files = Vec<(String, Vec<u8>)>;
+/// A refusal: `(reason, message)`.
+pub type Refusal = (&'static str, &'static str);
+
 /// The page's two names read now from [`crate::docs::root`]: `(name, bytes)` in order, or the
 /// refusal `(reason, message)`. A memory pack without a handoff is refused.
 pub fn gather(
     root: Option<&Path>,
     handoff: Option<&str>,
     mempack: Option<&str>,
-) -> Result<Vec<(String, Vec<u8>)>, (&'static str, &'static str)> {
+) -> Result<Files, Refusal> {
     if handoff.is_none() {
         return if mempack.is_some() {
             Err(("mempack", "a memory pack goes with a handoff"))
