@@ -2265,8 +2265,8 @@ jobs:
           sk locks.rs '    if enter == Enter::Reentered {' '    if enter == Enter::Reentered && false {' \
              a_move_inside_the_same_seats_transition_lock_reenters
           # DS4 the Unix folder lock is not the folder Python atomic_json flocks
-          sk locks.rs '        Level::Directory if cfg!(unix) => dir.to_path_buf(),' \
-             '        Level::Directory if cfg!(unix) && false => dir.to_path_buf(),' \
+          sk locks.rs '        Level::Directory => dir.lock_handle(DIR_LOCK_FILE),' \
+             '        Level::Directory => dir.open_private(DIR_LOCK_FILE),' \
              the_folder_lock_keeps_a_second_opener_out
           # DS5 the rev check is skipped
           sk store.rs '        let (ok, reason, cur) = rev_check(read.presence(), mv.if_rev, mv.no_rev_check);' \

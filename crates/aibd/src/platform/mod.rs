@@ -114,10 +114,23 @@ pub async fn shutdown_signal() {
     s.wait.await;
 }
 
-/// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
-/// Windows `%APPDATA%\Ez2\AIB\data` (CI-windows). Never the 1.x `~/.ez2-aib`.
+/// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`; Windows
+/// `%LOCALAPPDATA%\Ez2\AIB\data` for a new install, `%APPDATA%\Ez2\AIB\data` (roaming) only
+/// when an older install already has it ([`pick_data_dir`]). Never the 1.x `~/.ez2-aib`.
 pub fn default_data_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("app", "Ez2", "AIB").map(|p| p.data_dir().to_path_buf())
+    directories::ProjectDirs::from("app", "Ez2", "AIB")
+        .map(|p| pick_data_dir(p.data_dir(), p.data_local_dir()))
+}
+
+/// 5d33a L2 (PREREAD-shared-folder-noindex-a9136-1121): a roaming profile copies its folder to
+/// the domain server, handoffs and receipts with it; a new install stays local, an older one
+/// keeps the roaming folder it already has. On macOS both are the same folder.
+pub fn pick_data_dir(roaming: &Path, local: &Path) -> PathBuf {
+    if roaming != local && roaming.exists() {
+        roaming.to_path_buf()
+    } else {
+        local.to_path_buf()
+    }
 }
 
 /// aibd's own data directory (never the AIB 1.x state root) and its `run/`

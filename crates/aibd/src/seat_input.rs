@@ -50,9 +50,15 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::seat_move::MOVE,
+    crate::seat_move::UNMOVE,
+    crate::test_host_web::LIST,
+    crate::test_host_web::ADD,
+    crate::test_host_web::REMOVE,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
+    crate::gh_token::SET,
     crate::seats::PAGE_OPEN,
     RESTART,
     crate::default_model::KIND,
@@ -73,6 +79,11 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::receipt_run::READ,
     crate::receipt_run::WITHDRAW,
     crate::receipt_run::LIST,
+    crate::verify_run::RECEIPT,
+    crate::verify_run::EVENTS,
+    crate::verify_run::SEAT,
+    crate::verify_run::BUNDLE,
+    crate::verify_preview::PREVIEW_GET,
     crate::seat_tick::SET,
     crate::seat_tick::CLEAR,
     crate::seat_tick::LIST,
@@ -265,6 +276,28 @@ pub async fn act(
                 };
                 return crate::gh_view::seat_act(st, &seat, body).await;
             }
+            // G3 (PREREAD-seat-g1write-g3 r2): a moved seat reads and closes its 1.x letters
+            if crate::seat_dm::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_dm::seat_act(st, &seat, body).await;
+            }
+            // PREREAD-seat-pending-read: a seat reads the pending folder, read-only
+            if crate::seat_pending::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_pending::seat_act(st, &seat, body).await;
+            }
             // DESIGN-seat-now-all: a trusted, listed seat reads what every seat is doing
             if crate::seat_now_all::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -275,6 +308,18 @@ pub async fn act(
                     );
                 };
                 return crate::seat_now_all::seat_act(st, &seat, body).await;
+            }
+            // G6 (DESIGN-g6-verify-runner-7b81e-1121): a reviewer / verifier seat names a check;
+            // the seat is the token's, and its role is checked in verify_run
+            if crate::verify_run::is_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::verify_run::seat_act(st, &seat, body).await;
             }
             // N-webonly 第 4 件: a seat asks for a receipt of its own head, reads its own runs
             if crate::receipt_run::is_act(&body) {
@@ -419,6 +464,46 @@ pub async fn act(
                 crate::seat_trust::untrust(st, body, by).await
             };
         }
+        // 「加一台測試機」(DESIGN-add-test-host-b4297-1121): the built-in page in this pairing
+        // only; adding or taking one away then needs the owner's fingerprint
+        Some(
+            k @ (crate::test_host_web::LIST
+            | crate::test_host_web::ADD
+            | crate::test_host_web::REMOVE),
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "test machines are added from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::test_host_web::LIST => crate::test_host_web::list(st).await,
+                crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
+                _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
+        // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
+        // built-in page in this pairing only, with the owner's fingerprint; going back needs none
+        Some(k @ (crate::seat_move::MOVE | crate::seat_move::UNMOVE)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat is moved from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::seat_move::MOVE {
+                crate::seat_move::moved(st, body, by).await
+            } else {
+                crate::seat_move::unmoved(st, body, by).await
+            };
+        }
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a
         // registered repo go back as one new branch; the built-in page in this pairing only,
         // then the owner's fingerprint (a seat's token never reaches /api/v1/act as a page)
@@ -461,6 +546,20 @@ pub async fn act(
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::pr_open::act(st, body, by).await;
+        }
+        // DESIGN-gh-token-card (Andy 09:2x): a repository's GitHub token is pasted on the
+        // built-in page in this pairing only and kept with the owner's fingerprint
+        Some(crate::gh_token::SET) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a token is kept from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::gh_token::act(st, body, by).await;
         }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
@@ -534,6 +633,24 @@ pub async fn act(
             | crate::receipt_run::WITHDRAW
             | crate::receipt_run::LIST,
         ) => return crate::receipt_run::act(st, page, body).await,
+        // G6: the built-in page in this pairing runs a check (read-only; no fingerprint)
+        Some(
+            crate::verify_run::RECEIPT
+            | crate::verify_run::EVENTS
+            | crate::verify_run::SEAT
+            | crate::verify_run::BUNDLE
+            | crate::verify_preview::PREVIEW_GET,
+        ) => {
+            // G6: not a user folder page, not a carried pairing (5d33a REVIEW-g6verify N2)
+            if page.carried || held_as_user_page(&page).await {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "verify_built_in_page_only",
+                    "a check is run from the built-in page in this pairing only",
+                );
+            }
+            return crate::verify_run::act(st, body).await;
+        }
         // ORDER-webonly-today 7: a seat's timed sentence (the web page's 自動推進 round)
         Some(
             crate::seat_tick::SET

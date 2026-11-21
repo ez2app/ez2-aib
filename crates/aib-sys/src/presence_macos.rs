@@ -120,6 +120,10 @@ extern "C" {
     static kSecReturnAttributes: CFTypeRef;
     static kSecReturnData: CFTypeRef;
     fn SecItemCopyMatching(query: CFTypeRef, result: *mut CFTypeRef) -> i32;
+    static kSecValueData: CFTypeRef;
+    static kSecAttrAccessible: CFTypeRef;
+    fn SecItemAdd(attributes: CFTypeRef, result: *mut CFTypeRef) -> i32;
+    fn SecItemUpdate(query: CFTypeRef, attributes: CFTypeRef) -> i32;
     fn SecAccessControlCreateWithFlags(
         alloc: CFTypeRef,
         protection: CFTypeRef,
@@ -675,6 +679,8 @@ pub fn verify(public: &[u8], msg: &[u8], der: &[u8]) -> Result<bool, SeError> {
 /// A key with **no** owner ACL, for tests that must show [`probe`] calls it weak.
 /// `errSecItemNotFound`.
 const ITEM_NOT_FOUND: i32 = -25300;
+/// `errSecDuplicateItem`.
+const DUPLICATE_ITEM: i32 = -25299;
 
 /// `text` as a CFString we own; none when it holds a NUL or CoreFoundation gives none.
 fn cf_string(text: &str) -> Option<Owned> {
@@ -768,6 +774,65 @@ pub fn password(service: &str, account: &str) -> Result<Option<Vec<u8>>, i32> {
     }
 }
 
+/// K3 (DESIGN-gh-token-card-7b81e-1121 甲): stores `value` as the generic password
+/// `service` / `account` of the login keychain, replacing the one already there. Added by this
+/// process, the item's access list names this program; it is readable only while the Mac is
+/// unlocked and never leaves this device. An error is the `OSStatus` (0 when the query could
+/// not be built).
+///
+/// The CFData handed to the system is released as it is, not wiped: the caller's copy is the
+/// one it can clear.
+pub fn password_store(service: &str, account: &str, value: &[u8]) -> Result<(), i32> {
+    let (s, a) = (cf_string(service).ok_or(0)?, cf_string(account).ok_or(0)?);
+    let v = cf_data(value);
+    let item = new_dict();
+    if v.is_null() || item.is_null() {
+        return Err(0);
+    }
+    set(
+        &item,
+        k(&raw const kSecClass),
+        k(&raw const kSecClassGenericPassword),
+    );
+    set(&item, k(&raw const kSecAttrService), s.ptr());
+    set(&item, k(&raw const kSecAttrAccount), a.ptr());
+    set(
+        &item,
+        k(&raw const kSecAttrAccessible),
+        k(&raw const kSecAttrAccessibleWhenUnlockedThisDeviceOnly),
+    );
+    set(&item, k(&raw const kSecValueData), v.ptr());
+    let mut out: CFTypeRef = std::ptr::null();
+    // SAFETY: `item` is a live dictionary of live CF objects; `out` is a writable
+    // out-parameter that receives an object we own or stays null.
+    let status = unsafe { SecItemAdd(item.ptr(), &raw mut out) };
+    let _got = Owned(out);
+    match status {
+        0 => Ok(()),
+        DUPLICATE_ITEM => {
+            let q = new_dict();
+            let change = new_dict();
+            if q.is_null() || change.is_null() {
+                return Err(0);
+            }
+            set(
+                &q,
+                k(&raw const kSecClass),
+                k(&raw const kSecClassGenericPassword),
+            );
+            set(&q, k(&raw const kSecAttrService), s.ptr());
+            set(&q, k(&raw const kSecAttrAccount), a.ptr());
+            set(&change, k(&raw const kSecValueData), v.ptr());
+            // SAFETY: both are live dictionaries of live CF objects.
+            match unsafe { SecItemUpdate(q.ptr(), change.ptr()) } {
+                0 => Ok(()),
+                e => Err(e),
+            }
+        }
+        e => Err(e),
+    }
+}
+
 #[cfg(test)]
 fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
     create_with(None)
@@ -787,6 +852,11 @@ mod tests {
             password_there("a\0b", account),
             Err(0),
             "reason: nul_in_a_name"
+        );
+        assert_eq!(
+            password_store("a\0b", account, b"x"),
+            Err(0),
+            "reason: nul_in_a_name_stored"
         );
     }
 

@@ -9,6 +9,7 @@ mod idem;
 mod messages;
 mod migrate;
 mod seat_meta;
+pub mod seat_moves;
 mod seats;
 mod sessions;
 mod threads;

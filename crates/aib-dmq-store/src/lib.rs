@@ -23,6 +23,7 @@
 //! it is reported as [`Written::NotSynced`], never as "nothing changed".
 
 pub mod fsx;
+pub mod letter;
 pub mod locks;
 pub mod pyjson;
 pub mod recv;

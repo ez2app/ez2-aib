@@ -400,11 +400,27 @@ pub const TALK_TOOLS: [&str; 13] = [
     // 1a93b GAP §6: the seat says its handoff note is written (its own line only, like seat_now)
     "mcp__aibd__seat_handoff",
 ];
+/// PREREAD-seat-pending-read: a web seat reads the pending folder through aibd, read-only. A
+/// work / dgrs seat's, never a safe seat's (5d33a REVIEW-seatpendingread L1: a safe seat reads
+/// nothing today; aibd refuses one too, [`crate::seat_pending::mode_may_read`]).
+pub const PENDING_TOOLS: [&str; 6] = [
+    "mcp__aibd__pending_list",
+    "mcp__aibd__pending_read",
+    "mcp__aibd__pending_write",
+    "mcp__aibd__dm_waiting",
+    "mcp__aibd__dm_show",
+    "mcp__aibd__dm_done",
+];
 /// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
 /// and reads its own runs. Only for a seat that writes code ([`receipt_tool_for`]; 5d33a L3: a
 /// safe seat has no commit of its own, the tool would only bring the owner's window up); aibd
 /// refuses a safe seat's request as well (receipt_run::mode_may_ask).
 pub const RECEIPT_TOOL: &str = "mcp__aibd__seat_receipt";
+
+/// seat_verify (G6, DESIGN-g6-verify-runner-7b81e-1121): fixed read-only checks; aibd lets
+/// only a seat that is a reviewer / verifier on a node run one (verify_run::verifies). Given to
+/// the seats that read pending (work / dgrs), not to a safe seat.
+pub const VERIFY_TOOL: &str = "mcp__aibd__seat_verify";
 
 /// Whether a claude seat of `mode` is allowed [`RECEIPT_TOOL`].
 pub fn receipt_tool_for(mode: &str) -> bool {
@@ -520,6 +536,10 @@ pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
 /// [`talk_args`] with the gate switch given (tests; `gate` = [`now_gate_on`]).
 pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> {
     let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
+    if crate::seat_pending::mode_may_read(Some(mode)) {
+        allowed.extend(PENDING_TOOLS);
+        allowed.push(VERIFY_TOOL);
+    }
     if receipt_tool_for(mode) {
         allowed.push(RECEIPT_TOOL);
     }
@@ -1058,6 +1078,17 @@ struct RawOpen {
     /// The role it joins those nodes with ([`crate::assign::with_seat_role`]); never from a body.
     #[serde(skip)]
     join_role: &'static str,
+    /// A page's handoff and memory pack, read from the pending folder before the open
+    /// ([`crate::seat_carry::gather`]): copied into `<cwd>/.aib/` once the folder is known,
+    /// before the seat starts (PREREAD-seat-carry-a9136-1121); never from a body.
+    #[serde(skip)]
+    carry: Vec<(String, Vec<u8>)>,
+    /// `aibd ctl seat open … --handoff F [--mempack F]`: the same two file names a page gives
+    /// (PREREAD-seat-carry-a9136-1121), read into `carry` before the open.
+    #[serde(default)]
+    handoff: Option<String>,
+    #[serde(default)]
+    mempack: Option<String>,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -1213,17 +1244,13 @@ pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::p
 
 /// Where every work seat's folder lives: `<data>/seat-work`, next to the sessions folder.
 pub fn seat_work_root(sessions: &std::path::Path) -> std::path::PathBuf {
-    sessions.parent().unwrap_or(sessions).join("seat-work")
+    crate::folders::folder(sessions.parent().unwrap_or(sessions), "seat-work")
 }
 
 /// aibd's empty hooks folder for the git a work seat and aibd run there; its parent is the
 /// git HOME aibd gives its own git (seat_worktree).
 pub fn seat_git_hooks(sessions: &std::path::Path) -> std::path::PathBuf {
-    sessions
-        .parent()
-        .unwrap_or(sessions)
-        .join("seat-git")
-        .join("hooks")
+    crate::folders::folder(sessions.parent().unwrap_or(sessions), "seat-git").join("hooks")
 }
 
 /// 5d33a M1 on ecf54f91d / CHECK-preview-work-seat 2: a work seat given a folder by path works
@@ -1350,14 +1377,11 @@ pub fn init_work_repo(dir: &std::path::Path, env: &[(String, String)]) -> Result
     Ok(true)
 }
 
-/// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
-/// sessions folder (`sessions`) aibd keeps private.
+/// A seat's own folder when none is given: `<seat work root>/<seat id>` ([`seat_work_root`]:
+/// `seat-work`, or `seat-work.noindex` on a new macOS install), next to the sessions folder
+/// (`sessions`) aibd keeps private.
 pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBuf {
-    sessions
-        .parent()
-        .unwrap_or(sessions)
-        .join("seat-work")
-        .join(seat_id)
+    seat_work_root(sessions).join(seat_id)
 }
 
 /// Files a provider would load as project instructions or tools from `dir` or any folder above
@@ -1491,13 +1515,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 4 KiB")
             .into_response();
     };
-    let req: RawOpen = match serde_json::from_slice(&bytes) {
+    let mut req: RawOpen = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(_) => return Refusal(
             "body",
-            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, new?, dry_run?}",
+            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, new?, dry_run?, handoff?, mempack?}",
         )
         .into_response(),
+    };
+    // the same carry a page's open has, read before anything opens (PREREAD-seat-carry)
+    let (ho, mp) = (req.handoff.take(), req.mempack.take());
+    req.carry = match tokio::task::spawn_blocking(move || {
+        crate::seat_carry::gather(crate::docs::root().as_deref(), ho.as_deref(), mp.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err((reason, message))) => return Refusal(reason, message).into_response(),
+        Err(_) => return internal(),
     };
     open_checked(st, req, key, None).await
 }
@@ -1549,6 +1584,13 @@ struct PageOpen {
     /// none: the registered repo's HEAD.
     #[serde(default)]
     base: Option<String>,
+    /// A seat moved in from the terminal (PREREAD-seat-carry-a9136-1121): the file name, never a
+    /// path, of its handoff (`HANDOFF-….md`) in the pending folder; copied into `.aib/`.
+    #[serde(default)]
+    handoff: Option<String>,
+    /// With `handoff`: its memory pack's file name (`MEMPACK-….md`).
+    #[serde(default)]
+    mempack: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -1609,6 +1651,17 @@ pub async fn page_open(
     if req.base.is_some() && req.repo.is_none() {
         return Refusal("base", "base goes with repo").into_response();
     }
+    // read before anything is opened: a refused name opens nothing (PREREAD-seat-carry)
+    let (ho, mp) = (req.handoff.clone(), req.mempack.clone());
+    let carry = match tokio::task::spawn_blocking(move || {
+        crate::seat_carry::gather(crate::docs::root().as_deref(), ho.as_deref(), mp.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err((reason, message))) => return Refusal(reason, message).into_response(),
+        Err(_) => return internal(),
+    };
     let mut opened_by = opened_by;
     let tree_cwd = match req.repo.as_deref() {
         None => None,
@@ -1666,6 +1719,9 @@ pub async fn page_open(
         tree: tree_cwd.is_some(),
         join_nodes_of: join_of,
         join_role: crate::assign::with_seat_role(req.role.as_deref()),
+        carry,
+        handoff: None,
+        mempack: None,
     };
     let raw = RawOpen {
         cwd: tree_cwd.or(raw.cwd),
@@ -2216,6 +2272,26 @@ async fn open_checked(
             }
         }
     };
+    // the handoff and memory pack go into the folder before the seat is written and starts
+    let carried = if req.carry.is_empty() {
+        None
+    } else {
+        let (into, files) = (cwd.clone(), std::mem::take(&mut req.carry));
+        match tokio::task::spawn_blocking(move || {
+            crate::seat_carry::put(std::path::Path::new(&into), &files)
+        })
+        .await
+        {
+            Ok(Ok(c)) => Some(c),
+            _ => {
+                return Refusal(
+                    "carry",
+                    "the handoff could not be copied into the seat's folder (.aib is not a plain folder there)",
+                )
+                .into_response()
+            }
+        }
+    };
     // what the session start needs once the seat is written
     let started = (seat_id.clone(), card.clone(), cwd.clone());
     let now = now_rfc3339();
@@ -2337,6 +2413,10 @@ async fn open_checked(
             match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {
                 Ok(session) => response["session"] = session,
                 Err(e) => response["session_error"] = e,
+            }
+            if let Some(c) = &carried {
+                response["carried"] = serde_json::json!(c.paths);
+                response["carried_excluded"] = serde_json::json!(c.excluded);
             }
             if let Some(k) = key {
                 let store = st.store.clone();
@@ -2795,6 +2875,25 @@ mod tests {
             "reason: safe_seat_gets_receipt_tool"
         );
         assert!(
+            !a[3].contains("pending_"),
+            "reason: safe_seat_gets_pending_tools"
+        );
+        // G6: the check tool rides with the pending ones, never on a safe seat
+        assert!(
+            !a[3].contains("seat_verify"),
+            "reason: safe_seat_gets_verify_tool"
+        );
+        assert!(
+            w[3].contains(",mcp__aibd__dm_done,mcp__aibd__seat_verify,mcp__aibd__seat_receipt,"),
+            "reason: work_seat_lacks_verify_tool {}",
+            w[3]
+        );
+        assert!(
+            w[3].contains(",mcp__aibd__pending_list,mcp__aibd__pending_read,"),
+            "reason: work_seat_lacks_pending_tools {}",
+            w[3]
+        );
+        assert!(
             w[3].contains(",mcp__aibd__seat_receipt,"),
             "reason: work_seat_lacks_receipt_tool {}",
             w[3]
@@ -2964,6 +3063,9 @@ mod tests {
             tree: false,
             join_nodes_of: None,
             join_role: "observer",
+            carry: Vec::new(),
+            handoff: None,
+            mempack: None,
         }
     }
 
@@ -3120,9 +3222,11 @@ mod tests {
             );
             std::fs::remove_file(repo.join("CLAUDE.md")).unwrap();
         }
+        // next to the sessions folder; on macOS a new install's is seat-work.noindex (G1 shared
+        // folders, 6faa28762c): the name is folders::folder's, not written here
         assert_eq!(
             seat_home(std::path::Path::new("/d/sessions"), "seat_1"),
-            std::path::Path::new("/d/seat-work/seat_1")
+            crate::folders::folder(std::path::Path::new("/d"), "seat-work").join("seat_1")
         );
     }
 

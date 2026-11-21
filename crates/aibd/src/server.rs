@@ -87,6 +87,10 @@ pub async fn run(
     if let Some(api) = crate::pr_api::platform_api() {
         crate::pr_open::set_api(api);
     }
+    // DESIGN-gh-token-card-7b81e-1121: where a pasted token is checked and kept
+    if let Some(k) = crate::pr_api::platform_keeper() {
+        crate::gh_token::set_keeper(k);
+    }
     crate::gh_view::log_override();
     let run_dir = dirs.run_dir();
     platform::create_private_dir(&dirs.data_dir())?;
@@ -251,6 +255,8 @@ pub async fn run(
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
                 pairing.set_presence(p);
+                // pairing's windows get the countdown beside them too (Andy 11-21 01:42; 519d0 05:49)
+                crate::touch_hud::turn_on();
             }
             Ok(Err(why)) => tracing::warn!(why, "fingerprint pairing is refused at this start"),
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
@@ -410,6 +416,9 @@ pub async fn run(
     };
     // B1dm-S5: a seat that starts gets what other seats sent it while it was not running
     let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // DESIGN-web-inbox-aibd-7ebca-1121 r1 A: a web seat a bridged letter was put in is told
+    // the same way (redeliver, then mail_nudge)
+    crate::dm_import::set_wake(started_tx.clone());
     sessions.set_started(started_tx);
     // N-workspace: a seat's next turn starts with what it has not seen of its conversations
     sessions.set_catch_up(Arc::new(crate::catch_up::Library(

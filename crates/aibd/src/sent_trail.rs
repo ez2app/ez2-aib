@@ -764,7 +764,7 @@ mod tests {
             // 2. 推: refused once (the scan finds something), nothing moves, asked again
             let t = crate::repo_push::target(&data, "demo", &branch, &hooks).unwrap();
             assert_eq!(t.sha, head, "reason: the_push_reads_another_head");
-            let no = crate::repo_push::push(&data, &hooks, &t, Some(&leak_hit)).unwrap_err();
+            let no = crate::repo_push::push(&data, &hooks, &t, Some(&leak_hit), None).unwrap_err();
             failed(&data, "demo", &branch, STEP_PUSH, no.1, "t1").unwrap();
             assert_eq!(
                 (state()["state"].as_str(), state()["next"].as_str()),
@@ -776,7 +776,7 @@ mod tests {
                 format!("refs/heads/main {main}"),
                 "reason: a_refused_push_reached_the_remote"
             );
-            let p = crate::repo_push::push(&data, &hooks, &t, Some(&leak_ok)).unwrap();
+            let p = crate::repo_push::push(&data, &hooks, &t, Some(&leak_ok), None).unwrap();
             pushed(&data, &p.repo, &p.branch, &p.sha, "t2").unwrap();
             assert_eq!(
                 remote_refs(),
