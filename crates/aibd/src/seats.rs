@@ -3206,9 +3206,11 @@ mod tests {
             );
             std::fs::remove_file(repo.join("CLAUDE.md")).unwrap();
         }
+        // next to the sessions folder; on macOS a new install's is seat-work.noindex (G1 shared
+        // folders, 6faa28762c): the name is folders::folder's, not written here
         assert_eq!(
             seat_home(std::path::Path::new("/d/sessions"), "seat_1"),
-            std::path::Path::new("/d/seat-work/seat_1")
+            crate::folders::folder(std::path::Path::new("/d"), "seat-work").join("seat_1")
         );
     }
 
