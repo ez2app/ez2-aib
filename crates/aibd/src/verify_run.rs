@@ -13,6 +13,13 @@
 //! - [`SEAT`] `{seat_id}`: one seat's row, its meta without folder or resume id, and its newest
 //!   [`MAX_SESSIONS`] sessions without pid or argv.
 //!
+//! - [`BUNDLE`] `{file, repo, base, onto?}`: a `BUNDLE-*.bundle` of the pending folder, checked
+//!   in a bare repository of aibd's own that reads the registered repo's objects (as
+//!   [`crate::receipt_bundle`]: no git runs in anyone's copy): its sha256 and length, its heads,
+//!   whether `base` is an ancestor of the first head, how many files the head changes since
+//!   `base`, and with `onto` whether the head merges onto that commit cleanly and which files
+//!   conflict ([`check_bundle`]).
+//!
 //! Who asks: the built-in page of this pairing, or a seat's own token when that seat is the
 //! `reviewer` or `verifier` on some node of the workspace ([`verifies`]); a seat may ask
 //! [`PER_HOUR`] times an hour. No fingerprint (DESIGN §3): every answer is read-only.
@@ -27,6 +34,9 @@ use std::time::{Duration, Instant};
 pub const RECEIPT: &str = "verify_receipt";
 pub const EVENTS: &str = "verify_events";
 pub const SEAT: &str = "verify_seat";
+pub const BUNDLE: &str = "verify_bundle";
+pub const MAX_HEADS: usize = 8;
+pub const MAX_CONFLICTS: usize = 50;
 /// What a seat may ask in an hour.
 pub const PER_HOUR: usize = 120;
 pub const MAX_ROWS: u32 = 200;
@@ -38,8 +48,187 @@ pub const ROLES: [&str; 2] = ["reviewer", "verifier"];
 pub fn is_act(body: &Value) -> bool {
     matches!(
         body.get("type").and_then(Value::as_str),
-        Some(RECEIPT | EVENTS | SEAT)
+        Some(RECEIPT | EVENTS | SEAT | BUNDLE)
     )
+}
+
+/// A bundle's name in the pending folder: `BUNDLE-<letters, digits, . _ ->.bundle`.
+pub fn bundle_name_ok(f: &str) -> bool {
+    f.len() <= 160
+        && f.starts_with("BUNDLE-")
+        && f.ends_with(".bundle")
+        && f.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && !f.contains("..")
+}
+
+/// A ref name or path as a page is told it: at most 200 characters, anything but
+/// `[A-Za-z0-9/._-]` as `?`.
+fn plain(s: &str) -> String {
+    s.chars()
+        .take(200)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+/// What [`check_bundle`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleCheck {
+    pub len: u64,
+    pub sha256: String,
+    /// `(commit, ref)`, as [`plain`] words.
+    pub heads: Vec<(String, String)>,
+    pub base_is_ancestor: bool,
+    pub files_changed: usize,
+    /// With `onto`: `(clean, conflicting files)`.
+    pub onto: Option<(bool, Vec<String>)>,
+}
+
+fn sha256_file(p: &std::path::Path) -> Option<(u64, String)> {
+    use sha2::Digest;
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut h = sha2::Sha256::new();
+    let len = std::io::copy(&mut f, &mut h).ok()?;
+    Some((
+        len,
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+    ))
+}
+
+fn check_bundle_in(
+    repo: &std::path::Path,
+    hooks: &std::path::Path,
+    scratch: &std::path::Path,
+    bundle: &std::path::Path,
+    base: &str,
+    onto: Option<&str>,
+) -> Result<BundleCheck, &'static str> {
+    use crate::seat_worktree::{git, git_code, repo_safe};
+    use crate::send_back::sha_ok;
+    if !sha_ok(base) || onto.is_some_and(|o| !sha_ok(o)) {
+        return Err("verify_sha_shape");
+    }
+    repo_safe(repo).map_err(|_| "repo_unsafe")?;
+    let (len, sha256) = sha256_file(bundle).ok_or("bundle_not_found")?;
+    if len == 0 || len > aib_receipt_gate::MAX_BUNDLE {
+        return Err("bundle_size");
+    }
+    std::fs::create_dir_all(scratch).map_err(|_| "internal")?;
+    git(scratch, hooks, &["init", "-q", "--bare", "."]).map_err(|_| "internal")?;
+    let objects = repo.join(".git").join("objects");
+    let line = objects
+        .to_str()
+        .filter(|s| !s.contains('\n'))
+        .ok_or("repo_unsafe")?;
+    std::fs::write(
+        scratch.join("objects").join("info").join("alternates"),
+        format!("{line}\n"),
+    )
+    .map_err(|_| "internal")?;
+    let b = bundle.to_str().ok_or("bundle_not_found")?;
+    git(scratch, hooks, &["bundle", "verify", "-q", b]).map_err(|_| "bundle_refused")?;
+    let listed = git(scratch, hooks, &["bundle", "list-heads", b]).map_err(|_| "bundle_refused")?;
+    let heads: Vec<(String, String)> = listed
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(c, r)| (c.to_owned(), plain(r)))
+        .collect();
+    if heads.is_empty() || heads.iter().any(|(c, _)| !sha_ok(c)) {
+        return Err("bundle_no_head");
+    }
+    if heads.len() > MAX_HEADS {
+        return Err("bundle_too_many_heads");
+    }
+    git(scratch, hooks, &["bundle", "unbundle", b]).map_err(|_| "bundle_refused")?;
+    let head = heads[0].0.clone();
+    let known = |c: &str| {
+        git(
+            scratch,
+            hooks,
+            &["cat-file", "-e", &format!("{c}^{{commit}}")],
+        )
+        .is_ok()
+    };
+    if !known(base) {
+        return Err("base_unknown");
+    }
+    let base_is_ancestor = git(
+        scratch,
+        hooks,
+        &["merge-base", "--is-ancestor", base, &head],
+    )
+    .is_ok();
+    let z = git(
+        scratch,
+        hooks,
+        &["diff", "--name-only", "-z", base, &head, "--"],
+    )
+    .map_err(|_| "internal")?;
+    let files_changed = z.split('\0').filter(|p| !p.is_empty()).count();
+    let onto = match onto {
+        None => None,
+        Some(o) => {
+            if !known(o) {
+                return Err("onto_unknown");
+            }
+            let (code, out) = git_code(
+                scratch,
+                hooks,
+                &[
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "--no-messages",
+                    o,
+                    &head,
+                ],
+            )
+            .map_err(|_| "internal")?;
+            match code {
+                0 => Some((true, Vec::new())),
+                // the first line is the tree; the conflicting files follow
+                1 => Some((
+                    false,
+                    out.lines()
+                        .skip(1)
+                        .filter(|l| !l.is_empty())
+                        .take(MAX_CONFLICTS)
+                        .map(plain)
+                        .collect(),
+                )),
+                _ => return Err("merge_tree_failed"),
+            }
+        }
+    };
+    Ok(BundleCheck {
+        len,
+        sha256,
+        heads,
+        base_is_ancestor,
+        files_changed,
+        onto,
+    })
+}
+
+/// Checks `bundle` against the registered `repo` in `scratch` (a folder of aibd's own that
+/// does not exist yet; it is gone afterwards). Blocking (git).
+pub fn check_bundle(
+    repo: &std::path::Path,
+    hooks: &std::path::Path,
+    scratch: &std::path::Path,
+    bundle: &std::path::Path,
+    base: &str,
+    onto: Option<&str>,
+) -> Result<BundleCheck, &'static str> {
+    let got = check_bundle_in(repo, hooks, scratch, bundle, base, onto);
+    let _ = std::fs::remove_dir_all(scratch);
+    got
 }
 
 /// Whether `seat` holds one of [`ROLES`] on a node, from `nodes` and `members` (the workspace's
@@ -285,6 +474,7 @@ pub async fn act(st: AppState, body: Value) -> Response {
         Some(RECEIPT) => receipt(body).await,
         Some(EVENTS) => events(st, body).await,
         Some(SEAT) => seat(st, body).await,
+        Some(BUNDLE) => bundle(st, body).await,
         _ => refuse(StatusCode::BAD_REQUEST, "verify_unknown", "no such check"),
     }
 }
@@ -377,6 +567,86 @@ async fn seat(st: AppState, body: Value) -> Response {
             "internal",
             "the seat could not be read",
         ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleAsk {
+    #[serde(rename = "type")]
+    _type: String,
+    file: String,
+    repo: String,
+    base: String,
+    #[serde(default)]
+    onto: Option<String>,
+}
+
+async fn bundle(st: AppState, body: Value) -> Response {
+    let Ok(a) = serde_json::from_value::<BundleAsk>(body) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "verify_fields",
+            "body must be {type, file, repo, base, onto?}",
+        );
+    };
+    if !bundle_name_ok(&a.file) {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "bundle_name",
+            "a BUNDLE-*.bundle of pending",
+        );
+    }
+    let Some(root) = crate::docs::root() else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pending_unavailable",
+            "no pending folder",
+        );
+    };
+    let path = root.join(&a.file);
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) if m.file_type().is_file() => {}
+        _ => return refuse(StatusCode::NOT_FOUND, "bundle_not_found", "no such bundle"),
+    }
+    let private = st.sessions.private_dir().to_path_buf();
+    let data = private.parent().unwrap_or(&private).to_path_buf();
+    let Some(repo) = crate::repos::find(&data, &a.repo) else {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "repo_not_registered",
+            "no registered repo of that name",
+        );
+    };
+    let Ok(id) = crate::sessions::new_id("vb_") else {
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no id");
+    };
+    let scratch = data.join("verify-scratch").join(id);
+    let hooks = crate::seats::seat_git_hooks(&private);
+    let repo_path = std::path::PathBuf::from(repo.path);
+    let got = tokio::task::spawn_blocking(move || {
+        check_bundle(
+            &repo_path,
+            &hooks,
+            &scratch,
+            &path,
+            &a.base,
+            a.onto.as_deref(),
+        )
+    })
+    .await;
+    match got {
+        Ok(Ok(c)) => Json(json!({
+            "len": c.len,
+            "sha256": c.sha256,
+            "heads": c.heads.iter().map(|(h, r)| json!({"commit": h, "ref": r})).collect::<Vec<_>>(),
+            "base_is_ancestor": c.base_is_ancestor,
+            "files_changed": c.files_changed,
+            "onto": c.onto.map(|(clean, files)| json!({"clean": clean, "conflicts": files})),
+        }))
+        .into_response(),
+        Ok(Err(why)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, why, "the bundle was not checked"),
+        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "the check did not end"),
     }
 }
 
@@ -591,8 +861,142 @@ mod tests {
     }
 
     #[test]
+    fn a_bundle_is_named_from_pending_only() {
+        for ok in [
+            "BUNDLE-g6-verify-7b81e-b48372ac01-cae7d5cca.bundle",
+            "BUNDLE-a_b.c.bundle",
+        ] {
+            assert!(bundle_name_ok(ok), "reason: refused {ok}");
+        }
+        for bad in [
+            "../BUNDLE-x.bundle",
+            "BUNDLE-a/b.bundle",
+            "BUNDLE-..bundle",
+            "RECEIPT-x.out",
+            "BUNDLE-x.bundle.sh",
+            "BUNDLE-x y.bundle",
+            "BUNDLE-\u{4e2d}.bundle",
+        ] {
+            assert!(!bundle_name_ok(bad), "reason: let_in {bad}");
+        }
+    }
+
+    /// A registered repo with main M, a seat's copy with one commit on a.rs, and its bundle.
+    fn bundled() -> (
+        crate::receipt_bundle::fixture::Fix,
+        String,
+        std::path::PathBuf,
+    ) {
+        use crate::receipt_bundle::fixture::{fix, g};
+        let f = fix();
+        let head = f.commit("a.rs", "fn a() {}\n");
+        let b = f.data.path().join("BUNDLE-t.bundle");
+        let not_main = format!("^{}", f.main);
+        g(
+            &f.tree,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                b.to_str().unwrap(),
+                "HEAD",
+                &not_main,
+            ],
+        );
+        (f, head, b)
+    }
+
+    fn checked(
+        f: &crate::receipt_bundle::fixture::Fix,
+        b: &std::path::Path,
+        base: &str,
+        onto: Option<&str>,
+    ) -> Result<BundleCheck, &'static str> {
+        let scratch = f.data.path().join("verify-scratch").join("s1");
+        let got = check_bundle(&f.repo, &f.hooks, &scratch, b, base, onto);
+        assert!(!scratch.exists(), "reason: scratch_left");
+        got
+    }
+
+    #[test]
+    fn a_bundle_is_told_its_head_its_size_and_what_it_changes() {
+        let (f, head, b) = bundled();
+        let c = checked(&f, &b, &f.main, None).unwrap();
+        assert_eq!(c.heads, vec![(head.clone(), "HEAD".to_owned())]);
+        assert!(c.base_is_ancestor, "reason: base_not_ancestor");
+        assert_eq!(c.files_changed, 1, "reason: files_changed");
+        let bytes = std::fs::read(&b).unwrap();
+        assert_eq!(c.len, bytes.len() as u64);
+        use sha2::Digest;
+        let want: String = sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        assert_eq!(c.sha256, want, "reason: sha256_not_of_the_file");
+        assert_eq!(c.onto, None);
+    }
+
+    #[test]
+    fn a_bundle_onto_another_head_is_told_clean_or_its_conflicting_files() {
+        use crate::receipt_bundle::fixture::{g, out};
+        let (f, _head, b) = bundled();
+        // the registered repo moves on twice: one commit on a.rs (conflicts), one on b.rs
+        std::fs::write(f.repo.join("a.rs"), "fn a() { other() }\n").unwrap();
+        g(&f.repo, &["add", "-A"]);
+        g(&f.repo, &["commit", "-q", "-m", "a"]);
+        let clash = out(&f.repo, &["rev-parse", "HEAD"]);
+        g(&f.repo, &["checkout", "-q", "-b", "side", &f.main]);
+        std::fs::write(f.repo.join("b.rs"), "fn b() {}\n").unwrap();
+        g(&f.repo, &["add", "-A"]);
+        g(&f.repo, &["commit", "-q", "-m", "b"]);
+        let calm = out(&f.repo, &["rev-parse", "HEAD"]);
+        let c = checked(&f, &b, &f.main, Some(&clash)).unwrap();
+        assert_eq!(
+            c.onto,
+            Some((false, vec!["a.rs".to_owned()])),
+            "reason: conflict_not_told"
+        );
+        let c = checked(&f, &b, &f.main, Some(&calm)).unwrap();
+        assert_eq!(c.onto, Some((true, Vec::new())), "reason: clean_not_told");
+        // a base that is not under the head is said so, not refused
+        let c = checked(&f, &b, &calm, None).unwrap();
+        assert!(!c.base_is_ancestor, "reason: side_base_called_ancestor");
+    }
+
+    #[test]
+    fn a_bundle_the_repo_cannot_take_or_an_unknown_commit_is_refused() {
+        let (f, _head, b) = bundled();
+        assert_eq!(checked(&f, &b, &"0".repeat(40), None), Err("base_unknown"));
+        assert_eq!(
+            checked(&f, &b, &f.main, Some(&"1".repeat(40))),
+            Err("onto_unknown")
+        );
+        assert_eq!(checked(&f, &b, "main", None), Err("verify_sha_shape"));
+        // a bundle whose prerequisite only the seat's copy holds
+        use crate::receipt_bundle::fixture::g;
+        let first = f.commit("c.rs", "fn c() {}\n");
+        f.commit("d.rs", "fn d() {}\n");
+        let lone = f.data.path().join("BUNDLE-lone.bundle");
+        let not_first = format!("^{first}");
+        g(
+            &f.tree,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                lone.to_str().unwrap(),
+                "HEAD",
+                &not_first,
+            ],
+        );
+        assert_eq!(checked(&f, &lone, &f.main, None), Err("bundle_refused"));
+        let none = f.data.path().join("BUNDLE-none.bundle");
+        assert_eq!(checked(&f, &none, &f.main, None), Err("bundle_not_found"));
+    }
+
+    #[test]
     fn a_check_is_named_or_not_taken() {
-        for k in [RECEIPT, EVENTS, SEAT] {
+        for k in [RECEIPT, EVENTS, SEAT, BUNDLE] {
             assert!(is_act(&json!({"type": k})));
         }
         for k in ["verify_sql", "verify_shell", "receipt_read", ""] {

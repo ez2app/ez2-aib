@@ -300,9 +300,30 @@ fn git_env(home: &Path) -> Vec<(String, String)> {
 /// Every git call: fixed environment, no hooks, no fsmonitor program, no network, stdin
 /// closed. `hooks` is aibd's empty folder; its parent is aibd's own HOME for git.
 pub(crate) fn git(dir: &Path, hooks: &Path, args: &[&str]) -> Result<String, String> {
+    let out = git_command(dir, hooks, args)
+        .output()
+        .map_err(|e| format!("git did not start: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// [`git`] for a command whose exit code is an answer (`merge-tree --write-tree`: 1 is
+/// "conflicts", with the list on stdout): the code and stdout, whatever the code.
+pub(crate) fn git_code(dir: &Path, hooks: &Path, args: &[&str]) -> Result<(i32, String), String> {
+    let out = git_command(dir, hooks, args)
+        .output()
+        .map_err(|e| format!("git did not start: {e}"))?;
+    let code = out.status.code().ok_or("git ended by a signal")?;
+    Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+fn git_command(dir: &Path, hooks: &Path, args: &[&str]) -> Command {
     let home = hooks.parent().unwrap_or(hooks);
-    let out = Command::new("git")
-        .env_clear()
+    let mut c = Command::new("git");
+    c.env_clear()
         .envs(git_env(home))
         .arg("-C")
         .arg(dir)
@@ -313,14 +334,8 @@ pub(crate) fn git(dir: &Path, hooks: &Path, args: &[&str]) -> Result<String, Str
         // never replays resolutions recorded in a seat-writable .git/rr-cache into a 合回
         .args(["-c", "rerere.enabled=false"])
         .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("git did not start: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
+        .stdin(Stdio::null());
+    c
 }
 
 /// The repo's top folder, or why not (a registered path must be a repo's top).
