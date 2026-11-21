@@ -135,12 +135,62 @@ pub struct BundleCheck {
     pub onto: Option<(bool, Vec<String>)>,
 }
 
-fn sha256_file(p: &std::path::Path) -> Option<(u64, String)> {
+/// The settings an unbundle runs with: every object it brings is checked as a fetch checks it
+/// (5d33a PREREAD-g6 L2).
+pub const UNBUNDLE_FSCK: [&str; 4] = [
+    "-c",
+    "fetch.fsckObjects=true",
+    "-c",
+    "transfer.fsckObjects=true",
+];
+
+/// Opens `src` once, without following a link (5d33a REVIEW-g6verify L1: a check of the name
+/// and then a second open by path lets a link be put in between), and copies the plain file
+/// it is into the new file `dst`, hashing it on the way: at most `max` bytes. Everything after
+/// reads the copy.
+fn copy_in(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    max: u64,
+) -> Result<(u64, String), &'static str> {
     use sha2::Digest;
-    let mut f = std::fs::File::open(p).ok()?;
+    use std::io::{Read, Write};
+    let mut f = crate::send_back::open_nofollow(src).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "bundle_not_found"
+        } else {
+            "bundle_refused"
+        }
+    })?;
+    let m = f.metadata().map_err(|_| "bundle_refused")?;
+    if !m.is_file() {
+        return Err("bundle_refused");
+    }
+    if m.len() == 0 || m.len() > max {
+        return Err("bundle_size");
+    }
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)
+        .map_err(|_| "internal")?;
     let mut h = sha2::Sha256::new();
-    let len = std::io::copy(&mut f, &mut h).ok()?;
-    Some((
+    let mut buf = vec![0_u8; 64 * 1024];
+    let mut len = 0_u64;
+    loop {
+        let n = f.read(&mut buf).map_err(|_| "bundle_refused")?;
+        if n == 0 {
+            break;
+        }
+        len += n as u64;
+        if len > max {
+            return Err("bundle_size");
+        }
+        let chunk = buf.get(..n).unwrap_or_default();
+        h.update(chunk);
+        out.write_all(chunk).map_err(|_| "internal")?;
+    }
+    Ok((
         len,
         h.finalize().iter().map(|b| format!("{b:02x}")).collect(),
     ))
@@ -160,11 +210,9 @@ fn check_bundle_in(
         return Err("verify_sha_shape");
     }
     repo_safe(repo).map_err(|_| "repo_unsafe")?;
-    let (len, sha256) = sha256_file(bundle).ok_or("bundle_not_found")?;
-    if len == 0 || len > aib_receipt_gate::MAX_BUNDLE {
-        return Err("bundle_size");
-    }
     std::fs::create_dir_all(scratch).map_err(|_| "internal")?;
+    let copy = scratch.join("in.bundle");
+    let (len, sha256) = copy_in(bundle, &copy, aib_receipt_gate::MAX_BUNDLE)?;
     git(scratch, hooks, &["init", "-q", "--bare", "."]).map_err(|_| "internal")?;
     let objects = repo.join(".git").join("objects");
     let line = objects
@@ -176,7 +224,7 @@ fn check_bundle_in(
         format!("{line}\n"),
     )
     .map_err(|_| "internal")?;
-    let b = bundle.to_str().ok_or("bundle_not_found")?;
+    let b = copy.to_str().ok_or("internal")?;
     git(scratch, hooks, &["bundle", "verify", "-q", b]).map_err(|_| "bundle_refused")?;
     let listed = git(scratch, hooks, &["bundle", "list-heads", b]).map_err(|_| "bundle_refused")?;
     let heads: Vec<(String, String)> = listed
@@ -190,21 +238,9 @@ fn check_bundle_in(
     if heads.len() > MAX_HEADS {
         return Err("bundle_too_many_heads");
     }
-    // every object it brings is checked as a fetch checks it (5d33a PREREAD-g6 L2)
-    git(
-        scratch,
-        hooks,
-        &[
-            "-c",
-            "fetch.fsckObjects=true",
-            "-c",
-            "transfer.fsckObjects=true",
-            "bundle",
-            "unbundle",
-            b,
-        ],
-    )
-    .map_err(|_| "bundle_refused")?;
+    let mut unbundle: Vec<&str> = UNBUNDLE_FSCK.to_vec();
+    unbundle.extend(["bundle", "unbundle", b]);
+    git(scratch, hooks, &unbundle).map_err(|_| "bundle_refused")?;
     let head = heads[0].0.clone();
     let known = |c: &str| {
         git(
@@ -365,7 +401,82 @@ fn type_ok(s: &str) -> bool {
 struct ReceiptAsk {
     #[serde(rename = "type")]
     _type: String,
-    run_id: String,
+    #[serde(default)]
+    run_id: Option<String>,
+    /// A receipt run by hand and copied into pending (5d33a REVIEW-g6verify L2).
+    #[serde(default)]
+    file: Option<String>,
+    /// With `file`: the 40-hex head the asker expects it to be of.
+    #[serde(default)]
+    head: Option<String>,
+    /// With `file`: how many knives the asker expects (0: none asked for).
+    #[serde(default)]
+    knives: Option<u64>,
+}
+
+/// A hand-run receipt's name in pending: `RECEIPT-<letters, digits, . _ ->.out`.
+pub fn receipt_name_ok(f: &str) -> bool {
+    f.len() <= 160
+        && f.starts_with("RECEIPT-")
+        && f.ends_with(".out")
+        && f.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && f.find("..").is_none()
+}
+
+/// What aibd reads in a receipt `file` of the pending folder `root`, checked against `head`
+/// and `knives` as a run's `.out` is ([`crate::receipt_check::check`]); opened once without
+/// following a link. Its verdict and whether its seal held, never a line of it.
+pub fn pending_receipt(
+    root: &std::path::Path,
+    file: &str,
+    head: &str,
+    knives: u64,
+) -> Result<Value, &'static str> {
+    use std::io::Read;
+    if !receipt_name_ok(file) {
+        return Err("receipt_name");
+    }
+    if !crate::send_back::sha_ok(head) || knives > 200 {
+        return Err("verify_fields");
+    }
+    let mut f = crate::send_back::open_nofollow(&root.join(file)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "receipt_not_found"
+        } else {
+            "receipt_refused"
+        }
+    })?;
+    let m = f.metadata().map_err(|_| "receipt_refused")?;
+    let max = crate::receipt_run::MAX_OUT as u64;
+    if !m.is_file() {
+        return Err("receipt_refused");
+    }
+    if m.len() > max {
+        return Err("receipt_too_large");
+    }
+    let mut bytes = Vec::new();
+    (&mut f)
+        .take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "receipt_refused")?;
+    if bytes.len() as u64 > max {
+        return Err("receipt_too_large");
+    }
+    let v = crate::receipt_check::check(&bytes, head, knives);
+    let sealed = !v
+        .reasons
+        .iter()
+        .any(|r| r == "seal_missing" || r == "seal_mismatch");
+    Ok(json!({
+        "file": file,
+        "green": v.green,
+        "reasons": v.reasons,
+        "narrow": v.narrow,
+        "tests_total": v.tests,
+        "knives": v.knives,
+        "sealed": sealed,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,13 +664,48 @@ async fn receipt(body: Value) -> Response {
         return refuse(
             StatusCode::BAD_REQUEST,
             "verify_fields",
-            "body must be {type, run_id}",
+            "body must be {type, run_id} or {type, file, head, knives?}",
         );
     };
-    if !crate::receipt_run::run_id_ok(&a.run_id) {
+    let id = match (a.run_id, a.file, a.head) {
+        (Some(id), None, None) if a.knives.is_none() => id,
+        (None, Some(file), Some(head)) => {
+            let Some(root) = crate::docs::root() else {
+                return refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "pending_unavailable",
+                    "no pending folder",
+                );
+            };
+            let knives = a.knives.unwrap_or(0);
+            let got =
+                tokio::task::spawn_blocking(move || pending_receipt(&root, &file, &head, knives))
+                    .await;
+            return match got {
+                Ok(Ok(v)) => Json(v).into_response(),
+                Ok(Err(why)) => refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    why,
+                    "the receipt was not read",
+                ),
+                Err(_) => refuse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "the check did not end",
+                ),
+            };
+        }
+        _ => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "verify_fields",
+                "body must be {type, run_id} or {type, file, head, knives?}",
+            )
+        }
+    };
+    if !crate::receipt_run::run_id_ok(&id) {
         return refuse(StatusCode::BAD_REQUEST, "run_id_shape", "not a run id");
     }
-    let id = a.run_id.clone();
     match tokio::task::spawn_blocking(move || crate::receipt_run::find(&id)).await {
         Ok(Some(run)) => Json(json!({
             "run": crate::receipt_run::view(&run),
@@ -677,11 +823,8 @@ async fn bundle(st: AppState, body: Value) -> Response {
             "no pending folder",
         );
     };
+    // opened once, link not followed, in check_bundle (5d33a REVIEW-g6verify L1)
     let path = root.join(&a.file);
-    match std::fs::symlink_metadata(&path) {
-        Ok(m) if m.file_type().is_file() => {}
-        _ => return refuse(StatusCode::NOT_FOUND, "bundle_not_found", "no such bundle"),
-    }
     let private = st.sessions.private_dir().to_path_buf();
     let data = private.parent().unwrap_or(&private).to_path_buf();
     let Some(repo) = crate::repos::find(&data, &a.repo) else {
@@ -1112,6 +1255,90 @@ mod tests {
         assert_eq!(checked(&f, &lone, &f.main, None), Err("bundle_refused"));
         let none = f.data.path().join("BUNDLE-none.bundle");
         assert_eq!(checked(&f, &none, &f.main, None), Err("bundle_not_found"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_put_behind_a_link_is_not_followed() {
+        let (f, _head, b) = bundled();
+        let link = f.data.path().join("BUNDLE-link.bundle");
+        std::os::unix::fs::symlink(&b, &link).unwrap();
+        assert_eq!(checked(&f, &link, &f.main, None), Err("bundle_refused"));
+    }
+
+    #[test]
+    fn an_unbundle_checks_every_object_it_brings() {
+        for want in ["fetch.fsckObjects=true", "transfer.fsckObjects=true"] {
+            assert!(
+                UNBUNDLE_FSCK.windows(2).any(|w| w == ["-c", want]),
+                "reason: unbundle_without {want}"
+            );
+        }
+        let src = include_str!("verify_run.rs");
+        assert!(
+            src.contains("let mut unbundle: Vec<&str> = UNBUNDLE_FSCK.to_vec();"),
+            "reason: unbundle_not_given_the_settings"
+        );
+    }
+
+    #[test]
+    fn a_page_check_is_refused_to_a_user_page_and_a_carried_pairing() {
+        let src = include_str!("seat_input.rs").replace("\r\n", "\n");
+        let at = src.find("\"verify_built_in_page_only\"").unwrap();
+        let arm = &src[src[..at].rfind("Some(").unwrap()..at];
+        assert!(
+            arm.contains("crate::verify_run::RECEIPT")
+                && arm.contains("if page.carried || held_as_user_page(&page).await {"),
+            "reason: page_arm_lets_user_pages_in {arm}"
+        );
+    }
+
+    fn receipt_body(head: &str) -> Vec<u8> {
+        crate::receipt_check::seal(format!("HEAD {head}\nRC test=0\n").as_bytes())
+    }
+
+    #[test]
+    fn a_hand_run_receipt_in_pending_is_told_its_verdict_and_seal() {
+        let d = tempfile::tempdir().unwrap();
+        let h = "a".repeat(40);
+        std::fs::write(d.path().join("RECEIPT-ok.out"), receipt_body(&h)).unwrap();
+        let v = pending_receipt(d.path(), "RECEIPT-ok.out", &h, 0).unwrap();
+        assert_eq!(v["sealed"], true, "reason: sealed_not_seen {v}");
+        assert!(
+            !v.to_string().contains("RC test"),
+            "reason: receipt_line_told {v}"
+        );
+        let mut edited = receipt_body(&h);
+        edited[0] = b'X';
+        std::fs::write(d.path().join("RECEIPT-edited.out"), edited).unwrap();
+        let v = pending_receipt(d.path(), "RECEIPT-edited.out", &h, 0).unwrap();
+        assert_eq!(v["sealed"], false, "reason: edited_called_sealed {v}");
+        assert_eq!(v["green"], false);
+        for (file, head, why) in [
+            ("RECEIPT-none.out", h.as_str(), "receipt_not_found"),
+            ("../RECEIPT-ok.out", h.as_str(), "receipt_name"),
+            ("BUNDLE-ok.out", h.as_str(), "receipt_name"),
+            ("RECEIPT-ok.out", "main", "verify_fields"),
+        ] {
+            assert_eq!(
+                pending_receipt(d.path(), file, head, 0),
+                Err(why),
+                "reason: let_in {file}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                d.path().join("RECEIPT-ok.out"),
+                d.path().join("RECEIPT-link.out"),
+            )
+            .unwrap();
+            assert_eq!(
+                pending_receipt(d.path(), "RECEIPT-link.out", &h, 0),
+                Err("receipt_refused"),
+                "reason: link_followed"
+            );
+        }
     }
 
     #[test]

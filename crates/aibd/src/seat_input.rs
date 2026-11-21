@@ -601,7 +601,8 @@ pub async fn act(
             | crate::verify_run::BUNDLE
             | crate::verify_preview::PREVIEW_GET,
         ) => {
-            if held_as_user_page(&page).await || page.carried {
+            // G6: not a user folder page, not a carried pairing (5d33a REVIEW-g6verify N2)
+            if page.carried || held_as_user_page(&page).await {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "verify_built_in_page_only",

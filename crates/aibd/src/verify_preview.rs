@@ -180,7 +180,10 @@ pub fn token_of(data: &Path, id: &str) -> Option<String> {
         .join("data")
         .join("run")
         .join("aibd.token");
-    let t = std::fs::read_to_string(p).ok()?;
+    // its own file, opened without following a link (5d33a REVIEW-g6verify N1)
+    let mut f = crate::send_back::open_nofollow(&p).ok()?;
+    let mut t = String::new();
+    std::io::Read::read_to_string(&mut f, &mut t).ok()?;
     let t = t.trim();
     (!t.is_empty() && t.bytes().all(|b| b.is_ascii_graphic())).then(|| t.to_owned())
 }
