@@ -41,6 +41,24 @@ const CONNECT_SECS: u32 = 12;
 /// What the page is told at most of the list.
 const SHOWN_MAX: usize = 40;
 
+/// Machines whose line was written but whose gate did not answer (not pinned): what the card
+/// shows as ⚠️ until the machine is added again or taken away (1a93b 11-21 09:49). Kept only
+/// while aibd runs; adding again is idempotent there.
+static HALF: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn half_set(name: &str, on: bool) {
+    if let Ok(mut h) = HALF.lock() {
+        h.retain(|n| n != name);
+        if on {
+            h.push(name.to_owned());
+        }
+    }
+}
+
+fn half_now() -> Vec<String> {
+    HALF.lock().map(|h| h.clone()).unwrap_or_default()
+}
+
 /// One read-modify-write of the host list at a time.
 static LIST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -239,16 +257,22 @@ fn parse(body: Value) -> Option<Raw> {
 }
 
 /// What the card shows (the layout is 1a93b's): each machine, usable or why not, pinned or not.
-pub fn card(machines: &[(String, Result<Machine, &'static str>)], pinned: &[TrustedHost]) -> Value {
+pub fn card(
+    machines: &[(String, Result<Machine, &'static str>)],
+    pinned: &[TrustedHost],
+    half: &[String],
+) -> Value {
     let rows: Vec<Value> = machines
         .iter()
         .take(SHOWN_MAX)
         .map(|(name, m)| {
             let on = pinned.iter().any(|p| &p.name == name);
+            let h = !on && half.iter().any(|n| n == name);
             match m {
-                Ok(m) => json!({"name": name, "usable": true, "pinned": on,
+                Ok(m) => json!({"name": name, "usable": true, "pinned": on, "half": h,
                     "address": format!("{}@{}:{}", m.user, m.hostname, m.port)}),
-                Err(why) => json!({"name": name, "usable": false, "pinned": on, "why": why}),
+                Err(why) => json!({"name": name, "usable": false, "pinned": on, "half": h,
+                    "why": why}),
             }
         })
         .collect();
@@ -261,7 +285,7 @@ pub async fn list(st: AppState) -> Response {
     let got = tokio::task::spawn_blocking(move || {
         let ms = machines_now(&data)?;
         let p = pinned(&data).unwrap_or_default();
-        Some(card(&ms, &p))
+        Some(card(&ms, &p, &half_now()))
     })
     .await;
     match got {
@@ -355,6 +379,7 @@ pub async fn add(st: AppState, body: Value, by: String) -> Response {
     let key_id = crate::receipt_link::key_id(&public);
     match done {
         Ok(()) => {
+            half_set(&req.name, false);
             crate::seats::side_event(
                 &st,
                 "receipt",
@@ -365,9 +390,12 @@ pub async fn add(st: AppState, body: Value, by: String) -> Response {
             Json(json!({"done": true, "name": req.name, "pinned": true})).into_response()
         }
         // written there but the gate did not answer: not pinned, and the card offers the removal
-        Err("gate_did_not_answer") => Json(json!({"done": true, "name": req.name, "pinned": false,
+        Err("gate_did_not_answer") => {
+            half_set(&req.name, true);
+            Json(json!({"done": true, "name": req.name, "pinned": false,
                 "reason": "gate_did_not_answer"}))
-        .into_response(),
+            .into_response()
+        }
         Err(why) => refuse(status_of(why), why),
     }
 }
@@ -413,6 +441,7 @@ pub async fn remove(st: AppState, body: Value, by: String) -> Response {
     .unwrap_or(Err("host_list_unwritable"));
     match done {
         Ok(()) => {
+            half_set(&req.name, false);
             crate::seats::side_event(
                 &st,
                 "receipt",
@@ -475,9 +504,12 @@ mod tests {
                 ("jump".into(), Err("reached_through_something_else")),
             ],
             &pinned,
+            &["jump".to_owned(), "andymini".to_owned()],
         );
         assert_eq!(c["machines"][0]["address"], "owner@192.0.2.7:22");
         assert_eq!(c["machines"][0]["pinned"], true);
+        assert_eq!(c["machines"][0]["half"], false, "reason: pinned_shown_half");
+        assert_eq!(c["machines"][1]["half"], true, "reason: half_lost");
         assert_eq!(c["machines"][1]["usable"], false);
         assert_eq!(c["machines"][1]["why"], "reached_through_something_else");
         assert!(!c.to_string().contains("id_rsa"), "reason: key_file_shown");
