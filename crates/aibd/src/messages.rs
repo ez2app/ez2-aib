@@ -843,11 +843,68 @@ pub async fn inbox_as(st: AppState, me: String, body: Value) -> Response {
     }
 }
 
+/// `message_outbox {limit?}` (DESIGN-web-inbox-aibd-7ebca-1121 r1 E): what this seat sent,
+/// newest first: where each one is (sent, read, closed, refused and why, handed on to whom,
+/// its 1.x ledger copy's state); never another seat's rows.
+pub const OUTBOX: &str = "message_outbox";
+
+/// One row of a sent box.
+pub fn sent_view(r: &aib_store::MessageRow) -> Value {
+    let n = |k: &str| r.item.get(k).cloned().unwrap_or(Value::Null);
+    let mut o = json!({
+        "id": r.message_id,
+        "to_seat": r.to_key.strip_prefix("seat:").unwrap_or(&r.to_key),
+        "status": n("status"),
+        "created": r.created,
+        "delivered_at": n("delivered_at"),
+        "read_at": n("read_at"),
+        "done_at": n("done_at"),
+        "done_why": n("done_why"),
+    });
+    let failed = r.item.get("failed").and_then(Value::as_bool) == Some(true);
+    if failed {
+        o["blocked"] = json!({"reason": n("failed_code")});
+    }
+    for k in ["forwarded_to", "dm_status"] {
+        if r.item.get(k).is_some_and(|v| !v.is_null()) {
+            o[k] = n(k);
+        }
+    }
+    // a letter written into a 1.x ledger: its id there (crate::seat_send::to_ledger)
+    if let Some(id) = r
+        .item
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.strip_prefix(crate::seat_send::LEGACY_TO))
+    {
+        o["dm_id"] = json!(id);
+    }
+    o
+}
+
+/// The sent box of `me` (`seat:<seat id>`).
+pub async fn outbox_as(st: AppState, me: String, body: Value) -> Response {
+    let limit = body
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(aib_store::PAGE_MAX, |n| {
+            u32::try_from(n).unwrap_or(u32::MAX)
+        });
+    let db = st.messages.clone();
+    match tokio::task::spawn_blocking(move || db.sent_by(&me, limit)).await {
+        Ok(Ok(rows)) => Json(json!({
+            "messages": rows.iter().map(sent_view).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        _ => internal("messages not read"),
+    }
+}
+
 /// Whether `body` is one of a seat's own message acts (see [`seat_act`]).
 pub fn is_seat_act(body: &Value) -> bool {
     matches!(
         body.get("type").and_then(Value::as_str),
-        Some(INBOX | READ | DONE)
+        Some(INBOX | READ | DONE | OUTBOX)
     )
 }
 
@@ -858,6 +915,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     match body.get("type").and_then(Value::as_str) {
         Some(READ) => read_as(st, me, true, body).await,
         Some(DONE) => done_as(st, me, true, body).await,
+        Some(OUTBOX) => outbox_as(st, me, body).await,
         _ => inbox_as(st, me, body).await,
     }
 }

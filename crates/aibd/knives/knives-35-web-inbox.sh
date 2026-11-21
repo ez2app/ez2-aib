@@ -45,3 +45,9 @@ wk crates/aibd/src/dm_import.rs \
    '                if false && !to_this_code { // knife' \
    a_move_brings_the_open_letters_along_once \
    '--lib dm_import::tests::a_move_brings_the_open_letters_along_once'
+# WK7 a seat's sent box shows another seat's letters (r1 E)
+wk crates/aib-store/src/seat_moves.rs \
+   '            "SELECT {} FROM messages WHERE from_key = ?1' \
+   '            "SELECT {} FROM messages WHERE ?1 IS NOT NULL -- knife' \
+   letters_cross_the_bridge_once_each_way \
+   '--test seat_bridge letters_cross_the_bridge_once_each_way'

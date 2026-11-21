@@ -1039,7 +1039,7 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "unknown_act_type",
             // L5 (0eed7 / 5d33a; 519d0 r16 裁定 5): what a seat's token may act, all of it
             "a seat may seat_send, seat_now, thread_open, thread_send, thread_view, thread_read, \
-             message_inbox, message_read or message_done",
+             message_inbox, message_read, message_done or message_outbox",
         );
     }
     let (Some(to), Some(text)) = (

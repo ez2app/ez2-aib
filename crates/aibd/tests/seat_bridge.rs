@@ -180,6 +180,30 @@ async fn letters_cross_the_bridge_once_each_way() {
         assert_eq!(row.item["dm_status"], "done", "reason: close_not_followed");
     }
 
+    // r1 E: the sent box has its own letters, the ledger copy's state, and no other seat's
+    let r = act(&d, &tok, json!({"type": "message_outbox"})).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let rows = r.json["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 4, "reason: outbox_count {}", r.body);
+    assert!(
+        rows.iter().all(|m| m["to_seat"] == "legacy:519d0"),
+        "reason: other_rows {}",
+        r.body
+    );
+    let (mid, dm) = &sent[2];
+    let newest = &rows[0];
+    assert_eq!(newest["id"], mid.as_str(), "reason: not_newest_first");
+    assert_eq!(newest["dm_id"], dm.as_str(), "reason: ledger_id_missing");
+    assert_eq!(newest["dm_status"], "done", "reason: ledger_state_missing");
+    let other = aibd::seat_token::tokens().issue(&safe).unwrap();
+    let r = act(&d, &other, json!({"type": "message_outbox"})).await;
+    assert_eq!(
+        r.json["messages"].as_array().map(Vec::len),
+        Some(0),
+        "reason: saw_another_seats"
+    );
+    aibd::seat_token::tokens().revoke(&safe);
+
     aibd::seat_token::tokens().revoke(&seat);
     d.shutdown().await;
 }

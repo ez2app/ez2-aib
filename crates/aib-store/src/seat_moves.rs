@@ -23,6 +23,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS seat_moves_code_live ON seat_moves (old_code)
     WHERE unmoved_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS seat_moves_seat_live ON seat_moves (seat_id)
     WHERE unmoved_at IS NULL;
+CREATE INDEX IF NOT EXISTS messages_from ON messages (from_key, created_unix);
 ";
 
 /// Add the table when it is missing (every open; nothing when it is there).
@@ -155,6 +156,22 @@ pub struct Forward<'a> {
 }
 
 impl MessageDb {
+    /// What `from_key` sent, newest first, at most `limit` ([`crate::PAGE_MAX`] at most): a
+    /// seat's sent box (DESIGN-web-inbox-aibd-7ebca-1121 r1 E).
+    pub fn sent_by(&self, from_key: &str, limit: u32) -> Result<Vec<crate::MessageRow>> {
+        let c = self.read()?;
+        let mut st = c.prepare(&format!(
+            "SELECT {} FROM messages WHERE from_key = ?1
+             ORDER BY created_unix DESC, rowid DESC LIMIT ?2",
+            crate::messages::COLS
+        ))?;
+        let rows = st.query_map(
+            params![from_key, i64::from(limit.clamp(1, crate::PAGE_MAX))],
+            crate::messages::from_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Write `f` onto the row at `expect_rev` (as [`MessageDb::update`], with the receiver and
     /// the text too).
     pub fn forward(
