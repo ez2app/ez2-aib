@@ -31,13 +31,13 @@ dw crates/aibd/src/mail_nudge.rs \
 # DW5 a replaced look-again still fires
 dw crates/aibd/src/mail_nudge.rs \
    '    if p.get(seat) == Some(&at) {' \
-   '    if p.contains_key(seat) { // knife' \
+   '    if { let _ = at; p.contains_key(seat) } { // knife' \
    a_seat_has_one_look_again_waiting \
    '--lib mail_nudge::tests::a_seat_has_one_look_again_waiting'
 # DW6 a work order is named a second time (DECISION-council-driveweb r1: once, then the card)
 dw crates/aibd/src/mail_nudge.rs \
    '    !(crate::urgent::is_dispatch(r) && nudged(r) >= 1)' \
-   '    true // knife' \
+   '    { let _ = r; true } // knife' \
    a_work_order_is_named_at_once_and_only_once \
    '--lib mail_nudge::tests::a_work_order_is_named_at_once_and_only_once'
 # DW7 any seat's 「派工:」 is marked a work order (the rank is not compared)
@@ -96,7 +96,7 @@ ss '    row.idem_key = Some(send_key.to_owned());' \
    a_system_work_order_waits_to_be_written_and_reads_as_the_drives
 # DW17 a safe seat's card reaches a dgrs seat through the drive (519d0 擇定, 5d33a L3)
 ss '    may_send(origin_mode, to_mode, dgrs_on).map_err(|c| {' \
-   '    may_send(Some("dgrs"), to_mode, dgrs_on).map_err(|c| { // knife' \
+   '    may_send(origin_mode.and(Some("dgrs")).or(Some("dgrs")), to_mode, dgrs_on).map_err(|c| { // knife' \
    a_system_work_order_waits_to_be_written_and_reads_as_the_drives
 # DW18 a work order with no origin seat is sent
 ss '        return Err("origin_not_found");' \

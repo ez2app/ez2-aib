@@ -31,7 +31,7 @@ ur crates/aibd/src/urgent.rs \
 # UR8 the hour window counts letters of any age
 ur crates/aibd/src/urgent.rs \
    '        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, now_unix - 3600)' \
-   '        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, i64::MIN) // knife' \
+   '        .sent_at_level_since(&format!("seat:{seat_id}"), URGENT, now_unix.min(i64::MIN)) // knife' \
    three_urgent_letters_an_hour_then_plain \
    '--lib urgent::tests::three_urgent_letters_an_hour_then_plain'
 # UR9 seat_send judges but never marks the row (the inbox does not say urgent)
