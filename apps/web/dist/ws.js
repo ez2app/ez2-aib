@@ -3907,7 +3907,7 @@
   // 第 6 件第一片(a9136 IFACE-web-merge r1):有 repo_copy 的席 ⇒「送回倉(建新分支)」;這種席不給合回。
   // 兩步跟登記倉同形:先問(202 帶 plan 給畫面)→ 指紋 → 帶票 + plan.head 重送 ⇒ 200 {repo, branch, head, commits, files};分支名以 200 那次為準
   const SB_WHY = {
-    seat_busy: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按一次「' + '交回本機原倉' + '」', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
+    seat_busy: '這一席正在做事,這一輪做完再按「交回本機原倉」(不用停席)', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
     settings_touched: '動到 AI 設定檔、workflow、.gitmodules、.lfsconfig 或符號連結,不能從頁面送', objects_missing: '副本的物件不齊,沒有送',
     too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,AIB 不在那裡跑 git',
     send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次交回本機原倉',
@@ -3917,11 +3917,13 @@
   };
   const SB_SAFE = '只在你這台電腦的原倉建一條新分支:main 和你正在用的分支都不動,也不會上 GitHub。';
   const SB_NAME = '交回本機原倉(新分支)'; // 519d0 10:07 第 4 點(Andy 10:05 連問兩次「送回倉」是什麼)
+  // G4 跟上(519d0 22:41,5d33a REVIEW-g4a r3 N3):開著閒著的席也能交回;只有正在做事(aibd 給的 repo_copy.sendable === false)才擋,不看 running()
+  const sbHeld = (id) => { const s = seatById(id); const rc = s && s.repo_copy; return !!rc && typeof rc === 'object' && rc.sendable === false; };
   function sendBackHtml(s) {
     const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
     if (!rc) return '';
     if (S.sb && S.sb.seat === s.seat_id) return '';
-    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((running(s.seat_id) || rc.sendable === false ? '這一席還在跑:先按「停止」,停好再交回;' : '') + '把這一席副本裡已提交的改動,交回你這台電腦的原倉「' + String(rc.repo || '') + '」,建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>${S.sbBusy === s.seat_id || running(s.seat_id) ? '先停止,再' : ''}${SB_NAME}</button>`;
+    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((rc.sendable === false ? '這一席正在做事:這一輪做完再交回(不用停席);' : '') + '把這一席副本裡已提交的改動,交回你這台電腦的原倉「' + String(rc.repo || '') + '」,建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>${S.sbBusy === s.seat_id || rc.sendable === false ? '這輪做完再' : ''}${SB_NAME}</button>`;
   }
   function sendBackBox(s) {
     const B = S.sb && S.sb.seat === s.seat_id ? S.sb : null, M = S.sbMsg && S.sbMsg.seat === s.seat_id ? S.sbMsg : null;
@@ -4850,7 +4852,7 @@
     if (x.closest('[data-rcpno]')) { S.rcpAsk = null; render(); return; }
     const rg = x.closest('[data-rcpgo]'); if (rg && !S.sending) { const ti = document.querySelector('[data-rcptests]'); if (ti && S.rcpAsk) S.rcpAsk.tests = ti.value; return rcpGo(rg.dataset.rcpgo); }
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
-    const sbb = x.closest('[data-sendback]'); if (sbb && running(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按「交回本機原倉」' }; say(S.sbMsg.text, 'err'); return render(); }
+    const sbb = x.closest('[data-sendback]'); if (sbb && sbHeld(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席正在做事,沒有交回。這一輪做完再按「交回本機原倉」(不用停席)' }; say(S.sbMsg.text, 'err'); return render(); }
     if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
     const rlb = x.closest('[data-relogin]'); if (rlb && !(S.relog && !S.relog.done)) return relogin(rlb.dataset.relogin);
     if (x.closest('[data-relogsend]')) return relogSend();
