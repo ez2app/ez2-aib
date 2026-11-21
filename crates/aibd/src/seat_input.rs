@@ -50,6 +50,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
+    crate::seat_move::MOVE,
+    crate::seat_move::UNMOVE,
     crate::test_host_web::LIST,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
@@ -268,6 +270,28 @@ pub async fn act(
                 };
                 return crate::gh_view::seat_act(st, &seat, body).await;
             }
+            // G3 (PREREAD-seat-g1write-g3 r2): a moved seat reads and closes its 1.x letters
+            if crate::seat_dm::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_dm::seat_act(st, &seat, body).await;
+            }
+            // PREREAD-seat-pending-read: a seat reads the pending folder, read-only
+            if crate::seat_pending::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_pending::seat_act(st, &seat, body).await;
+            }
             // DESIGN-seat-now-all: a trusted, listed seat reads what every seat is doing
             if crate::seat_now_all::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -442,6 +466,24 @@ pub async fn act(
                 crate::test_host_web::LIST => crate::test_host_web::list(st).await,
                 crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
                 _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
+        // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
+        // built-in page in this pairing only, with the owner's fingerprint; going back needs none
+        Some(k @ (crate::seat_move::MOVE | crate::seat_move::UNMOVE)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat is moved from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::seat_move::MOVE {
+                crate::seat_move::moved(st, body, by).await
+            } else {
+                crate::seat_move::unmoved(st, body, by).await
             };
         }
         // N-webonly-c6-merge (DESIGN-web-merge r2): a seat's commits in its copy of a

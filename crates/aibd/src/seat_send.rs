@@ -881,6 +881,150 @@ async fn settle(st: &AppState, message_id: &str, how: Settled<'_>) -> Option<i64
     }
 }
 
+/// Whether a seat of `mode` may write into a 1.x seat's ledger: work or dgrs only, whatever
+/// else (safe, none, a mode this build does not know) may not (5d33a REVIEW-g5bridge M1, L1:
+/// an allow list, as mode_takes_input).
+pub fn may_send_to_legacy(mode: Option<&str>) -> bool {
+    matches!(mode, Some("work" | "dgrs"))
+}
+
+/// A web seat's row for a letter written into the 1.x ledger is to `legacy:<code>` (its to key
+/// `seat:legacy:<code>`, as queued_row writes it).
+pub const LEGACY_TO: &str = "legacy:";
+
+/// A web seat's letter to a 1.x seat (G5 信橋, DESIGN-g5-bridge-7ebca-1121 r1 §3): the same
+/// pace as any seat_send (to `legacy:<code>`), the text checked as a page's letter is
+/// (crate::legacy_send::check_text), aibd's row first (queued), then the letter written into
+/// the ledger with the lock and file shape of dm_queue.py (aib-dmq-store; the 1.x drainer
+/// delivers it), and the row delivered with the letter's id. The sender's old code is only
+/// the one the owner's fingerprint moved (aib_store::seat_moves); a web seat without one
+/// claims no seat. No idempotency key: refused, a retry is a new letter.
+async fn to_ledger(
+    st: &AppState,
+    from: &str,
+    fm: &aib_store::SeatMeta,
+    code: &str,
+    text: &str,
+    idem: Option<&str>,
+) -> Response {
+    // 5d33a REVIEW-g5bridge M1: a 1.x seat holds every hand (as a dgrs seat does); a safe
+    // seat reads what may carry an injection and writes into none of them
+    if !may_send_to_legacy(fm.mode.as_deref()) {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "seat_mode_cannot_send_to_legacy",
+            "only a work or dgrs seat writes into a 1.x seat's ledger",
+        );
+    }
+    if idem.is_some() {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "idempotency_not_for_ledger",
+            "a letter to a 1.x seat takes no idempotency_key",
+        );
+    }
+    if let Err((c, _)) = crate::legacy_send::check_text(text) {
+        return refuse(StatusCode::BAD_REQUEST, c, "text not sent");
+    }
+    let Some(cabin) = crate::bridge_cfg::now().legacy_cabin else {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "legacy_off",
+            "aibd is not told which cabin's old-style seats it may write to (legacy_cabin in <data>/bridge.json)",
+        );
+    };
+    let to_key = format!("{LEGACY_TO}{code}");
+    let now = Instant::now();
+    // the pace lock is dropped here, before any await
+    let admitted = pace().admit(from, &to_key, fm.cabin.as_deref().unwrap_or_default(), now);
+    if let Err(code) = admitted {
+        return refuse(StatusCode::TOO_MANY_REQUESTS, code, "not sent");
+    }
+    let sha = hex(&Sha256::digest(text.as_bytes()));
+    let Some(row) = queued_row(from, &to_key, fm.mode.as_deref(), text, &sha) else {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "no message id",
+        );
+    };
+    let message_id = row.message_id.clone();
+    let db = st.messages.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || db.insert(row)).await,
+        Ok(Ok(aib_store::Inserted::New))
+    ) {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "message_not_stored",
+            "nothing was written",
+        );
+    }
+    let Some(state_root) = crate::seat_move::ledger().and_then(|q| {
+        q.parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+    }) else {
+        settle(st, &message_id, Settled::Failed("legacy_off")).await;
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "legacy_off",
+            "no mail ledger",
+        );
+    };
+    let (m, f) = (st.messages.clone(), from.to_owned());
+    let old = tokio::task::spawn_blocking(move || m.moved_code(&f))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    let (c, t, id, web) = (
+        code.to_owned(),
+        text.to_owned(),
+        message_id.clone(),
+        crate::seats::seat_code(from),
+    );
+    let wrote = tokio::task::spawn_blocking(move || {
+        let who = crate::legacy_send::Sender::Seat {
+            old_code: old.as_deref(),
+            web_code: &web,
+            message_id: &id,
+        };
+        crate::legacy_send::send_as(&state_root, &cabin, &c, &t, &who, None)
+    })
+    .await;
+    let sent = match wrote {
+        Ok(Ok(s)) => s,
+        Ok(Err((c, d))) => {
+            settle(st, &message_id, Settled::Failed(c)).await;
+            let status = if c == "write_failed" {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::NOT_FOUND
+            };
+            return refuse(status, c, &d);
+        }
+        Err(_) => {
+            settle(st, &message_id, Settled::Failed("internal")).await;
+            return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not written");
+        }
+    };
+    let ledger_id = format!("{LEGACY_TO}{}", sent.id);
+    settle(st, &message_id, Settled::Delivered(&ledger_id)).await;
+    journal(
+        st,
+        "seat.message",
+        json!({"message_id": message_id, "from_seat": from, "to_seat": to_key,
+            "len": text.len(), "sha256": sha, "state": "delivered", "dm_id": sent.id}),
+    )
+    .await;
+    Json(
+        json!({"message_id": message_id, "to": to_key, "state": "delivered",
+        "dm_id": sent.id, "relay": sent.relay}),
+    )
+    .into_response()
+}
+
 pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Response {
     let Some(from) = crate::seat_token::tokens().seat(&key) else {
         return refuse(
@@ -895,7 +1039,7 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "unknown_act_type",
             // L5 (0eed7 / 5d33a; 519d0 r16 裁定 5): what a seat's token may act, all of it
             "a seat may seat_send, seat_now, thread_open, thread_send, thread_view, thread_read, \
-             message_inbox, message_read or message_done",
+             message_inbox, message_read, message_done or message_outbox",
         );
     }
     let (Some(to), Some(text)) = (
@@ -927,10 +1071,31 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "this seat is gone",
         );
     };
+    // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §3): a 1.x code the owner moved into a web seat
+    // names that seat; a 1.x code with a folder in this machine's ledger and no web seat of
+    // that code is written there (to_ledger)
+    let moved_to = if aib_store::seat_moves::code_ok(to) {
+        let (m, c) = (st.messages.clone(), to.to_owned());
+        tokio::task::spawn_blocking(move || m.moved_seat(&c))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    } else {
+        None
+    };
+    let to = moved_to.as_deref().unwrap_or(to);
     // another cabin's seat is answered as no seat at all; a seat code names a seat when it is
     // the only one of the cabin with it (519d0 L1: the receive marker shows the code)
     let tm = match resolve(to, metas.iter().filter(|m| m.cabin == fm.cabin)) {
         Ok(m) => m,
+        Err("seat_not_found")
+            if moved_to.is_none()
+                && aib_store::seat_moves::code_ok(to)
+                && crate::seat_move::in_ledger(to) =>
+        {
+            return to_ledger(&st, &from, fm, to, text, idem).await;
+        }
         Err(code) => {
             return refuse(
                 if code == "seat_ambiguous" {
@@ -1203,6 +1368,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// 5d33a REVIEW-g5bridge L1: only work and dgrs seats write into a 1.x ledger.
+    #[test]
+    fn only_work_and_dgrs_seats_write_into_a_ledger() {
+        assert!(may_send_to_legacy(Some("work")));
+        assert!(may_send_to_legacy(Some("dgrs")));
+        for m in [Some("safe"), None, Some(""), Some("Work"), Some("other")] {
+            assert!(!may_send_to_legacy(m), "reason: mode_let_through {m:?}");
+        }
+    }
 
     /// B1dm-S5: the row is written queued before anything is typed, from `seat:<a>` to
     /// `seat:<b>` in their thread; delivered / pending / refused say what happened after.

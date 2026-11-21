@@ -1023,6 +1023,7 @@ label.rvr{cursor:pointer}
 .trs.on{color:var(--green)}
 .trm{font-size:12px;margin:4px 0;color:var(--dim)}
 .trm.bad{color:var(--red)}
+.mvc{width:6em;font:inherit;font-size:12px;margin-left:8px;padding:2px 4px}
 .sbw{font-size:13px;margin:6px 0;padding:8px 10px;border:1px solid var(--line2);border-radius:8px}
 .sbw .sbf{color:var(--gold);margin-top:4px}
 .sbl{font-size:12px;color:var(--dim);margin-top:4px}
@@ -1039,7 +1040,7 @@ label.rvr{cursor:pointer}
 .snh{color:var(--dim);font-size:12px;margin-bottom:2px}
 .snl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 0}
 .snn{background:none;border:0;color:var(--text);font-weight:600;cursor:pointer;padding:0}
-.snl b.w{color:var(--gold)}
+.snl b.snw{color:var(--gold)}
 .snl b.bad,.body.bad{color:var(--red)}
 .body.ok{color:var(--green)}
 .pbx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
@@ -1052,3 +1053,59 @@ label.rvr{cursor:pointer}
 .ghp a.lk{color:var(--blue);text-decoration:underline}
 .ghk.bad{color:var(--red)}
 .adlg .adm{padding:6px 10px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.adlg .adm .apn{flex-basis:100%;padding:0}.adlg .adm .apq{flex:1;min-width:140px}.msw{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.msw .apq{min-width:160px;font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text)}.msw .apq:focus{outline:none;border-color:var(--gold)}
+.host .thh{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line2);font-size:13px}.host .thh b{flex:1}.host .thr{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;padding:3px 2px}.host .thr .hn{flex:1;min-width:0}.host .thr .k{padding:2px 10px;font-size:12px}.host .thm{flex-basis:100%;font-size:12px;color:var(--dim);padding-left:16px}.host .thm.bad,.host .thr.bad{color:var(--bad,#e5484d)}
+.host .thr .aw{display:block;font-style:normal;font-size:11px;color:var(--mute)}
+/* 519d0 10:07:失敗碼淡色、交回失敗的訊息放大、席卡倉標、母體頁導去預覽 */
+.wkst.soft{color:var(--mute)}
+.trm.bad.big{font-size:13px;padding:6px 10px;border:1px solid var(--red);border-radius:6px;background:color-mix(in srgb,var(--red) 10%,transparent);color:var(--text)}
+.rpt{margin-left:6px;font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
+.rpt.cp{border-color:var(--gold2);color:var(--gold2)}
+.adlg .aok{margin:12px 0;padding:10px 12px;border:1px solid var(--gold2);border-radius:8px;font-size:13px;line-height:1.6}
+/* 等回覆列(519d0 SPEC-wait-row-unify r0):通常幾秒、超過三倍變黃;列上直接停手;單席窗自己送的話 */
+.runl .wusual{margin-left:8px;font-size:11px;color:var(--mute)}
+.runl .wusual.slow{color:var(--gold2)}
+.runl .wstop{margin-left:auto;padding:2px 10px;font-size:12px}
+.wk.in.mine{justify-content:flex-end;opacity:.85}
+/* 總收件匣(1a93b DESIGN-web-inbox-page r2) */
+.ib.inbb.urg{border-color:var(--red);color:var(--red)}
+
+.inbtabs,.inbf{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.inbtabs .inbtab.on,.inbf .inbs.on{background:var(--gold);color:var(--gold-ink);font-weight:700}
+.inbf .inbc{flex:1;min-width:120px;width:auto}
+.inbl{display:flex;flex-direction:column;gap:4px;max-height:60vh;overflow:auto}
+.inbr{border:1px solid var(--line);border-radius:8px}
+.inbr.warn{border-color:var(--gold2)}
+.inbr.red{border-color:var(--red)}
+.inbh{display:flex;gap:8px;align-items:center;width:100%;text-align:left;background:none;border:0;color:inherit;padding:6px 8px;flex-wrap:wrap}
+.inbt{flex:1;min-width:160px}
+.inbw,.inba{font-size:12px;color:var(--mute)}
+.inl{font-size:11px;padding:0 6px;border-radius:6px}
+.inl.urg{background:var(--red);color:#fff}
+.inl.ntc{border:1px solid var(--line)}
+.ticks i{font-style:normal;opacity:.3;margin-right:4px;font-size:12px}
+.ticks i.on{opacity:1;color:var(--ok)}
+.inbbad{color:var(--red);font-size:12px}
+.inbsup,.inbdup{font-size:11px;color:var(--mute)}
+.inbbody{padding:6px 10px 10px}
+.inbnote{font-size:12px;color:var(--gold2);margin-bottom:4px}
+.inbbody pre{white-space:pre-wrap;word-break:break-word;margin:0}
+.inbvia{font-size:11px;border:1px dashed var(--mute);border-radius:5px;padding:0 5px;color:var(--mute)}
+.inbstat{margin-left:auto;font-size:12px;color:var(--mute);align-self:center}
+.inbstat b{color:var(--text)}
+/* 寬螢幕四欄並排、窄螢幕分頁(519d0 12:20,同 MOCK-web-inbox) */
+.cdlg.inbd{width:min(1400px,calc(100vw - 32px))}
+.inbcols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.inbcol{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;min-width:0}
+.inbch{font-weight:700;margin:0 2px 6px}
+.inbcol .inbl{max-height:55vh}
+.inbtabs .inbtab{display:none}
+@media (max-width:1000px){.inbcols{grid-template-columns:1fr}.inbcol{display:none}.inbcol.on{display:block}.inbch{display:none}.inbtabs .inbtab{display:inline-block}}
+.inbsent{margin-top:12px}
+.inbsh{cursor:pointer;font-weight:700}
+.inbsr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 2px;border-bottom:1px solid var(--line);font-size:13px}
+/* 單席窗待處理摘要 */
+.sinb{margin:6px 0;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--panel)}
+.sinbh{cursor:pointer;font-weight:700;font-size:13px}
+.sir{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;font-size:13px;border-top:1px solid var(--line)}
+.sir .sig{font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line)}
+.sir.g0 .sig{background:var(--red);color:#fff;border-color:var(--red)}

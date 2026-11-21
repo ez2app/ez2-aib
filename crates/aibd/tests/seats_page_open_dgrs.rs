@@ -220,7 +220,7 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     // (opened while a session slot is free: the start-up token waits for running)
     // a work seat the start-up token opened in a folder it chose (a work seat's folder is
     // under <data>/seat-work, 5d33a M1 on ecf54f91d; still not that seat's own folder)
-    let seat_work = dir.path().join("data").join("seat-work");
+    let seat_work = aibd::folders::folder(&dir.path().join("data"), "seat-work");
     let (chosen, _) = d
         .open_as("claude", "work", &harness::seat_dir(&seat_work, "chosen"))
         .await;
@@ -479,7 +479,7 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
     assert_eq!(r.code, 201, "reason: own_tree_refused {}", r.body);
     let third = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
     let third_session = r.json["session"]["id"].as_str().unwrap_or("").to_string();
-    let seat_work = dir.path().join("data").join("seat-work");
+    let seat_work = aibd::folders::folder(&dir.path().join("data"), "seat-work");
     let tree = std::fs::read_dir(&seat_work)
         .unwrap()
         .flatten()

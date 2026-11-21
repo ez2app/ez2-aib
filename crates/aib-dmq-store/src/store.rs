@@ -13,8 +13,8 @@ use aib_dmq::spec::{Reason, Status, ITEM_SCHEMA, LEGACY_ITEM_SCHEMAS, ORDER_SCHE
 use aib_dmq::transition::{decide, Decision, Outcome};
 use serde_json::{json, Map, Value};
 
-use crate::fsx::{replace, Replace};
-use crate::locks::{lock, LockError, DIR_LOCK_TIMEOUT};
+use crate::fsx::{Replace, SeatDir};
+use crate::locks::{lock_in, LockError, DIR_LOCK_TIMEOUT};
 
 pub const AUDIT_FILE: &str = "audit.jsonl";
 pub const ORDER_FILE: &str = "order.json";
@@ -100,6 +100,9 @@ pub struct Store {
     pub queue: PathBuf,
     /// The repository a commit given as evidence must be in.
     pub repo: PathBuf,
+    /// Whether a commit given as evidence is looked up with git (1.x: yes). aibd's seat path
+    /// turns it off (5d33a REVIEW-g3dm L1): a commit is then no evidence and git never runs.
+    pub git_evidence: bool,
 }
 
 /// What the caller measured about itself, for the audit line.
@@ -158,7 +161,14 @@ impl Store {
         Store {
             queue: state_root.join("state").join("dm-queue"),
             repo: repo.to_path_buf(),
+            git_evidence: true,
         }
+    }
+
+    /// This store, never running git for evidence.
+    pub fn without_git(mut self) -> Store {
+        self.git_evidence = false;
+        self
     }
 
     pub fn seat_dir(&self, seat: &str) -> Result<PathBuf, StoreError> {
@@ -168,18 +178,22 @@ impl Store {
         Ok(self.queue.join(seat))
     }
 
-    fn ensure_dir(&self, seat: &str) -> Result<PathBuf, StoreError> {
+    /// The seat's folder held open, made (0700) first when missing (5d33a PREREAD-g5 L1: no
+    /// link is followed into it, and what is written goes where it was opened).
+    pub fn ensure_dir(&self, seat: &str) -> Result<SeatDir, StoreError> {
         let d = self.seat_dir(seat)?;
-        std::fs::create_dir_all(&d).map_err(|e| StoreError::Write {
+        let dir = SeatDir::open(&self.queue, seat, true).map_err(|e| StoreError::Write {
             path: d.clone(),
             why: e.to_string(),
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
-        }
-        Ok(d)
+        dir.make_private();
+        Ok(dir)
+    }
+
+    /// The seat's folder held open when it is there (`None`: no folder, or not a plain folder).
+    pub fn open_dir(&self, seat: &str) -> Result<Option<SeatDir>, StoreError> {
+        self.seat_dir(seat)?;
+        Ok(SeatDir::open(&self.queue, seat, false).ok())
     }
 
     pub fn item_path(&self, seat: &str, id: &str) -> Result<PathBuf, StoreError> {
@@ -190,8 +204,11 @@ impl Store {
     }
 
     pub fn read_item(&self, seat: &str, id: &str) -> Result<ItemRead, StoreError> {
-        let path = self.item_path(seat, id)?;
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        self.item_path(seat, id)?;
+        let Some(dir) = self.open_dir(seat)? else {
+            return Ok(ItemRead::Missing);
+        };
+        let Ok(Some(text)) = dir.read_to_string(&format!("{id}.json")) else {
             return Ok(ItemRead::Missing);
         };
         let Ok(Value::Object(m)) = serde_json::from_str::<Value>(&text) else {
@@ -222,7 +239,7 @@ impl Store {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let path = self.item_path(seat, &id)?;
+        self.item_path(seat, &id)?;
         let dir = self.ensure_dir(seat)?;
         let mut out: Map<String, Value> = item
             .iter()
@@ -237,17 +254,19 @@ impl Store {
             out.insert("schema".into(), Value::from(ITEM_SCHEMA));
         }
         let w = {
-            let _g = lock(&dir, seat, Level::Directory, DIR_LOCK_TIMEOUT)?;
-            put(&path, &Value::Object(out))?
+            let _g = lock_in(&dir, seat, Level::Directory, DIR_LOCK_TIMEOUT)?;
+            put(&dir, &format!("{id}.json"), &Value::Object(out))?
         };
-        self.bump_source_rev(seat);
+        bump_in(&dir);
         Ok(w)
     }
 
     /// order.json ids (a missing or foreign file reads as empty).
     pub fn order_ids(&self, seat: &str) -> Result<Vec<String>, StoreError> {
-        let path = self.seat_dir(seat)?.join(ORDER_FILE);
-        Ok(read_order(&path))
+        Ok(self
+            .open_dir(seat)?
+            .map(|d| read_order(&d))
+            .unwrap_or_default())
     }
 
     /// Change order.json inside the folder lock (read, change, write: no window between).
@@ -257,23 +276,23 @@ impl Store {
         f: impl FnOnce(&mut Vec<String>),
     ) -> Result<Option<Written>, StoreError> {
         let dir = self.ensure_dir(seat)?;
-        let path = dir.join(ORDER_FILE);
         let w = {
-            let _g = lock(&dir, seat, Level::Directory, DIR_LOCK_TIMEOUT)?;
-            let mut ids = read_order(&path);
+            let _g = lock_in(&dir, seat, Level::Directory, DIR_LOCK_TIMEOUT)?;
+            let mut ids = read_order(&dir);
             let before = ids.clone();
             f(&mut ids);
             if ids == before {
                 None
             } else {
                 Some(put(
-                    &path,
+                    &dir,
+                    ORDER_FILE,
                     &json!({"schema": ORDER_SCHEMA, "seat": seat, "ids": ids}),
                 )?)
             }
         };
         if w.is_some() {
-            self.bump_source_rev(seat);
+            bump_in(&dir);
         }
         Ok(w)
     }
@@ -287,14 +306,19 @@ impl Store {
     pub fn order_remove(&self, seat: &str, id: &str) -> Result<Option<Written>, StoreError> {
         let w = self.order_update(seat, |ids| ids.retain(|i| i != id))?;
         if self.order_ids(seat)?.is_empty() && !self.anything_waiting(seat)? {
-            let _ = std::fs::remove_file(self.seat_dir(seat)?.join(VIEW_FILE));
+            if let Some(d) = self.open_dir(seat)? {
+                let _ = d.remove(VIEW_FILE);
+            }
         }
         Ok(w)
     }
 
     fn anything_waiting(&self, seat: &str) -> Result<bool, StoreError> {
-        let dir = self.seat_dir(seat)?;
-        let Ok(rd) = std::fs::read_dir(&dir) else {
+        // names only from the listing; each item is then read through the folder held open
+        let Some(dir) = self.open_dir(seat)? else {
+            return Ok(false);
+        };
+        let Ok(rd) = std::fs::read_dir(dir.path()) else {
             return Ok(false);
         };
         for e in rd.flatten() {
@@ -326,23 +350,11 @@ impl Store {
     /// 1.x waits on rev.lock without a limit; the hour here only stops a stuck holder from
     /// hanging the command for ever. It is not the short wait fsx::pause speaks of.
     pub fn bump_source_rev(&self, seat: &str) -> Option<u64> {
-        let dir = self.seat_dir(seat).ok()?;
-        let lock_path = dir.join(aib_dmq::lock::SOURCE_REV_LOCK);
-        let f = crate::fsx::create_private(&lock_path, false).ok()?;
-        crate::fsx::lock_ex(&f, Duration::from_secs(3600)).ok()?;
-        let path = dir.join(SOURCE_REV_FILE);
-        let n = self.source_rev(seat) + 1;
-        let r = replace(&path, format!("{n}\n").as_bytes()).ok();
-        let _ = f.unlock();
-        r.map(|_| n)
+        bump_in(&self.open_dir(seat).ok()??)
     }
 
     pub fn source_rev(&self, seat: &str) -> u64 {
-        self.seat_dir(seat)
-            .ok()
-            .and_then(|d| std::fs::read_to_string(d.join(SOURCE_REV_FILE)).ok())
-            .and_then(|t| t.trim().parse().ok())
-            .unwrap_or(0)
+        self.open_dir(seat).ok().flatten().map_or(0, |d| rev_in(&d))
     }
 
     /// One audit line (approved and refused moves alike). Never fails the caller.
@@ -359,12 +371,7 @@ impl Store {
         let Ok(line) = crate::pyjson::dumps(&Value::Object(rec)) else {
             return;
         };
-        let path = dir.join(AUDIT_FILE);
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path);
-        if let Ok(mut f) = f {
+        if let Ok(mut f) = dir.append(AUDIT_FILE) {
             let _ = f.write_all(format!("{line}\n").as_bytes());
         }
     }
@@ -398,7 +405,7 @@ impl Store {
         let audit = |reason: Reason, from: Option<Status>, rev: Option<i64>| {
             self.audit(mv.seat, caller, audit_fields(reason, from, rev));
         };
-        let _t = match lock(
+        let _t = match lock_in(
             &dir,
             mv.seat,
             Level::Transition,
@@ -516,25 +523,28 @@ impl Store {
     }
 }
 
-fn put(path: &Path, v: &Value) -> Result<Written, StoreError> {
+fn put(dir: &SeatDir, name: &str, v: &Value) -> Result<Written, StoreError> {
+    let path = dir.path().join(name);
     let mut s = crate::pyjson::dumps(v).map_err(|e| StoreError::Write {
-        path: path.into(),
+        path: path.clone(),
         why: e.to_string(),
     })?;
     s.push('\n');
-    match replace(path, s.as_bytes()) {
+    match dir.replace(name, s.as_bytes()) {
         Ok(Replace::Durable) => Ok(Written::Durable),
         Ok(Replace::NotSynced(w)) => Ok(Written::NotSynced(w)),
         Err(e) => Err(StoreError::Write {
-            path: path.into(),
+            path,
             why: e.to_string(),
         }),
     }
 }
 
-fn read_order(path: &Path) -> Vec<String> {
-    let v: Option<Value> = std::fs::read_to_string(path)
+fn read_order(dir: &SeatDir) -> Vec<String> {
+    let v: Option<Value> = dir
+        .read_to_string(ORDER_FILE)
         .ok()
+        .flatten()
         .and_then(|t| serde_json::from_str(&t).ok());
     match v {
         Some(v) if v.get("schema").and_then(Value::as_str) == Some(ORDER_SCHEMA) => v
@@ -548,6 +558,28 @@ fn read_order(path: &Path) -> Vec<String> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+fn rev_in(dir: &SeatDir) -> u64 {
+    dir.read_to_string(SOURCE_REV_FILE)
+        .ok()
+        .flatten()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// _bump_source_rev: +1 under rev.lock. Best effort like 1.x: a failure leaves the rev.
+/// 1.x waits on rev.lock without a limit; the hour here only stops a stuck holder from
+/// hanging the command for ever. It is not the short wait fsx::pause speaks of.
+fn bump_in(dir: &SeatDir) -> Option<u64> {
+    let f = dir.open_private(aib_dmq::lock::SOURCE_REV_LOCK).ok()?;
+    crate::fsx::lock_ex(&f, Duration::from_secs(3600)).ok()?;
+    let n = rev_in(dir) + 1;
+    let r = dir
+        .replace(SOURCE_REV_FILE, format!("{n}\n").as_bytes())
+        .ok();
+    let _ = f.unlock();
+    r.map(|_| n)
 }
 
 fn parent_pid() -> Option<u32> {
@@ -582,6 +614,9 @@ impl Probe for FsProbe<'_> {
     }
 
     fn commit_exists(&self, sha: &str) -> bool {
+        if !self.store.git_evidence {
+            return false;
+        }
         Command::new("git")
             .arg("-C")
             .arg(&self.store.repo)

@@ -40,6 +40,9 @@
   // ---------- 狀態 ----------
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
+    wait: {}, said: {}, lat: {}, doneDot: false, // 等回覆列(519d0 SPEC-wait-row-unify r0)
+    inbox: null, inbPfx: '', inbUi: { col: 'unread', urg: false, seat: '', card: '', open: null, body: null }, // 總收件匣(1a93b DESIGN-web-inbox-page r2)
+    moved: {}, moveAsk: null, moveCode: '', moveF: null, moveMsg: null, moveOff: false, // 搬舊席(G5 信橋,7ebca DESIGN-g5-bridge r1 §1)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
@@ -126,6 +129,8 @@
       soft(get('/api/v1/thermal')), soft(get('/api/v1/metrics')), soft(get('/api/v1/contacts')), soft(get('/api/v1/host')),
       soft(get('/api/v1/slots')), soft(get('/api/v1/usage')), soft(get('/api/v1/hosts')),
     ]);
+    // 總收件匣第 1 期(DESIGN-web-inbox-page-1a93b r2 / 7ebca §4):只給內建頁本次配對;403 / 404 ⇒ null,頂列不顯示「📥 信」
+    { const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null); S.inbox = ib && Array.isArray(ib.rows || ib.items) ? { rows: ib.rows || ib.items, counts: ib.counts || {}, next: ib.next || null, bridge: ib.bridge } : null; S.inbPfx = S.inbox && Number(S.inbox.counts.urgent) > 0 ? '(急 ' + (Number(S.inbox.counts.urgent) | 0) + ') ' : ''; if (document.getElementById('inbdlg') && document.getElementById('inbdlg').open) inboxDlg(); }
     S.hosts = hosts && Array.isArray(hosts.hosts) ? hosts.hosts : null;
     // 7ebca 事件卡槽 + 用量(第二波);這版 aibd 沒有 ⇒ null,事件欄照頁面自己算
     if (S.version === undefined) S.version = await soft(get('/api/v1/version')).catch(() => null);
@@ -543,6 +548,105 @@
     const what = n === 0 ? '裡面現在沒有開著的席' : n > 0 ? `裡面開著的 ${n} 席會全部停下` : '裡面開著的席會全部停下';
     return `<div class="pvwarn" role="alert"><b>要關「${esc(x.name || '預覽')}」嗎?</b>${what}。資料夾、對話、串都留著;下次打開預覽後,在右欄「停了」那一席按「重開」就接回原本的資料夾和對話。<div class="pvwb"><button type="button" class="k" data-pvstopno="1">先不要</button><button type="button" class="k n" data-pvstopgo="${esc(x.id)}">確定關掉</button></div></div>`;
   }
+  // ---------- 總收件匣(第 1 期,唯讀;DESIGN-web-inbox-page-1a93b-1121 r2,5d33a 預讀 0/0/1/2)----------
+  // 四欄;急件只看 aibd 的 level(信橋來的 aibd 一律給一般,本文寫「急」不算);過時用 aibd 的 age_min,不用本機時鐘;這段不送任何 act
+  const INB_COLS = [['unread', '未讀'], ['read_open', '讀了沒結'], ['waiting_you', '等你'], ['done', '已結']];
+  // 7ebca 12:22:blocked.reason = aibd 列的 failed_code(1.x 寄前檢查的代號 aibd 不會出;配速類寄出當下就拒、不建列)
+  const INB_BLOCK = { safe_cannot_send_to_dgrs: '安全模式的席不能寄給全權席', seat_mode_takes_no_input: '收件席這個模式不收字', seat_mode_cannot_send_to_legacy: '這個模式不能寄給終端機的舊席', not_a_member: '收件席不在這串對話裡', text_expired: '放太久過期了,沒送', text_refused: '內容被擋(太長或有不准的字)', legacy_off: '這台沒開舊信帳,寄不到終端機的席', seat_unknown: '找不到收件席', seat_not_in_cabin: '收件席不在這個艙', write_failed: '寫入失敗,沒送出', internal: 'aibd 內部出錯,沒送出' };
+  // 5d33a r3 N3:標急的人只認三個固定值,其他字一律不顯示(防寄件端塞字)
+  const INB_LVBY = { andy: '你', '519d0': '@519d0(統籌)', system: '系統' };
+  function inbCol(m) { return m.done_at || m.superseded_by ? 'done' : m.held_human ? 'waiting_you' : m.read_at ? 'read_open' : 'unread'; }
+  function inboxBtn() {
+    if (!S.inbox) return '';
+    const c = S.inbox.counts || {}, n = (Number(c.unread) | 0) + (Number(c.read_open) | 0), u = Number(c.urgent) | 0;
+    return `<button type="button" class="ib inbb${u ? ' urg' : ''}" data-inbox="1" title="所有席的信(只有內建頁看得到)">📥 信 ${n}${u ? ` · 急 ${u}` : ''}</button>`;
+  }
+  function inbAge(m) { const a = Math.max(0, Math.round(Number(m.age_min))); return !Number.isFinite(a) ? '' : a < 1 ? '剛剛' : a < 60 ? a + ' 分前' : a < 1440 ? Math.floor(a / 60) + ' 小時前' : Math.floor(a / 1440) + ' 天前'; }
+  function inbRow(m, col) {
+    const I = S.inbUi, lv = m.level === 'urgent' ? `<b class="inl urg" title="${esc(INB_LVBY[m.level_by] ? '標急的是 ' + INB_LVBY[m.level_by] : 'aibd 標的急件')}">急</b>` : m.level === 'notice' ? '<b class="inl ntc">通知</b>' : '';
+    const a = Number(m.age_min) || 0, late = col === 'unread' || col === 'read_open' ? (a >= 30 ? ' red' : a >= 10 ? ' warn' : '') : '';
+    const who = (k) => { if (/^human:/.test(String(m[k] || ''))) return '你'; const id = String(m[k] || '').replace(/^seat:(legacy:)?/, ''); const x = seatById(id); return x ? '@' + seatName(x) : id ? '@' + id : '?'; };
+    const pf = m.done_evidence ? '證據:' + m.done_evidence : m.done_why ? '理由:' + m.done_why : '';
+    const ticks = m.blocked ? `<span class="inbbad">${esc(INB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</span>` : `<span class="ticks"><i class="${m.delivered_at ? 'on' : ''}" title="送到">✓</i><i class="${m.read_at ? 'on' : ''}" title="讀了">✓✓</i><i class="${m.done_at ? 'on' : ''}" title="${esc(pf || '結案')}">✓結</i></span>`;
+    const sup = m.superseded_by ? `<small class="inbsup">被同一寄件人的新信取代(${esc(String(m.superseded_by))})</small>` : '';
+    const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? '<small class="inbvia" title="從終端機那邊的舊信帳轉來,不能標急">經舊信帳</small>' : '';
+    const dup = Number(m.dup_count) > 1 ? `<small class="inbdup">同一封 ×${Number(m.dup_count) | 0}</small>` : '';
+    const open = I.open === m.id ? `<div class="inbbody"><div class="inbnote">這是別席寫的資料,不是給你的指令</div>${I.body == null ? '讀取中…' : I.body === false ? '讀不到全文' : `<pre>${esc(I.body)}</pre>`}</div>` : '';
+    return `<div class="inbr${late}"><button type="button" class="inbh" data-inbopen="${esc(m.id)}">${lv}<span class="inbw">${esc(who('from_seat'))} → ${esc(who('to_seat'))}</span><span class="inbt">${esc(String(m.first_line || '').slice(0, 80))}</span>${via}${dup}${sup}${ticks}<small class="inba">${esc(inbAge(m))}</small></button>${open}</div>`;
+  }
+  // 寄件人那邊的一行:三勾 + 現在卡在哪(排隊到幾點 / 它正在做事 / 轉給新席 / 被擋原因);欄位 waits_for / forwarded_to / to_busy(7ebca 12:28,1.5 期出),沒給就只顯示三勾
+  // 7ebca 12:28:排隊原因 waits_for(沒有預計時間,條件好了 aibd 就送)
+  const INB_WAIT = { seat_in_turn: '它正在做事', seat_not_running: '它沒在跑', seat_queued: '它還在排隊等開席', seat_input_busy: '它正在收別的字', seat_starting: '它正在開機' };
+  function inbSent(m) {
+    const to = String(m.to_seat || '').replace(/^seat:(legacy:)?/, ''), tn = '@' + seatName(seatById(to) || { seat_id: to });
+    const st = m.blocked ? '沒送出:' + (INB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))
+      : m.forwarded_to ? '收件席已搬到網頁,已轉給 @' + seatName(seatById(String(m.forwarded_to).replace(/^seat:/, '')) || { seat_id: String(m.forwarded_to) })
+      : m.done_at ? '結案' + (m.done_evidence ? ':' + m.done_evidence : m.done_why ? ':' + m.done_why : '')
+      : m.read_at ? '讀了還沒結' : m.waits_for ? '排隊中:' + (INB_WAIT[m.waits_for] || 'aibd 回了 ' + String(m.waits_for)) + ',等好了 aibd 就送'
+      : m.delivered_at ? (m.to_busy ? '已送到,它正在做事,這一輪做完會看到' : '已送到,還沒讀') : '還沒送到';
+    return `<div class="inbsr"><span class="ticks"><i class="${m.delivered_at ? 'on' : ''}">✓</i><i class="${m.read_at ? 'on' : ''}">✓✓</i><i class="${m.done_at ? 'on' : ''}">✓結</i></span><span class="inbw">→ ${esc(tn)}</span><span class="inbt">${esc(String(m.first_line || '').slice(0, 60))}</span><small class="${m.blocked ? 'inbbad' : 'inbw'}">${esc(st)}</small></div>`;
+  }
+  // 單席窗的待處理摘要(MOCK 二;同 a9136 dm_waiting d99a56e1a 的排法):急 → 一般 → 通知,同級舊到新,一封一行;只有內建頁有 S.inbox
+  const INB_GRADE = { urgent: 0, normal: 1, notice: 2 }, INB_GW = ['急', '一般', '通知'];
+  function seatInbox(s) {
+    if (!S.inbox) return '';
+    const L = S.inbox.rows.filter((m) => String(m.to_seat || '').replace(/^seat:(legacy:)?/, '') === s.seat_id && !m.blocked && (inbCol(m) === 'unread' || inbCol(m) === 'read_open'));
+    if (!L.length) return '';
+    const g = (m) => (m.level in INB_GRADE ? INB_GRADE[m.level] : 1);
+    L.sort((a, b) => g(a) - g(b) || (Number(b.age_min) || 0) - (Number(a.age_min) || 0));
+    const n = [0, 0, 0]; for (const m of L) n[g(m)]++;
+    const who = (m) => (/^human:/.test(String(m.from_seat || '')) ? '你' : '@' + seatName(seatById(String(m.from_seat || '').replace(/^seat:(legacy:)?/, '')) || { seat_id: String(m.from_seat || '?') }));
+    const rows = L.slice(0, 20).map((m) => `<div class="sir g${g(m)}"><b class="sig">${INB_GW[g(m)]}</b>${m.claimed_urgent && g(m) !== 0 ? '<small class="inbw" title="寄件人自己寫急,不算">自稱急</small>' : ''}<span class="inbw">${esc(who(m))}</span><small class="inba">${esc(inbAge(m))}</small><span class="inbt">${esc(String(m.first_line || '').slice(0, 120))}</span>${m.read_at ? '<small class="inbw">讀了沒結</small>' : ''}</div>`).join('');
+    return `<details class="sinb" ${n[0] ? 'open' : ''}><summary class="sinbh">待處理 ${L.length} 封(急 ${n[0]} · 一般 ${n[1]} · 通知 ${n[2]})</summary>${rows}${L.length > 20 ? '<small class="inbw">還有 ' + (L.length - 20) + ' 封,打開「📥 信」看全部</small>' : ''}</details>`;
+  }
+  function inboxDlg() {
+    let d = document.getElementById('inbdlg');
+    if (!d) {
+      d = document.createElement('dialog'); d.id = 'inbdlg'; d.className = 'cdlg inbd'; document.body.appendChild(d);
+      d.addEventListener('click', async (e) => {
+        const I = S.inbUi;
+        if (e.target === d || e.target.closest('[data-inbx]')) { d.close(); return; }
+        const t = e.target.closest('[data-inbcol]'); if (t) { I.col = t.dataset.inbcol; return inboxDlg(); }
+        if (e.target.closest('[data-inburg]')) { I.urg = !I.urg; return inboxDlg(); }
+        const f = e.target.closest('[data-inbseat]'); if (f) { I.seat = I.seat === f.dataset.inbseat ? '' : f.dataset.inbseat; return inboxDlg(); }
+        if (e.target.closest('[data-inbmore]') && S.inbox && S.inbox.next) { const r = await soft(get('/api/v1/inbox?scope=all&cursor=' + encodeURIComponent(S.inbox.next))).catch(() => null); if (r) { S.inbox.rows = S.inbox.rows.concat(r.rows || r.items || []); S.inbox.next = r.next || null; } return inboxDlg(); }
+        const o = e.target.closest('[data-inbopen]');
+        if (o) {
+          const id = o.dataset.inbopen; if (I.open === id) { I.open = null; return inboxDlg(); }
+          I.open = id; I.body = null; inboxDlg();
+          const r = await soft(get('/api/v1/inbox/' + encodeURIComponent(id))).catch(() => null);
+          if (I.open === id) { I.body = r && typeof (r.body != null ? r.body : r.text) === 'string' ? (r.body != null ? r.body : r.text) : false; inboxDlg(); }
+        }
+      });
+      d.addEventListener('input', (e) => { if (e.target.matches('[data-inbcard]')) { S.inbUi.card = e.target.value.trim(); inboxDlg(); const i = d.querySelector('[data-inbcard]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } } });
+    }
+    const I = S.inbUi, B = S.inbox || { rows: [], counts: {} };
+    const byCol = { unread: [], read_open: [], waiting_you: [], done: [] };
+    const seen = new Set();
+    for (const m of B.rows) {
+      const sid = (v) => (/^seat:/.test(String(v || '')) ? String(v).replace(/^seat:(legacy:)?/, '') : ''), fr = sid(m.from_seat), to = sid(m.to_seat);
+      if (fr) seen.add(fr); if (to) seen.add(to);
+      if (I.seat && fr !== I.seat && to !== I.seat) continue;
+      if (I.urg && m.level !== 'urgent') continue;
+      if (I.card && !(String(m.card || '').includes(I.card) || String(m.first_line || '').includes(I.card))) continue;
+      byCol[inbCol(m)].push(m);
+    }
+    const urg = (m) => (m.level === 'urgent' ? 0 : 1), age = (m) => Number(m.age_min) || 0;
+    byCol.unread.sort((a, b) => urg(a) - urg(b) || age(b) - age(a)); byCol.read_open.sort((a, b) => urg(a) - urg(b) || age(b) - age(a));
+    byCol.waiting_you.sort((a, b) => age(b) - age(a)); byCol.done.sort((a, b) => age(a) - age(b));
+    const stuck = {}; for (const m of B.rows) { const c = inbCol(m); if (c !== 'unread' && c !== 'read_open' || !/^seat:/.test(String(m.to_seat || ''))) continue; const id = String(m.to_seat).replace(/^seat:(legacy:)?/, ''); const x = (stuck[id] = stuck[id] || { n: 0, old: 0 }); x.n++; x.old = Math.max(x.old, Number(m.age_min) || 0); }
+    const top = Object.keys(stuck).sort((a, b) => stuck[b].n - stuck[a].n || stuck[b].old - stuck[a].old)[0];
+    const stat = top ? `<span class="inbstat">誰卡最多:<b>@${esc(seatName(seatById(top) || { seat_id: top }))} ${stuck[top].n} 封</b> · 最舊放了 ${esc(inbAge({ age_min: stuck[top].old }).replace(/前$/, ''))}</span>` : '';
+    const tabs = INB_COLS.map(([k, w]) => `<button type="button" data-inbcol="${k}" class="k inbtab${I.col === k ? ' on' : ''}">${w} <b>${byCol[k].length}</b></button>`).join('');
+    const seats = [...seen].map((id) => { const x = seatById(id) || { seat_id: id, provider: 'claude' }; return `<button type="button" class="k inbs${I.seat === id ? ' on' : ''}" data-inbseat="${esc(id)}" title="只看寄給 / 寄自 @${esc(seatName(x))}">${esc(seatShort(x))}</button>`; }).join('');
+    // 519d0 12:20(同 MOCK-web-inbox):寬螢幕四欄並排、窄螢幕用上面的分頁只看一欄(CSS 切)
+    const cols = INB_COLS.map(([k, w]) => `<div class="inbcol${I.col === k ? ' on' : ''}"><div class="inbch">${w} <b>${byCol[k].length}</b></div><div class="inbl">${byCol[k].length ? byCol[k].map((m) => inbRow(m, k)).join('') : '<div class="empty">沒有信</div>'}</div></div>`).join('');
+    // 我寄出的(MOCK 三):寄件人是你(human:)的信,每封一行投遞狀態
+    const mine = B.rows.filter((m) => /^human:/.test(String(m.from_seat || ''))).sort((a, b) => age(a) - age(b)).slice(0, 30);
+    const sent = mine.length ? `<details class="inbsent"><summary class="inbsh">我寄出的 <b>${mine.length}</b></summary>${mine.map((m) => inbSent(m)).join('')}</details>` : '';
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="pill u-todo">所有席的信</span><span class="kid">唯讀;結案、回信下一期</span><button type="button" class="x" data-inbx="1" aria-label="關閉">✕</button></div></div><div class="db"><div class="inbtabs">${tabs}${stat}</div><div class="inbf"><button type="button" class="k inbs${I.urg ? ' on' : ''}" data-inburg="1">只看急件</button>${seats}<input type="search" class="sq inbc" data-inbcard placeholder="卡號或頭碼" maxlength="60" value="${esc(I.card)}"></div>${B.bridge === false ? '<div class="inbnote">這台沒有終端機的舊信帳(例如 Windows),這裡只有網頁版自己的信</div>' : ''}<div class="inbcols">${cols}</div>${sent}${B.next ? '<button type="button" class="k" data-inbmore="1">再拿 200 封</button>' : ''}</div></div>`;
+    if (!d.open) d.showModal();
+  }
   function pvListDlg() {
     let d = document.getElementById('pvldlg');
     if (!d) {
@@ -823,7 +927,54 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
+    return h + testHostHtml();
+  }
+  // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
+  const TH_WHY = {
+    reached_through_something_else: '這台要經跳板,不支援', config_has_match_or_include: 'ssh 設定有 Match / Include,讀不準,不支援',
+    no_identity_file: '這台的 ssh 設定看不懂', identity_file_not_absolute: '這台的 ssh 設定看不懂', value_with_a_token: '這台的 ssh 設定看不懂', port: '這台的 ssh 設定看不懂',
+    aibd_own_key: '這台設定用的是 aibd 自己的鑰匙',
+  };
+  const TH_ERR = {
+    no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
+    write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
+    page_only: '只有這台 aibd 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
+  };
+  async function thLoad() {
+    if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
+    S.th = Object.assign(S.th || {}, { loading: true });
+    try { const r = await act('test_host_list', {}); S.th = { list: Array.isArray(r && r.machines) ? r.machines : [], pinned: Number(r && r.pinned) || 0, max: Number(r && r.max) || 0, at: Date.now(), row: (S.th && S.th.row) || {} }; }
+    catch (e) { S.th = { err: TH_ERR[e && (e.code || e.reason)] || errText(e), at: Date.now(), row: {} }; }
+    render();
+  }
+  function testHostHtml() {
+    if (hasAct('test_host_list') !== true) return '';
+    const T = S.th;
+    if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="thh"><b>測試機</b><span class="hv">讀取中…</span></div>'; }
+    let h = `<div class="thh"><b>測試機</b><span class="hv">${T.list ? '收據可用 ' + T.pinned + (T.max ? ' / 最多 ' + T.max : '') : ''}</span><button type="button" class="k" data-threload="1" title="重讀這台 ssh 設定裡的機器">重讀</button></div>`;
+    if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
+    if (!T.list.length) return h + '<div class="thr hv">這台的 ssh 設定裡沒有別台機器</div>';
+    for (const m of T.list) {
+      const nm = String(m.name || ''), R = T.row[nm] || {};
+      // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
+      const half = 'half' in m ? m.half === true : R.half || (m.pinned === false && R.gateless);
+      const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
+      const st = R.busy ? (R.wait || '處理中…') : m.pinned ? '✅ 可跑收據' : half ? '⚠️ 寫了但收據閘沒回' : m.usable ? '還沒加' : '❌ ' + (TH_WHY[m.why] || '不支援');
+      const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${m.pinned || half ? '收回這台' : '加'}</button>`;
+      h += `<div class="thr"><span class="hd ${dot}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(String(m.address || ''))}</i></span><span class="hv">${esc(st)}</span>${btn}${R.msg ? `<div class="thm ${R.bad ? 'bad' : ''}" role="${R.bad ? 'alert' : 'status'}">${esc(R.msg)}</div>` : ''}</div>`;
+    }
     return h;
+  }
+  async function thAct(kind, name) {
+    const T = S.th; if (!T || !T.row) return;
+    const R = (T.row[name] = { busy: true });
+    render();
+    try {
+      const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = '請在這台 Mac 跳出的指紋視窗按下(' + (kind === 'add' ? '加' : '收回') + ' ' + name + ')· 還有 ' + sec + ' 秒 · ' + FINGER_BEHIND; render(); });
+      if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: '已寫上,但那台的收據閘沒回;可以收回這台', bad: true }; }
+      else T.row[name] = { msg: kind === 'add' ? '已加上,之後收據可以排到這台' : '已收回' };
+    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: TH_ERR[c] || errText(e), bad: true }; }
+    S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }
 
   // ---------- 右:事件 ----------
@@ -1200,16 +1351,16 @@
     const n = nowOf(s.seat_id), se = lastSession(s.seat_id), run = se && se.state === 'running';
     const bits = [];
     if (!run) bits.push(se ? '沒在跑' : '還沒開');
-    else if (n && n.state === 'reply') bits.push('<b class="w">等回應</b>');
-    else if (n && n.state === 'decide') bits.push('<b class="w">等你決定</b>');
+    else if (n && n.state === 'reply') bits.push('<b class="snw">等回應</b>');
+    else if (n && n.state === 'decide') bits.push('<b class="snw">等你決定</b>');
     else if (n && n.state === 'busy') { const st = stallOf(s.seat_id); bits.push(st && st.none ? '<b class="bad">這一輪模型沒有回應</b>' : '在做'); }
     else bits.push('在跑');
     if (n && n.item) bits.push(esc(String(n.item).slice(0, 80)) + (n.total ? ` <small>${Number(n.done) | 0}/${Number(n.total) | 0}</small>` : ''));
     const mail = (S.aslots || []).filter((c) => c && c.seat_id === s.seat_id && (c.kind === 'message.unclosed' || c.kind === 'message.unread'));
     const m = mail.map((c) => { const k = String(c.item || ''); const d = /(\d+)\s*封/.exec(k); return { n: d ? Number(d[1]) : 1, open: c.kind === 'message.unclosed' }; });
     const nOpen = m.filter((x) => x.open).reduce((a, x) => a + x.n, 0), nUnread = m.filter((x) => !x.open).reduce((a, x) => a + x.n, 0);
-    if (nOpen) bits.push(`<b class="w">${nOpen} 封信沒結</b>`);
-    if (nUnread) bits.push(`<b class="w">${nUnread} 封信沒讀</b>`);
+    if (nOpen) bits.push(`<b class="snw">${nOpen} 封信沒結</b>`);
+    if (nUnread) bits.push(`<b class="snw">${nUnread} 封信沒讀</b>`);
     const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
     if (u && u.pct != null) bits.push('用量 ' + (Number(u.pct) | 0) + '%');
     const tu = trustUntil(s); if (tu) bits.push('受信任到 ' + esc(hhmm(tu * 1000)));
@@ -1265,10 +1416,17 @@
     if (!P.length) return '';
     return `<div class="snb" data-seatnowbox><div class="snh">各席現在 <small>在做什麼 · 等誰 · 幾封信沒結</small></div>${P.map(seatNowLine).join('')}${ghBox()}</div>`;
   }
+  // 519d0 10:07 第 3 點:席卡標明它動的是哪裡。aibd 只說得出「登記倉的副本」(repo_copy);其他做事席開在自己的新資料夾,不是你的倉
+  function repoTag(s) {
+    const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
+    if (rc) return `<span class="rpt cp" title="這一席改的是「${esc(String(rc.repo || ''))}」的副本;你的原倉要按「交回本機原倉」才會多一條分支,main 不動">原倉副本 · ${esc(String(rc.repo || ''))}</span>`;
+    if (s.mode === 'work') return '<span class="rpt" title="這一席開在 aibd 給它的新資料夾,不是你登記的倉">自己的新資料夾</span>';
+    return '';
+  }
   function treeTag(s) {
     const L = (S.seats || []).filter((x) => !isArch(x));
     if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
-    if (s.repo_copy && typeof s.repo_copy === 'object') return `<small class="tt own" title="「${esc(String(s.repo_copy.repo || ''))}」的副本;做完用席窗的「送回倉」建新分支">倉副本 · ${esc(String(s.repo_copy.repo || ''))}</small>`; // a9136 IFACE-web-merge r1 §1:這種席不給合回
+    if (s.repo_copy && typeof s.repo_copy === 'object') return `<small class="tt own" title="「${esc(String(s.repo_copy.repo || ''))}」的副本;做完用席窗的「交回本機原倉」建新分支(main 不動、不上 GitHub)">倉副本 · ${esc(String(s.repo_copy.repo || ''))}</small>`; // a9136 IFACE-web-merge r1 §1:這種席不給合回
     const fo = s.folder_owner, t = s.tree && typeof s.tree === 'object' ? s.tree : null;
     const own = (c) => { const o = L.find((y) => y.seat_id === c || String(y.code || '') === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)); return o ? '@' + seatShort(o) : '@' + c; };
     const br = t && t.branch ? String(t.branch).replace(/^refs\/heads\//, '') : '';
@@ -1624,7 +1782,7 @@
   }
   function wkHtml(c, res) {
     const id = String(c.id || ''), open = id && S.wkOpen && S.wkOpen.has(id), all = id && S.wkAll && S.wkAll.has(id);
-    const st = !res ? '<span class="wkst run">執行中</span>' : res.err ? '<span class="wkst bad">出錯</span>' : '<span class="wkst">▸</span>';
+    const st = !res ? '<span class="wkst run">執行中</span>' : res.err ? (String(res.text || '').trim() ? '<span class="wkst soft" title="指令跑完了,但回了不是 0 的結束碼(例:搜尋沒對到)。不一定是壞事,點開看輸出">回了失敗碼</span>' : '<span class="wkst bad">出錯</span>') : '<span class="wkst">▸</span>';
     let body = '';
     if (open) {
       if (!res) body = '<div class="wkr na">還沒有結果</div>';
@@ -1703,6 +1861,11 @@
     if (T.last) return `<span class="turn ${T.last.err ? 'bad' : ''}">上一回合 ${esc(durS(T.last.ms))}${T.last.turns ? ' · ' + T.last.turns + ' 步' : ''}</span>`;
     return '';
   }
+  const TITLE0 = document.title, SPIN = ['◐', '◓', '◑', '◒']; let spinI = 0;
+  // 分頁標題只在這裡組:等回覆轉圈(或回完沒看 ●)+「(N) 等你決定 · 」(askNotice 給)+ 原標題;兩處各寫會互蓋、一秒一閃
+  function titleNow() { const n = Object.keys(S.wait).length; const t = (n ? SPIN[spinI] + ' ' : S.doneDot ? '● ' : '') + (S.inbPfx || '') + (S.askPfx || '') + TITLE0; if (document.title !== t) document.title = t; }
+  setInterval(() => { spinI = (spinI + 1) % 4; titleNow(); }, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) S.doneDot = false; });
   setInterval(() => { for (const b of document.querySelectorAll('[data-since]')) { const t = Date.parse(b.dataset.since); if (t) b.textContent = durS(Date.now() - t); } }, 1000);
   function outItems(seatId) {
     const se = lastSession(seatId);
@@ -1796,11 +1959,11 @@
     const u = S.usage && (S.usage.usage || []).find((x) => x.seat_id === s.seat_id && (!se || x.session_id === (se.id || se.session_id)));
     const uc = u && u.pct != null ? (u.pct >= (S.usage.red_pct || 95) ? 'red' : u.pct >= (S.usage.handoff_pct || 85) ? 'warn' : '') : '';
     const use = u && u.pct != null ? `<span class="use ${uc}" title="${esc((u.model || '') + (u.used != null ? ' · ' + u.used + ' / ' + u.window : ''))}">用量<progress class="usep" max="100" value="${Math.max(0, Math.min(100, Number(u.pct) || 0))}"></progress>${Number(u.pct) | 0}%</span>` : '';
-    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
-    if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
+    const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id), saidRows(s.seat_id), actItems(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
+    { const wr = waitRow(s.seat_id, false); if (wr) rows.push(wr); else if (n && n.state === 'busy') rows.push({ h: '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
-      ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}</div>` : ''}
+      ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
@@ -1920,18 +2083,51 @@
     return toolLine(c);
   };
   // 席在跑:最下面一行「@席 正在 …」,時間從這一回合第一筆輸出算
-  function runRows() {
-    const out = [];
-    for (const id of workSeats()) {
-      const T = turnOf(id); if (!T || !T.running) continue;
-      const W = workTools(id, String(T.since || ''), ''); let cur = null;
-      if (W) for (const c of W.uses) if (String(c.id || '') && !W.RES.has(c.id)) cur = c;
-      const s = seatById(id) || { seat_id: id, provider: 'claude' };
-      const what = cur ? '正在' + DOING(cur) : '在想…';
-      const stl = stallOf(id);
-      const head = stl && stl.none ? stallHtml(id, stl) : `<span class="spn"></span> ${esc(what)} · <b data-since="${esc(T.since)}">${esc(durS(Date.now() - Date.parse(T.since)))}</b>${stl ? ' ' + stallHtml(id, stl) : ''}`;
-      out.push({ t: '\uffff' + id, h: `<div class="msg runl${stl && stl.none ? ' stall' : ''}" data-stall="${stl ? (stl.none ? 'none' : 'quiet') : ''}"><div class="who">${logo(s, 'sm')}</div><div class="body">${head}</div><button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button></div>` });
+  // 519d0 SPEC-wait-row-unify r0(Andy 11:5x「能不能都用同一種方式」):單席與共同對話同一個等回覆列。
+  // 秒數從按下送出起算(S.wait[id].at);三段字:已送到等它開始 / 在想… / 正在<工具>;回合中再送 = 排在後面(aibd 回 202),不是錯
+  const WAIT_MAX = 30 * 60 * 1000;
+  function waitMark(id, text, queued) {
+    const now = Date.now(); S.wait[id] = { at: now, queued: !!queued, started: 0 };
+    if (text != null) (S.said[id] = S.said[id] || []).push({ t: new Date(now).toISOString(), text: String(text) });
+  }
+  function waitPhase(id) {
+    // 剛開的席還沒有任何輸出 ⇒ turnOf 是 null;回合開始以 aibd 用量那列的 turn_started_at 為準
+    let T = turnOf(id);
+    if (!T) { const se = lastSession(id), u = se && S.usage && (S.usage.usage || []).find((x) => x.seat_id === id && x.session_id === (se.id || se.session_id)); if (u && 'turn_started_at' in u) T = { running: !!(u.turn_started_at && (se.state === 'running' || se.state === 'pending')), since: u.turn_started_at }; }
+    const W = S.wait[id], run = !!(T && T.running && T.since);
+    if (W) {
+      const since = run ? Date.parse(T.since) : 0;
+      if (run && !W.started && since >= W.at - 1500) { W.started = Date.now(); const L = (S.lat[id] = S.lat[id] || []); L.push(W.started - W.at); if (L.length > 10) L.shift(); }
+      if ((!run && W.started) || Date.now() - W.at > WAIT_MAX) { delete S.wait[id]; if (document.hidden) S.doneDot = true; }
     }
+    const V = S.wait[id];
+    if (!V && !run) return null;
+    let what;
+    if (V && !V.started) what = V.queued || run ? '它正在忙,這句排在後面' : '已送到,等它開始';
+    else { const Wt = S.out && workTools(id, String(T.since || ''), ''); let cur = null; if (Wt) for (const c of Wt.uses) if (String(c.id || '') && !Wt.RES.has(c.id)) cur = c; what = cur ? '正在' + DOING(cur) : '在想…'; }
+    return { what, base: V ? V.at : Date.parse(T.since), run };
+  }
+  const median = (a) => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor((b.length - 1) / 2)] : 0; };
+  function waitRow(id, shared) {
+    const P = waitPhase(id); if (!P) return null;
+    const s = seatById(id) || { seat_id: id, provider: 'claude' };
+    const stl = P.run ? stallOf(id) : null;
+    const L = S.lat[id] || [], med = L.length >= 3 ? median(L) : 0, el = Date.now() - P.base;
+    const usual = med ? `<small class="wusual${el > 3 * med ? ' slow' : ''}" title="最近 ${L.length} 次從送出到它開始">通常 ${Math.max(1, Math.round(med / 1000))} 秒</small>` : '';
+    const iso = new Date(P.base).toISOString();
+    const head = stl && stl.none ? stallHtml(id, stl) : `<span class="spn"></span> ${esc(P.what)} · <b data-since="${esc(iso)}">${esc(durS(el))}</b>${usual}${stl ? ' ' + stallHtml(id, stl) : ''}`;
+    const se = lastSession(id), sid = se && (se.id || se.session_id);
+    const stop = sid && (se.state === 'running' || se.state === 'pending') ? `<button type="button" class="k wstop" data-stop="${esc(sid)}">${S.stopArm === sid ? '再按一次停止' : '先停手'}</button>` : '';
+    return { t: shared ? '\uffff' + id : '\uffff', h: `<div class="msg runl${stl && stl.none ? ' stall' : ''}" data-stall="${stl ? (stl.none ? 'none' : 'quiet') : ''}"><div class="who">${logo(s, 'sm')}</div><div class="body">${head}</div>${stop}${shared ? `<button type="button" class="wsum" data-openseat="${esc(id)}"><b>看這一席 ›</b></button>` : ''}</div>` };
+  }
+  // 單席窗:自己直接送的話(aibd 的輸出裡沒有),送出當下就放進時間軸
+  function saidRows(id) {
+    return (S.said[id] || []).map((m) => ({ t: m.t, h: `<div class="wk in mine"><span><span class="lg sm you">你</span> ${esc(m.text.split('\n')[0].slice(0, 200))}</span></div>` }));
+  }
+  function runRows() {
+    const ids = new Set(workSeats().concat(Object.keys(S.wait)));
+    const out = [];
+    for (const id of ids) { const r = waitRow(id, true); if (r) out.push(r); }
     return out;
   }
   function sharedRows() {
@@ -2567,12 +2763,10 @@
     S.askBusy = false; render(); tick(true);
   }
   // 分頁標題 + 響一聲:新出現的題目才響(開頁時已在的只改標題);瀏覽器擋自動播放就只改標題
-  let askTitle0 = null, askHeard = null;
+  let askHeard = null;
   function askNotice() {
-    if (askTitle0 === null) askTitle0 = document.title;
     const L = pendingAsks(), n = L.length;
-    const t = (n ? '(' + n + ') 等你決定 · ' : '') + askTitle0;
-    if (document.title !== t) document.title = t;
+    S.askPfx = n ? '(' + n + ') 等你決定 · ' : ''; titleNow();
     const ids = new Set(L.map((x) => x.card));
     if (askHeard && [...ids].some((k) => !askHeard.has(k))) askBeep();
     if (S.paired) askHeard = ids;
@@ -3104,20 +3298,21 @@
   // 第 6 件第一片(a9136 IFACE-web-merge r1):有 repo_copy 的席 ⇒「送回倉(建新分支)」;這種席不給合回。
   // 兩步跟登記倉同形:先問(202 帶 plan 給畫面)→ 指紋 → 帶票 + plan.head 重送 ⇒ 200 {repo, branch, head, commits, files};分支名以 200 那次為準
   const SB_WHY = {
-    seat_busy: '這一席還在跑,先停下它再送', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
+    seat_busy: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按一次「' + '交回本機原倉' + '」', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
     settings_touched: '動到 AI 設定檔、workflow、.gitmodules、.lfsconfig 或符號連結,不能從頁面送', objects_missing: '副本的物件不齊,沒有送',
     too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
-    send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次送回倉',
-    seat_id: '這一席不是登記倉的副本,不能送回倉', send_back_built_in_page_only: '只有這台內建的頁面能送回倉',
+    send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次交回本機原倉',
+    seat_id: '這一席不是登記倉的副本,不能交回原倉', send_back_built_in_page_only: '只有這台內建的頁面能交回原倉',
     owner_check_unavailable: '這台還不能按指紋,沒有送', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有送',
     finger_denied: '指紋取消了,沒有送', finger_expired: FINGER_GONE + ';沒有送,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有送',
   };
-  const SB_SAFE = '只在倉裡建一條新分支,不會推、不會改你正在用的分支。';
+  const SB_SAFE = '只在你這台電腦的原倉建一條新分支:main 和你正在用的分支都不動,也不會上 GitHub。';
+  const SB_NAME = '交回本機原倉(新分支)'; // 519d0 10:07 第 4 點(Andy 10:05 連問兩次「送回倉」是什麼)
   function sendBackHtml(s) {
     const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
     if (!rc) return '';
     if (S.sb && S.sb.seat === s.seat_id) return '';
-    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((rc.sendable === false ? '這一席看起來還在跑,先停下再送;' : '') + '把這一席副本裡已提交的改動,送回「' + String(rc.repo || '') + '」建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>送回倉(建新分支)</button>`;
+    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((running(s.seat_id) || rc.sendable === false ? '這一席還在跑:先按「停止」,停好再交回;' : '') + '把這一席副本裡已提交的改動,交回你這台電腦的原倉「' + String(rc.repo || '') + '」,建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>${S.sbBusy === s.seat_id || running(s.seat_id) ? '先停止,再' : ''}${SB_NAME}</button>`;
   }
   function sendBackBox(s) {
     const B = S.sb && S.sb.seat === s.seat_id ? S.sb : null, M = S.sbMsg && S.sbMsg.seat === s.seat_id ? S.sbMsg : null;
@@ -3126,7 +3321,7 @@
       const what = p.repo ? `送回「${esc(p.repo)}」,新分支 <b>${esc(p.branch || '')}</b>${p.head ? ' · 頭 ' + esc(String(p.head).slice(0, 12)) : ''}${p.commits != null ? ' · ' + (Number(p.commits) | 0) + ' 個提交' : ''}${p.files != null ? ' · ' + (Number(p.files) | 0) + ' 個檔' : ''}` : '正在問 aibd 要送什麼…';
       return `<div class="sbw" data-sendbackwait>${what}${L.length ? `<div class="sbl">要讓你看到的檔:${L.slice(0, 20).map((x) => '<code>' + esc(String(x)) + '</code>').join(' ')}</div>` : ''}<div>${SB_SAFE}只送已提交的。</div>${B.left != null ? `<div class="sbf">請在這台 Mac 按指紋 · 還有 ${B.left | 0} 秒 · ${FINGER_BEHIND}</div>` : ''}</div>`;
     }
-    if (M) return `<div class="trm${M.bad ? ' bad' : ''}" data-sendbackmsg>${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>${M.bad ? '' : pushBox(s)}`;
+    if (M) return `<div class="trm${M.bad ? ' bad big' : ''}" data-sendbackmsg role="${M.bad ? 'alert' : 'status'}">${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>${M.bad ? '' : pushBox(s)}`;
     return '';
   }
   async function sendBack(id) {
@@ -3134,13 +3329,14 @@
     try {
       const r = await fingerAct('seat_send_back', { seat_id: id }, (t, sec, first) => { if (S.sb && S.sb.seat === id) { S.sb.plan = (first && first.plan) || S.sb.plan; S.sb.left = sec; render(); } }, (first) => ({ head: String((first && first.plan && first.plan.head) || '') }));
       S.sbOk = { seat: id, repo: String((r && r.repo) || ''), branch: String((r && r.branch) || ''), head: String((r && r.head) || '') }; S.pushMsg = null; S.prAsk = null;
-      S.sbMsg = { seat: id, text: '已在「' + String((r && r.repo) || '') + '」建新分支 ' + String((r && r.branch) || '') + (r && r.head ? '(頭 ' + String(r.head).slice(0, 12) + (r.commits != null ? ',' + (Number(r.commits) | 0) + ' 個提交' : '') + (r.files != null ? '、' + (Number(r.files) | 0) + ' 個檔' : '') + ')' : '') + '。不會推、不會改你正在用的分支。' };
+      S.sbMsg = { seat: id, text: '已在你這台電腦的原倉「' + String((r && r.repo) || '') + '」建分支 ' + String((r && r.branch) || '') + (r && r.head ? '(頭 ' + String(r.head).slice(0, 12) + (r.commits != null ? ',' + (Number(r.commits) | 0) + ' 個提交' : '') + (r.files != null ? '、' + (Number(r.files) | 0) + ' 個檔' : '') + ')' : '') + '。main 沒動,也還沒上 GitHub。' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code), c = e && e.code;
       const k = SB_WHY[c] ? c : rs;
       const b = (e && e.body) || {};
-      S.sbMsg = { seat: id, bad: true, text: (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
+      S.sbMsg = { seat: id, bad: true, text: '沒有交回:' + (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
     }
+    if (S.sbMsg && S.sbMsg.bad) say(S.sbMsg.text, 'err'); // 519d0 10:07 第 1 點:席窗沒開或捲走了,頂端也寫同一句
     S.sb = null; render();
   }
   // 第 5 件殼(519d0 22:19):送回倉成功那列多「推上去」(G2)與「開 PR」(G3)。
@@ -3243,6 +3439,53 @@
       S.trustMsg = { seat: id, bad: true, text: trustWhy(e) };
     }
     S.trustF = null; render();
+  }
+  // G5 信橋(7ebca DESIGN-g5-bridge r1 §1;5d33a 63af3c25):把終端機舊席的信改送到這一席,要按指紋;搬回不用指紋
+  const MOVE_WHY = {
+    unknown_act_type: '這台的 aibd 還沒有搬舊席(G5 信橋才有 seat_move)', page_only: '只有這台內建的頁面能搬舊席',
+    body: '舊席碼是 5 碼小寫英數(0–9、a–f)', seat_not_found: '找不到這一席', seat_archived: '這一席已封存',
+    old_seat_not_found: '這台的舊信帳裡沒有這個舊席碼', old_code_moved: '這個舊席已經搬進另一席,先在那一席搬回',
+    seat_stands_for_another: '這一席已經收另一個舊席的信,先搬回', seat_move_changed: '按指紋之後狀況變了,請重按一次',
+    owner_check_unavailable: '這台問不到指紋,沒有搬', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有搬',
+    finger_denied: '指紋取消了,沒有搬', finger_expired: FINGER_GONE + ';沒有搬,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有搬',
+    store: 'aibd 寫不進搬席紀錄,請稍後再試',
+  };
+  const MOVE_CODE = /^[0-9a-f]{5}$/;
+  function moveHtml(s) {
+    if (S.moveOff) return '';
+    const id = s.seat_id, F = S.moveF && S.moveF.seat === id ? S.moveF : null;
+    if (F) return `<span class="trs" data-movewait>搬 @${esc(F.code)}:請在這台 Mac 按指紋 · 還有 ${F.left | 0} 秒 · ${FINGER_BEHIND}</span>`;
+    const m = S.moved[id];
+    if (m) return `<span class="trs on">收 @${esc(m)} 的信</span><button type="button" class="k" data-unmove="${esc(id)}" ${S.sending ? 'disabled' : ''} title="不用指紋;搬回後舊席收信要用 1.x 指令重開">搬回</button>`;
+    if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>按指紋搬</button><button type="button" class="k" data-moveno>取消</button>`;
+    return `<button type="button" class="k" data-move="${esc(id)}" title="把一個終端機舊席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
+  }
+  const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
+  async function seatMove(id, code) {
+    S.moveMsg = null;
+    if (!MOVE_CODE.test(code)) { S.moveMsg = { seat: id, bad: true, text: MOVE_WHY.body }; return render(); }
+    S.moveAsk = null; S.moveF = { seat: id, code, left: 120 }; render();
+    try {
+      const r = await fingerAct('seat_move', { old_code: code, seat_id: id }, (t, sec) => { if (S.moveF && S.moveF.seat === id) { S.moveF.left = sec; render(); } });
+      S.moved[id] = code;
+      const n = Number(r && r.forwarded) | 0;
+      S.moveMsg = { seat: id, text: (r && r.already ? '本來就收 @' + code + ' 的信' : '已搬:寄給 @' + code + ' 的信改送這一席') + (n ? ',舊帳裡沒結的 ' + n + ' 封一併轉過來' : '') + ';舊席那邊照步驟停收' };
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
+      if (rs === 'page_only' || rs === 'unknown_act_type') S.moveOff = true;
+      S.moveMsg = { seat: id, bad: true, text: moveWhy(e) };
+    }
+    S.moveF = null; render();
+  }
+  async function seatUnmove(id) {
+    const code = S.moved[id]; S.moveMsg = null;
+    if (!code) return render();
+    try {
+      await act('seat_unmove', { old_code: code });
+      delete S.moved[id];
+      S.moveMsg = { seat: id, text: '已搬回:寄給 @' + code + ' 的新信回到舊信帳;舊席收信要用 1.x 指令重開' };
+    } catch (e) { S.moveMsg = { seat: id, bad: true, text: moveWhy(e) }; }
+    render();
   }
   async function fingerAct(type, body, wait, extra) {
     let r = await act(type, body);
@@ -3369,9 +3612,16 @@
     const where = A.role ? `${node ? `<div class="apsel"><b>${esc(nodeT || node)}</b></div>` : ''}<div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找專案項目(標題或編號)" aria-label="找專案項目" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div>` : '<div class="apn">先選角色才要掛到項目;「不掛」就只開席</div>';
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
-    const FIX = { 這台還沒登入: '在這台的終端機先登入它(例:claude 打 /login),登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 aibd 還不會開它,等新版' };
+    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
+    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 aibd 還不會開它,等新版' };
     if (!pv) {
-      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(FIX[p.why]) : ''}</li>`).join('');
+      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
+      // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
+      const pvGo = !inPreview() && Array.isArray(S.pvs) && S.pvs.some((x) => !x.sample);
+      if (pvGo) return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="加一席">
+      <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
+      <div class="aok">這一頁是管預覽的母體頁,不在這裡開席。開席請到預覽那一頁:按下面的鈕,在預覽清單按「打開」就會帶好配對直接進去。</div>
+      <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button><button type="button" class="go" data-addpv="1">去預覽開席</button></div></div></div>`;
       return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="加一席">
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="aerr" role="alert">這台現在開不了任何 AI,所以不能加席。</div><ul class="anop">${why || '<li>aibd 沒列出任何品牌</li>'}</ul>
@@ -3397,21 +3647,26 @@
   // 6f1cb SPEC-seat-mempack r0(519d0 07:42,切換單前提 9):新席的記憶夾不會帶過去 ⇒ 交接時另寫記憶包 MEMPACK-<席碼>-<MMDD>.md;
   // 填了就送範本句(席碼取自記憶包檔名),新席把記憶包第 2 段寫進自己的記憶夾
   const mpPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^MEMPACK-[0-9a-f]{5}-[0-9]{4}\.md$/.test(base); };
-  const mpFirst = (ho, mp) => { const code = (String(mp).split(/[\\/]/).pop() || '').slice(8, 13); return '你是 @' + code + ' 的接手席。先讀 ' + ho + ' 與 ' + mp + ',把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。'; };
+  const mpFirst = (ho, mp) => { const code = (String(mp).split(/[\\/]/).pop() || '').slice(8, 13); return '你是 @' + code + ' 的接手席。先讀 ' + ho + ' 與 ' + mp + ';記憶包是你的席位記憶:不要寫進記憶夾(網頁席寫不到),之後每一段開始先重讀記憶包。讀完只回一句:我是誰、手上哪一件、下一步。'; }; // 6f1cb FINDING-cutover-seat-cant-read-handoff r0:網頁席的記憶夾寫不到
   const hoPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^HANDOFF-[^\\/]+\.md$/i.test(base); };
-  // 開好但還在排隊(沒在跑)的席:等它跑了再送,最多試 3 次、20 分鐘
+  // 開好但還在排隊(沒在跑)的席:等它跑了再送;20 分鐘內一直試。409(剛開還在起 / 回合中)不算失敗、10 秒後再試;
+  // 其他錯才算一次,3 次放棄(6f1cb FINDING-cutover r0:剛開的席 409 三次就放棄了)
   async function hoFirstFlush() {
     const P = S.hoFirst || {};
     for (const id of Object.keys(P)) {
       const f = P[id], se = (S.sessions || []).find((x) => x.seat_id === id);
       if (Date.now() - f.at > 20 * 60 * 1000 || f.tries >= 3) { delete P[id]; say('@' + f.nm + ' 的第一句沒送進去,請到那一席貼:' + f.line, 'err'); continue; }
-      if (!se || se.state !== 'running' || f.sending) continue;
-      f.sending = true; f.tries++;
-      try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; }
+      if (!se || se.state !== 'running' || f.sending || (f.next && Date.now() < f.next)) continue;
+      f.sending = true;
+      try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; if (e && e.status === 409) f.next = Date.now() + 10000; else f.tries++; }
     }
   }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
+    // a9136 da2520fac:交接單 / 記憶包只送檔名,aibd 從 pending 那一層讀、拷進席資料夾 .aib/;400 invalid_request reason 三種
+    if (c === 'invalid_request' && why === 'handoff') return '交接單拷不進新席:檔名不對、不在 ~/.ez2-aib/pending/ 那一層、太大或不是文字檔。席沒有開';
+    if (c === 'invalid_request' && why === 'mempack') return '記憶包拷不進新席:檔名不對、不在 pending 那一層、太大、不是文字檔,或沒一起填交接單。席沒有開';
+    if (c === 'invalid_request' && why === 'carry') return '新席資料夾裡的 .aib 不是一般資料夾或寫不進去,交接單沒拷進去。席沒有開';
     if (c === 'codex_work_own_folder' || why === 'codex_work_own_folder') return 'Codex 做事席只能用自己的新資料夾;「跟哪一席同一個資料夾」選「自己的資料夾」再開';
     if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
     if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 aibd 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
@@ -3447,6 +3702,10 @@
       // 7b81e 986bce061:帶倉可給 base(40 碼小寫提交)⇒ 這一席的分支從那一顆開(例:全合頭);空白不送
       const bs = String(A.base || '').trim();
       if (body.repo && bs) { if (!/^[0-9a-f]{40}$/.test(bs)) { A.busy = false; A.msg = REPO_WHY.base; A.err = true; return render(); } body.base = bs; }
+      // a9136 PREREAD-seat-carry(519d0 10:46):網頁席讀不到 pending ⇒ 只送檔名,aibd 從 pending 拷進席資料夾的 .aib/,回 carried 相對路徑
+      const baseOf = (p) => String(p).split(/[\\/]/).pop() || '';
+      if (hoPath) body.handoff = baseOf(hoPath);
+      if (mpPath) body.mempack = baseOf(mpPath);
       const r = body.repo ? await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開 · 還有 ' + sec + ' 秒 · ' + FINGER_BEHIND; render(); } }) : await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
@@ -3462,7 +3721,10 @@
       if (sq) note += ';它在排隊:同時最多 ' + (Number(sq.slots) || S.maxRun || '幾') + ' 席在跑、都在用' + (sq.position ? ',排第 ' + sq.position + ' 位' : '') + ',停掉一席它就開始';
       let hoNote = '';
       if (hoPath && seat.seat_id) {
-        const line = mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
+        const C = Array.isArray(r.carried) ? r.carried.map(String) : [];
+        const cHo = C.find((x) => /^\.aib\/HANDOFF-/.test(x)), cMp = C.find((x) => /^\.aib\/MEMPACK-/.test(x));
+        // 拷進來了 ⇒ 第一句用相對路徑、記憶包每段重讀(網頁席沒有記憶夾);舊 aibd 沒回 carried ⇒ 照舊句
+        const line = cHo ? (cMp ? mpFirst(cHo, cMp) : HO_FIRST + cHo) : mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
         if (ss.state === 'pending') { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 0 }; hoNote = ';它開始跑時會自動送第一句(讀交接檔)'; }
         else { try { await act('seat_input', { seat_id: seat.seat_id, text: line }); hoNote = ';已送第一句(讀交接檔)'; } catch (e) { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 1 }; note += ';第一句還沒送進去,稍後自動再送'; } }
       }
@@ -3562,7 +3824,7 @@
       const k = JSON.stringify([S.pair, S.boot, !!S.pvZone]);
       if (k === pairShown) return;
       pairShown = k;
-      el.innerHTML = `${pvBar()}<div class="bar0"><div class="brandt">多席工作台</div><div class="grow"></div><a class="ib" href="contacts.html">👥 聯絡中心</a></div>${pairHtml()}`;
+      el.innerHTML = `${pvBar()}<div class="bar0"><div class="brandt">多席工作台</div><div class="grow"></div><a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>${pairHtml()}`;
       const c = document.getElementById('pcode'); if (c) c.focus();
       return;
     }
@@ -3586,7 +3848,7 @@
     const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
-    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}<a class="ib" href="contacts.html">👥 聯絡中心</a></div>
+    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
@@ -3620,8 +3882,11 @@
     return '沒送出:' + (e.code || e.message || e.status);
   }
   async function sendSeat(seatId, text) {
-    const r = await act('seat_input', { seat_id: seatId, text });
-    return r.__status === 202 ? '已交給它,這一回合結束就收到' : '已送出';
+    waitMark(seatId, text, false); render();
+    let r;
+    try { r = await act('seat_input', { seat_id: seatId, text }); } catch (e) { delete S.wait[seatId]; (S.said[seatId] || []).pop(); throw e; }
+    if (r.__status === 202 && S.wait[seatId]) S.wait[seatId].queued = true;
+    return r.__status === 202 ? '它正在忙,這句排在後面;這一回合結束就收到' : '已送出';
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
   // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
@@ -3691,7 +3956,7 @@
       let tid = '';
       try { tid = await ensureShared(); } catch (e) { if (!(e && (e.status === 404 || e.status === 405 || e.code === 'unknown_act_type'))) { say(errText(e), 'err'); return false; } }
       if (tid) {
-        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); { const QT = T.filter((s) => queuedOf(s)); say(QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡', QT.length ? 'err' : ''); } return true; }
+        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); for (const x of T) waitMark(x.seat_id, null, running(x.seat_id) && !!(turnOf(x.seat_id) || {}).running); { const QT = T.filter((s) => queuedOf(s)); say(QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡', QT.length ? 'err' : ''); } return true; }
         catch (e) {
           // 開串之後才加的席不是成員 ⇒ 退回一對一信(回答不會帶回這裡,照實說)
           if (!(e && e.code === 'to_not_a_member')) { say(errText(e), 'err'); return false; }
@@ -3822,7 +4087,12 @@
     if (x.closest('[data-rcpno]')) { S.rcpAsk = null; render(); return; }
     const rg = x.closest('[data-rcpgo]'); if (rg && !S.sending) { const ti = document.querySelector('[data-rcptests]'); if (ti && S.rcpAsk) S.rcpAsk.tests = ti.value; return rcpGo(rg.dataset.rcpgo); }
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
-    const sbb = x.closest('[data-sendback]'); if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    const sbb = x.closest('[data-sendback]'); if (sbb && running(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席還在跑,沒有交回。下一步:先按這一席的「停止」,停好再按「交回本機原倉」' }; say(S.sbMsg.text, 'err'); return render(); }
+    if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    const mvb = x.closest('[data-move]'); if (mvb) { S.moveAsk = mvb.dataset.move; S.moveCode = ''; S.moveMsg = null; render(); const ci = document.querySelector('[data-movecode]'); if (ci) ci.focus(); return; }
+    if (x.closest('[data-moveno]')) { S.moveAsk = null; render(); return; }
+    const mvg = x.closest('[data-movego]'); if (mvg && !S.moveF) { const ci = document.querySelector('[data-movecode]'); mvg.disabled = true; return seatMove(mvg.dataset.movego, String(ci ? ci.value : S.moveCode || '').trim()); }
+    const umv = x.closest('[data-unmove]'); if (umv) { umv.disabled = true; return seatUnmove(umv.dataset.unmove); }
     const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答
@@ -3833,6 +4103,8 @@
     if (x.closest('[data-bootretry]')) { location.reload(); return; } // 憑證在這個分頁裡,重新載入不會再送配對碼
     if (x.closest('[data-sr]')) { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; const sq = document.getElementById('sq'); if (sq) sq.value = ''; render(); } // 點一筆:跳過去,搜尋收起(框清空、中欄回原樣;0eed7 L2:之前只清了 S.q,沒重畫,框與結果都還在)
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
+    const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
+    if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);
@@ -3877,6 +4149,7 @@
     }
     if (x.closest('[data-pvupd]')) { try { await act('preview_update', { idempotency_key: idem() }); } catch (er) { /* 能看階段:aibd 還沒有 */ } S.pvNew = ''; S.pvNewAt = 0; say('更新中,席與對話會保留'); return render(); }
     if (x.closest('[data-pvlist]')) { await loadPreviews(); return pvListDlg(); }
+    if (x.closest('[data-inbox]')) return inboxDlg();
     const eo = x.closest('[data-evopen]'); if (eo) return openEv(eo.dataset.evopen);
     if (x.closest('[data-dmopen]')) { S.dmOpen = !S.dmOpen; render(); if (S.dmOpen) loadDismissed(); return; }
     const ud = x.closest('[data-undm]');
@@ -4031,6 +4304,7 @@
       const ap = x.closest('[data-addp]'); if (ap) { S.add.provider = ap.dataset.addp; S.add.mode = 'safe'; S.add.key = idem(); return render(); }
       const am = x.closest('[data-addm]'); if (am) { S.add.mode = am.dataset.addm; S.add.key = idem(); return render(); }
       if (x.closest('[data-addx]') || x.classList.contains('dlgbg')) { S.add = null; return render(); }
+      if (x.closest('[data-addpv]')) { S.add = null; render(); await loadPreviews(); return pvListDlg(); }
       if (x.closest('[data-addgo]')) return doAdd();
     }
     const sd = x.closest('[data-send]'); if (sd) return doSend(sd.dataset.send, sd.dataset.code);
@@ -4068,6 +4342,7 @@
     if (e.target.dataset && e.target.dataset.addq && S.add) { S.add.pq = e.target.value; const l = document.getElementById('addpl'); if (l) l.innerHTML = personaRows(S.add); return; } // 只換清單,輸入框不重畫(不掉焦點)
     if (e.target.dataset && e.target.dataset.addf && S.add) { S.add[e.target.dataset.addf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.ansfor) { S.ansDraft[e.target.dataset.ansfor] = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.movecode !== undefined) { S.moveCode = e.target.value; return; } // 重畫時不掉字
     if (e.target.id === 'sq') {
       S.q = e.target.value; clearTimeout(SR.timer);
       if (!S.q.trim()) { SR.seq++; S.sr = null; render(); return; } // 清空就回原畫面

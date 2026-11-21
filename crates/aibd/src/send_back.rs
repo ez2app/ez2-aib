@@ -253,6 +253,7 @@ fn base_name(path: &str) -> String {
 /// A path a commit must not bring into the registered repo this way.
 fn refused_path(new_mode: &str, path: &str) -> bool {
     loads_as_settings(path)
+        || crate::seat_carry::in_carry(path)
         || CHECKOUT_SETTINGS.contains(&base_name(path).as_str())
         || new_mode == SYMLINK_MODE
 }
@@ -825,6 +826,7 @@ mod tests {
             (".github/workflows/x.yml", "on: push"),
             ("sub/.gitmodules", "[submodule \"x\"]"),
             (".lfsconfig", "[lfs]"),
+            (".aib/HANDOFF-a9136-1121-1030.md", "handoff"),
         ] {
             let f = fix();
             let sha = f.commit(file, body);

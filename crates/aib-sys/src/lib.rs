@@ -67,6 +67,7 @@ pub mod job;
 pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod noindex;
 #[cfg(target_os = "macos")]
 pub mod presence_macos;
 pub mod procargs;

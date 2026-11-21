@@ -148,7 +148,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
     assert_eq!(r.json["reason"], "owner_check_not_approved", "{}", r.body);
     let after = seats(&d.call("GET", "/api/v1/seats", None, None).await.json);
     assert_eq!(after, before, "reason: refused_open_wrote");
-    let work = data.join("seat-work");
+    let work = aibd::folders::folder(&data, "seat-work");
     let trees = std::fs::read_dir(&work)
         .map(|r| {
             r.flatten()
