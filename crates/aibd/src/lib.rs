@@ -93,6 +93,8 @@ pub mod sessions;
 pub mod slots;
 pub mod static_files;
 pub mod term_close;
+pub mod test_host_add;
+pub mod test_host_web;
 pub mod thermal;
 pub mod threads;
 pub mod timers;
