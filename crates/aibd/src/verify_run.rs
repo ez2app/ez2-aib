@@ -37,8 +37,43 @@ pub const SEAT: &str = "verify_seat";
 pub const BUNDLE: &str = "verify_bundle";
 pub const MAX_HEADS: usize = 8;
 pub const MAX_CONFLICTS: usize = 50;
-/// What a seat may ask in an hour.
-pub const PER_HOUR: usize = 120;
+/// The keys each answer has, and no other (5d33a PREREAD-g6 L1: the tests assert the set).
+pub const EVENT_KEYS: [&str; 6] = [
+    "global_seq",
+    "aggregate_type",
+    "aggregate_id",
+    "sequence",
+    "type",
+    "occurred_at",
+];
+pub const SEAT_KEYS: [&str; 6] = [
+    "seat_id",
+    "name",
+    "state",
+    "revision",
+    "created_at",
+    "updated_at",
+];
+pub const META_KEYS: [&str; 6] = [
+    "provider",
+    "role",
+    "model",
+    "model_pinned",
+    "mode",
+    "updated_at",
+];
+pub const SESSION_KEYS: [&str; 8] = [
+    "session_id",
+    "state",
+    "started_at",
+    "ended_at",
+    "ended_by",
+    "exit_code",
+    "signal",
+    "stop_status",
+];
+/// What a seat may ask in an hour (5d33a PREREAD-g6 Q1: 30, and each one an event).
+pub const PER_HOUR: usize = 30;
 pub const MAX_ROWS: u32 = 200;
 pub const MAX_TYPES: usize = 8;
 pub const MAX_SESSIONS: usize = 20;
@@ -50,6 +85,16 @@ pub fn is_act(body: &Value) -> bool {
         body.get("type").and_then(Value::as_str),
         Some(RECEIPT | EVENTS | SEAT | BUNDLE)
     )
+}
+
+/// Whether the run's `.out` carried its own sha256 and it matched (5d33a PREREAD-g6 N2): the
+/// verdict says `seal_missing` / `seal_mismatch` otherwise. `None`: no `.out` read yet.
+pub fn sealed_of(run: &crate::receipt_run::Run) -> Option<bool> {
+    run.verdict.as_ref().map(|v| {
+        !v.reasons
+            .iter()
+            .any(|r| r == "seal_missing" || r == "seal_mismatch")
+    })
 }
 
 /// A bundle's name in the pending folder: `BUNDLE-<letters, digits, . _ ->.bundle`.
@@ -145,7 +190,21 @@ fn check_bundle_in(
     if heads.len() > MAX_HEADS {
         return Err("bundle_too_many_heads");
     }
-    git(scratch, hooks, &["bundle", "unbundle", b]).map_err(|_| "bundle_refused")?;
+    // every object it brings is checked as a fetch checks it (5d33a PREREAD-g6 L2)
+    git(
+        scratch,
+        hooks,
+        &[
+            "-c",
+            "fetch.fsckObjects=true",
+            "-c",
+            "transfer.fsckObjects=true",
+            "bundle",
+            "unbundle",
+            b,
+        ],
+    )
+    .map_err(|_| "bundle_refused")?;
     let head = heads[0].0.clone();
     let known = |c: &str| {
         git(
@@ -462,9 +521,18 @@ pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
         return refuse(
             StatusCode::TOO_MANY_REQUESTS,
             "verify_too_often",
-            "at most 120 checks an hour for a seat",
+            "at most 30 checks an hour for a seat",
         );
     }
+    // the check's name is one of the fixed four (is_act let it in)
+    let check = body.get("type").cloned().unwrap_or(Value::Null);
+    crate::seats::side_event(
+        &st,
+        "verify",
+        "verify.checked",
+        json!({"seat": seat, "check": check}),
+    )
+    .await;
     act(st, body).await
 }
 
@@ -492,7 +560,11 @@ async fn receipt(body: Value) -> Response {
     }
     let id = a.run_id.clone();
     match tokio::task::spawn_blocking(move || crate::receipt_run::find(&id)).await {
-        Ok(Some(run)) => Json(json!({"run": crate::receipt_run::view(&run)})).into_response(),
+        Ok(Some(run)) => Json(json!({
+            "run": crate::receipt_run::view(&run),
+            "sealed": sealed_of(&run),
+        }))
+        .into_response(),
         Ok(None) => refuse(StatusCode::NOT_FOUND, "no_such_run", "no run of that id"),
         Err(_) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -680,6 +752,42 @@ mod tests {
         }
     }
 
+    fn keys(v: &Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    fn sorted(k: &[&str]) -> Vec<String> {
+        let mut k: Vec<String> = k.iter().map(|s| s.to_string()).collect();
+        k.sort();
+        k
+    }
+
+    #[test]
+    fn a_receipt_is_told_whether_its_seal_held() {
+        let mut run: crate::receipt_run::Run = serde_json::from_value(json!({
+            "run_id": "web-ab12c-012345678", "seat_id": "seat_ab12c", "head": "0".repeat(40),
+            "scope": "full", "state": "running", "asked_at": "t"
+        }))
+        .unwrap();
+        assert_eq!(sealed_of(&run), None, "reason: unread_called_sealed");
+        let verdict = |reasons: &[&str]| crate::receipt_check::Verdict {
+            green: reasons.is_empty(),
+            reasons: reasons.iter().map(|s| s.to_string()).collect(),
+            narrow: false,
+            tests: None,
+            knives: None,
+            sandbox: false,
+        };
+        run.verdict = Some(verdict(&["rc_nonzero:test"]));
+        assert_eq!(sealed_of(&run), Some(true), "reason: red_called_unsealed");
+        for bad in ["seal_missing", "seal_mismatch"] {
+            run.verdict = Some(verdict(&[bad, "rc_nonzero:test"]));
+            assert_eq!(sealed_of(&run), Some(false), "reason: {bad}_called_sealed");
+        }
+    }
+
     #[test]
     fn only_a_reviewer_or_verifier_on_some_node_runs_a_check() {
         let rows = [
@@ -781,6 +889,7 @@ mod tests {
         assert!(!s.contains("ev_secret"), "reason: event_id_told {s}");
         assert_eq!(v["type"], "seat.created");
         assert_eq!(v["global_seq"], 7);
+        assert_eq!(keys(&v), sorted(&EVENT_KEYS), "reason: event_keys");
     }
 
     #[test]
@@ -840,6 +949,16 @@ mod tests {
             "reason: not_newest_first"
         );
         assert_eq!(v["meta"]["mode"], "work");
+        assert_eq!(
+            keys(&v),
+            sorted(&["meta", "seat", "sessions"]),
+            "reason: top_keys"
+        );
+        assert_eq!(keys(&v["seat"]), sorted(&SEAT_KEYS), "reason: seat_keys");
+        assert_eq!(keys(&v["meta"]), sorted(&META_KEYS), "reason: meta_keys");
+        for s in told {
+            assert_eq!(keys(s), sorted(&SESSION_KEYS), "reason: session_keys");
+        }
     }
 
     #[test]
