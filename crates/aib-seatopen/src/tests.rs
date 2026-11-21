@@ -875,3 +875,24 @@ fn plain_refusals_match_the_1x_source_word_for_word() {
     );
     assert_eq!(OpenError::Cabin("m".into()).to_string(), "m");
 }
+
+/// 519d0 11-21 M6 (Andy's seat: `git add README.md` refused, the seat stopped): a file is
+/// added by name, a commit may be quiet, and the seat is told every command it may run.
+#[test]
+fn a_work_seat_adds_files_by_name_and_is_told_what_it_may_run() {
+    for rule in ["Bash(git add *)", "Bash(git commit -q -m *)"] {
+        assert!(WORK_ALLOWED.contains(&rule), "reason: not_allowed {rule}");
+        assert!(
+            WORK_FREE_ARGS.contains(&rule),
+            "reason: free_args_unlisted {rule}"
+        );
+    }
+    let note = work_note();
+    for rule in WORK_ALLOWED.iter().filter(|r| r.starts_with("Bash(")) {
+        let cmd = &rule["Bash(".len()..rule.len() - 1];
+        let shown = format!("`{}`", cmd.replace(" *", " …"));
+        assert!(note.contains(&shown), "reason: not_told {shown}");
+    }
+    assert!(note.contains("直接被拒"), "reason: refusal_not_said");
+    assert!(!note.contains("Bash("), "reason: rule_syntax_shown");
+}

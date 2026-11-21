@@ -514,8 +514,15 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             "a ticket comes with the head of its plan, and only then",
         );
     }
-    if st.sessions.live_seats().contains(&req.seat_id) {
-        return conflict("seat_busy", "the seat runs now; stop it first", json!({}));
+    // 519d0 11-21 (Andy in preview 51405: a seat done with its turn, open and idle, was
+    // refused three times): only a seat in a turn is refused, as 合回's author is. What goes
+    // is the copy's committed head, read here and again under the ticket (`head_moved`).
+    if st.sessions.in_turn(&req.seat_id) {
+        return conflict(
+            "seat_busy",
+            "the seat is in a turn; wait for it to finish",
+            json!({}),
+        );
     }
     let (store, sid) = (st.store.clone(), req.seat_id.clone());
     let meta = match tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await {

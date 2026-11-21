@@ -513,6 +513,29 @@ pub fn now_gate_on() -> bool {
     std::env::var(NOW_GATE_ENV).is_ok_and(|v| v == "1")
 }
 
+/// 519d0 11-21 M6: a claude `work` seat's system prompt starts with what it may run
+/// ([`aib_seatopen::work_note`]); its persona card's text (aibd's kept copy, `persona`)
+/// follows. Kept in aibd's private folder `dir` by the text's hash, as a card's text is.
+pub fn work_prompt_file(
+    dir: &std::path::Path,
+    persona: Option<&str>,
+) -> std::io::Result<std::path::PathBuf> {
+    let mut text = aib_seatopen::work_note().into_bytes();
+    if let Some(p) = persona {
+        text.extend_from_slice(b"\n\n");
+        text.extend(std::fs::read(p)?);
+    }
+    let sha = crate::preview::sha256_hex(&text);
+    let path = dir.join(format!("work-prompt-{}.md", &sha[..16]));
+    crate::platform::write_private_file(&path, &text)?;
+    Ok(path)
+}
+
+/// Whether a seat of `provider` in `mode` gets [`work_prompt_file`].
+pub fn told_its_commands(provider: &str, mode: &str) -> bool {
+    provider == "claude" && mode == "work"
+}
+
 pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
     talk_args_with(config_path, mode, now_gate_on())
 }
@@ -2165,7 +2188,25 @@ async fn open_checked(
         };
         a.extend(codex_talk_args(exe, data));
     }
-    if let (Ok(a), Some(f)) = (argv.as_mut(), persona_file.as_deref()) {
+    let prompt_file = if told_its_commands(&req.provider, &req.mode) && !req.dry_run {
+        let (dir, persona) = (
+            st.sessions.private_dir().to_path_buf(),
+            persona_file.clone(),
+        );
+        let kept =
+            tokio::task::spawn_blocking(move || work_prompt_file(&dir, persona.as_deref())).await;
+        match kept
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|p| p.to_str().map(str::to_owned))
+        {
+            Some(p) => Some(p),
+            None => return internal(),
+        }
+    } else {
+        persona_file.clone()
+    };
+    if let (Ok(a), Some(f)) = (argv.as_mut(), prompt_file.as_deref()) {
         if !aib_seatopen::add_persona_file(&req.provider, a, f) {
             return Refusal(
                 "persona_unsupported",
@@ -2894,6 +2935,31 @@ mod tests {
     }
 
     use super::*;
+
+    /// 519d0 11-21 M6: a claude work seat's prompt starts with its commands; its card follows;
+    /// other seats get the card alone.
+    #[test]
+    fn a_work_seat_is_told_its_commands_before_its_card() {
+        let d = tempfile::tempdir().unwrap();
+        let card = d.path().join("persona-ab.md");
+        std::fs::write(&card, "我是測試人格").unwrap();
+        let p = work_prompt_file(d.path(), card.to_str()).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            text.starts_with(&aib_seatopen::work_note()),
+            "reason: commands_not_first {text}"
+        );
+        assert!(
+            text.ends_with("\n\n我是測試人格"),
+            "reason: card_lost {text}"
+        );
+        let alone = std::fs::read_to_string(work_prompt_file(d.path(), None).unwrap()).unwrap();
+        assert_eq!(alone, aib_seatopen::work_note(), "reason: card_made_up");
+        assert!(told_its_commands("claude", "work"));
+        for (p, m) in [("claude", "safe"), ("claude", "dgrs"), ("codex", "work")] {
+            assert!(!told_its_commands(p, m), "reason: told {p} {m}");
+        }
+    }
 
     /// B4-1b-2b K5: the provider is told which seat and which card, by env (IFACE §4).
     #[test]

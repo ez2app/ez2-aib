@@ -247,9 +247,15 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         "reason: the_trail_is_not_on_its_seat_only"
     );
     let send = json!({"type": "seat_send_back", "seat_id": w1});
+    // 519d0 11-21: open and idle (not in a turn) is not busy: the send goes on to read the
+    // copy (nothing committed here, so nothing goes and no branch is written, below)
     let r = post(send.clone()).await;
-    assert_eq!(r.code, 409, "reason: running_seat_sent {}", r.body);
-    assert_eq!(r.json["code"], "seat_busy", "{}", r.body);
+    assert_ne!(
+        r.json["code"], "seat_busy",
+        "reason: idle_seat_refused {}",
+        r.body
+    );
+    assert_ne!(r.code, 200, "reason: sent_without_a_fingerprint {}", r.body);
     let mut half = send.clone();
     half["ticket"] = json!("t-made-up");
     let r = post(half).await;

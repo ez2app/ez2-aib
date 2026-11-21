@@ -153,7 +153,9 @@ pub const WORK_ALLOWED: &[&str] = &[
     "Bash(git show HEAD)",
     "Bash(git show --stat HEAD)",
     "Bash(git add -A)",
+    "Bash(git add *)", // a file by name (519d0 11-21 M6)
     "Bash(git commit -m *)",
+    "Bash(git commit -q -m *)",
     "Bash(ls)",
     "Bash(pwd)",
     "Bash(node --test)",
@@ -162,7 +164,30 @@ pub const WORK_ALLOWED: &[&str] = &[
 
 /// The Bash rules of [`WORK_ALLOWED`] that take free arguments; every other Bash rule is a
 /// whole fixed command (5d33a M2).
-pub const WORK_FREE_ARGS: &[&str] = &["Bash(git commit -m *)", "Bash(node --test *)"];
+/// `git add *` (519d0 11-21, Andy's seat had `git add README.md` refused, 0eed7 VERIFY-pv8 r2
+/// M6) takes paths and flags; what it could read outside the folder (`--pathspec-from-file`)
+/// the sandbox's read rules refuse, and it writes only the folder's own index.
+pub const WORK_FREE_ARGS: &[&str] = &[
+    "Bash(git add *)",
+    "Bash(git commit -m *)",
+    "Bash(git commit -q -m *)",
+    "Bash(node --test *)",
+];
+
+/// The words at the top of a claude work seat's system prompt (519d0 11-21 M6: a seat that
+/// does not know what it may run stops at the first refusal): its commands, read off
+/// [`WORK_ALLOWED`], and that a refusal is final (nobody is asked).
+pub fn work_note() -> String {
+    let cmds: Vec<String> = WORK_ALLOWED
+        .iter()
+        .filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(')'))
+        .map(|c| format!("- `{}`", c.replace(" *", " …")))
+        .collect();
+    format!(
+        "這一席是做事席:檔案工具(讀、找、改、寫)只在這個資料夾裡用;終端機指令只准下面這些         (… 是你自己填的檔名或說明,`git commit` 可以接好幾個 -m),其他指令會直接被拒、         沒有人會來核准,不要等也不要重試:\n{}\n\n         推上 GitHub、開 PR、送回倉都不是你做的:提交好就停,在回覆裡說做了什麼,         由主人在頁面上按。",
+        cmds.join("\n")
+    )
+}
 
 /// The longest persona word taken, in characters.
 pub const PERSONA_MAX_CHARS: usize = 64;
