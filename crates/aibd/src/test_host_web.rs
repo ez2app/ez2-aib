@@ -561,7 +561,7 @@ mod tests {
         };
         assert_eq!(pinned(d.path()).unwrap(), Vec::new());
         write_pinned(d.path(), std::slice::from_ref(&h)).unwrap();
-        assert_eq!(pinned(d.path()).unwrap(), vec![h]);
+        assert_eq!(pinned(d.path()).unwrap(), vec![h.clone()]);
         write_pinned(d.path(), &[]).unwrap();
         assert!(!hosts_file(d.path()).exists(), "reason: empty_list_left");
         assert_eq!(pinned(d.path()).unwrap(), Vec::new());
