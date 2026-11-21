@@ -7,7 +7,7 @@ wk() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" -- cargo te
 # WK1 a web seat a bridged letter was put in is not woken
 wk crates/aibd/src/dm_import.rs \
    '                    woken(&seat_id);' \
-   '                    let _ = &seat_id; // knife' \
+   '                    let _ = (&seat_id, woken); // knife' \
    a_letter_to_a_moved_code_lands_once_in_the_web_seats_inbox \
    '--lib dm_import::tests::a_letter_to_a_moved_code_lands_once_in_the_web_seats_inbox'
 # WK2 a move leaves a letter the mirror never posted in the old ledger
