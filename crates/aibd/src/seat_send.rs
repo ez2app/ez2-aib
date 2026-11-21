@@ -829,12 +829,18 @@ pub enum Settled<'a> {
     Failed(&'a str),
 }
 
-/// The row's item after `how` (pure; the caller writes it at the row's revision).
+/// The row's item after `how` (pure; the caller writes it at the row's revision); `None` when
+/// the row is no longer queued: the seat read or closed it while it was being written, and
+/// what the seat did stands (b4297 st2 41fcd024b: delivered was written over read, and the
+/// seat's close at the read revision was 409).
 pub fn settled_item(
     mut item: serde_json::Map<String, Value>,
     how: &Settled<'_>,
     at: i64,
-) -> serde_json::Map<String, Value> {
+) -> Option<serde_json::Map<String, Value>> {
+    if item.get("status").and_then(Value::as_str) != Some("queued") {
+        return None;
+    }
     match how {
         Settled::Delivered(session) => {
             item.insert("status".into(), json!("delivered"));
@@ -851,7 +857,7 @@ pub fn settled_item(
             item.insert("failed_code".into(), json!(code));
         }
     }
-    item
+    Some(item)
 }
 
 /// Write `how` onto the row (revision 1, as [`queued_row`] wrote it); the new revision, or
@@ -867,7 +873,7 @@ async fn settle(st: &AppState, message_id: &str, how: Settled<'_>) -> Option<i64
     .await
     .ok()?
     .ok()??;
-    let item = settled_item(row.item, &how, unix_now());
+    let item = settled_item(row.item, &how, unix_now())?;
     let now = crate::sessions::now_rfc3339();
     match tokio::task::spawn_blocking(move || db.update(&id, row.rev, item, &now)).await {
         Ok(Ok(aib_store::Updated::Done(r))) => Some(r.rev),
@@ -1214,18 +1220,34 @@ mod tests {
         assert_eq!(r.thread_id, "seat:seat_a~seat:seat_b");
         assert_eq!((r.len, r.body.as_deref()), (6, Some("你好")));
 
-        let d = settled_item(r.item.clone(), &Settled::Delivered("s1"), 9);
+        let d = settled_item(r.item.clone(), &Settled::Delivered("s1"), 9).unwrap();
         assert_eq!(d["status"], "delivered", "reason: delivered_not_written");
         assert_eq!(
             (d["delivered_at"].as_i64(), d["session_id"].as_str()),
             (Some(9), Some("s1"))
         );
-        let p = settled_item(r.item.clone(), &Settled::Pending("s1"), 9);
+        let p = settled_item(r.item.clone(), &Settled::Pending("s1"), 9).unwrap();
         assert_eq!(p["status"], "queued", "reason: pending_marked_delivered");
         assert!(p.get("delivered_at").is_none_or(Value::is_null));
-        let f = settled_item(r.item, &Settled::Failed("seat_not_running"), 9);
+        let f = settled_item(r.item.clone(), &Settled::Failed("seat_not_running"), 9).unwrap();
         assert_eq!(f["failed"], true, "reason: refused_left_open");
         assert_eq!(f["failed_code"], "seat_not_running");
+
+        // the seat read it (or closed it) while it was being written: nothing is written over
+        for status in ["read", "done"] {
+            let mut item = r.item.clone();
+            item.insert("status".into(), json!(status));
+            for how in [
+                Settled::Delivered("s1"),
+                Settled::Pending("s1"),
+                Settled::Failed("seat_not_running"),
+            ] {
+                assert!(
+                    settled_item(item.clone(), &how, 9).is_none(),
+                    "reason: settled_over_{status}"
+                );
+            }
+        }
     }
 
     /// safe never sends to dgrs; dgrs may send to safe; a seat that takes no input is refused.
