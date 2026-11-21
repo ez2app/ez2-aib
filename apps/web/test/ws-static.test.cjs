@@ -287,6 +287,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/\.cols\{[^}]*gap:22px/.test(css) && /\.card\{[^}]*margin-bottom:18px/.test(css) && /\.ibppl\{[^}]*gap:12px/.test(css) && /\.mock\{padding:14px\}/.test(css), 'reason: gaps_not_widened');
   // 四語都改名、都有圖例
   ok((cp.match(/tab_contacts: '📥 /g) || []).length === 4 && (cp.match(/ib_lg_urg:/g) || []).length === 4, 'reason: copy_not_four_languages');
+  // 被擋寫人話、代號只放滑過提示(519d0 13:1x:截圖 legacy_off 原代號露在卡上)
+  ok(/IB_BLOCK = \{[^}]*legacy_off: '/.test(app) && /title="\$\{esc\('aibd 代號 '/.test(app), 'reason: blocked_code_not_human_words');
   // 用戶資料夾頁 403 ⇒ 退回聯絡中心
   ok(/e\.status === 403/.test(app) && /S\.ib = null/.test(app), 'reason: user_page_403_not_handled');
 }

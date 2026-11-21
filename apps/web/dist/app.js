@@ -140,7 +140,7 @@
     const tk = `<span class="tk"><span class="${m.delivered_at ? 'on' : ''}">${esc(t('ib_t_sent'))}</span><span class="${m.read_at ? 'on' : ''}">${esc(t('ib_t_read'))}</span><span class="${m.done_at ? 'on' : ''}"${m.done_evidence || m.done_why ? ` title="${esc(m.done_evidence || m.done_why)}"` : ''}>${esc(t('ib_t_done'))}</span></span>`;
     const via = /^seat:legacy:/.test(String(m.from_seat || '')) || m.via === 'bridge' ? `<span class="via">${esc(t('ib_via'))}</span>` : '';
     const dup = Number(m.dup_count) > 1 ? `<span class="dup">${esc(t('ib_dup', { n: Number(m.dup_count) | 0 }))}</span>` : '';
-    const why = m.superseded_by ? `<div class="why">${esc(t('ib_sup'))}</div>` : m.blocked ? `<div class="why">${esc(IB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</div>` : '';
+    const why = m.superseded_by ? `<div class="why">${esc(t('ib_sup'))}</div>` : m.blocked ? `<div class="why" title="${esc('aibd 代號 ' + String(m.blocked.reason || '?'))}">${esc(IB_BLOCK[m.blocked.reason] || 'aibd 回了 ' + String(m.blocked.reason || '?'))}</div>` : '';
     return `<div class="card ${k === 'urg' ? 'urg' : k === 'ask' ? 'dec' : k === 'blk' ? 'blk' : age.trim()}${ibShow(m) ? '' : ' dim'}${S.ibOpen === m.id ? ' on' : ''}" role="button" tabindex="0" data-ib="${esc(m.id)}">
       <div class="r1"><span class="mini">${ibAv(ibKey(m.from_seat))}</span><span class="who">${esc(ibName(ibKey(m.from_seat)))}</span>→<span class="mini">${ibAv(ibKey(m.to_seat))}</span><span class="who2">${esc(ibName(ibKey(m.to_seat)))}</span>${tag}<span class="age${age}">${esc(t('ib_min', { n: Math.round(a) }))}</span></div>
       <div class="t">${esc(String(m.first_line || '').slice(0, 120))}</div><div class="r3">${tk}${dup}${via}</div>${why}</div>`;
