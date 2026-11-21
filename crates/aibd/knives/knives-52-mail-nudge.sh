@@ -8,8 +8,8 @@ set -eu
 mn() { python3 -I scripts/knife.py "crates/aibd/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aibd --locked --lib "$4"; }
 # MN1 a message is named a third time
-mn mail_nudge.rs '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER)' \
-   '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER + 1) // knife' \
+mn mail_nudge.rs '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER && nameable(r))' \
+   '        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER + 1 && nameable(r)) // knife' \
    a_message_is_named_twice_and_then_left_to_the_card
 # MN2 a message just written is named at once
 mn mail_nudge.rs '            .is_some_and(|at| at <= now - wait_of(r))' \

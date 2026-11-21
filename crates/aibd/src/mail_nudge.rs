@@ -55,11 +55,23 @@ fn open_past(r: &aib_store::MessageRow, now: i64) -> bool {
 /// aibd mark it; a bridged letter never is) not at all, every other [`AFTER_SECS`]
 /// (DESIGN-drive-d3-wake 2). Once named, every message rests [`AFTER_SECS`] ([`rested`]).
 fn wait_of(r: &aib_store::MessageRow) -> i64 {
-    if crate::urgent::is_urgent(r) && nudged(r) == 0 {
+    if at_once(r) && nudged(r) == 0 {
         0
     } else {
         AFTER_SECS
     }
+}
+
+/// An urgent message or a work order aibd marked: named the moment it is written, and a work
+/// order only that once (DECISION-council-driveweb r1 D3: still open after that, it is the
+/// card's, never a second wake).
+fn at_once(r: &aib_store::MessageRow) -> bool {
+    crate::urgent::is_urgent(r) || crate::urgent::is_dispatch(r)
+}
+
+/// Whether `r` is named (again): a work order named once is not.
+fn nameable(r: &aib_store::MessageRow) -> bool {
+    !(crate::urgent::is_dispatch(r) && nudged(r) >= 1)
 }
 
 /// When the earliest of a seat's open messages that is not due yet comes due (unix seconds,
@@ -72,6 +84,7 @@ pub fn next_due(rows: &[aib_store::MessageRow], now: i64) -> Option<i64> {
                 && Some("seat") == text_of(r, "sender_kind")
                 && r.item.get("post_id").is_none_or(Value::is_null)
                 && nudged(r) < PER_LETTER
+                && nameable(r)
         })
         .filter_map(|r| {
             let written = r.item.get("delivered_at").and_then(Value::as_i64)? + wait_of(r);
@@ -161,7 +174,7 @@ fn left_to_the_card(r: &aib_store::MessageRow, now: i64) -> bool {
 /// The rows of one seat's open messages a reminder names now, oldest first as given.
 pub fn due(rows: &[aib_store::MessageRow], now: i64) -> Vec<&aib_store::MessageRow> {
     rows.iter()
-        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER)
+        .filter(|r| open_past(r, now) && nudged(r) < PER_LETTER && nameable(r))
         .filter(|r| rested(r, now))
         .collect()
 }
@@ -696,6 +709,52 @@ mod tests {
         assert_eq!(
             next_due(std::slice::from_ref(&bridged), now),
             Some(now + AFTER_SECS)
+        );
+    }
+
+    // DECISION-council-driveweb r1 D3: a work order aibd marked is named at once and only once
+    #[test]
+    fn a_work_order_is_named_at_once_and_only_once() {
+        let now = 10_000;
+        let mut order = written("q_order", now);
+        order
+            .item
+            .insert(crate::urgent::DISPATCH.into(), json!(true));
+        assert_eq!(
+            due(std::slice::from_ref(&order), now).len(),
+            1,
+            "reason: order_waits"
+        );
+        let mut named = order.clone();
+        named
+            .item
+            .insert("delivered_at".into(), json!(now - AFTER_SECS));
+        named.item.insert("nudged".into(), json!(1));
+        named
+            .item
+            .insert("nudged_at".into(), json!(now - AFTER_SECS));
+        assert!(
+            due(std::slice::from_ref(&named), now).is_empty(),
+            "reason: order_named_twice"
+        );
+        assert_eq!(
+            next_due(std::slice::from_ref(&named), now),
+            None,
+            "reason: order_rechecked"
+        );
+        assert!(left_to_the_card(&named, now), "reason: order_not_carded");
+        // the text alone, or a bridged one, is no work order
+        let plain = row(
+            "q_text",
+            "seat_b",
+            &[("status", json!("delivered")), ("delivered_at", json!(now))],
+        );
+        assert!(due(std::slice::from_ref(&plain), now).is_empty());
+        let mut bridged = order.clone();
+        bridged.item.insert("imported".into(), json!(true));
+        assert!(
+            due(std::slice::from_ref(&bridged), now).is_empty(),
+            "reason: bridged_order_early"
         );
     }
 

@@ -12,14 +12,14 @@ dw crates/aibd/src/mail_nudge.rs \
    '--lib mail_nudge::tests::an_idle_seats_message_is_looked_at_again_when_it_comes_due'
 # DW2 an urgent message waits the three minutes like any other
 dw crates/aibd/src/mail_nudge.rs \
-   '    if crate::urgent::is_urgent(r) && nudged(r) == 0 {' \
-   '    if crate::urgent::is_urgent(r) && nudged(r) == -1 { // knife' \
+   '    if at_once(r) && nudged(r) == 0 {' \
+   '    if at_once(r) && nudged(r) == -1 { // knife' \
    an_urgent_message_is_named_at_once_and_a_bridged_one_waits \
    '--lib mail_nudge::tests::an_urgent_message_is_named_at_once_and_a_bridged_one_waits'
 # DW3 an urgent message, once named, is named again at once (no rest)
 dw crates/aibd/src/mail_nudge.rs \
-   '    if crate::urgent::is_urgent(r) && nudged(r) == 0 {' \
-   '    if crate::urgent::is_urgent(r) { // knife' \
+   '    if at_once(r) && nudged(r) == 0 {' \
+   '    if at_once(r) { // knife' \
    an_urgent_message_is_named_at_once_and_a_bridged_one_waits \
    '--lib mail_nudge::tests::an_urgent_message_is_named_at_once_and_a_bridged_one_waits'
 # DW4 a seat gets a second look-again for the same time
@@ -34,3 +34,33 @@ dw crates/aibd/src/mail_nudge.rs \
    '    if p.contains_key(seat) { // knife' \
    a_seat_has_one_look_again_waiting \
    '--lib mail_nudge::tests::a_seat_has_one_look_again_waiting'
+# DW6 a work order is named a second time (DECISION-council-driveweb r1: once, then the card)
+dw crates/aibd/src/mail_nudge.rs \
+   '    !(crate::urgent::is_dispatch(r) && nudged(r) >= 1)' \
+   '    true // knife' \
+   a_work_order_is_named_at_once_and_only_once \
+   '--lib mail_nudge::tests::a_work_order_is_named_at_once_and_only_once'
+# DW7 any seat's 「派工:」 is marked a work order (the rank is not compared)
+dw crates/aibd/src/urgent.rs \
+   '    ranks::seat_rank(db, seat_id) >= ranks::perm_min(db, DISPATCH)' \
+   '    ranks::seat_rank(db, seat_id) >= Rank::Plain // knife' \
+   a_work_order_is_marked_only_for_a_lead_and_never_bridged \
+   '--lib urgent::tests::a_work_order_is_marked_only_for_a_lead_and_never_bridged'
+# DW8 「派工:」 anywhere in the text makes a work order
+dw crates/aibd/src/urgent.rs \
+   '    let first = text.trim_start().lines().next().unwrap_or("");' \
+   '    let first = text.lines().find(|l| l.starts_with("派工")).unwrap_or(""); // knife' \
+   a_work_order_is_marked_only_for_a_lead_and_never_bridged \
+   '--lib urgent::tests::a_work_order_is_marked_only_for_a_lead_and_never_bridged'
+# DW9 a letter bridged in from a 1.x ledger counts as a work order
+dw crates/aibd/src/urgent.rs \
+   '    row.item.get(DISPATCH).and_then(Value::as_bool) == Some(true) && bridged != Some(true)' \
+   '    row.item.get(DISPATCH).and_then(Value::as_bool) == Some(true) && bridged != Some(false) // knife' \
+   a_work_order_is_marked_only_for_a_lead_and_never_bridged \
+   '--lib urgent::tests::a_work_order_is_marked_only_for_a_lead_and_never_bridged'
+# DW10 seat_send marks no work order (an idle seat is never woken at once for one)
+dw crates/aibd/src/seat_send.rs \
+   '    if dispatch {' \
+   '    if dispatch && false { // knife' \
+   an_urgent_letter_needs_a_granted_lead_role \
+   '--test seat_send an_urgent_letter_needs_a_granted_lead_role'

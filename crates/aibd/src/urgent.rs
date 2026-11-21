@@ -23,6 +23,29 @@ pub const RANK_TOO_LOW: &str = "rank_too_low";
 /// The seat sent [`HOUR_CAP`] urgent letters in the last hour.
 pub const HOUR_CAP_REACHED: &str = "urgent_hour_cap";
 
+/// A seat's work order: its first line starts 「派工:」 and the sender's rank reaches this act's
+/// least rank (DECISION-council-driveweb-519d0-1121 r1 D3). aibd marks the row; the text alone
+/// decides nothing, and a letter bridged in from a 1.x ledger is never one.
+pub const DISPATCH: &str = "dispatch";
+
+/// Whether `text` reads as a work order: its first line starts 「派工:」 (or 「派工:」).
+pub fn is_dispatch_text(text: &str) -> bool {
+    let first = text.trim_start().lines().next().unwrap_or("");
+    first.starts_with("派工:") || first.starts_with("派工:")
+}
+
+/// Whether `seat_id` may send a work order now: its rank reaches [`DISPATCH`]'s least rank (Lead
+/// when unset; the system identity counts as Lead).
+pub fn may_dispatch(db: &MessageDb, seat_id: &str) -> bool {
+    ranks::seat_rank(db, seat_id) >= ranks::perm_min(db, DISPATCH)
+}
+
+/// Whether a stored letter is a work order aibd marked (never one bridged in).
+pub fn is_dispatch(row: &aib_store::MessageRow) -> bool {
+    let bridged = row.item.get("imported").and_then(Value::as_bool);
+    row.item.get(DISPATCH).and_then(Value::as_bool) == Some(true) && bridged != Some(true)
+}
+
 /// Whether a stored letter is urgent: seat_send marked it and it did not come in from a 1.x
 /// ledger (`imported`; such a letter's fields are the ledger file's, which an AI can write).
 pub fn is_urgent(row: &aib_store::MessageRow) -> bool {
@@ -114,6 +137,32 @@ mod tests {
         row.item.insert("imported".into(), json!(true));
         let o = crate::messages::object(&row, "seat:s_ffffffffffffffff", false);
         assert!(o.get("level").is_none(), "reason: bridged_urgent {o}");
+    }
+
+    #[test]
+    fn a_work_order_is_marked_only_for_a_lead_and_never_bridged() {
+        assert!(is_dispatch_text("派工: D3 → 7ebca\n內文"));
+        assert!(is_dispatch_text("  派工:x"));
+        assert!(
+            !is_dispatch_text("回覆\n派工: x"),
+            "reason: dispatch_not_first_line"
+        );
+        assert!(!is_dispatch_text("派工 x"));
+        let (_d, db) = db();
+        let seat = "s_0123456789abcdef";
+        assert!(!may_dispatch(&db, seat), "reason: plain_dispatch");
+        db.role_rank_set("role_lead", Rank::Lead, "act:role_rank_set", AT)
+            .unwrap();
+        db.rank_grant(seat, "role_lead", "act:rank_grant", AT)
+            .unwrap();
+        assert!(may_dispatch(&db, seat), "reason: lead_no_dispatch");
+        let mut row =
+            crate::seat_send::queued_row(seat, "s_ffffffffffffffff", None, "派工: x", "0").unwrap();
+        assert!(!is_dispatch(&row), "reason: text_alone_dispatch");
+        row.item.insert(DISPATCH.into(), json!(true));
+        assert!(is_dispatch(&row));
+        row.item.insert("imported".into(), json!(true));
+        assert!(!is_dispatch(&row), "reason: bridged_dispatch");
     }
 
     #[test]

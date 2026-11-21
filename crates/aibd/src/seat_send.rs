@@ -1226,6 +1226,14 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
     } else {
         Err(None)
     };
+    // D3 (DECISION-council-driveweb r1): a work order wakes an idle seat at once; aibd marks it,
+    // from the sender's rank, never from the text alone
+    let dispatch = crate::urgent::is_dispatch_text(text) && {
+        let (db, f) = (st.messages.clone(), from.clone());
+        tokio::task::spawn_blocking(move || crate::urgent::may_dispatch(&db, &f))
+            .await
+            .unwrap_or(false)
+    };
     let level_answer = match &level {
         Ok(_) => json!({"level": crate::urgent::URGENT}),
         Err(Some(why)) => json!({"level": "normal", "level_downgraded": why}),
@@ -1243,6 +1251,9 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
         row.item
             .insert("level".into(), json!(crate::urgent::URGENT));
         row.item.insert("level_by".into(), json!(by));
+    }
+    if dispatch {
+        row.item.insert(crate::urgent::DISPATCH.into(), json!(true));
     }
     let message_id = row.message_id.clone();
     let hand = InHand::take(&message_id);

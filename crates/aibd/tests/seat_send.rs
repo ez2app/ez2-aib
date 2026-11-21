@@ -526,6 +526,15 @@ async fn an_urgent_letter_needs_a_granted_lead_role() {
     );
     assert_eq!(r.json["level_downgraded"], "rank_too_low", "{}", r.body);
 
+    // D3: a seat with no lead grant writes 「派工:」 and it is no work order
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "派工: 甲"}),
+    )
+    .await;
+    assert!(r.code == 200 || r.code == 202, "{}", r.body);
+
     let db = aib_store::MessageDb::open(&dir.path().join("data").join("messages.sqlite")).unwrap();
     let at = "2026-11-21T13:00:00+08:00";
     db.role_rank_set("role_lead", aib_store::ranks::Rank::Lead, "test", at)
@@ -548,6 +557,13 @@ async fn an_urgent_letter_needs_a_granted_lead_role() {
         r.body
     );
     assert!(r.json.get("level_downgraded").is_none(), "{}", r.body);
+    let r = act(
+        &mut d,
+        &ta,
+        serde_json::json!({"type": "seat_send", "to": b, "text": "派工: 乙"}),
+    )
+    .await;
+    assert!(r.code == 200 || r.code == 202, "{}", r.body);
 
     let r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
     assert_eq!(r.code, 200, "{}", r.body);
@@ -565,6 +581,15 @@ async fn an_urgent_letter_needs_a_granted_lead_role() {
     let m = by_body("急2");
     assert_eq!(m["level"], "urgent", "reason: urgent_not_in_inbox");
     assert_eq!(m["level_by"], "role_lead");
+    assert!(
+        by_body("派工: 甲").get("dispatch").is_none(),
+        "reason: ungranted_dispatch"
+    );
+    assert_eq!(
+        by_body("派工: 乙")["dispatch"],
+        true,
+        "reason: lead_dispatch_not_marked"
+    );
 
     aibd::seat_token::tokens().revoke(&a);
     aibd::seat_token::tokens().revoke(&b);
