@@ -3669,6 +3669,7 @@
       const rs = e && (e.reason || (e.body && e.body.reason));
       F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 AIB 還不能新增(示意)'
         : rs === 'owner_check_unavailable' ? '要本人指紋,這台還不能按'
+        : gateWhy(e) ? gateWhy(e)
         : e && e.status === 403 ? '只有內建頁、這一輪配對的分頁能新增' : '沒建成:' + errText(e);
     }
     render();
@@ -3998,7 +3999,7 @@
     // 7b81e IFACE-owner-touch r0:第一步就被擋的三種
     pair_touch_busy: '已經有一個指紋視窗開著;先回那一個再按',
     pair_touch_cooling: '剛按了不同意,冷卻中;稍等一下再按',
-    pair_touch_limited: '一小時內問指紋太多次;晚點再試',
+    pair_touch_limited: '10 分鐘內最多 3 張指紋窗(一小時最多 6 張);晚點再試',
     preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 AIB 用',
     settings_unreadable: '讀不到倉裡的專案設定,AIB 不收',
     hooks: 'AIB 準備不了自己的 git 設定資料夾;重開 AIB 再試',
@@ -4008,7 +4009,7 @@
     base_not_in_repo: '這個倉裡沒有那一顆提交(或沒有分支走得到它);檢查提交碼',
     tree_not_opened: '在這個倉開不出這一席自己的一份(分支);看倉是不是在改到一半',
   };
-  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
+  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return gateWhy(e) || REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
   // 519d0 06:2x 判:做事席也能帶登記的倉(沙盒照舊、一律開自己的一份),7b81e 做;aibd 在 GET version 給 repo_modes 才開給做事席,沒給 = 只有能改程式席
   const repoModes = () => (S.version && Array.isArray(S.version.repo_modes) ? S.version.repo_modes.map(String) : ['dgrs']);
   const curRepo = (A) => { const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')) : []; return A.repo && R.includes(A.repo) && repoModes().includes(A.mode) ? A.repo : ''; };
@@ -4332,8 +4333,15 @@
 
   // ---------- 動作 ----------
   function say(msg, kind) { S.hint = msg; S.hintKind = kind || ''; }
+  // 0eed7 pv7 L(519d0 07:46):指紋閘擋下的三種講真正原因;滿了講幾點幾分幾秒後可以再試(鐘點是 aibd 給的 retry_hms,同指紋窗的字)
+  function gateWhy(e) {
+    const b = (e && e.body) || {}, rs = e && (e.reason || b.reason || e.code);
+    if (rs === 'pair_touch_limited') { const t = String(b.retry_hms || ''); return '10 分鐘內最多 3 張指紋窗(一小時最多 6 張)' + (/^\d\d:\d\d:\d\d$/.test(t) ? ',' + t + ' 後可以再試' : ',晚點再試'); }
+    return rs === 'pair_touch_busy' || rs === 'pair_touch_cooling' ? REPO_WHY[rs] : '';
+  }
   function errText(e) {
     if (!e) return '出錯了';
+    if (gateWhy(e)) return gateWhy(e);
     if (e.pageMsg) return e.pageMsg;
     if (e.status === 0) return '連不上 AIB';
     if (e.code === 'user_page_safe_seats_only') return '用戶資料夾的頁只能對安全模式的席送字';

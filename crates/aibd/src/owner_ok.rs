@@ -228,15 +228,28 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
 /// the request, and [`object_shown`] keeps it from saying anything of the window's own.
 pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
-    let top = plain_words(ask.operation, &ask.params)
-        .unwrap_or_else(|| action_words(ask.operation).to_owned());
     format!(
-        "{top}({until},過了這張就作廢)\nAIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
+        "{}({until},過了這張就作廢)對照碼 {}\nAIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
+        top_words(ask),
+        pair_code(ticket),
         ask.operation,
         object_shown(&ask.resource),
         ticket,
         &p[..12]
     )
+}
+
+/// The window's first words: the plain sentence, or the operation's name when it has none.
+pub fn top_words(ask: &Ask) -> String {
+    plain_words(ask.operation, &ask.params)
+        .unwrap_or_else(|| action_words(ask.operation).to_owned())
+}
+
+/// Four characters of the ticket's hash, shown by the system's window and by the countdown
+/// beside it (5d33a PREREAD-touchcountdown L1): the person presses only when the two agree.
+/// The ticket is aibd's own random word; nothing of the request reaches it.
+pub fn pair_code(ticket: &str) -> String {
+    params_sha256(ticket.as_bytes())[..4].to_ascii_uppercase()
 }
 
 /// 「請在 01:23:44 前按」 for a ticket that expires at the unix second `expires_at`; the
@@ -308,17 +321,26 @@ static OWNER: std::sync::OnceLock<std::sync::Arc<Owner>> = std::sync::OnceLock::
 pub fn set_presence(p: crate::touch::SharedPresence, gate: std::sync::Arc<dyn WindowGate>) {
     let o = Owner::new(p, gate, unix_now).marked(mark_for(crate::preview::is_preview()));
     let _ = OWNER.set(std::sync::Arc::new(o));
+    // the countdown beside the system's window (DESIGN-touch-countdown-7b81e-1121)
+    crate::touch_hud::turn_on();
 }
 
 /// The one gate every fingerprint window of this aibd passes ([`crate::pairing::Pairing`]).
 pub trait WindowGate: Send + Sync {
     fn open(&self) -> Result<(), &'static str>;
     fn closed(&self, yes: bool);
+    /// How long until [`Self::open`] stops answering `pair_touch_limited`; none when it would not.
+    fn wait(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 impl WindowGate for crate::pairing::Pairing {
     fn open(&self) -> Result<(), &'static str> {
         self.window_open()
+    }
+    fn wait(&self) -> Option<std::time::Duration> {
+        self.touch_wait()
     }
     fn closed(&self, yes: bool) {
         self.window_closed(yes)
@@ -337,7 +359,7 @@ impl Drop for Closing {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -359,6 +381,40 @@ pub fn ask(ask: &Ask) -> Asked {
         }),
         None => Asked::Unavailable(UNAVAILABLE),
     }
+}
+
+/// The unix second from which a window fits the 3 in 10 minutes / 6 an hour again; none when
+/// one fits now or nothing is wired.
+pub fn retry_at() -> Option<u64> {
+    OWNER.get().and_then(|o| o.retry_at())
+}
+
+/// What the page gets (with its `request_id`) when [`ask`] answers [`Asked::Unavailable`]: the
+/// real reason, and for `pair_touch_limited` the time to try again (0eed7 pv7 L: it said "cannot
+/// be asked on this machine yet").
+pub fn refusal(why: &'static str) -> serde_json::Value {
+    refusal_at(why, retry_at())
+}
+
+pub(crate) fn refusal_at(why: &'static str, at: Option<u64>) -> serde_json::Value {
+    let message = match why {
+        "pair_touch_busy" => "a fingerprint window is open already; answer that one first",
+        "pair_touch_cooling" => "a fingerprint window was just declined; wait a little",
+        "pair_touch_limited" => {
+            "at most 3 fingerprint windows in 10 minutes and 6 in an hour; try again later"
+        }
+        _ => "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
+    };
+    let mut v = serde_json::json!({"code": "forbidden", "reason": why, "message": message});
+    if why == "pair_touch_limited" {
+        if let Some(at) = at {
+            v["retry_at"] = serde_json::json!(at);
+            if let Some(hms) = crate::touch::clock_text(at) {
+                v["retry_hms"] = serde_json::json!(hms);
+            }
+        }
+    }
+    v
 }
 
 /// A ticket's state for the page `by` (`page:<pair>`); another page's ticket reads as expired.
@@ -425,6 +481,12 @@ impl Owner {
         self.slots.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// [`retry_at`] for this owner: its clock plus the gate's wait, rounded up to the second.
+    pub fn retry_at(&self) -> Option<u64> {
+        let w = self.gate.wait()?;
+        Some((self.clock)() + w.as_secs() + u64::from(w.subsec_nanos() > 0))
+    }
+
     /// `spawn` runs the window (a thread in aibd, inline in tests).
     pub fn ask(
         self: &std::sync::Arc<Self>,
@@ -471,7 +533,14 @@ impl Owner {
         let why = format!("{}{words}", self.mark);
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
+        let (hud_words, hud_until, hud_code) = (
+            format!("{}{}", self.mark, top_words(ask)),
+            now + TICKET_SECS,
+            pair_code(&ticket),
+        );
         spawn(Box::new(move || {
+            // lives as long as the window below; only shows (crate::touch_hud)
+            let _hud = crate::touch_hud::Hud::show(&hud_words, hud_until, &hud_code);
             // the window lives as long as the ticket: past that it closes by itself, and a
             // window nobody answered is not a no (0eed7 VERIFY-ownertouch-andy M1)
             let mut sig = Vec::new();
@@ -851,7 +920,8 @@ mod tests {
         // an operation with no sentence: its name on top; start and end of a long object below
         let w = window_text(&x, "t9", "請在 01:23:44 前按");
         assert!(
-            w.starts_with("worktree.open(請在 01:23:44 前按,過了這張就作廢)\nAIB 網頁要求:worktree.open|對象:d/d/d/d/d/d/d/d/d/d/d/d/…"),
+            w.starts_with("worktree.open(請在 01:23:44 前按,過了這張就作廢)對照碼 ")
+                && w.contains("\nAIB 網頁要求:worktree.open|對象:d/d/d/d/d/d/d/d/d/d/d/d/…"),
             "{w}"
         );
         assert!(w.contains("/tail-end|單號 t9|參數 "), "{w}");
@@ -868,9 +938,23 @@ mod tests {
         x.params = br#"{"name":"demo-c45c","path":"/Users/x/demo-c45c","remote":"git@github.com:o/r.git"}"#.to_vec();
         let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
         assert!(
-            w.starts_with("登記這個資料夾當倉:demo-c45c(請在 01:23:44 前按,過了這張就作廢)\nAIB 網頁要求:repo.register|對象:demo-c45c · /Users/x/demo-c45c · remote github.com|單號 ot_1|參數 "),
+            w.starts_with(&format!(
+                "登記這個資料夾當倉:demo-c45c(請在 01:23:44 前按,過了這張就作廢)對照碼 {}\nAIB 網頁要求:repo.register|對象:demo-c45c · /Users/x/demo-c45c · remote github.com|單號 ot_1|參數 ",
+                pair_code("ot_1")
+            )),
             "reason: window_words {w}"
         );
+        // the code the countdown beside the window shows too: four of the ticket's own hash
+        let code = pair_code("ot_1");
+        assert!(
+            code.len() == 4
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)),
+            "reason: pair_code {code}"
+        );
+        assert_ne!(code, pair_code("ot_2"), "reason: one_code_for_every_ticket");
+        assert_eq!(top_words(&x), "登記這個資料夾當倉:demo-c45c");
         // one fixed sentence per operation, from the ticket's parameters
         for (op, params, want) in [
             (
@@ -1198,6 +1282,37 @@ mod tests {
             o.ask(&reg(), inline),
             Asked::Unavailable("pair_touch_limited"),
             "reason: limit_apart"
+        );
+        // and when it fits again: ten minutes after the first of the three (0eed7 pv7 L)
+        let at = o.retry_at().expect("reason: limit_no_retry");
+        assert!(
+            (20_000 + 590..=20_000 + 600).contains(&at),
+            "reason: limit_retry_at {at}"
+        );
+        let v = refusal_at("pair_touch_limited", Some(at));
+        assert_eq!(v["retry_at"], at, "reason: limit_retry_shown");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap()
+                .contains("3 fingerprint windows in 10 minutes"),
+            "reason: limit_words {v}"
+        );
+        if let Some(hms) = v["retry_hms"].as_str() {
+            assert!(crate::touch::clock_ok(hms), "reason: limit_hms {hms}");
+        }
+        assert!(
+            refusal_at("pair_touch_busy", Some(at))
+                .get("retry_at")
+                .is_none(),
+            "reason: retry_only_for_limit"
+        );
+        assert!(
+            refusal_at(UNAVAILABLE, None)["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be asked on this machine yet"),
+            "reason: unwired_words"
         );
         // a window whose thread never starts still closes in the gate (5d33a r2 N1)
         let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());

@@ -595,13 +595,11 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             )
                 .into_response(),
             // one ask only: asking again could open a second window for the same send
-            crate::owner_ok::Asked::Unavailable(why) => (
-                StatusCode::FORBIDDEN,
-                Json(json!({"code": "forbidden", "reason": why,
-                    "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
-                    "request_id": crate::guard::request_id()})),
-            )
-                .into_response(),
+            crate::owner_ok::Asked::Unavailable(why) => {
+                let mut v = crate::owner_ok::refusal(why);
+                v["request_id"] = json!(crate::guard::request_id());
+                (StatusCode::FORBIDDEN, Json(v)).into_response()
+            }
         };
     };
     if !crate::owner_ok::approved_for(&ticket, &ask) {
