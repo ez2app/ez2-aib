@@ -120,10 +120,18 @@ mod tests {
         let f = std::fs::File::create(&d).unwrap();
         // SAFETY: duplicates a descriptor this test owns to a number of 200 or more; no pointers.
         let stray = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_DUPFD, 200) };
+        // given from a number far from 3: run alone, the pipe itself can be 3, and then the copy
+        // onto 3 is never made (7b81e-ghj-1499e2dfb knife GB6 missed)
+        // SAFETY: duplicates the pipe's read end to a number of 100 or more, close-on-exec; no
+        // pointers.
+        let from = unsafe { libc::fcntl(r.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100) };
+        assert!(from >= 100, "reason: no_high_copy");
         let mut c = Command::new("/bin/sh");
         c.args(["-c", "cat <&3; ls /dev/fd"]);
-        stdio_and(&mut c, r.as_raw_fd(), 3);
+        stdio_and(&mut c, from, 3);
         let out = c.output().unwrap();
+        // SAFETY: closes the copy this test made; no pointers.
+        let _ = unsafe { libc::close(from) };
         drop(r);
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(text.starts_with("username=u\n"), "reason: not_given {text}");
