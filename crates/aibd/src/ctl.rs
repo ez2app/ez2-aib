@@ -1307,7 +1307,7 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "pending_write",
-            "description": "Write one of your own files into the shared pending folder: the name is <KIND><your seat code>-….md with KIND one of HANDOFF-, MEMPACK-, REVIEW-, PREREAD-, OPINION-, DESIGN- (letters, digits, . _ - only; at most 120 characters), the text at most 512 KB. Writing over a REVIEW- or PREREAD- keeps the earlier one. You cannot write another seat's file or any other kind.",
+            "description": "Write one of your own files into the shared pending folder: the name is <KIND>….md with KIND one of HANDOFF-, MEMPACK-, REVIEW-, PREREAD-, OPINION-, DESIGN-, VERIFY-, CHECKLIST-, MOVE-, TRY-, and the last five-hex part of the name your own seat code, or the old code you moved in from (e.g. MEMPACK-<your code>-1121.md, REVIEW-<topic>-<author code>-<your code>-<head>.md; letters, digits, . _ - only; at most 120 characters), the text at most 512 KB. Writing over a REVIEW-, PREREAD-, VERIFY- or CHECKLIST- keeps the earlier one. You cannot write another seat's file or any other kind.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

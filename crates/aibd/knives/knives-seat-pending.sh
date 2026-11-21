@@ -28,10 +28,10 @@ pr '    matches!(mode, Some("work" | "dgrs"))' '    matches!(mode, Some("work" |
 pr '    let text = if file.starts_with("RELAY-") {' '    let text = if file.is_empty() { // knife' \
    a_seat_reads_a_listed_kind_only_with_mail_masked
 # W1 another seat's code is written
-pr '                .and_then(|r| r.strip_prefix(code))' '                .and_then(|r| r.get(code.len()..)) // knife' \
+pr '        && writer_of(file) == Some(code)' '        && writer_of(file).is_some() // knife' \
    a_seat_writes_only_its_own_listed_names
 # W2 any kind is written
-pr '    "HANDOFF-", "MEMPACK-", "REVIEW-", "PREREAD-", "OPINION-", "DESIGN-",' '    "HANDOFF-", "MEMPACK-", "REVIEW-", "PREREAD-", "OPINION-", "DESIGN-", "RELAY-", "SUMMARY-", "DECISION-", "SIGN-", // knife' \
+pr '    "HANDOFF-",' '    "HANDOFF-", "RELAY-", "SUMMARY-", "DECISION-", "SIGN-", // knife' \
    a_seat_writes_only_its_own_listed_names
 # W3 a link is written over
 pr '        Some(false) => return Err("pending_refused"),' '        Some(false) => None, // knife' \

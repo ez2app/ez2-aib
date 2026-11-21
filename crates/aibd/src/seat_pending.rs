@@ -19,19 +19,80 @@ pub const LIST: &str = "pending_list";
 pub const READ: &str = "pending_read";
 /// G1 write (PREREAD-seat-g1write-g3-a9136-1121 r2, 5d33a 0/0/0/3): a seat writes its own files.
 pub const WRITE: &str = "pending_write";
-/// The kinds a seat may write, each followed by its own seat code (5d33a 題 1: no SUMMARY-).
+/// The kinds a seat may write (5d33a 題 1: no SUMMARY-); VERIFY- / CHECKLIST- / MOVE- / TRY- for
+/// the seats that check and move others (DESIGN-6f1cb-g1write-kinds-1121 r1, 519d0 11-21 19:53).
 pub const WRITE_KINDS: &[&str] = &[
-    "HANDOFF-", "MEMPACK-", "REVIEW-", "PREREAD-", "OPINION-", "DESIGN-",
+    "HANDOFF-",
+    "MEMPACK-",
+    "REVIEW-",
+    "PREREAD-",
+    "OPINION-",
+    "DESIGN-",
+    "VERIFY-",
+    "CHECKLIST-",
+    "MOVE-",
+    "TRY-",
 ];
-/// Kinds whose earlier text is kept when written over (5d33a L1: review evidence).
-pub const KEEP_PREV: &[&str] = &["REVIEW-", "PREREAD-"];
+/// Kinds whose earlier text is kept when written over (5d33a L1: review evidence; a checklist's
+/// ticks are evidence too, PREREAD-g1kinds-6f1cb-5d33a-1121 L1).
+pub const KEEP_PREV: &[&str] = &["REVIEW-", "PREREAD-", "VERIFY-", "CHECKLIST-"];
 /// The most one write may be.
 pub const WRITE_MAX: usize = 512 * 1024;
 /// Writes one seat may make in a minute.
 pub const WRITES_PER_MINUTE: usize = 30;
 
-/// A name a seat with `code` may write (5d33a L2): `<kind><code>-….md` of `[A-Za-z0-9._-]`, not
-/// starting with `.`, at most 120, no `..`, no secret name.
+/// Kinds read as the paper of the seat whose code comes right after the kind (seat_plan_move
+/// newest takes `HANDOFF-<code>-` / `MEMPACK-<code>-` into a moved seat's chat): the writer is
+/// that first code, and no other seat code may stand anywhere else in the name
+/// (PREREAD-g1kinds-6f1cb-5d33a-1121 M2: `HANDOFF-a9136-…-6f1cb.md` would plant a handoff).
+pub const OWNER_FIRST: &[&str] = &["HANDOFF-", "MEMPACK-"];
+
+/// Five lowercase hex digits: a seat code as the readers of these names take it.
+fn is_seat_code(p: &str) -> bool {
+    p.len() == 5
+        && p.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The writer a name claims, read the way every reader of review and acceptance names reads it
+/// (aib-drive snapshot::writer_claim, aib-slice reviewer_of, aibd ledger_cards review_of): the
+/// last `-` part after the kind that is a seat code (`REVIEW-cinb-6f1cb-5d33a-77266dcf.md` ⇒
+/// 5d33a, the reviewer; the author's code comes before). At least two parts after the kind.
+/// PREREAD-g1kinds-6f1cb-5d33a-1121 M1: a code right after the kind would make those readers take
+/// the author for the reviewer, so the writer is checked where they look.
+pub fn writer_of(file: &str) -> Option<&str> {
+    let kind = WRITE_KINDS.iter().find(|k| file.starts_with(*k))?;
+    let parts: Vec<&str> = file
+        .strip_prefix(kind)?
+        .strip_suffix(".md")?
+        .split('-')
+        .collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if OWNER_FIRST.contains(kind) {
+        // the seat's own paper: its code first and no other seat's anywhere in the name
+        let first = parts[0];
+        return (is_seat_code(first) && parts.iter().all(|p| !is_seat_code(p) || *p == first))
+            .then_some(first);
+    }
+    parts.into_iter().rfind(|p| is_seat_code(p))
+}
+
+/// The code a write is checked against: the old seat code this seat moved in from (aibd's own
+/// record, [`crate::seat_dm::moved_code`]) when the name claims it, else the seat's own
+/// (DESIGN-6f1cb-g1write-kinds-1121 r2: a moved seat keeps writing its MEMPACK-<old code>-…,
+/// cutover §4.6; `seat_code` of a web seat is the first five of its new id, never the old code).
+pub fn code_for(file: &str, own: &str, moved: Option<&str>) -> String {
+    match moved {
+        Some(m) if writer_of(file) == Some(m) => m.to_owned(),
+        _ => own.to_owned(),
+    }
+}
+
+/// A name a seat with `code` may write (5d33a L2): a listed kind, `[A-Za-z0-9._-]`, `.md`, not
+/// starting with `.`, at most 120, no `..`, no secret name, and its writer ([`writer_of`]) is
+/// `code`.
 pub fn write_name_ok(file: &str, code: &str) -> bool {
     file.len() <= 120
         && !file.starts_with('.')
@@ -41,11 +102,7 @@ pub fn write_name_ok(file: &str, code: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
         && !crate::docs::secret_name(file)
-        && WRITE_KINDS.iter().any(|k| {
-            file.strip_prefix(k)
-                .and_then(|r| r.strip_prefix(code))
-                .is_some_and(|r| r.starts_with('-'))
-        })
+        && writer_of(file) == Some(code)
 }
 
 /// Where the earlier text of a kept kind goes: `.<name>.prev-<unix seconds UTC>`.
@@ -133,9 +190,20 @@ fn sha_hex(bytes: &[u8]) -> String {
 /// The most names one list gives.
 pub const LIST_MAX: usize = 200;
 
-/// The kinds a seat may read: the page's ([`crate::docs::DOC_KINDS`]) and four a moved seat
-/// needs (its memory pack, findings, knife tables, council papers).
-pub const SEAT_EXTRA: &[&str] = &["MEMPACK-", "FINDING-", "KNIVES-", "COUNCIL-"];
+/// The kinds a seat may read: the page's ([`crate::docs::DOC_KINDS`]) and those a moved seat
+/// needs (its memory pack, findings, knife tables, council papers) and every kind it may write
+/// that the page's list lacks (DESIGN-6f1cb-g1write-kinds-1121: OPINION- was writable, not
+/// readable; `CHECK-` does not take `CHECKLIST-`).
+pub const SEAT_EXTRA: &[&str] = &[
+    "MEMPACK-",
+    "FINDING-",
+    "KNIVES-",
+    "COUNCIL-",
+    "OPINION-",
+    "CHECKLIST-",
+    "MOVE-",
+    "TRY-",
+];
 
 /// One piece (no folder) starting with a kind a seat may read.
 pub fn seat_listed(file: &str) -> bool {
@@ -378,7 +446,12 @@ async fn write_act(
     let Some(text) = body.get("text").and_then(Value::as_str).map(str::to_owned) else {
         return refuse(StatusCode::BAD_REQUEST, "invalid_request", "text is needed");
     };
-    let code = crate::seats::seat_code(seat_id);
+    let (db, sid) = (st.messages.clone(), seat_id.to_owned());
+    let moved = tokio::task::spawn_blocking(move || crate::seat_dm::moved_code(&db, &sid))
+        .await
+        .ok()
+        .flatten();
+    let code = code_for(&file, &crate::seats::seat_code(seat_id), moved.as_deref());
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -395,7 +468,7 @@ async fn write_act(
             return refuse(
                 status,
                 why,
-                "a seat writes <HANDOFF|MEMPACK|REVIEW|PREREAD|OPINION|DESIGN>-<its own seat code>-….md, at most 512 KB",
+                "a seat writes <HANDOFF|MEMPACK|REVIEW|PREREAD|OPINION|DESIGN|VERIFY|CHECKLIST|MOVE|TRY>-….md whose last five-hex part is its own seat code (or the old code it moved in from), at most 512 KB",
             );
         }
         Err(_) => {
@@ -489,6 +562,36 @@ mod tests {
     fn a_seat_writes_only_its_own_listed_names() {
         assert!(write_name_ok("MEMPACK-a9136-1121.md", "a9136"));
         assert!(write_name_ok("HANDOFF-a9136-1121-1200.md", "a9136"));
+        // DESIGN-6f1cb-g1write-kinds-1121 r1: the four kinds added, and the names seats already use
+        // (the writer's code last, an author's code before it)
+        for (good, code) in [
+            ("VERIFY-integ3-0eed7-1121.md", "0eed7"),
+            ("CHECKLIST-driveweb-5d33a-1121.md", "5d33a"),
+            ("MOVE-7ebca-6f1cb-1121.md", "6f1cb"),
+            ("TRY-driveweb-6f1cb-1121.md", "6f1cb"),
+            ("REVIEW-cinb-6f1cb-5d33a-77266dcf.md", "5d33a"),
+            ("DESIGN-6f1cb-g1write-kinds-1121.md", "6f1cb"),
+            ("OPINION-driveweb-a9136-1121.md", "a9136"),
+        ] {
+            assert!(
+                write_name_ok(good, code),
+                "reason: kind_listed_refused {good}"
+            );
+        }
+        for (bad, code) in [
+            ("MEMPACK-6f1cb-1121.md", "a9136"),
+            ("HANDOFF-a91360-x.md", "a9136"),
+            ("MEMPACK-a9136.md", "a9136"),
+            // the author's code is not the writer: the reviewer's is the last one
+            ("REVIEW-cinb-6f1cb-5d33a-77266dcf.md", "6f1cb"),
+            ("MOVE-7ebca-6f1cb-1121.md", "7ebca"),
+            ("VERIFY-0eed7-integ3-5d33a.md", "0eed7"),
+        ] {
+            assert!(
+                !write_name_ok(bad, code),
+                "reason: other_seat_written {bad}"
+            );
+        }
         for bad in [
             "MEMPACK-6f1cb-1121.md",
             "HANDOFF-a91360-x.md",
@@ -504,6 +607,11 @@ mod tests {
             "SUMMARY-a9136-x.md",
             "DECISION-a9136-x.md",
             "SIGN-a9136-x.md",
+            "KNIVES-a9136-x.md",
+            "BUNDLE-a9136-x.md",
+            "FINDING-a9136-x.md",
+            "COUNCIL-a9136-x.md",
+            "RECEIPT-a9136-x.md",
         ] {
             assert!(
                 !write_name_ok(bad, "a9136"),
@@ -519,6 +627,84 @@ mod tests {
             "MEMPACK-a9136-token.md",
         ] {
             assert!(!write_name_ok(bad, "a9136"), "reason: name_chars {bad}");
+        }
+    }
+
+    /// DESIGN-6f1cb-g1write-kinds-1121: every kind a seat may write it may read back (OPINION- was
+    /// written, never read); and the read list never takes the kinds a seat must not read as its
+    /// own work (5d33a N2).
+    #[test]
+    fn every_writable_kind_is_readable_by_a_seat() {
+        for k in WRITE_KINDS {
+            let f = format!("{k}x-a9136-1121.md");
+            assert!(seat_listed(&f), "reason: written_not_readable {f}");
+        }
+        for k in ["RELAY-", "RECEIPT-", "SIGN-", "DECISION-"] {
+            assert!(!SEAT_EXTRA.contains(&k), "reason: seat_extra_takes {k}");
+        }
+    }
+
+    /// M2: a seat cannot plant another seat's handoff or memory pack by putting its own code last.
+    #[test]
+    fn a_seat_cannot_plant_another_seats_handoff() {
+        for bad in [
+            "HANDOFF-a9136-1121-2359-6f1cb.md",
+            "MEMPACK-a9136-1121-6f1cb.md",
+            "HANDOFF-6f1cb-1121-a9136.md",
+        ] {
+            assert!(
+                !write_name_ok(bad, "6f1cb"),
+                "reason: handoff_planted {bad}"
+            );
+        }
+        assert!(!write_name_ok("HANDOFF-6f1cb-1121-a9136.md", "a9136"));
+        assert!(write_name_ok("HANDOFF-6f1cb-1121-2359.md", "6f1cb"));
+    }
+
+    /// r2: a moved seat writes under its old code only when aibd's move record says so; any other
+    /// claimed code stays its own new one (and is then refused as another seat's).
+    #[test]
+    fn a_moved_seat_writes_under_its_old_code_only() {
+        let f = "MEMPACK-6f1cb-1121.md";
+        assert_eq!(
+            code_for(f, "1677c", Some("6f1cb")),
+            "6f1cb",
+            "reason: moved_code_not_taken"
+        );
+        assert!(write_name_ok(f, &code_for(f, "1677c", Some("6f1cb"))));
+        // no move on record, or moved from another code: the name is another seat's
+        for moved in [None, Some("7ebca")] {
+            let c = code_for(f, "1677c", moved);
+            assert_eq!(c, "1677c");
+            assert!(
+                !write_name_ok(f, &c),
+                "reason: other_seat_written {moved:?}"
+            );
+        }
+        // its own new code still works when moved
+        assert_eq!(
+            code_for("MEMPACK-1677c-1121.md", "1677c", Some("6f1cb")),
+            "1677c"
+        );
+    }
+
+    /// PREREAD-g1kinds-6f1cb-5d33a-1121 M1: the writer is the one the readers of these names find,
+    /// the last seat code (aib-drive snapshot::writer_claim and aib-slice reviewer_of take the last
+    /// five-hex part). The table is that rule written out, so the two sides cannot drift apart.
+    #[test]
+    fn the_writer_rule_matches_the_readers() {
+        for (name, reader_says) in [
+            ("REVIEW-drive-wl1-5d33a-ae9e225f.md", "5d33a"),
+            ("REVIEW-cinb-6f1cb-5d33a-77266dcf.md", "5d33a"),
+            ("VERIFY-integ3-0eed7-1121.md", "0eed7"),
+            ("MOVE-519d0-6f1cb-1121.md", "6f1cb"),
+            ("HANDOFF-6f1cb-1120-2234.md", "6f1cb"),
+        ] {
+            assert_eq!(
+                writer_of(name),
+                Some(reader_says),
+                "reason: writer_not_the_readers {name}"
+            );
         }
     }
 
@@ -543,6 +729,20 @@ mod tests {
             "one",
             "reason: prev_not_kept"
         );
+        // a checklist's ticks and an acceptance note are evidence too (5d33a L1); a move sheet is not
+        for (f, keep) in [
+            ("VERIFY-x-a9136-1121.md", true),
+            ("CHECKLIST-x-a9136-1121.md", true),
+            ("MOVE-x-a9136-1121.md", false),
+        ] {
+            write(r, "a9136", f, "v1", 250).unwrap();
+            write(r, "a9136", f, "v2", 260).unwrap();
+            assert_eq!(
+                r.join(prev_name(f, 260)).exists(),
+                keep,
+                "reason: prev_not_kept {f}"
+            );
+        }
         write(r, "a9136", "MEMPACK-a9136-1121.md", "m1", 300).unwrap();
         write(r, "a9136", "MEMPACK-a9136-1121.md", "m2", 400).unwrap();
         assert!(!r.join(prev_name("MEMPACK-a9136-1121.md", 400)).exists());
