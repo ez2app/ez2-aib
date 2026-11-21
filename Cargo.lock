@@ -428,6 +428,14 @@ name = "aib-thermal"
 version = "0.2.0-preview.7"
 
 [[package]]
+name = "aib-tidy"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-title"
 version = "0.2.0-preview.7"
 dependencies = [
