@@ -26,9 +26,11 @@ pub const WAIT_STATUSES: [&str; 5] = ["queued", "claimed", "hold_human", "delive
 /// Letters listed at most.
 pub const WAIT_MAX: usize = 100;
 /// Characters of a letter's first line in the list.
-pub const FIRST_MAX: usize = 200;
+pub const FIRST_MAX: usize = 120;
 /// Bytes of a letter, or of its long-message file, shown at most.
 pub const SHOW_MAX: usize = 64 * 1024;
+/// Letters one `dm_done` closes at most (PREREAD-seat-inbox-summary r3).
+pub const DONE_MAX: usize = 20;
 /// Characters of `why` or `evidence` at most.
 pub const NOTE_MAX: usize = 500;
 
@@ -52,7 +54,7 @@ pub fn fields_ok(body: &Value) -> bool {
         o.keys().all(|k| match k.as_str() {
             "type" => true,
             "id" => kind == SHOW || kind == DONE,
-            "rev" | "evidence" | "why" => kind == DONE,
+            "rev" | "evidence" | "why" | "items" => kind == DONE,
             _ => false,
         })
     })
@@ -87,12 +89,36 @@ fn read(store: &aib_dmq_store::Store, code: &str, id: &str) -> Option<Map<String
     }
 }
 
-/// The letters waiting for `code`: in the ledger's order, then the rest by time.
-pub fn waiting(store: &aib_dmq_store::Store, code: &str) -> Vec<Value> {
+/// A letter's grade (PREREAD-seat-inbox-summary-a9136-1121 r3, 5d33a 0/0/0/2): 0 急, 1 一般,
+/// 2 通知, and whether the ledger claimed urgent without aibd's word for it. 急 only when the
+/// letter came through the bridge (`aibd_message_id`) and aibd's own record has it urgent
+/// ([`aibd_urgent`]); a ledger `urgent` alone is 一般 (5d33a M1: the ledger file is
+/// AI-writable). `reminder` is 通知. The text is never read for it.
+pub fn grade_of(item: &Map<String, Value>, urgent: &dyn Fn(&str) -> bool) -> (u8, bool) {
+    let p = str_of(item, "priority").to_ascii_lowercase();
+    let mid = str_of(item, "aibd_message_id");
+    if !mid.is_empty() && urgent(mid) {
+        return (0, false);
+    }
+    if p == "reminder" {
+        return (2, false);
+    }
+    (1, p == "urgent")
+}
+
+const GRADES: [&str; 3] = ["急", "一般", "通知"];
+
+/// The waiting letters for `code` as a to-do summary: 急 → 一般 → 通知, oldest first within a
+/// grade, one line each, with the counts on top.
+pub fn waiting(
+    store: &aib_dmq_store::Store,
+    code: &str,
+    now: i64,
+    urgent: &dyn Fn(&str) -> bool,
+) -> Value {
     let Ok(dir) = store.seat_dir(code) else {
-        return Vec::new();
+        return json!({"counts": {"urgent": 0, "normal": 0, "notice": 0, "oldest_min": 0}, "letters": [], "more": 0});
     };
-    let order = store.order_ids(code).unwrap_or_default();
     let ids: Vec<String> = std::fs::read_dir(&dir)
         .map(|rd| {
             rd.filter_map(Result::ok)
@@ -102,7 +128,7 @@ pub fn waiting(store: &aib_dmq_store::Store, code: &str) -> Vec<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    let mut rows: Vec<(usize, i64, Value)> = ids
+    let mut rows: Vec<(u8, i64, Value)> = ids
         .iter()
         .filter_map(|id| {
             let item = read(store, code, id)?;
@@ -110,22 +136,82 @@ pub fn waiting(store: &aib_dmq_store::Store, code: &str) -> Vec<Value> {
             if !WAIT_STATUSES.contains(&status) {
                 return None;
             }
-            let at = order.iter().position(|o| o == id).unwrap_or(usize::MAX);
             let ts = item.get("ts").and_then(Value::as_i64).unwrap_or(0);
+            let (g, claimed) = grade_of(&item, urgent);
             let row = json!({
                 "id": id,
                 "rev": aib_dmq::rev::item_rev(&Value::Object(item.clone())),
+                "grade": GRADES[usize::from(g)],
+                "claimed_urgent": claimed,
                 "status": status,
-                "sender_seat": str_of(&item, "sender_seat"),
+                "age_min": (now - ts).max(0) / 60,
+                "sender": str_of(&item, "sender_seat"),
                 "sender_label": str_of(&item, "sender_label"),
                 "first_line": first_line(str_of(&item, "msg")),
             });
-            Some((at, ts, row))
+            Some((g, ts, row))
         })
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let count = |g: u8| rows.iter().filter(|r| r.0 == g).count();
+    let oldest = rows
+        .iter()
+        .map(|r| r.1)
+        .min()
+        .map_or(0, |t| (now - t).max(0) / 60);
+    let counts =
+        json!({"urgent": count(0), "normal": count(1), "notice": count(2), "oldest_min": oldest});
+    let more = rows.len().saturating_sub(WAIT_MAX);
     rows.truncate(WAIT_MAX);
-    rows.into_iter().map(|r| r.2).collect()
+    json!({"counts": counts, "letters": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(), "more": more})
+}
+
+/// Whether aibd's own record has the letter `aibd_message_id` urgent, marked by Andy, 519d0 or
+/// the system (7ebca's level column; 5d33a: a seat cannot mark urgent in the first stage).
+/// False until that column exists.
+pub fn aibd_urgent(_db: &aib_store::MessageDb, _aibd_message_id: &str) -> bool {
+    false
+}
+
+/// Close several letters with one evidence (PREREAD-seat-inbox-summary r3, 5d33a 題 1): each at
+/// its own rev, each its own audit line; one failing leaves the others. 200 with each result
+/// unless all fail (then the first failure's status).
+#[allow(clippy::too_many_arguments)]
+pub fn done_many(
+    store: &aib_dmq_store::Store,
+    relay_dirs: &[PathBuf],
+    pending: Option<&Path>,
+    code: &str,
+    items: &[(String, i64)],
+    evidence: Option<&str>,
+    why: Option<&str>,
+    now: i64,
+) -> (StatusCode, Value) {
+    if items.is_empty() || items.len() > DONE_MAX {
+        return (
+            StatusCode::BAD_REQUEST,
+            json!({"code": "dm_items", "message": "1 to 20 letters at a time"}),
+        );
+    }
+    let mut first_fail = None;
+    let mut out = Vec::new();
+    for (id, rev) in items {
+        let (st, v) = done(
+            store, relay_dirs, pending, code, id, *rev, evidence, why, now,
+        );
+        let ok = st == StatusCode::OK;
+        if !ok && first_fail.is_none() {
+            first_fail = Some(st);
+        }
+        out.push(json!({"id": id, "ok": ok, "code": v.get("code").or(v.get("reason")).cloned().unwrap_or(Value::Null)}));
+    }
+    let any_ok = out.iter().any(|r| r["ok"] == json!(true));
+    let status = if any_ok {
+        StatusCode::OK
+    } else {
+        first_fail.unwrap_or(StatusCode::CONFLICT)
+    };
+    (status, json!({"results": out}))
 }
 
 /// One letter in full; a long message's file is added behind the relay wall.
@@ -355,6 +441,21 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         .unwrap_or_default()
         .to_owned();
     let rev = body.get("rev").and_then(Value::as_i64);
+    let items: Option<Vec<(String, i64)>> = body.get("items").map(|v| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|i| {
+                        (
+                            i["id"].as_str().unwrap_or_default().to_owned(),
+                            i["rev"].as_i64().unwrap_or(-1),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    let db = st.messages.clone();
     let evidence = body
         .get("evidence")
         .and_then(Value::as_str)
@@ -366,17 +467,30 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     let got = tokio::task::spawn_blocking(move || {
         let store = aib_dmq_store::Store::new(&state_root, &state_root).without_git();
         match kind.as_str() {
-            WAITING => (StatusCode::OK, json!({"letters": waiting(&store, &code)})),
+            WAITING => (
+                StatusCode::OK,
+                waiting(&store, &code, now, &|mid| aibd_urgent(&db, mid)),
+            ),
             SHOW => match show(&store, &code, &id, &relay_dirs) {
                 Ok(v) => (StatusCode::OK, v),
                 Err(c) => (StatusCode::NOT_FOUND, json!({"code": c})),
             },
-            _ => match rev {
-                None => (
+            _ => match (items, rev) {
+                (Some(items), _) => done_many(
+                    &store,
+                    &relay_dirs,
+                    pending.as_deref(),
+                    &code,
+                    &items,
+                    evidence.as_deref(),
+                    why.as_deref(),
+                    now,
+                ),
+                (None, None) => (
                     StatusCode::BAD_REQUEST,
                     json!({"code": "dm_rev", "message": "rev is needed"}),
                 ),
-                Some(rev) => done(
+                (None, Some(rev)) => done(
                     &store,
                     &relay_dirs,
                     pending.as_deref(),
@@ -426,7 +540,19 @@ mod tests {
         str_of(&read(store, CODE, id).unwrap(), "status").to_owned()
     }
 
-    /// G3 read: the waiting letters only, in order, first line masked and short.
+    fn put_p(store: &aib_dmq_store::Store, id: &str, prio: &str, mid: &str, ts: i64) {
+        let mut item = crate::legacy_send::letter(id, CODE, "x", "519d0", "seat:519d0", "", ts);
+        item.insert("status".into(), json!("delivered"));
+        item.insert("priority".into(), json!(prio));
+        if !mid.is_empty() {
+            item.insert("aibd_message_id".into(), json!(mid));
+        }
+        store.write_item(CODE, &item).unwrap();
+        store.order_append(CODE, id).unwrap();
+    }
+
+    /// G3 read / IB1: the waiting letters only, 急 → 一般 → 通知 and oldest first, first line
+    /// masked and short, counts on top.
     #[test]
     fn the_waiting_letters_are_listed_in_order() {
         let (_d, store) = ledger();
@@ -439,17 +565,170 @@ mod tests {
         );
         put(&store, "q_00000000000000a2", "done", "結了", 11);
         put(&store, "q_00000000000000a3", "read", &"長".repeat(400), 12);
-        let rows = waiting(&store, CODE);
-        let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["q_00000000000000a1", "q_00000000000000a3"]);
-        let first = rows[0]["first_line"].as_str().unwrap();
+        put_p(&store, "q_00000000000000a4", "reminder", "", 5);
+        put_p(
+            &store,
+            "q_00000000000000a5",
+            "normal",
+            "q_aaaaaaaaaaaaaaaa",
+            20,
+        );
+        let urgent = |mid: &str| mid == "q_aaaaaaaaaaaaaaaa";
+        let v = waiting(&store, CODE, 600, &urgent);
+        let ids: Vec<&str> = v["letters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "q_00000000000000a5",
+                "q_00000000000000a1",
+                "q_00000000000000a3",
+                "q_00000000000000a4"
+            ],
+            "reason: grade_order"
+        );
+        let rows = v["letters"].as_array().unwrap();
+        let first = rows[1]["first_line"].as_str().unwrap();
         assert!(
             !first.contains("x@y.com") && !first.contains("第二行"),
             "{first}"
         );
         assert_eq!(
-            rows[1]["first_line"].as_str().unwrap().chars().count(),
+            rows[2]["first_line"].as_str().unwrap().chars().count(),
             FIRST_MAX
+        );
+        assert_eq!(
+            v["counts"],
+            json!({"urgent": 1, "normal": 2, "notice": 1, "oldest_min": 9})
+        );
+        assert_eq!(rows[1]["age_min"], json!(9));
+    }
+
+    /// IB2 / IB2b / IB6 (5d33a M1): urgent only by aibd's own record; a ledger `urgent`, or one
+    /// with a bridge id aibd does not have urgent, or a text saying 急, is 一般.
+    #[test]
+    fn only_aibd_makes_a_letter_urgent() {
+        let (_d, store) = ledger();
+        put_p(&store, "q_00000000000000e1", "urgent", "", 10);
+        put_p(
+            &store,
+            "q_00000000000000e2",
+            "URGENT",
+            "q_bbbbbbbbbbbbbbbb",
+            11,
+        );
+        put(
+            &store,
+            "q_00000000000000e3",
+            "delivered",
+            "急!急件!urgent",
+            12,
+        );
+        let urgent = |mid: &str| mid == "q_aaaaaaaaaaaaaaaa";
+        let v = waiting(&store, CODE, 100, &urgent);
+        for r in v["letters"].as_array().unwrap() {
+            assert_eq!(
+                r["grade"],
+                json!("一般"),
+                "reason: claimed_urgent_trusted {}",
+                r["id"]
+            );
+        }
+        let rows = v["letters"].as_array().unwrap();
+        assert_eq!(rows[0]["claimed_urgent"], json!(true));
+        assert_eq!(rows[1]["claimed_urgent"], json!(true));
+        assert_eq!(rows[2]["claimed_urgent"], json!(false));
+        assert_eq!(v["counts"]["urgent"], json!(0));
+    }
+
+    /// IB3 / IB4 / IB5 (5d33a 題 1): several at once, each at its own rev; one failing leaves
+    /// the others; at most 20.
+    #[test]
+    fn several_letters_close_at_once_each_on_its_own() {
+        let (d, store) = ledger();
+        let pending = d.path().join("pending");
+        std::fs::create_dir(&pending).unwrap();
+        let rev_of =
+            |id: &str| aib_dmq::rev::item_rev(&Value::Object(read(&store, CODE, id).unwrap()));
+        for (i, id) in [
+            "q_00000000000000f1",
+            "q_00000000000000f2",
+            "q_00000000000000f3",
+        ]
+        .iter()
+        .enumerate()
+        {
+            put(&store, id, "read", "知會", 10 + i as i64);
+        }
+        let items = vec![
+            (
+                "q_00000000000000f1".to_owned(),
+                rev_of("q_00000000000000f1"),
+            ),
+            (
+                "q_00000000000000f2".to_owned(),
+                rev_of("q_00000000000000f2") + 5,
+            ),
+            (
+                "q_00000000000000f3".to_owned(),
+                rev_of("q_00000000000000f3"),
+            ),
+        ];
+        let (st, v) = done_many(
+            &store,
+            &[],
+            Some(&pending),
+            CODE,
+            &items,
+            None,
+            Some("知會"),
+            30,
+        );
+        assert_eq!(st, StatusCode::OK, "{v:?}");
+        let ok: Vec<bool> = v["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["ok"] == json!(true))
+            .collect();
+        assert_eq!(ok, [true, false, true], "reason: one_fail_stops_all");
+        assert_eq!(status(&store, "q_00000000000000f1"), "done");
+        assert_eq!(
+            status(&store, "q_00000000000000f2"),
+            "read",
+            "reason: rev_not_each"
+        );
+        assert_eq!(status(&store, "q_00000000000000f3"), "done");
+        let many: Vec<(String, i64)> = (0..21).map(|i| (format!("q_{i:016x}"), 1)).collect();
+        let (st, _) = done_many(
+            &store,
+            &[],
+            Some(&pending),
+            CODE,
+            &many,
+            None,
+            Some("x"),
+            30,
+        );
+        assert_eq!(st, StatusCode::BAD_REQUEST, "reason: no_batch_cap");
+        let (st, _) = done_many(
+            &store,
+            &[],
+            Some(&pending),
+            CODE,
+            &items[1..2],
+            None,
+            Some("x"),
+            30,
+        );
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "all failed: the first failure's status"
         );
     }
 

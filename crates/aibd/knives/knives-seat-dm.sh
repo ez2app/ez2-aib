@@ -32,3 +32,21 @@ st() { python3 -I scripts/knife.py crates/aib-dmq-store/src/store.rs "$1" "$2" -
         -- cargo test -p aibd --locked --lib "seat_dm::tests::$3"; }
 st '        if !self.store.git_evidence {' '        if self.store.repo.as_os_str().is_empty() { // knife' \
    the_ledger_never_runs_git_for_a_seat
+# IB1 (PREREAD-seat-inbox-summary r3) not by grade
+dm '    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));' '    rows.sort_by(|a, b| a.1.cmp(&b.1)); // knife' \
+   the_waiting_letters_are_listed_in_order
+# IB2 (5d33a M1) a ledger urgent is urgent
+dm '    (1, p == "urgent")' '    (u8::from(p != "urgent"), p == "urgent") // knife' \
+   only_aibd_makes_a_letter_urgent
+# IB6 (5d33a M1) a bridge id makes it urgent without aibd's record
+dm '    if !mid.is_empty() && urgent(mid) {' '    if !mid.is_empty() { // knife' \
+   only_aibd_makes_a_letter_urgent
+# IB3 no cap on one batch
+dm '    if items.is_empty() || items.len() > DONE_MAX {' '    if items.is_empty() { // knife' \
+   several_letters_close_at_once_each_on_its_own
+# IB4 one failing stops the rest
+dm '        let ok = st == StatusCode::OK;' '        let ok = st == StatusCode::OK; if !ok { first_fail = Some(st); break; } // knife' \
+   several_letters_close_at_once_each_on_its_own
+# IB5 one rev for every letter
+dm '    for (id, rev) in items {' '    for (id, rev) in items.iter().map(|(i, _)| (i, &items[0].1)) { // knife' \
+   several_letters_close_at_once_each_on_its_own
