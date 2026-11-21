@@ -55,12 +55,12 @@ pub struct Facts {
     pub seat_now: Option<String>,
 }
 
-/// This machine's 1.x ledger (`<state>/dm-queue`), as the mirror finds it.
-fn ledger() -> Option<PathBuf> {
-    crate::dm_import::queue_root(|k| std::env::var(k).ok())
+/// This machine's 1.x ledger (`<state>/dm-queue`), as the mirror and legacy_send find it.
+pub fn ledger() -> Option<PathBuf> {
+    crate::bridge_cfg::queue_root(&crate::bridge_cfg::now(), |k| std::env::var(k).ok())
 }
 
-fn in_ledger(code: &str) -> bool {
+pub fn in_ledger(code: &str) -> bool {
     ledger().is_some_and(|q| {
         std::fs::symlink_metadata(q.join(code)).is_ok_and(|m| m.file_type().is_dir())
     })
