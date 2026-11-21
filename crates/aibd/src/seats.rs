@@ -331,14 +331,14 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
         );
     }
     // N-webonly-c6-merge (IFACE-web-merge r1 §1): a seat in its copy of a registered repo
-    let live = st.sessions.live_seats();
+    // (519d0 11-21: `sendable` follows the act, a seat in a turn is not; open and idle is)
     for v in &mut out {
         let id = v["seat_id"].as_str().unwrap_or_default();
         let copy = metas
             .iter()
             .find(|m| m.seat_id == id)
             .map_or(serde_json::Value::Null, |m| {
-                crate::send_back::repo_copy_of(&m.cwd, live.iter().any(|s| s == id))
+                crate::send_back::repo_copy_of(&m.cwd, st.sessions.in_turn(id))
             });
         v["repo_copy"] = copy;
     }
@@ -785,10 +785,12 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
         }
         (StatusCode::CONFLICT, Json(body)).into_response()
     };
-    if st.sessions.live_seats().contains(&seat_id) {
+    // 519d0 11-21 10:11 (放寬, with 送回倉): open and idle is merged back; only a seat in a turn
+    // is refused. take_head reads its committed head once and only that commit is merged.
+    if st.sessions.in_turn(&seat_id) {
         return conflict(
             "seat_busy",
-            "the seat runs now; stop it first",
+            "the seat is in a turn; merge back when it is done",
             serde_json::json!({}),
         );
     }

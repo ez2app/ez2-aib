@@ -206,7 +206,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         .clone();
     assert_eq!(
         (&row["repo_copy"]["repo"], &row["repo_copy"]["sendable"]),
-        (&json!("my-repo"), &json!(false)),
+        (&json!("my-repo"), &json!(true)),
         "reason: repo_copy_not_listed {row}"
     );
     assert_eq!(
