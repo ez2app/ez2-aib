@@ -211,6 +211,7 @@ async fn run() -> ExitCode {
     // N-web-dmbridge: the switches live in <data>/bridge.json (a preview's environment is
     // cleared); the mirror only with "dm_mirror": true there
     aibd::bridge_cfg::set_dir(&cfg.data_dir);
+    aibd::folders::prepare(&cfg.data_dir);
     aibd::dm_import::start(|k| std::env::var(k).ok(), cfg.data_dir.clone());
     let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {

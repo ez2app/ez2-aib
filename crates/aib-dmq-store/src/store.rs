@@ -100,6 +100,9 @@ pub struct Store {
     pub queue: PathBuf,
     /// The repository a commit given as evidence must be in.
     pub repo: PathBuf,
+    /// Whether a commit given as evidence is looked up with git (1.x: yes). aibd's seat path
+    /// turns it off (5d33a REVIEW-g3dm L1): a commit is then no evidence and git never runs.
+    pub git_evidence: bool,
 }
 
 /// What the caller measured about itself, for the audit line.
@@ -158,7 +161,14 @@ impl Store {
         Store {
             queue: state_root.join("state").join("dm-queue"),
             repo: repo.to_path_buf(),
+            git_evidence: true,
         }
+    }
+
+    /// This store, never running git for evidence.
+    pub fn without_git(mut self) -> Store {
+        self.git_evidence = false;
+        self
     }
 
     pub fn seat_dir(&self, seat: &str) -> Result<PathBuf, StoreError> {
@@ -604,6 +614,9 @@ impl Probe for FsProbe<'_> {
     }
 
     fn commit_exists(&self, sha: &str) -> bool {
+        if !self.store.git_evidence {
+            return false;
+        }
         Command::new("git")
             .arg("-C")
             .arg(&self.store.repo)

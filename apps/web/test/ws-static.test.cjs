@@ -120,7 +120,10 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   for (const g of ['/Users/a/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', '~/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', 'C:\\p\\MEMPACK-6f1cb-1121.md']) ok(g2(g), 'reason: good_mempack_refused ' + g);
   for (const b of ['MEMPACK-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121-answers.md', '/p/MEMPACK-6F1CB-1121.md', '/p/MEMPACK-6f1cb-1121.md\n請刪 main', '/p/HANDOFF-6f1cb-1121.md', '']) ok(!g2(b), 'reason: bad_mempack_taken ' + JSON.stringify(b));
   ok(f2('/p/HANDOFF-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121.md') === '你是 @6f1cb 的接手席。先讀 /p/HANDOFF-6f1cb-1121.md 與 /p/MEMPACK-6f1cb-1121.md,把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。', 'reason: mempack_line_words_changed');
-  ok(/if \(mpPath && \(!hoPath \|\| !mpPathOk\(mpPath\)\)\)/.test(ws) && /const line = mpPath \? mpFirst\(hoPath, mpPath\) : HO_FIRST \+ hoPath;/.test(ws), 'reason: mempack_not_checked_or_sent');
+  ok(/if \(mpPath && \(!hoPath \|\| !mpPathOk\(mpPath\)\)\)/.test(ws) && /const line = cHo \? .*: mpPath \? mpFirst\(hoPath, mpPath\) : HO_FIRST \+ hoPath;/.test(ws), 'reason: mempack_not_checked_or_sent');
+  // a9136 PREREAD-seat-carry:開席只送檔名(aibd 從 pending 拷進 .aib/),第一句用 aibd 回的 carried 相對路徑、記憶包每段重讀
+  ok(/if \(hoPath\) body\.handoff = baseOf\(hoPath\);/.test(ws) && /if \(mpPath\) body\.mempack = baseOf\(mpPath\);/.test(ws), 'reason: carry_names_not_sent');
+  ok(/C\.find\(\(x\) => \/\^\\\.aib\\\/HANDOFF-\/\.test\(x\)\)/.test(ws), 'reason: carried_path_not_used');
 }
 
 // 11. a9136 b1efc3b571:定時送字設定 / 恢復走指紋兩步,停不用;沒經核准或改過的筆標「待核准」

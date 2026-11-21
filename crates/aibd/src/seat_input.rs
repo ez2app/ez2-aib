@@ -267,6 +267,28 @@ pub async fn act(
                 };
                 return crate::gh_view::seat_act(st, &seat, body).await;
             }
+            // G3 (PREREAD-seat-g1write-g3 r2): a moved seat reads and closes its 1.x letters
+            if crate::seat_dm::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_dm::seat_act(st, &seat, body).await;
+            }
+            // PREREAD-seat-pending-read: a seat reads the pending folder, read-only
+            if crate::seat_pending::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_pending::seat_act(st, &seat, body).await;
+            }
             // DESIGN-seat-now-all: a trusted, listed seat reads what every seat is doing
             if crate::seat_now_all::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
