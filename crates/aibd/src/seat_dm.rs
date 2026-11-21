@@ -94,10 +94,16 @@ fn read(store: &aib_dmq_store::Store, code: &str, id: &str) -> Option<Map<String
 /// letter came through the bridge (`aibd_message_id`) and aibd's own record has it urgent
 /// ([`aibd_urgent`]); a ledger `urgent` alone is 一般 (5d33a M1: the ledger file is
 /// AI-writable). `reminder` is 通知. The text is never read for it.
-pub fn grade_of(item: &Map<String, Value>, urgent: &dyn Fn(&str, &str) -> bool) -> (u8, bool) {
+/// `id` is the letter's file name id, never the file's own `id` field: a file an AI wrote
+/// could copy a real urgent letter's id and aibd_message_id (5d33a REVIEW-urgentwire L1).
+pub fn grade_of(
+    item: &Map<String, Value>,
+    id: &str,
+    urgent: &dyn Fn(&str, &str) -> bool,
+) -> (u8, bool) {
     let p = str_of(item, "priority").to_ascii_lowercase();
     let mid = str_of(item, "aibd_message_id");
-    if !mid.is_empty() && urgent(mid, str_of(item, "id")) {
+    if !mid.is_empty() && urgent(mid, id) {
         return (0, false);
     }
     if p == "reminder" {
@@ -138,7 +144,7 @@ pub fn waiting(
                 return None;
             }
             let ts = item.get("ts").and_then(Value::as_i64).unwrap_or(0);
-            let (g, claimed) = grade_of(&item, urgent);
+            let (g, claimed) = grade_of(&item, id, urgent);
             let row = json!({
                 "id": id,
                 "rev": aib_dmq::rev::item_rev(&Value::Object(item.clone())),
@@ -176,6 +182,9 @@ pub fn waiting(
 ///   (`session_id` = `legacy:<id>`, as seat_send settles a ledger letter);
 /// - [`crate::urgent::is_urgent`]: seat_send marked it urgent, and it did not come in from a
 ///   ledger.
+///
+/// Today seat_send writes every letter to a 1.x ledger as plain (7ebca e41c75d354
+/// `to_ledger`), so this is always false; it is wired for when that opens (5d33a N1).
 pub fn aibd_urgent(
     db: &aib_store::MessageDb,
     aibd_message_id: &str,
@@ -763,6 +772,22 @@ mod tests {
         assert!(
             !urgent_row(&row(&to, &mine, "urgent", true), CODE, letter),
             "reason: imported_counted"
+        );
+    }
+
+    /// IB10 (5d33a REVIEW-urgentwire L1): the urgent check takes the file name id; a file whose
+    /// own `id` copies a real urgent letter's is not urgent.
+    #[test]
+    fn the_urgent_check_takes_the_file_name_id() {
+        let mut item = Map::new();
+        item.insert("id".into(), json!("q_00000000000000e1"));
+        item.insert("aibd_message_id".into(), json!("m_real"));
+        let urgent = |mid: &str, letter: &str| mid == "m_real" && letter == "q_00000000000000e1";
+        assert_eq!(grade_of(&item, "q_00000000000000e1", &urgent).0, 0);
+        assert_eq!(
+            grade_of(&item, "q_00000000000000f9", &urgent).0,
+            1,
+            "reason: json_id_trusted"
         );
     }
 

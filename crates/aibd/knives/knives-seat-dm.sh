@@ -39,7 +39,7 @@ dm '    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));' '    rows.sort_
 dm '    (1, p == "urgent")' '    (u8::from(p != "urgent"), p == "urgent") // knife' \
    only_aibd_makes_a_letter_urgent
 # IB6 (5d33a M1) a bridge id makes it urgent without aibd's record
-dm '    if !mid.is_empty() && urgent(mid, str_of(item, "id")) {' '    if !mid.is_empty() { // knife' \
+dm '    if !mid.is_empty() && urgent(mid, id) {' '    if !mid.is_empty() { // knife' \
    only_aibd_makes_a_letter_urgent
 # IB3 no cap on one batch
 dm '    if items.is_empty() || items.len() > DONE_MAX {' '    if items.is_empty() { // knife' \
@@ -65,3 +65,6 @@ dm '            == Some(format!("{legacy}{letter_id}").as_str())' '            !
 # IB9 a plain or imported row makes the letter urgent
 dm '        && crate::urgent::is_urgent(row)' '        && !row.item.is_empty()' \
    aibd_makes_a_letter_urgent_only_by_its_own_row
+# IB10 (5d33a REVIEW-urgentwire L1) the file's own id field is trusted for urgent
+dm '    if !mid.is_empty() && urgent(mid, id) {' '    if !mid.is_empty() && urgent(mid, str_of(item, "id")) {' \
+   the_urgent_check_takes_the_file_name_id
