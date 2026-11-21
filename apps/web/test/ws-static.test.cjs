@@ -421,7 +421,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 先問 aibd(drive_status),沒有才用「自動推進的信」拼,且標「拼的」
   ok(/if \(ctHas\('drive_status'\)\)/.test(seg) && /category=drive&limit=3/.test(seg) && /拼的/.test(seg), 'reason: drive_panel_source');
   // 開關三態(a9136 PREREAD-drive-d7d5 §1):鈕只照 aibd 的 can_on / can_off / can_pause 出;三種都要理由;送 drive_toggle {to, why};打開提示指紋;對不上指紋帳紅字
-  ok(/st\['can_' \+ \(to === 'paused' \? 'pause' : to\)\] === true/.test(seg) && /if \(!to \|\| !drvCan\(st, to\)\) return;/.test(seg) && /if \(!why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /act\('drive_toggle', \{ to, why \}\)/.test(seg) && /打開要 Andy 在這台按指紋/.test(seg) && /未經指紋的開啟/.test(seg) && !/can_toggle/.test(seg.replace(/\/\/[^\n]*/g, '')), 'reason: drive_toggle_rules');
+  ok(/st\['can_' \+ \(to === 'paused' \? 'pause' : to\)\] === true/.test(seg) && /if \(!to \|\| !drvCan\(st, to\)\) return;/.test(seg) && /if \(!why\) \{ DRV\.note = '要寫一句理由'/.test(seg) && /fingerAct\('drive_toggle', \{ to, why \}/.test(seg) && /r\.needs_approval === true \|\| r\.approval_id/.test(seg) && /全部暫停/.test(seg) && /打開要 Andy 在這台按指紋/.test(seg) && /未經指紋的開啟/.test(seg) && !/can_toggle/.test(seg.replace(/\/\/[^\n]*/g, '')), 'reason: drive_toggle_rules');
   // 拼的派工只有「送到」確定;已讀 / 接單 寫 AIB 還沒給
   ok(/:AIB 還沒給/.test(seg) && /\.drvd\.unk\{/.test(css), 'reason: drive_unknown_stage_not_marked');
   // 理由框打字不被重畫吃掉

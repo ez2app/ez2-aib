@@ -1877,7 +1877,7 @@
   // 「開工」看收件席之後有沒有開始回合),整塊標「拼的」。開關照 a9136 PREREAD-drive-d7d5 §1:drive_toggle {to: on|off|paused, why},
   // 鈕只照 aibd 給的 can_on / can_off / can_pause 出(打開要 Andy 指紋、停派工要主管、全停任何配對頁),三種都要寫理由(5d33a L1);頁面不判權。
   const DRV = { st: null, posts: [], at: 0, busy: false, open: null, why: '', note: '' };
-  const DRV_TO = { on: ['打開派工', '開著', 'drvon'], off: ['停派工', '只停派工', 'drvoff'], paused: ['全停', '全停', 'drvoff'] };
+  const DRV_TO = { on: ['打開派工', '開著', 'drvon'], off: ['停派工', '只停派工', 'drvoff'], paused: ['全部暫停', '全部暫停', 'drvoff'] };
   // 三態放 switch(dispatch 是派工清單,不能撞名);舊形狀只有 on 布林
   const drvState = (st) => (st && /^(on|off|paused)$/.test(String(st.switch)) ? String(st.switch) : st && st.on === true ? 'on' : st && st.on === false ? 'off' : '');
   const drvCan = (st, to) => !!st && st['can_' + (to === 'paused' ? 'pause' : to)] === true && drvState(st) !== to;
@@ -1921,11 +1921,21 @@
     const foot = `<div class="drvfoot">${andy ? `等你決定 ${andy} 件(在最上面)` : '沒有等你決定的'}${st ? '' : ' · 這塊是用「自動推進的信」拼的:只有「送到」確定,「開工」看那席之後有沒有開始回合;已讀 / 接單 AIB 還沒給'}${DRV.note ? ' · ' + esc(DRV.note) : ''}</div>`;
     return `<div class="ecls drvbox" data-drv="1"><div class="ecl"><span class="ek kdrv">自動推進</span> ${on}${who}${tog}${st ? '' : '<span class="drvq">拼的</span>'}</div>${form}${nx}<div class="drvs"><span class="drvh">派工</span><span class="drvlg">送到 · 已讀 · 接單 · 開工</span>${list}</div>${bl}${foot}</div>`;
   }
+  // 打開派工要 Andy 指紋(a9136 19:2x):走頁面既有的指紋等待(202 + ticket 每秒問、最長 120 秒);
+  // aibd 若改回 needs_approval + approval_id(consent 卡),就寫「等 Andy 按指紋」並每 5 秒重讀狀態,最長 2 分鐘
   async function driveToggle() {
     const st = DRV.st, to = DRV.open; if (!to || !drvCan(st, to)) return;
     const why = DRV.why.trim(); if (!why) { DRV.note = '要寫一句理由'; return render(); }
-    try { await act('drive_toggle', { to, why }); DRV.open = null; DRV.why = ''; DRV.note = ''; await driveLoad(true); }
-    catch (e) { DRV.note = errText(e); }
+    try {
+      const r = await fingerAct('drive_toggle', { to, why }, (t, sec) => { DRV.note = '請在這台 Mac 跳出的指紋視窗按下(打開派工要 Andy 本人)· 還有 ' + sec + ' 秒'; render(); });
+      DRV.open = null; DRV.why = ''; DRV.note = '';
+      if (r && (r.needs_approval === true || r.approval_id)) {
+        DRV.note = '已送出,等 Andy 在這台按指紋' + (r.approval_id ? '(單號 ' + String(r.approval_id).slice(0, 12) + ')' : '') + ';按完這裡會自己變「開著」';
+        const until = Date.now() + 120000;
+        const poll = async () => { await driveLoad(true); if (drvState(DRV.st) === to) { DRV.note = ''; return render(); } if (Date.now() > until) { DRV.note = '等指紋逾時:這次沒打開,要的話再按一次'; return render(); } setTimeout(poll, 5000); };
+        setTimeout(poll, 5000);
+      } else await driveLoad(true);
+    } catch (e) { DRV.note = errText(e); }
     render();
   }
 
