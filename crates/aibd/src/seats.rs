@@ -1371,14 +1371,11 @@ pub fn init_work_repo(dir: &std::path::Path, env: &[(String, String)]) -> Result
     Ok(true)
 }
 
-/// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
-/// sessions folder (`sessions`) aibd keeps private.
+/// A seat's own folder when none is given: `<seat work root>/<seat id>` ([`seat_work_root`]:
+/// `seat-work`, or `seat-work.noindex` on a new macOS install), next to the sessions folder
+/// (`sessions`) aibd keeps private.
 pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBuf {
-    sessions
-        .parent()
-        .unwrap_or(sessions)
-        .join("seat-work")
-        .join(seat_id)
+    seat_work_root(sessions).join(seat_id)
 }
 
 /// Files a provider would load as project instructions or tools from `dir` or any folder above
