@@ -670,6 +670,12 @@ pub fn forward_open(
         let Some(letter) = read_letter(&p) else {
             continue;
         };
+        // 5d33a REVIEW-webinbox1 L1: the file is named by its own id (a file put in this folder
+        // under another letter's id hands on nothing)
+        let named = p.file_stem().and_then(|n| n.to_str()) == Some(text(&letter, "id"));
+        if !named {
+            continue;
+        }
         // open, to this code, neither replaced nor expired (view_of says those first)
         if !OPEN.contains(&text(&letter, "status"))
             || text(&letter, "seat") != old_code
@@ -689,6 +695,11 @@ pub fn forward_open(
                 }
             }
             Some(had) => {
+                // L1: the row found is that letter to this code, not another code's
+                let to_this_code = had.item.get("dm_to").and_then(Value::as_str) == Some(old_code);
+                if !to_this_code {
+                    continue;
+                }
                 if had.item.get("forwarded_to").is_some_and(|v| !v.is_null()) || had.to_key == to {
                     continue;
                 }
@@ -1295,6 +1306,20 @@ mod tests {
         let mut old = letter("q_old", "delivered", "seat", "519d0", "7ebca", "被取代");
         old["superseded_by"] = json!("q_fresh");
         write(&root, &old);
+        // another code's letter, and a file here carrying its id: neither is handed on
+        let other = letter("q_other", "delivered", "seat", "519d0", "a9136", "別席的");
+        pass(&[write(&root, &other)], d.path(), &db, true).unwrap();
+        std::fs::write(root.join("7ebca").join("q_planted.json"), other.to_string()).unwrap();
+        // a file named apart from the id it carries, even to this code
+        let named_apart = letter("q_unposted", "queued", "seat", "519d0", "7ebca", "改名的");
+        std::fs::write(
+            root.join("7ebca").join("q_renamed.json"),
+            named_apart.to_string(),
+        )
+        .unwrap();
+        let mut copy = other.clone();
+        copy["seat"] = json!("7ebca");
+        std::fs::write(root.join("7ebca").join("q_other.json"), copy.to_string()).unwrap();
         let seat = "s_0123456789abcdef";
         db.seat_move("7ebca", seat, "page:0123abcd", "2026-11-21T00:00:00Z")
             .unwrap();

@@ -34,3 +34,14 @@ wk crates/aibd/src/dm_import.rs \
    '        "aibd_bridge", // knife' \
    closing_on_the_web_closes_the_ledger_copy \
    '--lib dm_import::tests::closing_on_the_web_closes_the_ledger_copy'
+# WK6 a file under another name, or another code's mirrored row, is handed on (5d33a REVIEW-webinbox1 L1)
+wk crates/aibd/src/dm_import.rs \
+   '        if !named {' \
+   '        if false && !named { // knife' \
+   a_move_brings_the_open_letters_along_once \
+   '--lib dm_import::tests::a_move_brings_the_open_letters_along_once'
+wk crates/aibd/src/dm_import.rs \
+   '                if !to_this_code {' \
+   '                if false && !to_this_code { // knife' \
+   a_move_brings_the_open_letters_along_once \
+   '--lib dm_import::tests::a_move_brings_the_open_letters_along_once'
