@@ -403,10 +403,13 @@ pub const TALK_TOOLS: [&str; 13] = [
 /// PREREAD-seat-pending-read: a web seat reads the pending folder through aibd, read-only. A
 /// work / dgrs seat's, never a safe seat's (5d33a REVIEW-seatpendingread L1: a safe seat reads
 /// nothing today; aibd refuses one too, [`crate::seat_pending::mode_may_read`]).
-pub const PENDING_TOOLS: [&str; 3] = [
+pub const PENDING_TOOLS: [&str; 6] = [
     "mcp__aibd__pending_list",
     "mcp__aibd__pending_read",
     "mcp__aibd__pending_write",
+    "mcp__aibd__dm_waiting",
+    "mcp__aibd__dm_show",
+    "mcp__aibd__dm_done",
 ];
 /// seat_receipt (N-webonly 第 4 件, 7ebca 11-20): a seat asks aibd for a receipt of its own head
 /// and reads its own runs. Only for a seat that writes code ([`receipt_tool_for`]; 5d33a L3: a
