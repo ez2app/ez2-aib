@@ -724,6 +724,18 @@ mod tests {
             next_due(std::slice::from_ref(&again), now),
             Some(now + AFTER_SECS)
         );
+        // named once with no time kept (a row written before nudged_at, or it lost it): not
+        // named at once again, it waits like any other (a9136 b42: DW3 bit nothing)
+        let mut no_time = urgent.clone();
+        no_time.item.insert("nudged".into(), json!(1));
+        assert!(
+            due(std::slice::from_ref(&no_time), now).is_empty(),
+            "reason: urgent_named_at_once_twice"
+        );
+        assert_eq!(
+            next_due(std::slice::from_ref(&no_time), now),
+            Some(now + AFTER_SECS)
+        );
         let mut bridged = urgent.clone();
         bridged.item.insert("imported".into(), json!(true));
         assert!(
