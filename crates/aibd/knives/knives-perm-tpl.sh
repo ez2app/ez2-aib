@@ -30,7 +30,7 @@ python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
 # pt-noenforce
 python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
   '(on && !given) || (!on && given && !DROPPABLE_NOW.contains(k))' \
-  '(on && !given)' \
+  'on && !given' \
   --expect-fail 'perm_tpl::tests::what_a_base_cannot_hold_is_named' \
   -- cargo test -p aibd --locked --lib 'perm_tpl::tests::what_a_base_cannot_hold_is_named'
 # pt-reserved
