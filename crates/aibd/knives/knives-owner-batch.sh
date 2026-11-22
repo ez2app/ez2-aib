@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 指紋批次簽 B1 pure part (DESIGN-ownerbatch-impl-08de5-1123 r0, f163c REVIEW r0): groups, signed alone, order in the hash and the window, what fits, duplicates
+# 指紋批次簽 B1 (DESIGN-ownerbatch-impl-08de5-1123 r0, f163c REVIEW r0 + list r0): groups, signed alone, order, fit, duplicates; collecting, one window, the list taken once, child tickets bound to the collected ask
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -57,9 +57,75 @@ python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '        (Some(a), Some(_)) => Ok(a),' \
   --expect-fail owner_batch::tests::an_item_is_batched_only_with_one_ask \
   -- cargo test -p aibd --locked --lib owner_batch::tests::an_item_is_batched_only_with_one_ask
-# ob-delim (f163c pre N1)
+# ob-delim
 python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '            a.resource.len(),' \
   '            0,' \
-  --expect-fail 'owner_batch::tests::the_hash_and_the_window_keep_the_order' \
-  -- cargo test -p aibd --locked --lib 'owner_batch::tests::the_hash_and_the_window_keep_the_order'
+  --expect-fail owner_batch::tests::the_hash_and_the_window_keep_the_order \
+  -- cargo test -p aibd --locked --lib owner_batch::tests::the_hash_and_the_window_keep_the_order
+# obw-collect
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '        return Asked::Ticket(format!("{COLLECTED}{n}"));' \
+  '        let _ = n;' \
+  --expect-fail owner_ok::tests::a_collected_ask_raises_nothing_and_stays_with_its_call \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::a_collected_ask_raises_nothing_and_stays_with_its_call
+# obw-shape
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  'pub const COLLECTED: &str = "collected.";' \
+  'pub const COLLECTED: &str = "collected_";' \
+  --expect-fail owner_ok::tests::a_collected_ask_raises_nothing_and_stays_with_its_call \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::a_collected_ask_raises_nothing_and_stays_with_its_call
+# obw-used
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '        if v.rec.used {' \
+  '        if v.rec.used && !v.rec.used {' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-taken
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '        let ok = b.rec.operation == OP_BATCH && b.rec.approved && b.rec.used;' \
+  '        let ok = b.rec.operation == OP_BATCH && b.rec.approved;' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-bind
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '                    params_sha256: params_sha256.clone(),' \
+  '                    params_sha256: String::new(),' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-lines
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '            b.lines.join("\n")' \
+  '            b.lines.first().cloned().unwrap_or_default()' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-sign
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '        let msg = crate::owner_batch::binding(&b.ticket, &b.batch_sha, &b.by);' \
+  '        let msg = crate::owner_batch::binding(&b.ticket, "", &b.by);' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-told
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '        if let Some(f) = told {' \
+  '        if let Some(f) = told.filter(|_| false) {' \
+  --expect-fail owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item \
+  -- cargo test -p aibd --locked --lib owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
+# obw-work
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '            body["repo"].is_string() && body["mode"].as_str().is_some_and(|m| m != "work")' \
+  '            body["repo"].is_string() || body["mode"].as_str().is_some_and(|m| m != "work")' \
+  --expect-fail owner_batch::tests::only_acts_that_ask_first_are_collected \
+  -- cargo test -p aibd --locked --lib owner_batch::tests::only_acts_that_ask_first_are_collected
+# obw-move
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '    broke && group == Group::Move' \
+  '    broke && group == Group::Push' \
+  --expect-fail owner_batch::tests::a_failed_move_step_stops_the_rest_only_in_its_group \
+  -- cargo test -p aibd --locked --lib owner_batch::tests::a_failed_move_step_stops_the_rest_only_in_its_group
+# obw-merged
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '        let mut v = b.states[*k].clone();' \
+  '        let mut v = ended("waiting", None, None);' \
+  --expect-fail owner_batch::tests::a_merged_item_reads_as_the_kept_one \
+  -- cargo test -p aibd --locked --lib owner_batch::tests::a_merged_item_reads_as_the_kept_one

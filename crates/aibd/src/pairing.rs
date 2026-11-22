@@ -1106,7 +1106,12 @@ impl Pairing {
     /// The guard's lookup: `Some` only for a credential that is awaiting confirmation or
     /// confirmed and in time.
     pub fn access(&self, presented: &str) -> Option<PageAccess> {
-        let digest = sha(presented.as_bytes());
+        self.access_digest(sha(presented.as_bytes()))
+    }
+
+    /// [`Pairing::access`] by the credential's digest: 指紋批次簽 replays each item with the
+    /// pairing as it is now (f163c REVIEW-ownerbatch-impl r0 L3), not as it was collected.
+    pub fn access_digest(&self, digest: Hash) -> Option<PageAccess> {
         let mut inner = self.lock();
         let now = (self.clock)();
         Self::purge(&mut inner, now);

@@ -9,7 +9,11 @@
 //!   child ticket has not: refused `signed_alone` until B4 (f163c r0: only stricter).
 //! - The hash, the window's numbers and the page's list are in one order (f163c N1).
 
+use crate::api::AppState;
 use crate::owner_ok::{self, Ask};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -207,6 +211,355 @@ pub fn one(asks: Vec<Ask>) -> Result<Ask, &'static str> {
     }
 }
 
+// ---------------------------------------------------------------- wiring (B1 接線)
+
+/// The page acts a batch may hold (f163c list r0: collecting runs the act up to its ask, so
+/// only acts that always ask before they write are let in). A page seat open asks only with
+/// a repo and a mode other than work: anything else would open a seat while being collected.
+pub fn collectable(kind: &str, body: &Value) -> bool {
+    match kind {
+        crate::repos::REGISTER
+        | crate::seat_trust::TRUST
+        | crate::seat_move::MOVE
+        | crate::send_back::SEND_BACK
+        | crate::repo_push::PUSH
+        | crate::pr_open::OPEN => true,
+        crate::seats::PAGE_OPEN => {
+            body["repo"].is_string() && body["mode"].as_str().is_some_and(|m| m != "work")
+        }
+        _ => false,
+    }
+}
+
+/// One item's end, as the ticket's `items[i]` gives it.
+fn ended(state: &str, reason: Option<&str>, result: Option<Value>) -> Value {
+    let mut v = serde_json::json!({"state": state});
+    if let Some(r) = reason {
+        v["reason"] = serde_json::json!(r);
+    }
+    if let Some(r) = result {
+        v["result"] = r;
+    }
+    v
+}
+
+struct Kept {
+    /// `page:<8 bytes hex>`: whose batch (the ticket's GET reads with it).
+    by: String,
+    digest: [u8; 32],
+    group: Group,
+    /// What aibd sends again, in order (its own copy: the page sends nothing after opening).
+    items: Vec<(String, Value)>,
+    asks: Vec<Ask>,
+    /// The page's index of each kept item, and of each merged one with the kept one it is.
+    kept_at: Vec<usize>,
+    merged: Vec<(usize, usize)>,
+    states: Vec<Value>,
+    until: u64,
+}
+
+type Table = std::collections::HashMap<String, Kept>;
+
+static BATCHES: std::sync::LazyLock<std::sync::Mutex<Table>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn batches() -> std::sync::MutexGuard<'static, Table> {
+    BATCHES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The ticket's `items` for the page that opened it, in the page's order; a merged item gives
+/// the result of the one it is (f163c B1 pre N2).
+pub fn items_of(ticket: &str, by: &str) -> Option<Value> {
+    let g = batches();
+    let b = g.get(ticket).filter(|b| b.by == by)?;
+    let n = b.kept_at.len() + b.merged.len();
+    let mut out = vec![Value::Null; n];
+    for (k, i) in b.kept_at.iter().enumerate() {
+        let mut v = b.states[k].clone();
+        v["i"] = serde_json::json!(i);
+        out[*i] = v;
+    }
+    for (i, k) in &b.merged {
+        let mut v = b.states[*k].clone();
+        v["i"] = serde_json::json!(i);
+        v["merged_into"] = serde_json::json!(b.kept_at[*k]);
+        out[*i] = v;
+    }
+    Some(Value::Array(out))
+}
+
+fn set_state(ticket: &str, k: usize, v: Value) {
+    if let Some(s) = batches().get_mut(ticket).and_then(|b| b.states.get_mut(k)) {
+        *s = v;
+    }
+}
+
+fn refuse(code: StatusCode, reason: &str, more: Value) -> Response {
+    let mut v = serde_json::json!({"code": if code == StatusCode::FORBIDDEN { "forbidden" } else { "bad_request" },
+        "reason": reason, "request_id": crate::guard::request_id()});
+    if let (Some(o), Some(m)) = (v.as_object_mut(), more.as_object()) {
+        o.extend(m.clone());
+    }
+    (code, Json(v)).into_response()
+}
+
+fn hex8(d: &[u8; 32]) -> String {
+    d[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A page act on its way, boxed.
+type Sent = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
+
+/// The page act through the one front door, boxed (the act may be this very batch's caller).
+fn send(st: &AppState, page: crate::pairing::PageAccess, body: Value) -> Sent {
+    Box::pin(crate::seat_input::act(
+        axum::extract::State(st.clone()),
+        axum::Extension(crate::guard::Caller::Page(page)),
+        Some(Json(body)),
+    ))
+}
+
+async fn body_of(r: Response) -> Value {
+    let b = axum::body::to_bytes(r.into_body(), 256 * 1024)
+        .await
+        .unwrap_or_default();
+    serde_json::from_slice(&b).unwrap_or(Value::Null)
+}
+
+/// `{"type":"owner_batch","items":[{"type":…,"body":{…}},…],"idem_key"}` from the built-in page
+/// (the caller checked that): each item collected, one window for the list, then aibd sends
+/// each one again itself once the owner said yes. `202 {ticket, code, until, batch_sha, group,
+/// items:[{i, words}], merged}`.
+pub async fn open(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
+    sweep(crate::owner_ok::unix_now());
+    let keys_ok = body.as_object().is_some_and(|o| {
+        o.keys()
+            .all(|k| matches!(k.as_str(), "type" | "items" | "idem_key"))
+    });
+    let Some(raw) = body["items"]
+        .as_array()
+        .filter(|a| keys_ok && !a.is_empty())
+    else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "body",
+            serde_json::json!({
+            "message": "body must be {type, items:[{type, body}], idem_key}"}),
+        );
+    };
+    if raw.len() > MAX_ITEMS * 2 {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "batch_too_big",
+            serde_json::json!({"max": MAX_ITEMS}),
+        );
+    }
+    let mut list = Vec::new();
+    for (i, it) in raw.iter().enumerate() {
+        let kind = it["type"].as_str().unwrap_or_default();
+        let Some(b) = it["body"].as_object() else {
+            return refuse(StatusCode::BAD_REQUEST, "item", serde_json::json!({"i": i}));
+        };
+        let mut b = Value::Object(b.clone());
+        if let Some(o) = b.as_object_mut() {
+            o.remove("ticket");
+            o.insert("type".into(), serde_json::json!(kind));
+        }
+        if !collectable(kind, &b) {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "batch_mixed",
+                serde_json::json!({"i": i, "why": "not_batchable"}),
+            );
+        }
+        list.push((kind.to_owned(), b));
+    }
+    let (kept_at, merged_at) = dedup(&list);
+    let shas: Vec<String> = list.iter().map(|(k, b)| item_sha(k, b)).collect();
+    let merged: Vec<(usize, usize)> = merged_at
+        .iter()
+        .filter_map(|i| Some((*i, kept_at.iter().position(|k| shas[*k] == shas[*i])?)))
+        .collect();
+    let mut asks = Vec::new();
+    for i in &kept_at {
+        let (r, got) = crate::owner_ok::collecting(send(&st, page, list[*i].1.clone())).await;
+        if r.status() != StatusCode::ACCEPTED {
+            let status = r.status().as_u16();
+            let b = body_of(r).await;
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "batch_item_refused",
+                serde_json::json!({
+                "i": i, "status": status, "why": b["reason"].as_str().or(b["code"].as_str())}),
+            );
+        }
+        match one(got) {
+            Ok(a) => asks.push(a),
+            Err(why) => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    "batch_mixed",
+                    serde_json::json!({"i": i, "why": why}),
+                )
+            }
+        }
+    }
+    let group = match check(&asks) {
+        Ok(g) => g,
+        Err(e) => {
+            let mut more = serde_json::json!({});
+            match e {
+                BatchError::TooBig { max } => more["max"] = serde_json::json!(max),
+                BatchError::Mixed { i, reason } => {
+                    more["i"] = serde_json::json!(kept_at[i]);
+                    more["why"] = serde_json::json!(reason);
+                }
+                BatchError::Empty => {}
+            }
+            return refuse(StatusCode::BAD_REQUEST, e.code(), more);
+        }
+    };
+    let Ok(ticket) = crate::sessions::new_id("ot_") else {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            crate::owner_ok::UNAVAILABLE,
+            serde_json::json!({}),
+        );
+    };
+    let (sha, lines) = (batch_sha(&asks), window_lines(&asks));
+    let by = format!("page:{}", hex8(&page.digest));
+    let n = asks.len();
+    batches().insert(
+        ticket.clone(),
+        Kept {
+            by: by.clone(),
+            digest: page.digest,
+            group,
+            items: kept_at.iter().map(|i| list[*i].clone()).collect(),
+            asks,
+            kept_at: kept_at.clone(),
+            merged: merged.clone(),
+            states: vec![ended("waiting", None, None); n],
+            until: crate::owner_ok::unix_now() + crate::owner_ok::TICKET_SECS + 600,
+        },
+    );
+    let rt = tokio::runtime::Handle::current();
+    let st2 = st.clone();
+    let asked = crate::owner_ok::ask_batch(crate::owner_ok::BatchAsk {
+        ticket: ticket.clone(),
+        batch_sha: sha.clone(),
+        lines: lines.clone(),
+        by,
+        answered: Box::new(move |t, yes| {
+            if yes {
+                let _detached = rt.spawn(run(st2, t));
+            } else {
+                let n = batches().get(&t).map_or(0, |b| b.states.len());
+                for k in 0..n {
+                    set_state(&t, k, ended("failed", Some("owner_said_no"), None));
+                }
+            }
+        }),
+    });
+    match asked {
+        crate::owner_ok::Asked::Ticket(t) => {
+            tracing::info!(target: "owner_batch", ticket12 = &t[..t.len().min(12)], n, group = group.code(),
+                batch_sha12 = &sha[..12], "owner_batch.opened");
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"done": false, "ticket": t,
+                    "code": crate::owner_ok::pair_code(&t), "batch_sha": sha, "group": group.code(),
+                    "max": MAX_ITEMS, "merged": merged_at,
+                    "items": kept_at.iter().zip(lines).map(|(i, w)| serde_json::json!({"i": i, "words": w})).collect::<Vec<_>>()})),
+            )
+                .into_response()
+        }
+        crate::owner_ok::Asked::Unavailable(why) => {
+            batches().remove(&ticket);
+            let mut v = crate::owner_ok::refusal(why);
+            v["request_id"] = serde_json::json!(crate::guard::request_id());
+            (StatusCode::FORBIDDEN, Json(v)).into_response()
+        }
+    }
+}
+
+/// After the yes: the list used once, then each item sent again in order with its own child
+/// ticket and aibd's copy of its body, the pairing read as it is now (f163c L3). In the 搬家
+/// group an item after a failed one is skipped; the other groups go on (f163c list L4).
+async fn run(st: AppState, ticket: String) {
+    let Some((by, digest, group, items, asks)) = batches().get(&ticket).map(|b| {
+        (
+            b.by.clone(),
+            b.digest,
+            b.group,
+            b.items.clone(),
+            b.asks.clone(),
+        )
+    }) else {
+        return;
+    };
+    if let Err(why) = crate::owner_ok::take_batch(&ticket, &by) {
+        for k in 0..items.len() {
+            set_state(&ticket, k, ended("failed", Some(why), None));
+        }
+        return;
+    }
+    let mut broke = false;
+    for (k, ((kind, body), ask)) in items.into_iter().zip(asks).enumerate() {
+        let end = if skips(group, broke) {
+            ended("skipped", Some("an_earlier_move_failed"), None)
+        } else {
+            one_item(&st, &ticket, digest, body, &ask).await
+        };
+        broke |= end["state"] != "done";
+        tracing::info!(target: "owner_batch", ticket12 = &ticket[..ticket.len().min(12)], k,
+            act = kind.as_str(), operation = ask.operation, state = end["state"].as_str().unwrap_or(""),
+            reason = end["reason"].as_str().unwrap_or(""), "owner_batch.item");
+        set_state(&ticket, k, end);
+    }
+}
+
+/// f163c list L4: in the 搬家 group an item after a failed one is not done (each step needs
+/// the one before); a send back or a push stands alone.
+pub fn skips(group: Group, broke: bool) -> bool {
+    broke && group == Group::Move
+}
+
+async fn one_item(st: &AppState, batch: &str, digest: [u8; 32], body: Value, ask: &Ask) -> Value {
+    let Some(page) = crate::owner_ok::page_now(digest).filter(|p| p.confirmed) else {
+        return ended("failed", Some("pairing_gone"), None);
+    };
+    let Some(child) = crate::owner_ok::child(batch, ask) else {
+        return ended("failed", Some("batch_not_approved"), None);
+    };
+    let mut b = body;
+    b["ticket"] = serde_json::json!(child);
+    let r = send(st, page, b).await;
+    let status = r.status();
+    let v = body_of(r).await;
+    if status.is_success() && status != StatusCode::ACCEPTED {
+        return ended("done", None, Some(v));
+    }
+    // the child ticket is bound to the ask this item gave when collected: an act that now asks
+    // for anything else is not approved by it (f163c list L3)
+    if v["reason"] == "owner_check_not_approved" {
+        return ended("failed", Some("params_changed"), None);
+    }
+    let why = v["reason"]
+        .as_str()
+        .or(v["code"].as_str())
+        .unwrap_or("refused")
+        .to_owned();
+    let mut e = ended("failed", None, None);
+    e["reason"] = serde_json::json!(why);
+    e
+}
+
+/// Batches past their time are dropped (their tickets are gone from owner_ok too).
+pub fn sweep(now: u64) {
+    batches().retain(|_, b| now < b.until);
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -369,5 +722,61 @@ mod tests {
         assert!(String::from_utf8(b)
             .unwrap()
             .starts_with("aibd/owner-batch/v1\not_1\n"));
+    }
+
+    /// f163c list r0: only acts that always ask before writing are collected; a page seat open
+    /// only with a repo and not in work mode (a work open asks nothing and would open).
+    #[test]
+    fn only_acts_that_ask_first_are_collected() {
+        let open = |b: Value| collectable(crate::seats::PAGE_OPEN, &b);
+        assert!(open(json!({"repo": "ez2-aib", "mode": "dgrs"})));
+        assert!(open(json!({"repo": "ez2-aib", "mode": "safe"})));
+        assert!(
+            !open(json!({"repo": "ez2-aib", "mode": "work"})),
+            "reason: work_open_collected"
+        );
+        assert!(
+            !open(json!({"mode": "dgrs"})),
+            "reason: open_without_repo_collected"
+        );
+        assert!(collectable(crate::repo_push::PUSH, &json!({})));
+        assert!(!collectable(KIND, &json!({})), "reason: batch_in_batch");
+        assert!(!collectable("seat_input", &json!({})));
+    }
+
+    /// f163c list L4: after a failed 搬家 step the rest is skipped; other groups go on.
+    #[test]
+    fn a_failed_move_step_stops_the_rest_only_in_its_group() {
+        assert!(skips(Group::Move, true));
+        assert!(!skips(Group::Move, false));
+        assert!(!skips(Group::SendBack, true) && !skips(Group::Push, true));
+    }
+
+    /// B1 pre N2: a merged item reads as the one it is, with where it was merged.
+    #[test]
+    fn a_merged_item_reads_as_the_kept_one() {
+        batches().insert(
+            "ot_t1".into(),
+            Kept {
+                by: "page:p".into(),
+                digest: [0; 32],
+                group: Group::Push,
+                items: vec![],
+                asks: vec![],
+                kept_at: vec![0, 2],
+                merged: vec![(1, 0)],
+                states: vec![ended("done", None, None), ended("failed", Some("x"), None)],
+                until: u64::MAX,
+            },
+        );
+        let v = items_of("ot_t1", "page:p").unwrap();
+        assert_eq!(v[1]["state"], "done", "reason: merged_not_as_kept {v}");
+        assert_eq!(v[1]["merged_into"], 0);
+        assert_eq!(v[2]["state"], "failed");
+        assert!(
+            items_of("ot_t1", "page:q").is_none(),
+            "reason: other_page_reads"
+        );
+        batches().remove("ot_t1");
     }
 }
