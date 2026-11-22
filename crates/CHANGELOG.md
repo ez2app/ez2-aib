@@ -5,6 +5,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+## 0.2.0-preview.8 — 2026-11-22
+
+- Release only: cut from main cae7d5ccab (everything merged since preview.7; the entries below
+  were the Unreleased list). Integration heads #871 / #872 were red on macOS and are not in it.
+
 - Pairing (a20, DECISION-council-gaps-519d0-1117): the terminal y/N pairing is now a **weak
   pairing**, named as weak everywhere, until Windows Hello / Touch ID pairing lands.
   `AIBD_PAIRING=terminal-unverified` is read on every platform (macOS keeps it so AIB 2.0 can be
