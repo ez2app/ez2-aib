@@ -522,6 +522,20 @@ pub fn library_synced(root: &Path, home: Option<&Path>, icloud_desktop: bool) ->
     named || desktop
 }
 
+/// Andy 11-23 01:5x 「3開放」(DECISION-council-aipartner §九): a library in a synced folder takes
+/// notes; the list and the page say so in these words.
+pub const SYNCED_WORDS: &str = "這個大腦會同步到雲端";
+
+/// Whether the library this aibd reads is in a synced folder now (`false` when there is none).
+fn synced_now() -> bool {
+    let Some(r) = library().ok().and_then(|r| std::fs::canonicalize(r).ok()) else {
+        return false;
+    };
+    let home = home_dir();
+    let icloud = home.as_deref().is_some_and(icloud_desktop_on);
+    library_synced(&r, home.as_deref(), icloud)
+}
+
 /// iCloud 「桌面與文件」 is on for `home` (its Desktop folder is in iCloud Drive).
 fn icloud_desktop_on(home: &Path) -> bool {
     cfg!(target_os = "macos")
@@ -596,7 +610,6 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
 /// What a refused write says (ebab8 01:51: 人話 for the person reading the page).
 pub fn message_of(code: &str) -> &'static str {
     match code {
-        "brain_library_synced" => "這個第二大腦在雲端同步資料夾裡,還沒開放沙盒夥伴寫入",
         "brain_overlaps_protected" => "這個第二大腦跟人格卡、夥伴或程式倉的資料夾重疊,不能寫入",
         "brain_protected_unknown" => "讀不到人格卡清單,先不寫入",
         "brain_root_missing" => "找不到第二大腦的資料庫",
@@ -613,10 +626,9 @@ fn status_of(code: &str) -> StatusCode {
         "brain_root_missing" | "brain_folder_missing" | "brain_unknown" | "brain_not_bound" => {
             StatusCode::CONFLICT
         }
-        "brain_path_unsafe"
-        | "brain_index_unreadable"
-        | "brain_library_synced"
-        | "brain_overlaps_protected" => StatusCode::FORBIDDEN,
+        "brain_path_unsafe" | "brain_index_unreadable" | "brain_overlaps_protected" => {
+            StatusCode::FORBIDDEN
+        }
         "brain_protected_unknown" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -756,11 +768,6 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     let wrote = tokio::task::spawn_blocking(move || -> Result<String, &'static str> {
         let root = library()?;
         let root_real = std::fs::canonicalize(&root).map_err(|_| "brain_root_missing")?;
-        let home = home_dir();
-        let icloud = home.as_deref().is_some_and(icloud_desktop_on);
-        if library_synced(&root_real, home.as_deref(), icloud) {
-            return Err("brain_library_synced");
-        }
         let folder = crate::registry::brain_folder(&root, &r)?;
         let brain_real = std::fs::canonicalize(
             folder
@@ -826,8 +833,14 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     let store = st.store.clone();
     let _ = tokio::task::spawn_blocking(move || ev.map(|ev| store.append(vec![ev]))).await;
     let name = rel.rsplit('/').next().unwrap_or_default().to_string();
-    Json(json!({"note_id": note_id, "file": name, "bytes": bytes.len(), "sha256": sha}))
-        .into_response()
+    let synced = tokio::task::spawn_blocking(synced_now)
+        .await
+        .unwrap_or(false);
+    Json(
+        json!({"note_id": note_id, "file": name, "bytes": bytes.len(), "sha256": sha,
+                "synced": synced}),
+    )
+    .into_response()
 }
 
 /// A note as a page sees it: never the brain's route key or folder, only the file's name.
@@ -868,16 +881,10 @@ pub async fn list(st: AppState, body: Value) -> Response {
     match tokio::task::spawn_blocking(move || db.brain_notes(&of)).await {
         Ok(Ok(v)) => {
             // 8b09a L3: the page says a note written here leaves this machine
-            let synced = library()
-                .ok()
-                .and_then(|r| std::fs::canonicalize(r).ok())
-                .map(|r| {
-                    let home = home_dir();
-                    let icloud = home.as_deref().is_some_and(icloud_desktop_on);
-                    library_synced(&r, home.as_deref(), icloud)
-                });
+            let synced = synced_now();
             Json(json!({"notes": v.iter().map(shown).collect::<Vec<_>>(),
-                        "library_synced": synced}))
+                        "synced": synced,
+                        "synced_words": synced.then_some(SYNCED_WORDS)}))
             .into_response()
         }
         _ => refuse(
@@ -1284,8 +1291,7 @@ mod tests {
     #[test]
     fn a_library_in_a_synced_folder_is_known() {
         assert_eq!(
-            message_of("brain_library_synced"),
-            "這個第二大腦在雲端同步資料夾裡,還沒開放沙盒夥伴寫入",
+            SYNCED_WORDS, "這個大腦會同步到雲端",
             "reason: synced_words_changed"
         );
         let p = |s: &str| PathBuf::from(s);
