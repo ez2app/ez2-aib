@@ -66,12 +66,12 @@ fn bad(reason: &str, message: &str) -> Response {
 }
 
 /// Only these keys in a body; anything else is refused (a page cannot slip a field in).
-fn only(body: &Value, keys: &[&str]) -> Result<(), Response> {
+fn only(body: &Value, keys: &[&str]) -> Result<(), Box<Response>> {
     let o = body
         .as_object()
-        .ok_or_else(|| bad("body", "the body is an object"))?;
+        .ok_or_else(|| Box::new(bad("body", "the body is an object")))?;
     match o.keys().find(|k| !keys.contains(&k.as_str())) {
-        Some(k) => Err(bad("field", &format!("unknown field {k}"))),
+        Some(k) => Err(Box::new(bad("field", &format!("unknown field {k}")))),
         None => Ok(()),
     }
 }
@@ -84,16 +84,16 @@ fn uid_ok(u: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-fn uid_of(body: &Value, key: &str) -> Result<String, Response> {
+fn uid_of(body: &Value, key: &str) -> Result<String, Box<Response>> {
     body.get(key)
         .and_then(Value::as_str)
         .filter(|u| uid_ok(u))
         .map(str::to_owned)
-        .ok_or_else(|| bad(key, "a uid from aibd's list"))
+        .ok_or_else(|| Box::new(bad(key, "a uid from aibd's list")))
 }
 
 /// The card of `uid` and its text as the list names it.
-async fn card_now(st: &AppState, uid: &str) -> Result<(String, String), Response> {
+async fn card_now(st: &AppState, uid: &str) -> Result<(String, String), Box<Response>> {
     let src = st.personas.clone();
     let u = uid.to_owned();
     let got = tokio::task::spawn_blocking(move || {
@@ -106,26 +106,26 @@ async fn card_now(st: &AppState, uid: &str) -> Result<(String, String), Response
     .ok()
     .flatten();
     got.ok_or_else(|| {
-        err(
+        Box::new(err(
             StatusCode::NOT_FOUND,
             "persona_unreadable",
             "no such persona, or its card cannot be read as the list names it",
-        )
+        ))
     })
 }
 
 /// `persona_read`.
 pub async fn read(st: AppState, body: Value) -> Response {
     if let Err(r) = only(&body, &["type", "persona_uid", "idem_key"]) {
-        return r;
+        return *r;
     }
     let uid = match uid_of(&body, "persona_uid") {
         Ok(u) => u,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let (sha, text) = match card_now(&st, &uid).await {
         Ok(x) => x,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let mut out = json!({
         "persona_uid": uid,
@@ -138,12 +138,12 @@ pub async fn read(st: AppState, body: Value) -> Response {
     Json(out).into_response()
 }
 
+/// The sections a change touches: `(heading, characters before, characters after)`.
+pub type Changed = Vec<(&'static str, usize, usize)>;
+
 /// What `persona_set` changes: the new text and, per section sent, `(heading, before, after)`
 /// lengths in characters (the window's words).
-pub fn new_text(
-    text: &str,
-    body: &Value,
-) -> Result<(String, Vec<(&'static str, usize, usize)>), card::EditError> {
+pub fn new_text(text: &str, body: &Value) -> Result<(String, Changed), card::EditError> {
     let mut t = text.to_owned();
     let mut changed = Vec::new();
     for (field, heading) in card::SECTIONS {
@@ -214,7 +214,7 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
             "idem_key",
         ],
     ) {
-        return r;
+        return *r;
     }
     if body.get("name").is_some() {
         return bad(
@@ -224,7 +224,7 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
     }
     let uid = match uid_of(&body, "persona_uid") {
         Ok(u) => u,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let Some(base) = body
         .get("base_sha")
@@ -239,7 +239,7 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
     }
     let (sha, text) = match card_now(&st, &uid).await {
         Ok(x) => x,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     if !sha.eq_ignore_ascii_case(&base) {
         return err(
@@ -333,11 +333,11 @@ fn now_s() -> i64 {
 /// `<kind>_archive` / `<kind>_restore`.
 pub async fn archive(st: AppState, act: &str, body: Value) -> Response {
     if let Err(r) = only(&body, &["type", "uid", "idem_key"]) {
-        return r;
+        return *r;
     }
     let uid = match uid_of(&body, "uid") {
         Ok(u) => u,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let kind = kind_of(act);
     if kind == "role"
@@ -398,11 +398,11 @@ pub async fn rename(st: AppState, act: &str, body: Value) -> Response {
         &["type", "uid", "name", "idem_key"]
     };
     if let Err(r) = only(&body, keys) {
-        return r;
+        return *r;
     }
     let uid = match uid_of(&body, "uid") {
         Ok(u) => u,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     if role
         && crate::registry::BUILTIN_ROLES
