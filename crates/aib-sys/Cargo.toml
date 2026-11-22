@@ -46,6 +46,7 @@ objc2-local-authentication = { version = "=0.3.2", default-features = false, fea
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",

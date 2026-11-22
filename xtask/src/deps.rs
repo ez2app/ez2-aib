@@ -48,6 +48,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         &[
             "Win32_Foundation",
             "Win32_Security",
+            // S10-3 / W1b hello_ncrypt (DESIGN-persona-propose-osverify-c2f0b-1123 §3)
+            "Win32_Security_Cryptography",
             // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
             "Win32_Storage_FileSystem",
             "Win32_System_Console",
