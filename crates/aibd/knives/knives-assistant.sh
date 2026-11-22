@@ -111,3 +111,21 @@ python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   'let _ = may_request(act, &params);' \
   --expect-fail 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else' \
   -- cargo test -p aibd --locked --lib 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else'
+# as-fields
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'if o.keys().any(|k| !SEAT_OPEN_FIELDS.contains(&k.as_str())) {' \
+  'if false {' \
+  --expect-fail 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode'
+# as-strmode
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'Some(_) => return Err(RequestRefused::Mode),' \
+  'Some(_) => "safe",' \
+  --expect-fail 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode'
+# as-pageacts
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "perm_template_add"];' \
+  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "persona_set"];' \
+  --expect-fail 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet'

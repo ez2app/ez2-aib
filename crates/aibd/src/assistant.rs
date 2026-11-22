@@ -12,7 +12,8 @@
 //!   refused for every other seat ([`tool_allowed`], AS1).
 //! - What it may ask for through owner_request ([`may_request`], AS2 / AS3): open a seat in
 //!   `safe` or `work` only (never `dgrs` or `host`: only a lead may ask for those), add a
-//!   persona, edit a persona (`persona_edit`, which writes through `persona_write::write`),
+//!   persona, edit a persona (`persona_set`, 08de5 A1 persona_edit.rs, which writes
+//!   through `persona_write::write`),
 //!   add a brain from aibd's candidates, add a role, add a permission template. Nothing else.
 //! - Its own persona card is built into aibd, not in the 1.x cards file, so no persona act
 //!   can reach it (AS11).
@@ -53,7 +54,7 @@ pub const ASSISTANT_ONLY: [&str; 2] = ["catalog_list", "assistant_suggest"];
 pub const REQUEST_ACTS: [&str; 6] = [
     "seat_open",
     "persona_add",
-    "persona_edit",
+    "persona_set",
     "brain_add",
     "role_add",
     "perm_template_add",
@@ -129,6 +130,8 @@ pub enum RequestRefused {
     ActNotListed,
     /// A seat in a mode only a lead may ask for (403 `request_mode`).
     Mode,
+    /// A seat_open field the assistant may not set (403 `request_field`).
+    Field,
 }
 
 impl RequestRefused {
@@ -136,6 +139,7 @@ impl RequestRefused {
         match self {
             RequestRefused::ActNotListed => "request_act_not_listed",
             RequestRefused::Mode => "request_mode",
+            RequestRefused::Field => "request_field",
         }
     }
 }
@@ -147,13 +151,39 @@ pub fn may_request(act: &str, params: &Value) -> Result<(), RequestRefused> {
         return Err(RequestRefused::ActNotListed);
     }
     if act == "seat_open" {
-        let mode = params.get("mode").and_then(Value::as_str).unwrap_or("safe");
+        // f163c REVIEW-a9 pre L1: only these fields; no repo, own tree, hosts, template,
+        // ticket, handoff or another seat's folder (the person adds those themselves)
+        let o = params.as_object().ok_or(RequestRefused::Field)?;
+        if o.keys().any(|k| !SEAT_OPEN_FIELDS.contains(&k.as_str())) {
+            return Err(RequestRefused::Field);
+        }
+        let mode = match o.get("mode") {
+            None => "safe",
+            Some(Value::String(m)) => m.as_str(),
+            Some(_) => return Err(RequestRefused::Mode),
+        };
         if !matches!(mode, "safe" | "work") {
             return Err(RequestRefused::Mode);
         }
     }
     Ok(())
 }
+
+/// The fields a seat_open the assistant asks for may carry.
+pub const SEAT_OPEN_FIELDS: [&str; 8] = [
+    "provider",
+    "mode",
+    "persona_uid",
+    "model",
+    "brain",
+    "role",
+    "node",
+    "name",
+];
+
+/// [`REQUEST_ACTS`] not yet in `seat_input::PAGE_ACTS` of main (their slices are 08de5 A1
+/// `persona_set` and `perm_template_add`); emptied when those land.
+pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "perm_template_add"];
 
 /// `true` when a request body carries a `kind` field at its top or in its `params`: only the
 /// act that opens the assistant sets a seat's kind (AS10).
@@ -343,7 +373,7 @@ pub fn to_request(it: &SuggestItem) -> Result<Option<(&'static str, Value)>, Req
     let (act, params): (&'static str, Value) = match (it.what.as_str(), &it.uid, &it.draft) {
         (_, Some(_), None) => return Ok(None),
         ("persona", Some(u), Some(_)) => (
-            "persona_edit",
+            "persona_set",
             serde_json::json!({"persona_uid": u, "card_text": d.get("text").cloned().unwrap_or(Value::Null)}),
         ),
         ("persona", None, Some(_)) => ("persona_add", d),
@@ -413,7 +443,7 @@ mod tests {
         let ok = json!({"items":[
             {"what":"persona","uid":"aaaaa1","note":"用這位\u{200B}"},
             {"what":"brain","draft":{"name":"新大腦"}},
-            {"what":"seat","draft":{"persona":"aaaaa1","mode":"work"}}]});
+            {"what":"seat","draft":{"persona_uid":"aaaaa1","mode":"work"}}]});
         let v = parse_suggest(&ok).unwrap();
         assert_eq!(v.len(), 3);
         assert_eq!(v[0].note, "用這位");
@@ -472,9 +502,9 @@ mod tests {
             {"what":"persona","uid":"aaaaa1"},
             {"what":"persona","uid":"aaaaa1","draft":{"text":"新卡"}},
             {"what":"persona","draft":{"name":"新人格","text":"卡"}},
-            {"what":"seat","draft":{"persona":"aaaaa1","mode":"work"}},
-            {"what":"seat","draft":{"persona":"aaaaa1","mode":"dgrs"}},
-            {"what":"seat","draft":{"persona":"aaaaa1","kind":"assistant"}},
+            {"what":"seat","draft":{"persona_uid":"aaaaa1","mode":"work"}},
+            {"what":"seat","draft":{"persona_uid":"aaaaa1","mode":"dgrs"}},
+            {"what":"seat","draft":{"persona_uid":"aaaaa1","kind":"assistant"}},
             {"what":"template","draft":{"name":"t","items":["chat"]}}]}))
         .unwrap();
         assert_eq!(to_request(&v[0]), Ok(None));
@@ -482,7 +512,7 @@ mod tests {
         assert_eq!(
             (a, p),
             (
-                "persona_edit",
+                "persona_set",
                 json!({"persona_uid":"aaaaa1","card_text":"新卡"})
             )
         );
@@ -491,6 +521,11 @@ mod tests {
         assert_eq!(to_request(&v[4]), Err(RequestRefused::Mode));
         assert_eq!(to_request(&v[5]), Err(RequestRefused::ActNotListed));
         assert_eq!(to_request(&v[6]).unwrap().unwrap().0, "perm_template_add");
+        let w = parse_suggest(
+            &json!({"items":[{"what":"seat","draft":{"mode":"work","hosts":["h"]}}]}),
+        )
+        .unwrap();
+        assert_eq!(to_request(&w[0]), Err(RequestRefused::Field));
     }
 
     #[test]
@@ -567,7 +602,7 @@ mod tests {
         assert_eq!(RequestRefused::Mode.code(), "request_mode");
         for a in [
             "persona_add",
-            "persona_edit",
+            "persona_set",
             "brain_add",
             "role_add",
             "perm_template_add",
@@ -596,6 +631,58 @@ mod tests {
             RequestRefused::ActNotListed.code(),
             "request_act_not_listed"
         );
+    }
+
+    #[test]
+    fn as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode() {
+        assert_eq!(
+            may_request(
+                "seat_open",
+                &json!({"provider":"claude","mode":"work","persona_uid":"aaaaa1","brain":"b","role":"r","model":"m","node":"n","name":"x"})
+            ),
+            Ok(())
+        );
+        for f in [
+            "hosts",
+            "tpl",
+            "repo",
+            "own_tree",
+            "with_seat",
+            "ticket",
+            "handoff",
+            "idem_key",
+        ] {
+            assert_eq!(
+                may_request("seat_open", &json!({"mode":"safe", f: "x"})),
+                Err(RequestRefused::Field),
+                "{f}"
+            );
+        }
+        assert_eq!(
+            may_request("seat_open", &json!("safe")),
+            Err(RequestRefused::Field)
+        );
+        assert_eq!(RequestRefused::Field.code(), "request_field");
+        for m in [json!(1), json!(null), json!(["safe"]), json!(true)] {
+            assert_eq!(
+                may_request("seat_open", &json!({"mode": m})),
+                Err(RequestRefused::Mode),
+                "{m}"
+            );
+        }
+    }
+
+    #[test]
+    fn l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet() {
+        for a in REQUEST_ACTS {
+            assert!(
+                crate::seat_input::PAGE_ACTS.contains(&a) || ACTS_NOT_IN_MAIN_YET.contains(&a),
+                "{a}"
+            );
+        }
+        for a in ACTS_NOT_IN_MAIN_YET {
+            assert!(REQUEST_ACTS.contains(&a), "{a}");
+        }
     }
 
     #[test]
