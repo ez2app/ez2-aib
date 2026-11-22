@@ -10,5 +10,8 @@ python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '        .map(|h| format
 python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '    let hold = crate::grants::hold_in(ask.operation, &ask.params)' '    let hold = crate::grants::hold_in(crate::grants::OP_FS_OPEN, &ask.params) // knife' \
   --expect-fail owner_ok::tests::the_hold_is_in_the_window_and_in_what_was_approved -- cargo test -p aibd --locked --lib owner_ok::tests::the_hold_is_in_the_window_and_in_what_was_approved
 # HL3 the hold is not said at all
-python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",' '        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold:.0}\n單號 {}|參數 {}|{}", // knife' \
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '        "對照碼 {} · {until},過了這張就作廢{hold}",' '        "對照碼 {} · {until},過了這張就作廢{hold:.0}", // knife' \
   --expect-fail owner_ok::tests::the_hold_is_in_the_window_and_in_what_was_approved -- cargo test -p aibd --locked --lib owner_ok::tests::the_hold_is_in_the_window_and_in_what_was_approved
+# CL1 (08de5 B1) the window writes its third line itself instead of code_line
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '        code_line(ticket, until, hold),' '        code_line(ticket, until, None), // knife' \
+  --expect-fail owner_ok::tests::the_code_line_is_the_windows_third_line_for_a_batch_too -- cargo test -p aibd --locked --lib owner_ok::tests::the_code_line_is_the_windows_third_line_for_a_batch_too

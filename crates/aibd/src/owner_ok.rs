@@ -323,17 +323,28 @@ pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     // window at all (Owner::ask is Unavailable), and nothing else of the request says a time
     let hold = crate::grants::hold_in(ask.operation, &ask.params)
         .ok()
-        .flatten()
-        .map(|h| format!(" · {}", h.words()))
-        .unwrap_or_default();
+        .flatten();
     format!(
-        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",
+        "{}\n對象:{}\n{}\n單號 {}|參數 {}|{}",
         top_words(ask),
         object_shown(&ask.resource),
-        pair_code(ticket),
+        code_line(ticket, until, hold),
         ticket,
         &p[..12],
         ask.operation,
+    )
+}
+
+/// The window's third line: the code, until when, and how long a yes opens it (only what
+/// [`crate::grants::hold_in`] gave, in its own words). One sentence for every system window,
+/// a single ask's and a batch's (08de5 B1), so the person learns one.
+pub fn code_line(ticket: &str, until: &str, hold: Option<crate::grants::Hold>) -> String {
+    let hold = hold
+        .map(|h| format!(" · {}", h.words()))
+        .unwrap_or_default();
+    format!(
+        "對照碼 {} · {until},過了這張就作廢{hold}",
+        pair_code(ticket)
     )
 }
 
@@ -1712,6 +1723,25 @@ mod tests {
 
     /// HD1 (DESIGN-persona-propose-osverify r1 §2a): the hold is in the window's words and in
     /// what the owner approves; a page that asks again with another hold has no approval.
+    #[test]
+    fn the_code_line_is_the_windows_third_line_for_a_batch_too() {
+        let ask = held(crate::grants::OP_FS_OPEN, "min15");
+        let w = window_text(&ask, "ot_abcdef", "請在 01:02:03 前按");
+        let third = w.lines().nth(2).unwrap();
+        let min15 = crate::grants::hold_in(crate::grants::OP_FS_OPEN, &ask.params).unwrap();
+        assert_eq!(third, code_line("ot_abcdef", "請在 01:02:03 前按", min15));
+        assert_eq!(
+            code_line("ot_abcdef", "請在 01:02:03 前按", None),
+            format!(
+                "對照碼 {} · 請在 01:02:03 前按,過了這張就作廢",
+                pair_code("ot_abcdef")
+            ),
+            "reason: code_line_words"
+        );
+        assert!(code_line("t", "u", Some(crate::grants::Hold::Hour1))
+            .ends_with(crate::grants::Hold::Hour1.words()));
+    }
+
     #[test]
     fn the_hold_is_in_the_window_and_in_what_was_approved() {
         at(5000);
