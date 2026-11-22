@@ -373,6 +373,8 @@ pub const WIRED: &[&str] = &[
     // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
     crate::test_host_add::OP_ADD,
     crate::test_host_add::OP_REMOVE,
+    // aibd §7: a permission template change that turns an item on or raises the base
+    crate::perm_tpl::OP,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.

@@ -9,6 +9,7 @@ pub mod brain_notes;
 mod idem;
 mod messages;
 mod migrate;
+pub mod perm_templates;
 pub mod ranks;
 mod seat_meta;
 pub mod seat_moves;
@@ -30,6 +31,7 @@ pub use messages::{
     MESSAGES_FILE, MESSAGES_SCHEMA, PAGE_MAX, PERSON_WORDS,
 };
 pub use migrate::{Migration, MIGRATIONS};
+pub use perm_templates::{PermTemplate, PermTemplateLog, TplWrite};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
 pub use sessions::{seat_sessions_running_at, SessionRow, ENDED_BY_RESTART};

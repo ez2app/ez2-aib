@@ -61,6 +61,11 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::seat_rank::SHOW,
     crate::brain_note::LIST,
     crate::brain_note::DELETE,
+    crate::perm_tpl::LIST,
+    crate::perm_tpl::LOG,
+    crate::perm_tpl::ADD,
+    crate::perm_tpl::SET,
+    crate::perm_tpl::REMOVE,
     crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
@@ -413,6 +418,31 @@ pub async fn act(
             } else {
                 let by = format!("page:{}", hex(&page.digest[..8]));
                 crate::brain_note::delete(st, body, by).await
+            };
+        }
+        // aibd §7 permission templates: the built-in page in this pairing only; a change that
+        // raises asks the owner's fingerprint (perm_tpl decides which)
+        Some(
+            k @ (crate::perm_tpl::LIST
+            | crate::perm_tpl::LOG
+            | crate::perm_tpl::ADD
+            | crate::perm_tpl::SET
+            | crate::perm_tpl::REMOVE),
+        ) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "permission templates are kept from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::perm_tpl::LIST => crate::perm_tpl::list(st).await,
+                crate::perm_tpl::LOG => crate::perm_tpl::log(st, body).await,
+                crate::perm_tpl::ADD => crate::perm_tpl::add(st, body, by).await,
+                crate::perm_tpl::SET => crate::perm_tpl::set(st, body, by).await,
+                _ => crate::perm_tpl::remove(st, body, by).await,
             };
         }
         Some(crate::contacts_api::CONTACT_SET) => {

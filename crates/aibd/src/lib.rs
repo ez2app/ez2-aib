@@ -50,6 +50,7 @@ pub mod owner_ok;
 pub mod pair_api;
 pub mod pair_carry;
 pub mod pairing;
+pub mod perm_tpl;
 pub mod person;
 pub mod personas;
 pub mod plan_route;
