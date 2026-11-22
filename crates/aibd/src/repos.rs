@@ -341,6 +341,24 @@ pub fn restart_ask(
     }
 }
 
+/// A11 (f163c L1): a seat record read as the gate needs it: there, not there, or not read.
+fn known_or_stop<T, E, J>(read: Result<Result<Option<T>, E>, J>) -> Result<Option<T>, ()> {
+    match read {
+        Ok(Ok(m)) => Ok(m),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
+}
+
+fn seat_unreadable() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"code": "internal", "reason": "seat_unreadable",
+            "message": "the seat's record could not be read; nothing was stopped or started",
+            "request_id": crate::guard::request_id()})),
+    )
+        .into_response()
+}
+
 /// A11: before a page's act starts a dgrs seat's provider again, the owner is asked (`Some`: the
 /// answer to give now, nothing stopped or started); a safe or work seat, or an unknown one (the
 /// act answers that itself), is not asked here.
@@ -351,10 +369,14 @@ pub async fn dgrs_restart_gate(
     by: String,
 ) -> Option<Response> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
-    let meta = tokio::task::spawn_blocking(move || store.seat_meta(&id).ok().flatten())
-        .await
-        .ok()
-        .flatten()?;
+    let read = tokio::task::spawn_blocking(move || store.seat_meta(&id)).await;
+    // f163c REVIEW-a11 L1: only "no such seat" is left to the act; a read that failed stops
+    // here (a second read in revive could succeed and start a dgrs seat unasked)
+    let meta = match known_or_stop(read) {
+        Ok(Some(m)) => m,
+        Ok(None) => return None,
+        Err(()) => return Some(seat_unreadable()),
+    };
     if meta.mode.as_deref() != Some("dgrs") {
         return None;
     }
@@ -549,6 +571,23 @@ pub fn prepare_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// f163c REVIEW-a11 L1: a seat record that could not be read stops the gate; only a seat
+    /// that is not there is left to the act.
+    #[test]
+    fn a_seat_record_not_read_stops_the_dgrs_gate() {
+        type R = Result<Result<Option<u8>, &'static str>, &'static str>;
+        let (some, none, db, join): (R, R, R, R) =
+            (Ok(Ok(Some(1))), Ok(Ok(None)), Ok(Err("db")), Err("join"));
+        assert_eq!(known_or_stop(some), Ok(Some(1)));
+        assert_eq!(known_or_stop(none), Ok(None));
+        assert_eq!(known_or_stop(db), Err(()), "reason: read_error_let_through");
+        assert_eq!(
+            known_or_stop(join),
+            Err(()),
+            "reason: join_error_let_through"
+        );
+    }
     use std::process::Command;
 
     /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
