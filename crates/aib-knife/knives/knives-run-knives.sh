@@ -34,7 +34,7 @@ rk '  envs=()' '  : # knife: envs never reset' \
   an_env_header_reaches_only_its_own_script
 # S88-split shards (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做")
 # RK9 every shard runs every script (N cells would run each script N times)
-rk '  if [ $(((here_ok - 1) % shard_n + 1)) != "$shard_k" ]; then' '  if false; then # knife: no shard' \
+rk '  if [ $(((turn - 1) % shard_n + 1)) != "$shard_k" ]; then' '  if false; then # knife: no shard' \
   shards_take_turns_over_the_scripts_that_run_here_and_together_run_each_once
 # RK10 turns are counted over the job's scripts of every OS: a script that cannot run here takes a turn
 rk '  here_ok=$((here_ok + 1))' '  here_ok=$mine # knife: other OS takes a turn' \
@@ -61,3 +61,22 @@ rk $'  missed=$(grep -Ec \'^KNIFE(-BUILD)? .*: (MISSES|INVALID|pattern found )\'
 # RK17 only knife.py's lines are read: a compile-time knife (knife-build.py prints KNIFE-BUILD) that missed stays green
 rk "'^KNIFE(-BUILD)? .*: (MISSES|INVALID|pattern found )'" "'^KNIFE .*: (MISSES|INVALID|pattern found )'" \
   a_script_that_returns_0_over_a_knife_that_missed_is_red
+# Shards by time (Andy 11-22): AIB_KNIVES_PLAN names each script's cell, AIB_KNIVES_LIST prints what would run
+# RK18 the plan is read and not used: the cells take turns in name order as before
+rk '        turn=${plan_k[$pi]}' '        turn=$here_ok # knife: the plan is not used' \
+  a_plan_names_each_scripts_cell_and_the_cells_together_run_each_once
+# RK19 a script the plan does not name is in no cell at all, and no cell says so
+rk '    if [ "$turn" = 0 ]; then' '    if false; then # knife: not red' \
+  a_script_that_runs_here_and_is_not_in_the_plan_is_red_in_every_cell
+# RK20 a cell number above N is taken (that script would run in no cell)
+rk ' && [ "${BASH_REMATCH[1]}" -le "$shard_n" ]; then' '; then # knife: any k' \
+  a_plan_that_is_not_read_or_not_understood_is_refused
+# RK21 a plan that cannot be read is no plan: the run goes on without one
+rk '  [ -r "$plan_file" ] || { echo "AIB_KNIVES_PLAN=$plan_file cannot be read"; exit 2; }' '  : # knife: not checked' \
+  a_plan_that_is_not_read_or_not_understood_is_refused
+# RK22 list mode runs the scripts
+rk '  if [ -n "$list_only" ]; then' '  if false; then # knife: list mode runs' \
+  list_mode_prints_the_scripts_that_would_run_here_and_runs_none
+# RK23 the plan and the list reach the scripts (a knife that runs this file under test would use them)
+rk 'unset AIB_KNIVES_LIST AIB_KNIVES_PLAN' ': # knife: kept' \
+  the_scripts_do_not_see_the_plan_or_the_list
