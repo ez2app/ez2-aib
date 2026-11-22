@@ -12,9 +12,9 @@ pp '        PROPOSE => &["type", "card_text", "why"],' \
 pp '        if persona_diff::hidden_char_line(&diff).is_some() {' \
    '        if persona_diff::hidden_char_line(&diff).is_some() && diff.added == usize::MAX {' \
    the_identity_and_hidden_characters_are_refused
-# PP3 (PW7) the front matter uid / code may change
-pp '            if front_value(new, key) != front_value(card.text, key) {' \
-   '            if front_value(new, key) != front_value(card.text, key) && key == "none" {' \
+# PP3 (PW7, r4 §9) the front matter may change
+pp '        if front_block(new) != front_block(card.text) {' \
+   '        if front_block(new) != front_block(card.text) && new.is_empty() {' \
    the_identity_and_hidden_characters_are_refused
 # PP4 (PW8) two proposals wait on one card
 pp '        if l.iter().filter(waiting).any(|p| p.persona_uid == card.uid) {' \

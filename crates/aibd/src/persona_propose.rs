@@ -10,8 +10,8 @@
 //!
 //! - The persona is the seat's own (`seat_meta.persona_uid`): a body naming one is refused
 //!   (`request_param_not_taken`), so a seat cannot propose for another persona (D2).
-//! - The text: UTF-8, at most 64 KiB and [`persona_diff::MAX_LINES`] lines, the same `uid` and
-//!   `code` in its front matter, not the same as the card, and no added line with a character
+//! - The text: UTF-8, at most 64 KiB and [`persona_diff::MAX_LINES`] lines, the front matter
+//!   byte for byte the card's (r4 §9), not the same as the card, and no added line with a character
 //!   the diff would not show (refused, not cleaned: what is shown is what is written, D3).
 //! - Frozen when asked: the whole text, the card's sha it was diffed against, the diff. There is
 //!   no way to change a proposal; withdraw and propose again (that counts too).
@@ -117,6 +117,23 @@ pub fn sha_hex(b: &[u8]) -> String {
         .collect()
 }
 
+/// The front matter as written: from a first line `---` through the next `---` line, ends of
+/// line included; `None` without one (or never closed).
+pub fn front_block(text: &str) -> Option<&str> {
+    let first = text.split_inclusive('\n').next()?;
+    if first.trim_end() != "---" {
+        return None;
+    }
+    let mut end = first.len();
+    for l in text[first.len()..].split_inclusive('\n') {
+        end += l.len();
+        if l.trim_end() == "---" {
+            return Some(&text[..end]);
+        }
+    }
+    None
+}
+
 /// The value of `key:` in the text's front matter (between a first line `---` and the next).
 pub fn front_value(text: &str, key: &str) -> Option<String> {
     let mut lines = text.lines();
@@ -182,10 +199,11 @@ impl Book {
         if new == card.text {
             return Err("persona_no_change");
         }
-        for key in ["uid", "code"] {
-            if front_value(new, key) != front_value(card.text, key) {
-                return Err("persona_identity_changed");
-            }
+        // the whole front matter, not only uid / code: the 1.x card list takes its other
+        // fields (category, name, …) from it, and a changed one leaves that list stale
+        // (DESIGN-persona-propose-osverify-c2f0b-1123 r4 §9, S5)
+        if front_block(new) != front_block(card.text) {
+            return Err("persona_identity_changed");
         }
         let diff = persona_diff::diff(card.text, new).map_err(|e| e.reason())?;
         if persona_diff::hidden_char_line(&diff).is_some() {
@@ -585,6 +603,13 @@ mod tests {
                 .err(),
             Some("persona_identity_changed")
         );
+        // r4 §9 S5: any other front matter field too
+        let moved = OLD.replace("code: owner-sec\n", "code: owner-sec\ncategory: 研究\n");
+        assert_eq!(
+            b.propose(&card(), &ask("seat_ab", &moved), &mut id, 1)
+                .err(),
+            Some("persona_identity_changed")
+        );
         let hidden = new_text("看不見\u{202e}的字");
         assert_eq!(
             b.propose(&card(), &ask("seat_ab", &hidden), &mut id, 1)
@@ -728,6 +753,12 @@ mod tests {
         );
         assert_eq!(front_value("no front\nuid: x\n", "uid"), None);
         assert_eq!(front_value("---\na: 1\n---\nuid: x\n", "uid"), None);
+        assert_eq!(
+            front_block(OLD),
+            Some("---\nuid: lvkson\ncode: owner-sec\n---\n")
+        );
+        assert_eq!(front_block("no front\n---\n"), None);
+        assert_eq!(front_block("---\nuid: x\n"), None);
     }
 
     #[test]
