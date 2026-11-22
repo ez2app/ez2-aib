@@ -254,16 +254,18 @@ pub fn quota_of(v: &Value) -> Option<(&'static str, Value)> {
 pub fn apply(row: &mut Usage, raw: &[u8], at: &str) {
     row.last_output_at = Some(at.to_owned());
     // A15: a limit line (claude's rate_limit_event, codex's rateLimits): kept per brand
+    // Only a line that is a limit line ends here (f163c pre L1): an answer that merely says
+    // "rateLimits" goes on to the usage reading below.
     if raw.first() == Some(&b'{') && (has(raw, b"rate_limit_event") || has(raw, b"rateLimits")) {
-        if let Some((brand, mut q)) = serde_json::from_slice::<Value>(raw)
+        let limit = serde_json::from_slice::<Value>(raw)
             .ok()
             .as_ref()
-            .and_then(quota_of)
-        {
+            .and_then(quota_of);
+        if let Some((brand, mut q)) = limit {
             q["seen_at"] = json!(at);
             quotas().insert(brand, q);
+            return;
         }
-        return;
     }
     // only a JSON object line can carry a reading; most lines are skipped without parsing
     if raw.first() != Some(&b'{')
@@ -358,6 +360,8 @@ static BOARD: LazyLock<Board> = LazyLock::new(Board::default);
 pub struct Quotas(Mutex<BTreeMap<&'static str, Value>>);
 
 impl Quotas {
+    /// The latest line of a brand wins: one account a brand on a machine for now (f163c pre
+    /// N1); two seats of one brand under two accounts would show whichever spoke last.
     pub fn insert(&self, brand: &'static str, q: Value) {
         self.0
             .lock()
@@ -993,6 +997,29 @@ mod tests {
     }
 
     const AT: &str = "2026-11-18T02:00:00.000Z";
+
+    /// f163c pre L1: an answer that only mentions rateLimits still moves the usage.
+    #[test]
+    fn an_answer_naming_rate_limits_still_moves_the_usage() {
+        let mut r = Usage {
+            session_id: "s".into(),
+            seat_id: None,
+            model: None,
+            used: None,
+            window: None,
+            pct: None,
+            at: None,
+            last_output_at: None,
+            order: 0,
+        };
+        let line = json!({"type":"assistant","message":{"model":"claude-opus-5-5",
+            "content":[{"type":"text","text":"codex 的 rateLimits 跟 rate_limit_event 不一樣"}],
+            "usage":{"input_tokens":120_000,"cache_read_input_tokens":0,
+                     "cache_creation_input_tokens":0,"output_tokens":9}}})
+        .to_string();
+        apply(&mut r, line.as_bytes(), AT);
+        assert_eq!(r.used, Some(120_000), "reason: usage_skipped_on_the_word");
+    }
 
     fn assistant(i: u64, r: u64, c: u64) -> String {
         json!({"type":"assistant","message":{"model":"claude-opus-5-5","content":[],

@@ -39,3 +39,9 @@ python3 -I scripts/knife.py crates/aibd/src/codex_wire.rs \
   '        &json!({"jsonrpc": "2.0", "method": "initialized"}),' \
   --expect-fail 'codex_wire::tests::the_opening_carries_the_persona_in_the_protocol' \
   -- cargo test -p aibd --locked --lib 'codex_wire::tests::the_opening_carries_the_persona_in_the_protocol'
+# a15-wordonly (f163c pre L1)
+python3 -I scripts/knife.py crates/aibd/src/usage.rs \
+  '        if let Some((brand, mut q)) = limit {' \
+  '        if let Some((brand, mut q)) = limit.or(Some(("claude", json!({})))) {' \
+  --expect-fail 'usage::tests::an_answer_naming_rate_limits_still_moves_the_usage' \
+  -- cargo test -p aibd --locked --lib 'usage::tests::an_answer_naming_rate_limits_still_moves_the_usage'
