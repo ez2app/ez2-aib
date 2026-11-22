@@ -1680,6 +1680,20 @@ pub async fn page_open(
             }
         },
     };
+    // A1: an archived persona, brain or role opens nothing (a seat already running goes on)
+    let (db, p, b, r) = (
+        st.messages.clone(),
+        req.persona_uid.clone(),
+        req.brain.clone(),
+        req.role.clone(),
+    );
+    if let Ok(Some(why)) = tokio::task::spawn_blocking(move || {
+        crate::persona_edit::archived_now(&db, &p, b.as_deref(), r.as_deref())
+    })
+    .await
+    {
+        return Refusal(why, "it is archived: restore it first").into_response();
+    }
     if req.base.is_some() && req.repo.is_none() {
         return Refusal("base", "base goes with repo").into_response();
     }

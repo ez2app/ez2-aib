@@ -53,6 +53,7 @@ pub mod pairing;
 pub mod perm_tpl;
 pub mod person;
 pub mod persona_card;
+pub mod persona_edit;
 pub mod persona_write;
 pub mod personas;
 pub mod plan_route;

@@ -68,6 +68,14 @@ pub fn section(text: &str, heading: &str) -> String {
         .unwrap_or_default()
 }
 
+/// f163c REVIEW-a1 r0 L1 (as the page refuses): a line that is a Markdown heading (`#` to
+/// `######` then a space, after any spaces) or a `---` rule / front-matter line.
+fn starts_a_heading(l: &str) -> bool {
+    let t = l.trim_start();
+    let hashes = t.bytes().take_while(|b| *b == b'#').count();
+    ((1..=6).contains(&hashes) && t[hashes..].starts_with([' ', '\t'])) || t.trim_end() == "---"
+}
+
 /// What the page may send for a section: control characters out (line ends kept), within
 /// [`SECTION_MAX`], no line that would start a new section.
 pub fn clean_section(field: &'static str, body: &str) -> Result<String, EditError> {
@@ -79,7 +87,7 @@ pub fn clean_section(field: &'static str, body: &str) -> Result<String, EditErro
     if b.chars().count() > SECTION_MAX {
         return Err(EditError::TooLong(field));
     }
-    if b.lines().any(|l| l.starts_with("## ")) {
+    if b.lines().any(starts_a_heading) {
         return Err(EditError::Heading(field));
     }
     Ok(b.trim_matches('\n').to_owned())
@@ -207,7 +215,15 @@ mod tests {
             Err(EditError::Heading("duty")),
             "reason: heading_let_in"
         );
-        assert_eq!(clean_section("duty", "a\n### 小節").unwrap(), "a\n### 小節");
+        assert_eq!(
+            clean_section("duty", "a\n### 小節"),
+            Err(EditError::Heading("duty")),
+            "reason: subheading_let_in"
+        );
+        assert_eq!(
+            clean_section("duty", "#標籤\n-- 兩槓").unwrap(),
+            "#標籤\n-- 兩槓"
+        );
         assert_eq!(
             clean_section("duty", &"字".repeat(SECTION_MAX + 1)),
             Err(EditError::TooLong("duty"))

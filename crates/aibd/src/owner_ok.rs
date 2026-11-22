@@ -210,6 +210,7 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
                 piece(&v, "provider")?
             ),
         },
+        crate::persona_edit::OP_SET => crate::persona_edit::plain(&v)?,
         crate::send_back::OP_SEND_BACK => format!(
             "把席 {} 的 {} 個提交、{} 個檔送回 {}",
             seat_code(&v)?,
@@ -373,6 +374,8 @@ pub const WIRED: &[&str] = &[
     // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
     crate::test_host_add::OP_ADD,
     crate::test_host_add::OP_REMOVE,
+    // A1: a persona card's sections changed from the built-in page (DESIGN-a1-edit-archive)
+    crate::persona_edit::OP_SET,
     // aibd §7: a permission template change that turns an item on or raises the base
     crate::perm_tpl::OP,
 ];

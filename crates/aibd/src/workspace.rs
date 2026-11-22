@@ -240,12 +240,24 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// uids of seats already open). The name only: never where the card text is, nor its hash.
 /// Cards that cannot be read: 503 `persona_source_unavailable`, as when a seat is opened.
 pub async fn personas(State(st): State<AppState>) -> Response {
-    let src = st.personas.clone();
-    match tokio::task::spawn_blocking(move || src.cards()).await {
-        Ok(Ok(cards)) => Json(json!({
+    let (src, db) = (st.personas.clone(), st.messages.clone());
+    match tokio::task::spawn_blocking(move || {
+        src.cards()
+            .map(|c| (c, crate::persona_edit::archived_uids(&db, "persona")))
+    })
+    .await
+    {
+        // A1: an archived card is listed apart (the page's 已封存 with ↺), not in the picker
+        Ok(Ok((cards, gone))) => Json(json!({
             "personas": cards
                 .iter()
+                .filter(|c| !gone.contains(&c.uid))
                 .map(|c| json!({"uid": c.uid, "display_name": c.name}))
+                .collect::<Vec<_>>(),
+            "archived": cards
+                .iter()
+                .filter(|a| gone.contains(&a.uid))
+                .map(|a| json!({"uid": a.uid, "display_name": a.name}))
                 .collect::<Vec<_>>(),
         }))
         .into_response(),

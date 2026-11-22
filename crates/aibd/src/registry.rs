@@ -38,8 +38,8 @@ pub const BUILTIN_ROLES: [(&str, &str, &str); 6] = [
     ("observer", "旁聽", "只看不動手"),
 ];
 
-const NAME_MAX: usize = 20;
-const WHAT_MAX: usize = 80;
+pub const NAME_MAX: usize = 20;
+pub const WHAT_MAX: usize = 80;
 const LIST_MAX: usize = 200;
 const QUERY_MAX: usize = 50;
 
@@ -212,9 +212,27 @@ fn bad(reason: &str, message: &str) -> Response {
 /// `GET /api/v1/roles`
 pub async fn roles(State(st): State<AppState>) -> Response {
     match load(&data_dir(&st)) {
-        Ok(r) => Json(roles_body(&r)).into_response(),
+        Ok(r) => {
+            let gone = crate::persona_edit::archived_uids(&st.messages, "role");
+            Json(split_archived(roles_body(&r), "roles", &gone)).into_response()
+        }
         Err(e) => internal(&e),
     }
+}
+
+/// A1: `body[key]`'s rows whose uid is archived move to `body.archived`.
+pub fn split_archived(
+    mut body: Value,
+    key: &str,
+    gone: &std::collections::BTreeSet<String>,
+) -> Value {
+    let rows = body[key].as_array().cloned().unwrap_or_default();
+    let (old, live): (Vec<Value>, Vec<Value>) = rows
+        .into_iter()
+        .partition(|r| r["uid"].as_str().is_some_and(|u| gone.contains(u)));
+    body[key] = Value::Array(live);
+    body["archived"] = Value::Array(old);
+    body
 }
 
 #[derive(Deserialize)]
@@ -225,7 +243,15 @@ pub struct BrainQuery {
 /// `GET /api/v1/brains?q=`
 pub async fn brains(State(st): State<AppState>, Query(q): Query<BrainQuery>) -> Response {
     match load(&data_dir(&st)) {
-        Ok(r) => Json(brains_body(&r, q.q.as_deref())).into_response(),
+        Ok(r) => {
+            let gone = crate::persona_edit::archived_uids(&st.messages, "brain");
+            Json(split_archived(
+                brains_body(&r, q.q.as_deref()),
+                "brains",
+                &gone,
+            ))
+            .into_response()
+        }
         Err(e) => internal(&e),
     }
 }
@@ -568,6 +594,19 @@ pub async fn fingerprinted_add(kind: &'static str, body: Value, by: String) -> R
             (StatusCode::FORBIDDEN, Json(v)).into_response()
         }
     }
+}
+
+/// A1: change registry.json under the one lock: load, `f`, save. `f` says why not as
+/// `(reason, message)`; a load or save that fails is `("registry_io", …)`.
+pub async fn edit(
+    data: &Path,
+    f: impl FnOnce(&mut Registry) -> Result<(), (&'static str, &'static str)>,
+) -> Result<(), (&'static str, &'static str)> {
+    const IO: (&str, &str) = ("registry_io", "the list could not be read or written");
+    let _g = LOCK.lock().await;
+    let mut r = load(data).map_err(|_| IO)?;
+    f(&mut r)?;
+    save(data, &r).map_err(|_| IO)
 }
 
 /// `registry_rename {kind: "role", uid, name}`: a role the person added; built-in ones keep
