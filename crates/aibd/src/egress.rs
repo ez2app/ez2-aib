@@ -257,8 +257,17 @@ pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47799;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Local {
     Aibd,
+    /// A service that hands over the whole machine (f163c REVIEW-sandboxnet18 L1): refused like
+    /// aibd's ports, no card.
+    Machine,
     Service,
 }
+
+/// Ports where a yes would hand over the whole machine, refused with no card in the first version
+/// (f163c REVIEW-sandboxnet18 L1): ssh back into this computer, the Docker API (root), screen
+/// sharing / Apple Remote Desktop, a browser's remote debugging (the owner's signed-in browser).
+pub const MACHINE_PORTS: [std::ops::RangeInclusive<u16>; 5] =
+    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9229];
 
 /// `own_binds` are the ports this aibd process bound (kept in the process); `preview_ports` are
 /// what the previews' run files say, which only ever add to the list (a deleted file still leaves
@@ -266,6 +275,8 @@ pub enum Local {
 pub fn local_kind(port: u16, own_binds: &[u16], preview_ports: &[u16]) -> Local {
     if AIBD_RESERVED.contains(&port) || own_binds.contains(&port) || preview_ports.contains(&port) {
         Local::Aibd
+    } else if MACHINE_PORTS.iter().any(|r| r.contains(&port)) {
+        Local::Machine
     } else {
         Local::Service
     }
@@ -321,7 +332,15 @@ mod tests {
             "reason: preview_port_open"
         );
         // another program's service: the high-risk card (N37)
-        for p in [22, 3000, 5432, 47769, 47800] {
+        // these hand over the whole machine: refused, no card (L1, N40)
+        for p in [22, 2375, 2376, 3283, 5900, 9222, 9229] {
+            assert_eq!(
+                local_kind(p, &[], &[]),
+                Local::Machine,
+                "reason: machine_port_carded {p}"
+            );
+        }
+        for p in [21, 23, 3000, 5432, 9221, 9230, 47769, 47800] {
             assert_eq!(
                 local_kind(p, &[51000], &[52000]),
                 Local::Service,

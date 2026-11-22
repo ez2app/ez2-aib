@@ -29,3 +29,7 @@ eg '        (_, "dgrs") => "hint",' '        (_, "dgrs") => "enforced", // knife
 eg '    if AIBD_RESERVED.contains(&port) || own_binds.contains(&port) || preview_ports.contains(&port) {' '    if own_binds.contains(&port) || preview_ports.contains(&port) || AIBD_RESERVED.is_empty() { // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
 # EG12 the reserved range stops short of the previews
 eg 'pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47799;' 'pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47780; // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
+# EG13 (f163c REVIEW-sandboxnet18 L1, N40) ssh back into this computer gets a card
+eg '    } else if MACHINE_PORTS.iter().any(|r| r.contains(&port)) {' '    } else if MACHINE_PORTS.iter().any(|r| r.contains(&port) && port != 22) { // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
+# EG14 the browser's remote-debugging range is cut short
+eg '    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9229];' '    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9222]; // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
