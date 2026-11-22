@@ -593,6 +593,19 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// What a refused write says (ebab8 01:51: 人話 for the person reading the page).
+pub fn message_of(code: &str) -> &'static str {
+    match code {
+        "brain_library_synced" => "這個第二大腦在雲端同步資料夾裡,還沒開放沙盒夥伴寫入",
+        "brain_overlaps_protected" => "這個第二大腦跟人格卡、夥伴或程式倉的資料夾重疊,不能寫入",
+        "brain_protected_unknown" => "讀不到人格卡清單,先不寫入",
+        "brain_root_missing" => "找不到第二大腦的資料庫",
+        "brain_folder_missing" | "brain_unknown" => "找不到這位夥伴綁的第二大腦資料夾",
+        "brain_path_unsafe" | "brain_index_unreadable" => "第二大腦的位置不安全,沒有寫入",
+        _ => "筆記沒有寫入",
+    }
+}
+
 fn status_of(code: &str) -> StatusCode {
     match code {
         "note_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
@@ -772,7 +785,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     .await;
     let rel = match wrote {
         Ok(Ok(rel)) => rel,
-        Ok(Err(c)) => return refuse(status_of(c), c, "the note was not written"),
+        Ok(Err(c)) => return refuse(status_of(c), c, message_of(c)),
         Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "write"),
     };
 
@@ -1270,6 +1283,11 @@ mod tests {
     /// BN11 (8b09a L3): a library in a synced folder is known as one.
     #[test]
     fn a_library_in_a_synced_folder_is_known() {
+        assert_eq!(
+            message_of("brain_library_synced"),
+            "這個第二大腦在雲端同步資料夾裡,還沒開放沙盒夥伴寫入",
+            "reason: synced_words_changed"
+        );
         let p = |s: &str| PathBuf::from(s);
         let home = p("/Users/a");
         for s in [
