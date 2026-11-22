@@ -8,7 +8,7 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 python3 -I scripts/knife.py crates/aibd/src/touch_hud.rs '  act.stringValue = words;' '  act.stringValue = eval(words); // knife' \
   --expect-fail touch_hud::tests::the_script_is_fixed_and_the_words_are_only_arguments -- cargo test -p aibd --locked --lib touch_hud::tests::the_script_is_fixed_and_the_words_are_only_arguments
 # TH2 the object and the code share a line
-python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '"{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢\n單號 {}|參數 {}|{}",' '"{}\n對象:{} 對照碼 {} · {until},過了這張就作廢\n單號 {}|參數 {}|{}", // knife' \
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '"{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",' '"{}\n對象:{} 對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}", // knife' \
   --expect-fail owner_ok::tests::the_window_has_four_lines_and_only_the_object_is_cut -- cargo test -p aibd --locked --lib owner_ok::tests::the_window_has_four_lines_and_only_the_object_is_cut
 # TH3 an object may write a code of its own
 python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '    ("對照碼", "對·照碼"),' '    ("對照碼", "對照碼"), // knife' \

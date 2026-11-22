@@ -310,18 +310,24 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
 /// line, always [`WINDOW_LINES`] lines, in the order the page card and the countdown use:
 /// 1. what is done ([`top_words`], the same words the countdown's first line shows)
 /// 2. `對象:` the object ([`object_shown`]: the only line ever cut, start and end kept)
-/// 3. `對照碼 XXXX · 請在 … 前按,過了這張就作廢` (how long a yes opens something: only from
-///    c2f0b's `grants::hold_in` once that is in, never from the request; f163c M1)
+/// 3. `對照碼 XXXX · 請在 … 前按,過了這張就作廢`, then `· <Hold::words>` when
+///    `grants::hold_in` gives the operation a hold (never from the request's own words; f163c M1)
 /// 4. `單號 …|參數 …|<operation>`
 ///
 /// No line but the second carries words of the request, and none of them can hold a line
 /// break ([`aib_approve::text::is_bad_char`]).
 pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
-    // how long a yes opens something is never read from the request (f163c REVIEW-touchhud M1):
-    // it comes only from c2f0b's grants::hold_in, after that slice is in; until then no line says it
+    // how long a yes opens something: only what grants::hold_in allows for this operation, in
+    // its own words (f163c REVIEW-touchhud M1; c2f0b 11-23 06:07); a hold it refuses has no
+    // window at all (Owner::ask is Unavailable), and nothing else of the request says a time
+    let hold = crate::grants::hold_in(ask.operation, &ask.params)
+        .ok()
+        .flatten()
+        .map(|h| format!(" · {}", h.words()))
+        .unwrap_or_default();
     format!(
-        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢\n單號 {}|參數 {}|{}",
+        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",
         top_words(ask),
         object_shown(&ask.resource),
         pair_code(ticket),
@@ -1715,6 +1721,31 @@ mod tests {
             !top_words(&x).contains("開放 15 分鐘"),
             "reason: hold_in_top_words"
         );
+        // 3e53b: the third line says it, in grants' own words, and only there
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "reason: hold_line_count {w}");
+        assert_eq!(
+            l[2],
+            format!(
+                "對照碼 {} · 請在 01:23:44 前按,過了這張就作廢 · 開放 15 分鐘(從你按下起算)",
+                pair_code("ot_1")
+            ),
+            "reason: hold_not_on_third_line {w}"
+        );
+        assert_eq!(w.matches("開放").count(), 1, "reason: hold_said_twice {w}");
+        // a hold the operation does not allow, or an unknown word: no time on any line
+        for (op, h) in [
+            (crate::seat_trust::OP, "min15"),
+            (crate::grants::OP_FS_OPEN, "2h"),
+        ] {
+            let mut y = held(op, h);
+            y.params = format!(r#"{{"hold":"{h}","open_for":"15m"}}"#).into_bytes();
+            assert!(
+                !window_text(&y, "ot_1", "u").contains("開放"),
+                "reason: refused_hold_shown {op} {h}"
+            );
+        }
         let o = owner(Ok(()));
         let t = ticket(o.ask(&x, inline));
         assert!(
