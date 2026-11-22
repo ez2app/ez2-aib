@@ -1390,7 +1390,7 @@ fn install_steps(
                 if !given.contains(&k.as_str()) {
                     out.say(format!("KEPT-ENV {k}"));
                 }
-                env.insert(k.clone(), v.clone());
+                env.insert(k.to_owned(), v.to_owned());
             }
         }
         for (k, v) in &o.env {

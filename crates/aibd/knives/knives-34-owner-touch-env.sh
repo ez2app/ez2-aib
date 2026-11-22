@@ -19,10 +19,10 @@ python3 -I scripts/knife.py crates/aibd/src/install.rs '    if os != "macos" {' 
   --expect-fail "$U" \
   -- cargo test -p aibd --locked --lib "$U"
 # OTE4 a reinstall drops the old plist's keys (AIBD_MAX_SESSIONS, the switch, the pairing)
-python3 -I scripts/knife.py crates/aibd/src/install.rs '                env.insert(k.clone(), v.clone());' '                let _ = (k, v); // knife' \
+python3 -I scripts/knife.py crates/aibd/src/install.rs '                env.insert(k.to_owned(), v.to_owned());' '                let _ = (k, v); // knife' \
   --expect-fail "$T" \
   -- cargo test -p aibd --locked --lib "$T"
 # OTE5 no word that the fingerprint key is still to be made
-python3 -I scripts/knife.py crates/aibd/src/install.rs '    (env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID)' '    (false // knife' \
+python3 -I scripts/knife.py crates/aibd/src/install.rs '    (env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID)' '    (false && env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID) // knife' \
   --expect-fail "$T" \
   -- cargo test -p aibd --locked --lib "$T"
