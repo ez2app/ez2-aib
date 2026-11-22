@@ -295,7 +295,12 @@ fn set_state(ticket: &str, k: usize, v: Value) {
 }
 
 fn refuse(code: StatusCode, reason: &str, more: Value) -> Response {
-    let mut v = serde_json::json!({"code": if code == StatusCode::FORBIDDEN { "forbidden" } else { "bad_request" },
+    let word = match code {
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::CONFLICT => "conflict",
+        _ => "bad_request",
+    };
+    let mut v = serde_json::json!({"code": word,
         "reason": reason, "request_id": crate::guard::request_id()});
     if let (Some(o), Some(m)) = (v.as_object_mut(), more.as_object()) {
         o.extend(m.clone());

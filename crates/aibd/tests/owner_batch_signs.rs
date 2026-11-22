@@ -192,6 +192,35 @@ async fn one_yes_does_the_list_and_collecting_it_writes_nothing() {
         ["repo-a", "repo-b"],
         "reason: gone_pairing_registered"
     );
+
+    // wire pre L2: an item that asks nothing (a seat trusted now) was done while collected; the
+    // list stops and says so, never as refused
+    PAIRED.store(true, Ordering::SeqCst);
+    let (seat, _) = d.open("safe", &harness::seat_dir(dir.path(), "t")).await;
+    std::fs::write(data.join("bridge.json"), r#"{"trusted_seats": true}"#).unwrap();
+    let file = data.join("trusted").join("seats.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 600;
+    std::fs::write(&file, json!({"seats": {seat.clone(): until}}).to_string()).unwrap();
+    let trust = json!({"type": "seat_trust", "body": {"seat_id": seat}});
+    let windows = n.load(Ordering::SeqCst);
+    let r = post(batch(vec![trust], "ob-4")).await;
+    assert_eq!(r.code, 409, "reason: done_told_as_refused {}", r.body);
+    assert_eq!(
+        r.json["reason"], "batch_item_done_without_window",
+        "{}",
+        r.body
+    );
+    assert_eq!(r.json["result"]["already"], true, "{}", r.body);
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        windows,
+        "reason: window_for_a_done_item"
+    );
     d.shutdown().await;
 }
 
