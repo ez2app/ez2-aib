@@ -137,9 +137,134 @@ pub struct Usage {
     order: u64,
 }
 
+/// A15 (DESIGN-a15-quota-08de5-1123 r1; f163c REVIEW-a15 r0 L3 + r1 N1): a word kept from a
+/// limit line (a window's name, a status, a plan): `[a-z_]{1,32}`, anything else dropped.
+fn word(v: &Value) -> Option<String> {
+    v.as_str()
+        .filter(|s| {
+            (1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        })
+        .map(str::to_owned)
+}
+
+/// A15: a number kept from a limit line: finite, `lo..=hi`.
+fn num(v: &Value, lo: f64, hi: f64) -> Option<f64> {
+    v.as_f64()
+        .filter(|n| n.is_finite() && (lo..=hi).contains(n))
+}
+
+/// A15: a reset time: whole Unix seconds after 2020 and before 2100.
+fn reset(v: &Value) -> Option<u64> {
+    v.as_u64()
+        .filter(|s| (1_577_836_800..4_102_444_800).contains(s))
+}
+
+/// A15: one window as the page gets it: `{name, used_pct, resets_at?, status?}`.
+fn window(name: String, used_pct: f64, resets: Option<u64>, status: Option<String>) -> Value {
+    let mut w = json!({"name": name, "used_pct": (used_pct * 10.0).round() / 10.0});
+    if let Some(r) = resets {
+        w["resets_at"] = json!(r);
+    }
+    if let Some(s) = status {
+        w["status"] = json!(s);
+    }
+    w
+}
+
+/// A15: the account's limits a stdout line tells, as `(brand, quota)`; only the whitelisted
+/// fields, nothing else of the line kept (never the balance, never a reason in words).
+/// - claude stream-json: `{"type":"rate_limit_event","rate_limit_info":{rateLimitType,
+///   utilization (0–1), resetsAt, status, unifiedWindows:{<name>:{utilization, resetsAt,
+///   status}}}}` (claude 2.1.330, measured 11-23).
+/// - codex app-server: the answer to `account/rateLimits/read` (`result.rateLimits`) or a push
+///   with `params.rateLimits`: `{primary/secondary:{usedPercent, windowDurationMins, resetsAt},
+///   planType, credits:{hasCredits, unlimited, balance}}` (codex 0.167.0, measured 11-23).
+pub fn quota_of(v: &Value) -> Option<(&'static str, Value)> {
+    if v["type"] == "rate_limit_event" {
+        let i = &v["rate_limit_info"];
+        let mut wins: Vec<Value> = i["unifiedWindows"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, w)| {
+                        let name = word(&json!(k))?;
+                        let u = num(&w["utilization"], 0.0, 1.0)?;
+                        Some(window(
+                            name,
+                            u * 100.0,
+                            reset(&w["resetsAt"]),
+                            word(&w["status"]),
+                        ))
+                    })
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if wins.is_empty() {
+            if let (Some(name), Some(u)) =
+                (word(&i["rateLimitType"]), num(&i["utilization"], 0.0, 1.0))
+            {
+                wins.push(window(
+                    name,
+                    u * 100.0,
+                    reset(&i["resetsAt"]),
+                    word(&i["status"]),
+                ));
+            }
+        }
+        if wins.is_empty() {
+            return None;
+        }
+        let mut q = json!({"windows": wins, "source": "claude_stream"});
+        if let Some(s) = word(&i["status"]) {
+            q["status"] = json!(s);
+        }
+        return Some(("claude", q));
+    }
+    let r = v
+        .get("result")
+        .and_then(|r| r.get("rateLimits"))
+        .or_else(|| v.get("params").and_then(|p| p.get("rateLimits")))?;
+    let wins: Vec<Value> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|k| {
+            let w = r.get(*k)?;
+            let u = num(&w["usedPercent"], 0.0, 100.0)?;
+            let mins = w["windowDurationMins"]
+                .as_u64()
+                .filter(|m| (1..=527_040).contains(m));
+            let mut x = window((*k).to_owned(), u, reset(&w["resetsAt"]), None);
+            if let Some(m) = mins {
+                x["window_mins"] = json!(m);
+            }
+            Some(x)
+        })
+        .collect();
+    if wins.is_empty() {
+        return None;
+    }
+    let mut q = json!({"windows": wins, "source": "codex_app_server"});
+    if let Some(p) = word(&r["planType"]) {
+        q["plan"] = json!(p);
+    }
+    Some(("codex", q))
+}
+
 /// One stdout line seen at `at`: the row after it.
 pub fn apply(row: &mut Usage, raw: &[u8], at: &str) {
     row.last_output_at = Some(at.to_owned());
+    // A15: a limit line (claude's rate_limit_event, codex's rateLimits): kept per brand
+    if raw.first() == Some(&b'{') && (has(raw, b"rate_limit_event") || has(raw, b"rateLimits")) {
+        if let Some((brand, mut q)) = serde_json::from_slice::<Value>(raw)
+            .ok()
+            .as_ref()
+            .and_then(quota_of)
+        {
+            q["seen_at"] = json!(at);
+            quotas().insert(brand, q);
+        }
+        return;
+    }
     // only a JSON object line can carry a reading; most lines are skipped without parsing
     if raw.first() != Some(&b'{')
         || !(has(raw, b"\"model\"") || has(raw, b"\"usage\"") || has(raw, b"tokenUsage"))
@@ -228,6 +353,42 @@ impl Board {
 
 static BOARD: LazyLock<Board> = LazyLock::new(Board::default);
 
+/// A15: the newest limits seen per brand (in memory, gone on restart, like the board).
+#[derive(Default)]
+pub struct Quotas(Mutex<BTreeMap<&'static str, Value>>);
+
+impl Quotas {
+    pub fn insert(&self, brand: &'static str, q: Value) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(brand, q);
+    }
+
+    /// `{claude: {quota, quota_reason?}, codex: …}` for every 2.0 brand: `quota: null` with
+    /// `quota_reason: "not_seen_yet"` when no seat of that brand has said it yet.
+    pub fn body(&self) -> Value {
+        let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = serde_json::Map::new();
+        for b in aib_seatopen::AIB2_BRANDS {
+            out.insert(
+                (*b).to_owned(),
+                match g.get(b) {
+                    Some(q) => json!({"quota": q}),
+                    None => json!({"quota": null, "quota_reason": "not_seen_yet"}),
+                },
+            );
+        }
+        Value::Object(out)
+    }
+}
+
+static QUOTAS: LazyLock<Quotas> = LazyLock::new(Quotas::default);
+
+pub fn quotas() -> &'static Quotas {
+    &QUOTAS
+}
+
 pub fn board() -> &'static Board {
     &BOARD
 }
@@ -244,6 +405,8 @@ pub async fn list(State(st): State<AppState>) -> Response {
         "red_pct": RED_PCT,
         "now": crate::sessions::now_rfc3339(),
         "usage": usage,
+        // A15: each brand's account limits, as its seats last said them
+        "providers": quotas().body(),
     }))
     .into_response()
 }
@@ -573,6 +736,76 @@ mod tests {
     use super::*;
 
     /// c44: a row says its seat's turn under way; only the seat's newest session does.
+    /// The real lines' shape (claude 2.1.330, codex 0.167.0, 11-23).
+    const CLAUDE_LIMIT: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795780800,"rateLimitType":"seven_day","utilization":0.74,"overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false,"unifiedWindows":{"seven_day":{"utilization":0.74,"resetsAt":1795780800,"status":"allowed"},"Bad Name":{"utilization":0.1}},"overageEnabled":true},"uuid":"u","session_id":"s"}"#;
+    const CODEX_LIMIT: &str = r#"{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":2,"windowDurationMins":10080,"resetsAt":1795627409},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"12.50"},"individualLimit":null,"planType":"prolite","rateLimitReachedType":null}}}"#;
+
+    /// A15-1: claude's limit line gives its windows, whitelisted fields only.
+    #[test]
+    fn claude_says_its_limits_and_only_the_listed_fields_are_kept() {
+        let (b, q) = quota_of(&serde_json::from_str(CLAUDE_LIMIT).unwrap()).unwrap();
+        assert_eq!(b, "claude");
+        assert_eq!(
+            q["windows"].as_array().unwrap().len(),
+            1,
+            "reason: bad_window_name_kept {q}"
+        );
+        let w = &q["windows"][0];
+        assert_eq!(
+            (w["name"].as_str(), w["used_pct"].as_f64()),
+            (Some("seven_day"), Some(74.0))
+        );
+        assert_eq!(w["resets_at"], 1_795_780_800_u64);
+        assert_eq!(q["status"], "allowed_warning");
+        let t = q.to_string();
+        for leak in ["out_of_credits", "overage", "uuid", "session_id"] {
+            assert!(
+                !t.contains(leak),
+                "reason: field_not_whitelisted {leak} {t}"
+            );
+        }
+    }
+
+    /// A15-2: codex's answer gives its windows and plan, never the balance.
+    #[test]
+    fn codex_says_its_limits_and_never_its_balance() {
+        let (b, q) = quota_of(&serde_json::from_str(CODEX_LIMIT).unwrap()).unwrap();
+        assert_eq!(b, "codex");
+        assert_eq!(q["windows"][0]["used_pct"], 2.0);
+        assert_eq!(q["windows"][0]["window_mins"], 10080);
+        assert_eq!(q["plan"], "prolite");
+        assert_eq!(q["windows"].as_array().unwrap().len(), 1);
+        assert!(!q.to_string().contains("12.50"), "reason: balance_kept {q}");
+    }
+
+    /// A15-3 (f163c r1 N1): odd words and numbers are dropped, not passed on.
+    #[test]
+    fn odd_words_and_numbers_are_dropped() {
+        let v = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "rateLimitType": "five_hour<script>", "utilization": 0.5}});
+        assert!(quota_of(&v).is_none(), "reason: odd_word_kept");
+        let v = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "rateLimitType": "five_hour", "utilization": 7.0}});
+        assert!(quota_of(&v).is_none(), "reason: odd_number_kept");
+        let v = json!({"result": {"rateLimits": {"primary": {"usedPercent": "2"}, "planType": "PRO plan"}}});
+        assert!(quota_of(&v).is_none());
+        assert!(quota_of(&json!({"type": "assistant"})).is_none());
+    }
+
+    /// A15-4: no seat of a brand has said its limits ⇒ that brand says so.
+    #[test]
+    fn a_brand_not_heard_yet_says_so() {
+        let q = Quotas::default();
+        q.insert(
+            "codex",
+            json!({"windows": [], "source": "codex_app_server"}),
+        );
+        let b = q.body();
+        assert_eq!(b["claude"]["quota"], Value::Null);
+        assert_eq!(b["claude"]["quota_reason"], "not_seen_yet");
+        assert_eq!(b["codex"]["quota"]["source"], "codex_app_server");
+    }
+
     #[test]
     fn a_usage_row_says_its_seats_turn_under_way() {
         let row = |session: &str, seat: Option<&str>| Usage {
