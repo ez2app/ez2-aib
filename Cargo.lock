@@ -265,6 +265,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-plugin"
+version = "0.2.0-preview.8"
+dependencies = [
+ "aib-ledger",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-policy"
 version = "0.2.0-preview.8"
 
