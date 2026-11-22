@@ -12,7 +12,7 @@ python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
 # PWR2
 python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
   '        .is_some_and(|u| u == uid);' \
-  '        .is_none_or(|_| true);' \
+  '        .is_none_or(|u| u == uid || u != uid);' \
   --expect-fail 'persona_write::tests::a_file_that_is_not_this_personas_card_is_not_written' \
   -- cargo test -p aibd --locked --lib 'persona_write::tests::a_file_that_is_not_this_personas_card_is_not_written'
 # PWR3
