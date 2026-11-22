@@ -120,6 +120,23 @@ pub fn front_value(text: &str, key: &str) -> Option<String> {
     None
 }
 
+/// `real` (from `canonicalize`) is `path` itself. Windows gives `\\?\C:\…` and its paths
+/// ignore case: compared without that prefix, case folded (a Mac and Windows rule, Andy 11-14).
+fn same_path(real: &Path, path: &Path) -> bool {
+    if cfg!(windows) {
+        let plain = |p: &Path| {
+            let t = p.to_string_lossy().into_owned();
+            if let Some(x) = t.strip_prefix(r"\\?\").filter(|x| !x.starts_with("UNC")) {
+                return x.to_owned();
+            }
+            t
+        };
+        plain(real).eq_ignore_ascii_case(&plain(path))
+    } else {
+        real == path
+    }
+}
+
 fn read_checked(path: &Path, uid: &str, base_sha: &str) -> Result<Vec<u8>, WriteError> {
     let meta = std::fs::symlink_metadata(path).map_err(|_| WriteError::Unreadable)?;
     if meta.file_type().is_symlink() {
@@ -137,7 +154,7 @@ fn read_checked(path: &Path, uid: &str, base_sha: &str) -> Result<Vec<u8>, Write
     }
     // a linked folder on the way: the real path is somewhere else
     let real = std::fs::canonicalize(path).map_err(|_| WriteError::Unreadable)?;
-    if real != path {
+    if !same_path(&real, path) {
         return Err(WriteError::Symlink);
     }
     let text = std::fs::read(path).map_err(|_| WriteError::Unreadable)?;
@@ -758,10 +775,14 @@ mod tests {
     }
 
     // ---- the shared write (ebab8 04:01; c2f0b r5 §10) ----------------------------------
+    // The 1.x checks run where the 1.x card list runs: unix (6770f 04:1x: no python3 on the
+    // Windows cell). PW-R6 runs everywhere.
 
+    #[cfg(unix)]
     const CARD1: &str =
         "---\nuid: \"abc001\"\ncode: t0\nname: \"測試員0\"\nupdated: 2026-10-17T08:40:42.123Z\n---\n你是測試。\n";
 
+    #[cfg(unix)]
     fn card_of(uid: &str, i: usize) -> String {
         CARD1
             .replace("abc001", uid)
@@ -771,6 +792,7 @@ mod tests {
 
     /// A 1.x card library in a folder: two cards, the route contract, `cards.json` and its
     /// provenance made by 1.x `scan` itself. `None` when python3 is not here (CI: a failure).
+    #[cfg(unix)]
     struct Lib {
         _t: tempfile::TempDir,
         root: PathBuf,
@@ -778,6 +800,7 @@ mod tests {
         dir: PathBuf,
     }
 
+    #[cfg(unix)]
     const PY: &str = r#"
 import sys, json
 sys.path.insert(0, sys.argv[5])
@@ -793,6 +816,7 @@ else:
     print(json.dumps(json.load(open(out, encoding="utf-8")), ensure_ascii=False, sort_keys=True), end="")
 "#;
 
+    #[cfg(unix)]
     impl Lib {
         fn py(&self, mode: &str, out: &Path) -> Option<String> {
             let mem = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../aib/src/memory");
@@ -867,6 +891,7 @@ else:
         }
     }
 
+    #[cfg(unix)]
     fn reg_sha(out: &Path, uid: &str) -> String {
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
         v["cards"][uid]["persona_sha"].as_str().unwrap().to_owned()
@@ -874,6 +899,7 @@ else:
 
     /// PW-R1: the card, its `persona_sha` and the provenance are written, and 1.x says current;
     /// one copy kept, no pending record left.
+    #[cfg(unix)]
     #[test]
     fn the_three_writes_leave_the_1x_list_current() {
         let Some(l) = Lib::new() else { return };
@@ -899,6 +925,7 @@ else:
     }
 
     /// PW-R2 (f163c r5 L1): two threads write two cards at once; both are in, 1.x current.
+    #[cfg(unix)]
     #[test]
     fn two_writes_at_once_both_stay() {
         let Some(l) = Lib::new() else { return };
@@ -918,6 +945,7 @@ else:
     }
 
     /// PW-R3: a list edited by hand is not written, and neither is the card.
+    #[cfg(unix)]
     #[test]
     fn a_hand_edited_list_writes_nothing() {
         let Some(l) = Lib::new() else { return };
@@ -939,6 +967,7 @@ else:
 
     /// PW-R4 (r5 L1): a write that stopped after the card is finished when aibd starts; one
     /// that stopped before the card is dropped.
+    #[cfg(unix)]
     #[test]
     fn a_stopped_write_is_finished_or_dropped_at_start() {
         let Some(l) = Lib::new() else { return };
@@ -976,6 +1005,7 @@ else:
     }
 
     /// PW-R5: the newest copies only.
+    #[cfg(unix)]
     #[test]
     fn only_the_newest_copies_are_kept() {
         let Some(l) = Lib::new() else { return };
@@ -1013,6 +1043,7 @@ else:
     }
 
     /// PW-R7: the fingerprint's text is 1.x's `json.dumps(sort_keys, ensure_ascii=False)`.
+    #[cfg(unix)]
     #[test]
     fn the_compact_text_is_the_1x_text() {
         let Some(l) = Lib::new() else { return };

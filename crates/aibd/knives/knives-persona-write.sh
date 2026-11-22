@@ -17,8 +17,8 @@ python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
   -- cargo test -p aibd --locked --lib 'persona_write::tests::a_file_that_is_not_this_personas_card_is_not_written'
 # PWR3
 python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
-  '    if real != path {' \
-  '    if real != path && real.as_os_str().is_empty() {' \
+  '    if !same_path(&real, path) {' \
+  '    if !same_path(&real, path) && real.as_os_str().is_empty() {' \
   --expect-fail 'persona_write::tests::a_link_or_a_second_name_is_not_written' \
   -- cargo test -p aibd --locked --lib 'persona_write::tests::a_link_or_a_second_name_is_not_written'
 # PWR4
