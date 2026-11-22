@@ -161,10 +161,337 @@ pub fn carries_kind(body: &Value) -> bool {
     body.get("kind").is_some() || body.get("params").and_then(|p| p.get("kind")).is_some()
 }
 
+// ---------- 9b: the data shapes (DESIGN-assistant r1 §2a, §2b, §3) ----------
+
+/// What `catalog_list` may list.
+pub const CATALOG_KINDS: [&str; 8] = [
+    "persona",
+    "persona_card",
+    "brain",
+    "role",
+    "project",
+    "host",
+    "perm_template",
+    "seats",
+];
+
+/// The fields `catalog_list` passes on for each kind; anything else aibd has (a brain's route
+/// key or folder, a host's address, user, key path or fingerprint, a card's path) is dropped
+/// here, whatever the caller handed in (AS5).
+pub fn catalog_fields(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "persona" => &["uid", "name", "used", "alias_of", "archived"],
+        "persona_card" => &["uid", "name", "text"],
+        "brain" => &["uid", "name", "personas"],
+        "role" => &["uid", "name", "what", "builtin"],
+        "project" => &["id", "title", "seats"],
+        "host" => &["name"],
+        "perm_template" => &["id", "name", "items"],
+        "seats" => &["working", "waiting", "slots"],
+        _ => &[],
+    }
+}
+
+/// The most of a card's text handed to the assistant.
+pub const CARD_TEXT_MAX: usize = 32 * 1024;
+
+/// Invisible / control characters out (the object_shown rule), for names read back.
+fn shown(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+                )
+        })
+        .collect()
+}
+
+/// One catalog entry as the assistant sees it: only [`catalog_fields`], strings cleaned
+/// (a card's text keeps its line breaks and is cut at [`CARD_TEXT_MAX`] bytes on a char
+/// boundary), and `trust: "data"` (what a person or another seat typed, not an order).
+pub fn catalog_entry(kind: &str, entry: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for k in catalog_fields(kind) {
+        if let Some(v) = entry.get(*k) {
+            let v = match (k, v) {
+                (&"text", Value::String(s)) => {
+                    let mut end = s.len().min(CARD_TEXT_MAX);
+                    while !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    Value::String(
+                        s[..end]
+                            .chars()
+                            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                            .collect(),
+                    )
+                }
+                (_, Value::String(s)) => Value::String(shown(s)),
+                (_, other) => other.clone(),
+            };
+            out.insert((*k).to_string(), v);
+        }
+    }
+    out.insert("trust".into(), Value::String("data".into()));
+    Value::Object(out)
+}
+
+/// What a suggestion item is about.
+pub const SUGGEST_WHATS: [&str; 5] = ["persona", "brain", "role", "template", "seat"];
+/// The most items one suggestion card holds.
+pub const SUGGEST_MAX: usize = 10;
+/// The most characters of an item's note.
+pub const NOTE_MAX: usize = 200;
+
+/// One item of the card the assistant hands to the page (`assistant_suggest`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuggestItem {
+    pub what: String,
+    /// An existing one (「已有」), or an existing persona to change when `draft` is there too.
+    pub uid: Option<String>,
+    /// What to make (「新建」), or a persona's new card text with `uid`.
+    pub draft: Option<Value>,
+    /// The assistant's one line, shown as its words (未驗證), plain text.
+    pub note: String,
+}
+
+/// `assistant_suggest {items:[{what, uid?, draft?, note?}]}` read strictly: 1..=10 items,
+/// known `what`, no other fields, at least one of uid / draft, a seat only as a draft.
+pub fn parse_suggest(body: &Value) -> Result<Vec<SuggestItem>, &'static str> {
+    let obj = body.as_object().ok_or("suggest_shape")?;
+    if obj.keys().any(|k| k != "items") {
+        return Err("suggest_shape");
+    }
+    let items = obj
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or("suggest_shape")?;
+    if items.is_empty() || items.len() > SUGGEST_MAX {
+        return Err("suggest_count");
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        let o = it.as_object().ok_or("suggest_shape")?;
+        if o.keys()
+            .any(|k| !matches!(k.as_str(), "what" | "uid" | "draft" | "note"))
+        {
+            return Err("suggest_shape");
+        }
+        let what = o.get("what").and_then(Value::as_str).unwrap_or("");
+        if !SUGGEST_WHATS.contains(&what) {
+            return Err("suggest_what");
+        }
+        let uid = match o.get("uid") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(u))
+                if crate::registry::clean(u, 64).as_deref() == Some(u.as_str()) =>
+            {
+                Some(u.clone())
+            }
+            Some(_) => return Err("suggest_shape"),
+        };
+        let draft = match o.get("draft") {
+            None | Some(Value::Null) => None,
+            Some(d @ Value::Object(_)) => Some(d.clone()),
+            Some(_) => return Err("suggest_shape"),
+        };
+        if uid.is_none() && draft.is_none() {
+            return Err("suggest_empty_item");
+        }
+        if what == "seat" && (uid.is_some() || draft.is_none()) {
+            return Err("suggest_seat_is_a_draft");
+        }
+        let note: String = o
+            .get("note")
+            .and_then(Value::as_str)
+            .map(shown)
+            .unwrap_or_default()
+            .chars()
+            .take(NOTE_MAX)
+            .collect();
+        out.push(SuggestItem {
+            what: what.to_string(),
+            uid,
+            draft,
+            note,
+        });
+    }
+    Ok(out)
+}
+
+/// 「已有」or「新建」for the page; a uid the catalog does not have is refused (AS7).
+/// `known(what, uid)` asks aibd's own lists.
+pub fn label(
+    it: &SuggestItem,
+    known: impl Fn(&str, &str) -> bool,
+) -> Result<&'static str, &'static str> {
+    match &it.uid {
+        Some(u) if !known(&it.what, u) => Err("suggest_unknown_uid"),
+        Some(_) if it.draft.is_none() => Ok("已有"),
+        Some(_) => Ok("修改"),
+        None => Ok("新建"),
+    }
+}
+
+/// The owner_request a card item becomes when the person presses「照這樣開」, or `None`
+/// when there is nothing to make (an existing one used as it is). The act passes
+/// [`may_request`] or the item is refused with that reason.
+pub fn to_request(it: &SuggestItem) -> Result<Option<(&'static str, Value)>, RequestRefused> {
+    let d = it.draft.clone().unwrap_or(Value::Null);
+    let (act, params): (&'static str, Value) = match (it.what.as_str(), &it.uid, &it.draft) {
+        (_, Some(_), None) => return Ok(None),
+        ("persona", Some(u), Some(_)) => (
+            "persona_edit",
+            serde_json::json!({"persona_uid": u, "card_text": d.get("text").cloned().unwrap_or(Value::Null)}),
+        ),
+        ("persona", None, Some(_)) => ("persona_add", d),
+        ("brain", None, Some(_)) => ("brain_add", d),
+        ("role", None, Some(_)) => ("role_add", d),
+        ("template", None, Some(_)) => ("perm_template_add", d),
+        ("seat", None, Some(_)) => ("seat_open", d),
+        _ => return Err(RequestRefused::ActNotListed),
+    };
+    if carries_kind(&serde_json::json!({ "params": params })) {
+        return Err(RequestRefused::ActNotListed);
+    }
+    may_request(act, &params)?;
+    Ok(Some((act, params)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn as5_catalog_entries_drop_paths_routes_and_addresses() {
+        let b = catalog_entry(
+            "brain",
+            &json!({"uid":"brn_a","name":"重構\u{202E}筆記","personas":2,
+                    "route_key":"folder.group.x","folder":"/Users/x/brain"}),
+        );
+        assert_eq!(
+            b,
+            json!({"uid":"brn_a","name":"重構筆記","personas":2,"trust":"data"})
+        );
+        let h = catalog_entry(
+            "host",
+            &json!({"name":"lin","addr":"192.0.2.1","user":"u","key":"/k","fingerprint":"SHA256:x"}),
+        );
+        assert_eq!(h, json!({"name":"lin","trust":"data"}));
+        let p = catalog_entry(
+            "persona",
+            &json!({"uid":"aaaaa1","name":"X","card_path":"/v/x.md"}),
+        );
+        assert!(p.get("card_path").is_none());
+        assert_eq!(
+            catalog_entry("bogus", &json!({"uid":"x"})),
+            json!({"trust":"data"})
+        );
+        for k in CATALOG_KINDS {
+            assert!(!catalog_fields(k).is_empty(), "{k}");
+        }
+    }
+
+    #[test]
+    fn a_card_text_keeps_its_lines_and_is_cut_on_a_char_boundary() {
+        let long = "中".repeat(CARD_TEXT_MAX); // 3 bytes each
+        let c = catalog_entry(
+            "persona_card",
+            &json!({"uid":"aaaaa1","name":"X","text": long}),
+        );
+        let t = c["text"].as_str().unwrap();
+        assert!(t.len() <= CARD_TEXT_MAX && t.chars().all(|ch| ch == '中'));
+        let c = catalog_entry("persona_card", &json!({"text":"一行\n二行\u{7}"}));
+        assert_eq!(c["text"], "一行\n二行");
+    }
+
+    #[test]
+    fn suggest_is_read_strictly() {
+        let ok = json!({"items":[
+            {"what":"persona","uid":"aaaaa1","note":"用這位\u{200B}"},
+            {"what":"brain","draft":{"name":"新大腦"}},
+            {"what":"seat","draft":{"persona":"aaaaa1","mode":"work"}}]});
+        let v = parse_suggest(&ok).unwrap();
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].note, "用這位");
+        let bad = |b: Value| parse_suggest(&b).unwrap_err();
+        assert_eq!(bad(json!({"items":[]})), "suggest_count");
+        assert_eq!(
+            bad(json!({"items": vec![json!({"what":"role","uid":"r"}); SUGGEST_MAX + 1]})),
+            "suggest_count"
+        );
+        assert_eq!(
+            bad(json!({"items":[{"what":"host","uid":"h"}]})),
+            "suggest_what"
+        );
+        assert_eq!(
+            bad(json!({"items":[{"what":"role"}]})),
+            "suggest_empty_item"
+        );
+        assert_eq!(
+            bad(json!({"items":[{"what":"seat","uid":"s"}]})),
+            "suggest_seat_is_a_draft"
+        );
+        assert_eq!(
+            bad(json!({"items":[{"what":"role","uid":"r","act":"x"}]})),
+            "suggest_shape"
+        );
+        assert_eq!(
+            bad(json!({"items":[{"what":"role","uid":7}]})),
+            "suggest_shape"
+        );
+        assert_eq!(bad(json!({"items":[], "do":"x"})), "suggest_shape");
+        assert_eq!(bad(json!("x")), "suggest_shape");
+        let n =
+            parse_suggest(&json!({"items":[{"what":"role","uid":"r","note":"字".repeat(500)}]}))
+                .unwrap();
+        assert_eq!(n[0].note.chars().count(), NOTE_MAX);
+    }
+
+    #[test]
+    fn as7_labels_and_an_unknown_uid_is_refused() {
+        let v = parse_suggest(&json!({"items":[
+            {"what":"persona","uid":"aaaaa1"},
+            {"what":"persona","uid":"aaaaa1","draft":{"text":"新卡"}},
+            {"what":"role","draft":{"name":"審查"}},
+            {"what":"brain","uid":"nope"}]}))
+        .unwrap();
+        let known = |w: &str, u: &str| w == "persona" && u == "aaaaa1";
+        assert_eq!(label(&v[0], known), Ok("已有"));
+        assert_eq!(label(&v[1], known), Ok("修改"));
+        assert_eq!(label(&v[2], known), Ok("新建"));
+        assert_eq!(label(&v[3], known), Err("suggest_unknown_uid"));
+    }
+
+    #[test]
+    fn as8_items_become_the_listed_requests_and_nothing_else() {
+        let v = parse_suggest(&json!({"items":[
+            {"what":"persona","uid":"aaaaa1"},
+            {"what":"persona","uid":"aaaaa1","draft":{"text":"新卡"}},
+            {"what":"persona","draft":{"name":"新人格","text":"卡"}},
+            {"what":"seat","draft":{"persona":"aaaaa1","mode":"work"}},
+            {"what":"seat","draft":{"persona":"aaaaa1","mode":"dgrs"}},
+            {"what":"seat","draft":{"persona":"aaaaa1","kind":"assistant"}},
+            {"what":"template","draft":{"name":"t","items":["chat"]}}]}))
+        .unwrap();
+        assert_eq!(to_request(&v[0]), Ok(None));
+        let (a, p) = to_request(&v[1]).unwrap().unwrap();
+        assert_eq!(
+            (a, p),
+            (
+                "persona_edit",
+                json!({"persona_uid":"aaaaa1","card_text":"新卡"})
+            )
+        );
+        assert_eq!(to_request(&v[2]).unwrap().unwrap().0, "persona_add");
+        assert_eq!(to_request(&v[3]).unwrap().unwrap().0, "seat_open");
+        assert_eq!(to_request(&v[4]), Err(RequestRefused::Mode));
+        assert_eq!(to_request(&v[5]), Err(RequestRefused::ActNotListed));
+        assert_eq!(to_request(&v[6]).unwrap().unwrap().0, "perm_template_add");
+    }
 
     #[test]
     fn as6_one_assistant_and_it_needs_a_free_slot() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AS-K (DESIGN-assistant-6770f-1123 r1 §1 §2 §4; f163c REVIEW-assistant r1): one assistant and only with a free slot, only its tools for it and never its tools for others, only listed acts and never dgrs / host seats, and a kind field anywhere in a request is caught. Each rule broken turns its test red.
+# AS-K (DESIGN-assistant-6770f-1123 r1 §1 §2 §4; f163c REVIEW-assistant r1): one assistant and only with a free slot, only its tools for it and never its tools for others, only listed acts and never dgrs / host seats, a kind field anywhere in a request is caught; the catalog drops routes, paths and addresses and marks data, suggestions are read strictly, an unknown uid is refused, and items become only listed requests. Each rule broken turns its test red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -51,3 +51,63 @@ python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   'body.get("kind").is_some()' \
   --expect-fail 'assistant::tests::as10_a_kind_field_anywhere_a_request_puts_it_is_caught' \
   -- cargo test -p aibd --locked --lib 'assistant::tests::as10_a_kind_field_anywhere_a_request_puts_it_is_caught'
+# as-brainroute
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '"brain" => &["uid", "name", "personas"],' \
+  '"brain" => &["uid", "name", "personas", "route_key"],' \
+  --expect-fail 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses'
+# as-hostaddr
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '"host" => &["name"],' \
+  '"host" => &["name", "addr"],' \
+  --expect-fail 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses'
+# as-trust
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'out.insert("trust".into(), Value::String("data".into()));' \
+  'let _ = 0;' \
+  --expect-fail 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as5_catalog_entries_drop_paths_routes_and_addresses'
+# as-charcut
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'while !s.is_char_boundary(end) {' \
+  'while false {' \
+  --expect-fail 'assistant::tests::a_card_text_keeps_its_lines_and_is_cut_on_a_char_boundary' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::a_card_text_keeps_its_lines_and_is_cut_on_a_char_boundary'
+# as-count
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'if items.is_empty() || items.len() > SUGGEST_MAX {' \
+  'if items.is_empty() {' \
+  --expect-fail 'assistant::tests::suggest_is_read_strictly' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::suggest_is_read_strictly'
+# as-seatdraft
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'if what == "seat" && (uid.is_some() || draft.is_none()) {' \
+  'if false {' \
+  --expect-fail 'assistant::tests::suggest_is_read_strictly' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::suggest_is_read_strictly'
+# as-note
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '.take(NOTE_MAX)' \
+  '.take(usize::MAX)' \
+  --expect-fail 'assistant::tests::suggest_is_read_strictly' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::suggest_is_read_strictly'
+# as-unknown
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'Some(u) if !known(&it.what, u) => Err("suggest_unknown_uid"),' \
+  'Some(u) if false && !known(&it.what, u) => Err("suggest_unknown_uid"),' \
+  --expect-fail 'assistant::tests::as7_labels_and_an_unknown_uid_is_refused' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as7_labels_and_an_unknown_uid_is_refused'
+# as-reqkind
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'if carries_kind(&serde_json::json!({ "params": params })) {' \
+  'if false {' \
+  --expect-fail 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else'
+# as-reqmode
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  'may_request(act, &params)?;' \
+  'let _ = may_request(act, &params);' \
+  --expect-fail 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::as8_items_become_the_listed_requests_and_nothing_else'
