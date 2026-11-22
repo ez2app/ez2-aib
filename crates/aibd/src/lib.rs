@@ -21,11 +21,13 @@ pub mod display;
 pub mod dm_cards;
 pub mod dm_import;
 pub mod docs;
+// sandboxnet r6 §3 / §15: what a sandboxed seat's egress proxy takes and lets through (3e53b 11-23)
 pub mod drive_plan;
 pub mod drive_send;
 pub mod drive_switch;
 pub mod drive_view;
 pub mod drive_wake;
+pub mod egress;
 pub mod events_push;
 pub mod folders;
 pub mod gh_token;
