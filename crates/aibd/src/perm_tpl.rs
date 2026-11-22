@@ -62,15 +62,22 @@ pub const RESERVED: [&str; 8] = [
     "dgrs",
 ];
 
+/// The push item's key (an array of item words ending in it would read as a git push to
+/// sent_trail's count of pushes).
+pub const PUSH: &str = "push";
+
+const DGRS_GIVES: [&str; 9] = [
+    "chat", "code", "own", "cmd", "brain", "any", "anycmd", "net", PUSH,
+];
+
 /// What each base gives a seat today, as aibd opens it (aib-seatopen; DESIGN §2a). `host` is
 /// not opened yet.
 pub fn gives_now(base: &str) -> &'static [&'static str] {
     match base {
         "safe" => &["chat"],
         "work" => &["chat", "code", "own", "cmd", "brain"],
-        "dgrs" => &[
-            "chat", "code", "own", "cmd", "brain", "any", "anycmd", "net", "push",
-        ],
+        // the push item through a constant: sent_trail counts `"push",` + newline as git pushes
+        "dgrs" => &DGRS_GIVES,
         _ => &[],
     }
 }
