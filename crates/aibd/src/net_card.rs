@@ -9,8 +9,8 @@
 //! - Six choices for a private address (`net.private`): 拒絕 / 只這一次 / 15 分鐘 / 1 小時 /
 //!   到這一位關掉 / 一直允許這個位址. The last four need the owner (Touch ID / login password /
 //!   Windows Hello); a missing, cancelled or failed verification is a refusal ([`decide`]).
-//! - The ids are the ones the verification window shows its "open for" from (owner_ok
-//!   `OPEN_FOR`: `once` / `15m` / `1h` / `until_close`), plus `deny` and `always`.
+//! - The ids are c2f0b's `grants::Hold` words (`once` / `min15` / `hour1` / `until_seat_ends`;
+//!   one vocabulary, f163c REVIEW-touchhud M1), plus `deny` and `always`.
 //! - 「到這一位關掉」 ends when the seat ends or restarts and is not written to the list; 「一直
 //!   允許」 is written to the seat's own list as one `ip:port` (no ranges, no wildcards), lasts over
 //!   restarts and is taken back only from the partner page; taking it back says which of the
@@ -37,9 +37,9 @@ pub enum Choice {
 pub const CHOICES: [(Choice, &str, &str); 6] = [
     (Choice::Deny, "deny", "拒絕"),
     (Choice::Once, "once", "只這一次"),
-    (Choice::Min15, "15m", "15 分鐘"),
-    (Choice::Hour1, "1h", "1 小時"),
-    (Choice::UntilClose, "until_close", "到這一位關掉"),
+    (Choice::Min15, "min15", "15 分鐘"),
+    (Choice::Hour1, "hour1", "1 小時"),
+    (Choice::UntilClose, "until_seat_ends", "到這一位關掉"),
     (Choice::Always, "always", "一直允許這個位址"),
 ];
 
@@ -179,7 +179,17 @@ mod tests {
     #[test]
     fn the_card_has_six_choices_and_four_need_the_owner() {
         let ids: Vec<&str> = CHOICES.iter().map(|(_, i, _)| *i).collect();
-        assert_eq!(ids, ["deny", "once", "15m", "1h", "until_close", "always"]);
+        assert_eq!(
+            ids,
+            [
+                "deny",
+                "once",
+                "min15",
+                "hour1",
+                "until_seat_ends",
+                "always"
+            ]
+        );
         let words: Vec<&str> = CHOICES.iter().map(|(_, _, w)| *w).collect();
         assert_eq!(
             words,
@@ -199,7 +209,7 @@ mod tests {
             .collect();
         assert_eq!(
             need,
-            ["15m", "1h", "until_close", "always"],
+            ["min15", "hour1", "until_seat_ends", "always"],
             "reason: owner_not_asked"
         );
         for (c, i, _) in CHOICES {
@@ -224,7 +234,7 @@ mod tests {
             decide(Some("once"), Owner::NotAsked).map(|v| v.lasts()),
             Some(Lasts::Once)
         );
-        for id in ["15m", "1h", "until_close", "always"] {
+        for id in ["min15", "hour1", "until_seat_ends", "always"] {
             assert_eq!(
                 decide(Some(id), Owner::Failed),
                 None,
@@ -253,7 +263,7 @@ mod tests {
     fn only_always_writes_the_list_and_taking_back_closes_its_tunnels() {
         let mut l = AllowList::new("a1b2c");
         let ip = at("10.0.0.5:22");
-        for id in ["once", "15m", "1h", "until_close"] {
+        for id in ["once", "min15", "hour1", "until_seat_ends"] {
             let yes = decide(Some(id), Owner::Yes).unwrap();
             assert!(!l.add(ip, &yes), "reason: not_always_written {id}");
         }
