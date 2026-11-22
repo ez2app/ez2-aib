@@ -37,15 +37,26 @@ fn run(root: &Path, job: &str) -> (i32, String) {
 
 /// `shard` = AIB_KNIVES_SHARD; None = not set (also not taken from a sharded CI cell around the test)
 fn run_shard(root: &Path, job: &str, shard: Option<&str>) -> (i32, String) {
+    run_env(root, job, shard, &[])
+}
+
+/// `run_shard` with more variables set (AIB_KNIVES_PLAN, AIB_KNIVES_LIST); neither is taken from
+/// the cell around the test.
+fn run_env(root: &Path, job: &str, shard: Option<&str>, env: &[(&str, &str)]) -> (i32, String) {
     let mut c = Command::new("bash");
     c.arg(runner())
         .arg(job)
         .current_dir(root)
         .env("AIB_KNIVES_SECS_PER_MIN", "1")
         .env_remove("AIB_KNIVES_NO_SE")
+        .env_remove("AIB_KNIVES_PLAN")
+        .env_remove("AIB_KNIVES_LIST")
         .env_remove("AIB_KNIVES_SHARD");
     if let Some(s) = shard {
         c.env("AIB_KNIVES_SHARD", s);
+    }
+    for (k, v) in env {
+        c.env(k, v);
     }
     let o = c.output().unwrap();
     let _ = std::fs::remove_dir_all(root);
@@ -386,4 +397,188 @@ fn the_scripts_do_not_see_the_shard() {
     let (rc, out) = run_shard(&r, "rust", Some("1/1"));
     assert_eq!(rc, 0, "{out}");
     assert!(out.contains("shard=unset"), "{out}");
+}
+
+/// `five_and_two_others` with `plan` written beside them as `plan.tsv` (the folder goes with the run).
+fn repo_with_plan(plan: &str) -> PathBuf {
+    let files = five_and_two_others();
+    let mut refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    refs.push(("plan.tsv", plan));
+    repo(&refs)
+}
+
+fn k(i: u32) -> String {
+    format!("crates/a/knives/k{i}.sh")
+}
+
+#[test]
+fn a_plan_names_each_scripts_cell_and_the_cells_together_run_each_once() {
+    // not the name-order turns (1 3 5 / 2 4): the plan puts k3 k5 in cell 1 and k1 k2 k4 in cell 2
+    let plan = format!(
+        "2\t{}\n2\t{}\n1\t{}\n2\t{}\n1\t{}\n",
+        k(1),
+        k(2),
+        k(3),
+        k(4),
+        k(5)
+    );
+    let env = [("AIB_KNIVES_PLAN", "plan.tsv")];
+    let (rc1, out1) = run_env(&repo_with_plan(&plan), "rust", Some("1/2"), &env);
+    let (rc2, out2) = run_env(&repo_with_plan(&plan), "rust", Some("2/2"), &env);
+    assert_eq!((rc1, rc2), (0, 0), "{out1}\n{out2}");
+    assert_eq!(ran(&out1), vec![3, 5], "{out1}");
+    assert_eq!(ran(&out2), vec![1, 2, 4], "{out2}");
+    assert!(
+        out1.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: SKIPPED why=other_shard shard=1/2"),
+        "{out1}"
+    );
+    // the other-OS script needs no line in the plan
+    assert!(out1.contains("SKIPPED why=not_this_os"), "{out1}");
+    assert!(
+        out1.contains("KNIVES-OK job=rust scripts=6 shard=1/2 ran=2"),
+        "{out1}"
+    );
+    assert!(
+        out2.contains("KNIVES-OK job=rust scripts=6 shard=2/2 ran=3"),
+        "{out2}"
+    );
+}
+
+#[test]
+fn a_script_that_runs_here_and_is_not_in_the_plan_is_red_in_every_cell() {
+    // k4 has no line: without the red it would be in no cell at all and nobody would see it
+    let plan = format!("1\t{}\n2\t{}\n1\t{}\n2\t{}\n", k(1), k(2), k(3), k(5));
+    let env = [("AIB_KNIVES_PLAN", "plan.tsv")];
+    for (shard, others) in [("1/2", vec![1, 3]), ("2/2", vec![2, 5])] {
+        let (rc, out) = run_env(&repo_with_plan(&plan), "rust", Some(shard), &env);
+        assert_eq!(rc, 1, "{shard}: {out}");
+        assert!(
+            out.contains("KNIVES-PLAN-MISSING crates/a/knives/k4.sh: the plan has no cell for it"),
+            "{shard}: {out}"
+        );
+        assert!(
+            out.contains("KNIVES-RED 1: crates/a/knives/k4.sh"),
+            "{shard}: {out}"
+        );
+        // the scripts the plan does name still run where it says
+        assert_eq!(ran(&out), others, "{shard}: {out}");
+    }
+}
+
+#[test]
+fn a_plan_that_is_not_read_or_not_understood_is_refused() {
+    let good = format!(
+        "1\t{}\n2\t{}\n1\t{}\n2\t{}\n1\t{}\n",
+        k(1),
+        k(2),
+        k(3),
+        k(4),
+        k(5)
+    );
+    // no such file
+    let (rc, out) = run_env(
+        &repo_with_plan(&good),
+        "rust",
+        Some("1/2"),
+        &[("AIB_KNIVES_PLAN", "no-such-plan.tsv")],
+    );
+    assert_eq!(rc, 2, "{out}");
+    assert_eq!(ran(&out), Vec::<u32>::new(), "{out}");
+    assert!(out.contains("cannot be read"), "{out}");
+    // a cell number of 0, one above N, a space for the tab, no number, no path
+    for bad in [
+        format!("0\t{}", k(1)),
+        format!("3\t{}", k(1)),
+        format!("1 {}", k(1)),
+        format!("x\t{}", k(1)),
+        "1\t".to_string(),
+        k(1),
+    ] {
+        let plan = format!("{good}{bad}\n");
+        let (rc, out) = run_env(
+            &repo_with_plan(&plan),
+            "rust",
+            Some("1/2"),
+            &[("AIB_KNIVES_PLAN", "plan.tsv")],
+        );
+        assert_eq!(rc, 2, "{bad:?}: {out}");
+        assert_eq!(ran(&out), Vec::<u32>::new(), "{bad:?}: {out}");
+        assert!(
+            out.contains("AIB_KNIVES_PLAN line is not"),
+            "{bad:?}: {out}"
+        );
+    }
+}
+
+#[test]
+fn list_mode_prints_the_scripts_that_would_run_here_and_runs_none() {
+    let (rc, out) = run_env(
+        &repo_with_plan(""),
+        "rust",
+        None,
+        &[("AIB_KNIVES_LIST", "1")],
+    );
+    assert_eq!(rc, 0, "{out}");
+    assert_eq!(ran(&out), Vec::<u32>::new(), "{out}");
+    let listed: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("KNIVES-ELIGIBLE "))
+        .collect();
+    // not k0 (another OS), not k9 (another job)
+    assert_eq!(listed, vec![k(1), k(2), k(3), k(4), k(5)], "{out}");
+}
+
+#[test]
+fn the_scripts_do_not_see_the_plan_or_the_list() {
+    // knives-run-knives.sh runs this file's tests from inside a cell that has a plan
+    let script = "#!/usr/bin/env bash\n# aib-knives: os=any\necho plan=${AIB_KNIVES_PLAN:-unset} list=${AIB_KNIVES_LIST:-unset}\n";
+    let r = repo(&[
+        ("crates/a/knives/k1.sh", script),
+        ("plan.tsv", "1\tcrates/a/knives/k1.sh\n"),
+    ]);
+    let (rc, out) = run_env(&r, "rust", Some("1/1"), &[("AIB_KNIVES_PLAN", "plan.tsv")]);
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("plan=unset list=unset"), "{out}");
+}
+
+#[test]
+fn the_plan_made_from_the_list_runs_every_script_once_over_the_cells() {
+    // the two halves together, as the workflow step uses them: list ⇒ knife-shards plan ⇒ cells
+    let (rc, out) = run_env(
+        &repo_with_plan(""),
+        "rust",
+        None,
+        &[("AIB_KNIVES_LIST", "1")],
+    );
+    assert_eq!(rc, 0, "{out}");
+    let list: Vec<String> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("KNIVES-ELIGIBLE "))
+        .map(str::to_string)
+        .collect();
+    // k2 and k4 are the heavy ones: name order would put both in cell 2 of 2
+    let secs =
+        crate::knife_shards::parse_secs(&format!("90\t{}\n80\t{}\n1\t{}\n", k(2), k(4), k(1)))
+            .unwrap();
+    let plan: String = crate::knife_shards::plan(&list, &secs, 2)
+        .unwrap()
+        .iter()
+        .map(|(f, c)| format!("{c}\t{f}\n"))
+        .collect();
+    let env = [("AIB_KNIVES_PLAN", "plan.tsv")];
+    let (rc1, out1) = run_env(&repo_with_plan(&plan), "rust", Some("1/2"), &env);
+    let (rc2, out2) = run_env(&repo_with_plan(&plan), "rust", Some("2/2"), &env);
+    assert_eq!((rc1, rc2), (0, 0), "{out1}\n{out2}");
+    let (a, b) = (ran(&out1), ran(&out2));
+    let mut all = [a.clone(), b.clone()].concat();
+    all.sort_unstable();
+    assert_eq!(all, vec![1, 2, 3, 4, 5], "{out1}\n{out2}");
+    assert_ne!(
+        a.contains(&2),
+        a.contains(&4),
+        "k2 and k4 apart: {a:?} {b:?}"
+    );
 }

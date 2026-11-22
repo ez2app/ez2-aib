@@ -16,6 +16,13 @@
 # each script exactly once. Not set = 1/1 = all. A shard that gets no script is red, like an empty job.
 # A value not known is an error, never a guess. Run from the repo root.
 #
+# Shards by time (Andy 11-22: use each run's seconds, do not only print them): name order gave #875's four
+# cells 63 / 90 / 139 / 88 minutes. AIB_KNIVES_PLAN=<file> (lines "<k>\t<path>", made by
+# `aib-xtask knife-shards plan` from the committed seconds table) names each script's cell instead of the
+# name-order turn; a script that runs here and is not in the plan is red in every cell, a line not understood
+# is rc 2. AIB_KNIVES_LIST=1 runs nothing and prints "KNIVES-ELIGIBLE <file>" for each script that would run
+# here (the list the plan is made from, so this file stays the only reader of the headers). Not set = as before.
+#
 # Lines (read by the ledger and by people):
 #   KNIVES-SCRIPT <file>: rc=<n> secs=<n>
 #   KNIVES-SCRIPT <file>: missed=<n> rc=0        the script returned 0 over <n> knife lines that did not bite
@@ -23,6 +30,8 @@
 #   KNIVES-SCRIPT <file>: SKIPPED why=other_shard shard=<k>/<N>
 #   KNIVES-SCRIPT <file>: not_run why_not=timeout secs=<n> limit=<n>m
 #   KNIVES-HEADER-BAD <file>: <what>
+#   KNIVES-ELIGIBLE <file>                       AIB_KNIVES_LIST=1 only
+#   KNIVES-PLAN-MISSING <file>: the plan has no cell for it
 # rc 1 when any script failed, timed out or has a bad header, when no script belongs to <job>, or
 # when this shard ran none; rc 2 when AIB_KNIVES_SHARD is not k/N with 1 <= k <= N.
 #
@@ -51,6 +60,24 @@ if [[ "$shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && [ "${BASH_REMATCH[1]}" -le
 else
   echo "AIB_KNIVES_SHARD=$shard is not k/N with 1 <= k <= N"
   exit 2
+fi
+# the scripts never see these two either (see AIB_KNIVES_SHARD above)
+list_only=${AIB_KNIVES_LIST:-}
+plan_file=${AIB_KNIVES_PLAN:-}
+unset AIB_KNIVES_LIST AIB_KNIVES_PLAN
+plan_f=()
+plan_k=()
+if [ -n "$plan_file" ]; then
+  [ -r "$plan_file" ] || { echo "AIB_KNIVES_PLAN=$plan_file cannot be read"; exit 2; }
+  plan_re=$'^([1-9][0-9]*)\t([^\t]+)$'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ $plan_re ]] && [ "${BASH_REMATCH[1]}" -le "$shard_n" ]; then
+      plan_k+=("${BASH_REMATCH[1]}")
+      plan_f+=("${BASH_REMATCH[2]}")
+    else
+      echo "AIB_KNIVES_PLAN line is not <k><tab><path> with 1 <= k <= $shard_n: $line"; exit 2
+    fi
+  done < "$plan_file"
 fi
 mine=0
 here_ok=0 # scripts of <job> that run on this OS, the ones shards take turns over
@@ -114,8 +141,30 @@ for f in "${scripts[@]}"; do
     continue
   fi
   here_ok=$((here_ok + 1))
-  if [ $(((here_ok - 1) % shard_n + 1)) != "$shard_k" ]; then
+  turn=$here_ok
+  if [ -n "$plan_file" ]; then
+    turn=0
+    pi=0
+    while [ "$pi" -lt "${#plan_f[@]}" ]; do
+      if [ "${plan_f[$pi]}" = "$f" ]; then
+        turn=${plan_k[$pi]}
+        break
+      fi
+      pi=$((pi + 1))
+    done
+    if [ "$turn" = 0 ]; then
+      echo "KNIVES-PLAN-MISSING $f: the plan has no cell for it"
+      bad+=("$f")
+      continue
+    fi
+  fi
+  if [ $(((turn - 1) % shard_n + 1)) != "$shard_k" ]; then
     echo "KNIVES-SCRIPT $f: SKIPPED why=other_shard shard=$shard_k/$shard_n"
+    continue
+  fi
+  if [ -n "$list_only" ]; then
+    echo "KNIVES-ELIGIBLE $f"
+    ran=$((ran + 1))
     continue
   fi
   ran=$((ran + 1))
