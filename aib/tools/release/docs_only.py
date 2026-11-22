@@ -58,7 +58,6 @@ DOC_EXCLUDE = (
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.5.md",  # 同上;preview.5 發版時 aibd-release.yml 讀(待 Andy 點頭)
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.6.md",  # 同上;preview.6 發版時 aibd-release.yml 讀(過渡,Andy 11-15 22:2x 同意)
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.7.md",  # 同上;preview.7 發版時 aibd-release.yml 讀(過渡,照 preview.6 例;待 Andy 點頭)
-    "docs/aibd/RELEASE-NOTES-0.2.0-preview.8.md",  # 同上;preview.8 發版時 aibd-release.yml 讀(Andy 11-22 選 A:發 preview.8)
 )
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。

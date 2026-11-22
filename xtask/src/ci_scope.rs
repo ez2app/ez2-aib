@@ -36,7 +36,7 @@ pub const YML_READ_TESTS: [&str; 4] = [
 // docs_only.py's lists, copied word for word (parity test below).
 const DOC_PREFIXES: [&str; 1] = ["docs/"];
 const DOC_ROOT_GLOBS: [(&str, &str); 2] = [("SECURITY", ".md"), ("CODE_OF_CONDUCT", ".md")];
-const DOC_EXCLUDE: [&str; 11] = [
+const DOC_EXCLUDE: [&str; 10] = [
     "docs/perf/timers.md",
     "docs/aibd/INSTALL.md",
     "docs/aibd/INSTALL.zh-TW.md",
@@ -47,7 +47,6 @@ const DOC_EXCLUDE: [&str; 11] = [
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.5.md",
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.6.md",
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.7.md",
-    "docs/aibd/RELEASE-NOTES-0.2.0-preview.8.md",
 ];
 const RUST_FILES: [&str; 2] = ["Cargo.toml", "Cargo.lock"];
 const RUST_PREFIXES: [&str; 1] = ["crates/"];
