@@ -123,10 +123,11 @@ fn clean(path: &str) -> Option<&str> {
 /// docs_only.py `is_doc`.
 pub fn is_doc(path: &str) -> bool {
     let Some(p) = clean(path) else { return false };
-    if !p.ends_with(".md")
-        || DOC_EXCLUDE.contains(&p)
-        || DOC_EXCLUDE_PREFIXES.iter().any(|x| p.starts_with(x))
-    {
+    if !p.ends_with(".md") || DOC_EXCLUDE.contains(&p) {
+        return false;
+    }
+    // kept apart from the line above, which knives-01-ci-scope.sh CS5 is anchored on
+    if DOC_EXCLUDE_PREFIXES.iter().any(|x| p.starts_with(x)) {
         return false;
     }
     if DOC_PREFIXES.iter().any(|pre| p.starts_with(pre)) {
