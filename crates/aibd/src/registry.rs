@@ -196,7 +196,7 @@ pub fn usual_brains(r: &Registry, metas: &[aib_store::SeatMeta]) -> BTreeMap<Str
         };
         let t = tally.entry((p, b)).or_insert((0, ""));
         t.0 += 1;
-        t.1 = t.1.max(m.updated_at.as_str());
+        t.1 = t.1.max(utc_stamp(&m.updated_at));
     }
     let mut out: BTreeMap<String, (Usual, &str)> = BTreeMap::new();
     for ((p, b), (n, at)) in tally {
@@ -213,6 +213,19 @@ pub fn usual_brains(r: &Registry, metas: &[aib_store::SeatMeta]) -> BTreeMap<Str
         }
     }
     out.into_iter().map(|(p, (u, _))| (p, u)).collect()
+}
+
+/// f163c REVIEW-s4a N2: `updated_at` is compared as text, which is time order only for
+/// aibd's own stamp (`sessions::now_rfc3339`: UTC, milliseconds, `Z`, 24 characters). Any
+/// other shape (an offset, no fraction) counts as the oldest instead of being misordered.
+fn utc_stamp(s: &str) -> &str {
+    let b = s.as_bytes();
+    let shaped = b.len() == 24 && b[10] == b'T' && b[19] == b'.' && b[23] == b'Z';
+    if shaped {
+        s
+    } else {
+        ""
+    }
 }
 
 /// [`usual_brains`] from the registry file and the store; nothing when either cannot be
@@ -785,16 +798,21 @@ mod tests {
     fn a_persona_s_usual_brain_is_the_one_its_seats_use_most() {
         let r = two_brains();
         let m = vec![
-            meta("s1", Some("p1"), Some("proj.a"), "2026-11-20T00:00:00Z"),
-            meta("s2", Some("p1"), Some("proj.b"), "2026-11-21T00:00:00Z"),
-            meta("s3", Some("p1"), Some("proj.a"), "2026-11-19T00:00:00Z"),
+            meta("s1", Some("p1"), Some("proj.a"), "2026-11-20T00:00:00.000Z"),
+            meta("s2", Some("p1"), Some("proj.b"), "2026-11-21T00:00:00.000Z"),
+            meta("s3", Some("p1"), Some("proj.a"), "2026-11-19T00:00:00.000Z"),
             // a tie: one each, the newer wins whatever the order
-            meta("s4", Some("p2"), Some("proj.b"), "2026-11-22T00:00:00Z"),
-            meta("s5", Some("p2"), Some("proj.a"), "2026-11-18T00:00:00Z"),
+            meta("s4", Some("p2"), Some("proj.b"), "2026-11-22T00:00:00.000Z"),
+            meta("s5", Some("p2"), Some("proj.a"), "2026-11-18T00:00:00.000Z"),
             // not counted: no brain, a brain no longer registered, no persona
-            meta("s6", Some("p3"), None, "2026-11-22T00:00:00Z"),
-            meta("s7", Some("p3"), Some("proj.gone"), "2026-11-22T00:00:00Z"),
-            meta("s8", None, Some("proj.a"), "2026-11-22T00:00:00Z"),
+            meta("s6", Some("p3"), None, "2026-11-22T00:00:00.000Z"),
+            meta(
+                "s7",
+                Some("p3"),
+                Some("proj.gone"),
+                "2026-11-22T00:00:00.000Z",
+            ),
+            meta("s8", None, Some("proj.a"), "2026-11-22T00:00:00.000Z"),
         ];
         let u = usual_brains(&r, &m);
         assert_eq!(
@@ -825,6 +843,37 @@ mod tests {
         assert_eq!(p["personas"][0]["usual_brain"], "brn_aaaaaa");
         assert!(p["personas"][1]["usual_brain"].is_null());
         assert_eq!(p["personas"][1]["display_name"], "三");
+    }
+
+    /// f163c REVIEW-s4a N1 / N2: one seat each at the same moment goes to the smaller uid;
+    /// a stamp not in aibd's own UTC shape never wins a tie by looking newer.
+    #[test]
+    fn a_tie_at_the_same_moment_is_the_smaller_uid_and_odd_stamps_are_oldest() {
+        let r = two_brains();
+        let at = "2026-11-22T00:00:00.000Z";
+        let m = vec![
+            meta("s1", Some("p1"), Some("proj.b"), at),
+            meta("s2", Some("p1"), Some("proj.a"), at),
+            // 09:00+08:00 is 01:00Z, older than 02:00Z, but as text it sorts after it
+            meta("s3", Some("p2"), Some("proj.a"), "2026-11-22T02:00:00.000Z"),
+            meta(
+                "s4",
+                Some("p2"),
+                Some("proj.b"),
+                "2026-11-22T09:00:00+08:00",
+            ),
+        ];
+        let u = usual_brains(&r, &m);
+        assert_eq!(
+            u.get("p1").map(|x| x.brain.as_str()),
+            Some("brn_aaaaaa"),
+            "reason: same_moment_not_smaller_uid"
+        );
+        assert_eq!(
+            u.get("p2").map(|x| x.brain.as_str()),
+            Some("brn_aaaaaa"),
+            "reason: odd_stamp_won"
+        );
     }
 
     #[test]
