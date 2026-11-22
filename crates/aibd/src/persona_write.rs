@@ -8,6 +8,7 @@
 //!    place, so every other byte stays what 1.x `_dump` wrote);
 //! 3. its provenance: `cards_json_sha256` (the whole file's bytes) and `cards_fingerprint`
 //!    (the cards as 1.x `json.dumps(sort_keys=True, ensure_ascii=False)`), swapped the same way.
+//!
 //! After the three, 1.x `card_registry.py refresh` says `current` (r4 §9 S3).
 //!
 //! Before anything: an archived persona (`persona_archived`) or an old uid merged into another
@@ -494,7 +495,10 @@ fn now_ms() -> u128 {
 /// Copy the card, `cards.json` and its provenance before they are written; keep the newest
 /// [`COPIES_KEPT`] copies.
 fn keep_copy(dir: &Path, uid: &str, card: &Path, cards_json: &Path) -> Result<(), WriteError> {
-    let at = dir.join(format!("{:020}-{uid}", now_ms()));
+    // the time, then a count in this process: two copies in one millisecond stay two, in order
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let at = dir.join(format!("{:020}-{seq:08}-{uid}", now_ms()));
     std::fs::create_dir_all(&at).map_err(|_| WriteError::Io)?;
     let prov = provenance_of(cards_json);
     for (from, name) in [
@@ -1012,7 +1016,6 @@ else:
         std::fs::create_dir_all(&l.dir).unwrap();
         for _ in 0..COPIES_KEPT + 3 {
             keep_copy(&l.dir, "abc001", &l.card("abc001"), &l.out).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let n = std::fs::read_dir(&l.dir).unwrap().count();
         assert_eq!(n, COPIES_KEPT, "reason: copies_not_trimmed");
