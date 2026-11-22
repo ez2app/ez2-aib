@@ -43,6 +43,7 @@ pub mod legacy_send;
 pub mod lineage;
 pub mod mail_nudge;
 pub mod messages;
+pub mod model_list;
 pub mod nodes;
 pub mod now_gate;
 pub mod owner_ok;
