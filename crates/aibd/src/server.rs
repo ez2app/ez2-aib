@@ -402,6 +402,15 @@ pub async fn run(
             }
         }
     }
+    // ebab8 11-23 04:01 (DESIGN-persona-propose-osverify-c2f0b r5 §10 L1): the one card write
+    // keeps its copies and pending records here; a write that stopped is finished or dropped
+    let pw_dir = dirs.data_dir().join("persona-writes");
+    crate::persona_write::set_dir(pw_dir.clone());
+    if let Some(cards) = cfg.persona_cards.clone() {
+        for f in crate::persona_write::finish_pending(&cards, &pw_dir) {
+            tracing::warn!(?f, "persona write left pending at start");
+        }
+    }
     let state = AppState {
         store,
         lineage,
