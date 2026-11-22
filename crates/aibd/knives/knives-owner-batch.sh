@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 指紋批次簽 B1 (DESIGN-ownerbatch-impl-08de5-1123 r0, f163c REVIEW r0 + list r0 + wire pre): groups, signed alone, order, fit, duplicates; collecting, one window, the list taken once, child tickets bound to the collected ask, done-without-window told as done
+# 指紋批次簽 B1 (DESIGN-ownerbatch-impl-08de5-1123 r0, f163c REVIEW r0 + list r0 + wire pre): groups, signed alone, order, fit, duplicates; collecting, one window, the list taken once, child tickets bound to the collected ask, done-without-window told as done; the pairing read again before each item
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -135,3 +135,9 @@ python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '    if status.is_success() && false {' \
   --expect-fail owner_batch::tests::an_item_done_without_a_window_is_told_as_done \
   -- cargo test -p aibd --locked --lib owner_batch::tests::an_item_done_without_a_window_is_told_as_done
+# obi-gone
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '    let Some(page) = crate::owner_ok::page_now(digest).filter(|p| p.confirmed) else {' \
+  '    let Some(page) = Some(crate::pairing::PageAccess { digest, confirmed: true, user_page: false, carried: false }) else {' \
+  --expect-fail one_yes_does_the_list_and_collecting_it_writes_nothing \
+  -- cargo test -p aibd --locked --test owner_batch_signs one_yes_does_the_list_and_collecting_it_writes_nothing
