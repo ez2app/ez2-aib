@@ -28,6 +28,9 @@ function run(argv) {
   var code = String(argv[2] || '');
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy(1);
+  function rgb(r, g, b) { return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r / 255, g / 255, b / 255, 1); }
+  var bg = rgb(0x16, 0x1b, 0x24), gold = rgb(0xe3, 0xc0, 0x6a), fg = rgb(0xe6, 0xe8, 0xee);
+  var dim = rgb(0x9a, 0xa3, 0xb5), warn = rgb(0xe8, 0x93, 0x5a);
   var w = 460, h = 132;
   var scr = $.NSScreen.mainScreen.visibleFrame;
   var rect = $.NSMakeRect(scr.origin.x + scr.size.width - w - 24, scr.origin.y + scr.size.height - h - 24, w, h);
@@ -35,20 +38,53 @@ function run(argv) {
   win.setLevel(25);
   win.setCollectionBehavior(1 | 256);
   win.title = 'AIB';
-  function label(y, size) {
+  win.appearance = $.NSAppearance.appearanceNamed($.NSAppearanceNameDarkAqua);
+  win.backgroundColor = bg;
+  var view = win.contentView;
+  view.wantsLayer = true;
+  view.layer.cornerRadius = 12;
+  function label(x, y, width, height, font, color) {
     var t = $.NSTextField.labelWithString('');
-    t.setFrame($.NSMakeRect(16, y, w - 32, size + 8));
-    t.setFont($.NSFont.systemFontOfSize(size));
-    win.contentView.addSubview(t);
+    t.setFrame($.NSMakeRect(x, y, width, height));
+    t.setFont(font);
+    t.setTextColor(color);
+    t.setLineBreakMode(4);
+    view.addSubview(t);
     return t;
   }
-  var l0 = label(94, 12), l1 = label(62, 15), l2 = label(14, 24);
-  l0.stringValue = '以系統指紋視窗上的字為準 · 對照碼 ' + code;
-  l1.stringValue = words;
+  var bold = function (size) { return $.NSFont.boldSystemFontOfSize(size); };
+  var secs = label(14, 52, 72, 40, $.NSFont.monospacedDigitSystemFontOfSizeWeight(32, 0.4), gold);
+  secs.setAlignment(1);
+  var unit = label(14, 30, 72, 18, $.NSFont.systemFontOfSize(12), dim);
+  unit.setAlignment(1);
+  var x0 = 98, tw = w - x0 - 16;
+  var top = label(x0, 96, tw, 18, $.NSFont.systemFontOfSize(12), dim);
+  var act = label(x0, 66, tw, 24, bold(15), fg);
+  var pre = label(x0, 30, 54, 22, $.NSFont.systemFontOfSize(13), dim);
+  var box = label(x0 + 54, 28, 64, 26, $.NSFont.monospacedSystemFontOfSizeWeight(15, 0.4), gold);
+  box.setAlignment(1);
+  box.wantsLayer = true;
+  box.layer.borderWidth = 1;
+  box.layer.borderColor = gold.CGColor;
+  box.layer.cornerRadius = 6;
+  var post = label(x0 + 124, 30, tw - 124, 22, $.NSFont.systemFontOfSize(12), dim);
+  top.stringValue = '以系統指紋視窗上的字為準';
+  act.stringValue = words;
+  pre.stringValue = '對照碼';
+  box.stringValue = code;
+  post.stringValue = '跟系統指紋視窗上的一樣才按';
   win.orderFrontRegardless;
   for (;;) {
     var left = until - Math.floor(Date.now() / 1000);
-    l2.stringValue = left > 0 ? '還有 ' + left + ' 秒' : '這張過期了';
+    if (left > 0) {
+      secs.stringValue = String(left);
+      unit.stringValue = '秒';
+      secs.setTextColor(left <= 5 ? warn : gold);
+    } else {
+      secs.stringValue = '';
+      unit.stringValue = '這張過期了';
+      unit.setTextColor(warn);
+    }
     $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5));
     if (left <= -1) break;
   }
@@ -154,9 +190,41 @@ mod tests {
             "Function(",
             "runScript",
             "system(",
+            // r2 (3e53b 11-23, ORDER-touchhud 第 1 項): the other ways JXA turns text into code
+            "setTimeout",
+            "setInterval",
+            "NSAppleScript",
+            "NSTask",
+            "NSUserScriptTask",
+            "performSelector",
+            "bindFunction",
+            "ObjC.import('Foundation')",
+            "Application(",
+            "Library(",
         ] {
             assert!(!SCRIPT.contains(word), "reason: script_can_run_{word}");
         }
+        // the three arguments are read once each, as text or a number, never anything else
+        assert_eq!(
+            SCRIPT.matches("argv[").count(),
+            4,
+            "reason: argv_read_elsewhere"
+        );
+        for read in [
+            "String(argv[0] || '')",
+            "parseInt(argv[1], 10)",
+            "String(argv[2] || '')",
+            "argv[0] === '--'",
+        ] {
+            assert!(SCRIPT.contains(read), "reason: argv_read_{read}");
+        }
+        // the three places say the same: the system window is the one to read, the code is
+        // the ticket's (owner_ok::pair_code), the action the window's first line
+        assert!(
+            SCRIPT.contains("跟系統指紋視窗上的一樣才按"),
+            "reason: no_compare_line"
+        );
+        assert!(SCRIPT.contains("這張過期了"), "reason: no_expired_line");
         assert!(
             SCRIPT.contains("以系統指紋視窗上的字為準"),
             "reason: no_source_line"
