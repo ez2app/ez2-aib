@@ -162,7 +162,7 @@ async fn a_dgrs_seat_starts_from_the_page_only_through_the_owner() {
     // (L2) 換模型 on a running dgrs seat: asked before the model is written or the seat stopped
     let asked = n.load(Ordering::SeqCst);
     let r = post(
-        json!({"type": "seat_model", "seat_id": seat, "model": "sonnet",
+        json!({"type": "seat_model_set", "seat_id": seat, "model": "sonnet",
                         "idem_key": "a11-m1"}),
     )
     .await;

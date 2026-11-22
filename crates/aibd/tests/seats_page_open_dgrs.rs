@@ -41,13 +41,31 @@ impl aibd::owner_ok::WindowGate for Open {
     fn closed(&self, _yes: bool) {}
 }
 
+/// One for the whole binary: every test that opens a dgrs seat from the page shares it, and it
+/// is set before any of them starts its aibd.
 fn owner_says_yes() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    aibd::owner_ok::set_presence(
-        std::sync::Arc::new(Yes(n.clone())),
-        std::sync::Arc::new(Open),
-    );
-    n
+    static N: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicUsize>> =
+        std::sync::OnceLock::new();
+    N.get_or_init(|| {
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        aibd::owner_ok::set_presence(
+            std::sync::Arc::new(Yes(n.clone())),
+            std::sync::Arc::new(Open),
+        );
+        n
+    })
+    .clone()
+}
+
+/// Waits until the owner was asked more than `before` times, and the answer is in.
+fn answered_after(asked: &std::sync::atomic::AtomicUsize, before: usize) {
+    for _ in 0..100 {
+        if asked.load(std::sync::atomic::Ordering::SeqCst) > before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -66,18 +84,13 @@ async fn with_the_switch_on_the_page_opens_a_dgrs_seat() {
         }
         b.to_string()
     };
+    let before = asked.load(std::sync::atomic::Ordering::SeqCst);
     let r = d
         .call("POST", "/api/v1/act", Some(&cred), Some(&open(None)))
         .await;
     assert_eq!(r.code, 202, "reason: dgrs_opened_unasked {}", r.body);
     let ticket = r.json["ticket"].as_str().unwrap().to_owned();
-    for _ in 0..100 {
-        if asked.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    answered_after(&asked, before);
     let r = d
         .call(
             "POST",
@@ -157,6 +170,8 @@ fn started_in(dir: &std::path::Path, want: usize) -> std::collections::BTreeSet<
 #[tokio::test(flavor = "multi_thread")]
 async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    // A11: the dgrs seat below is opened through the owner (here one who says yes)
+    let asked = owner_says_yes();
     let dir = kept_dir();
     // room for all six seats to run: past four the later ones only queue, and a seat that is
     // not running is refused before its folder is looked at (#867 SW1 did not bite)
@@ -271,7 +286,13 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
         .open_as("claude", "work", &harness::seat_dir(&seat_work, "chosen"))
         .await;
     // a dgrs seat's folder is not shared; nor a safe seat's (only work with work)
+    let before = asked.load(std::sync::atomic::Ordering::SeqCst);
     let r = post(open("wild", "dgrs", None)).await;
+    assert_eq!(r.code, 202, "reason: dgrs_opened_unasked {}", r.body);
+    let mut again: serde_json::Value = serde_json::from_str(&open("wild", "dgrs", None)).unwrap();
+    again["ticket"] = r.json["ticket"].clone();
+    answered_after(&asked, before);
+    let r = post(again.to_string()).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let wild = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
     // a work seat whose folder is then swapped for a link
