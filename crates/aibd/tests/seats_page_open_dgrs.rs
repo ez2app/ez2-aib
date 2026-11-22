@@ -22,22 +22,68 @@ fn kept_dir() -> &'static tempfile::TempDir {
     Box::leak(Box::new(tempfile::tempdir().unwrap()))
 }
 
+/// A11: an owner who says yes to every window (and counts them), set once for this binary.
+struct Yes(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl aibd::touch::Presence for Yes {
+    fn ask(&self, _reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct Open;
+
+impl aibd::owner_ok::WindowGate for Open {
+    fn open(&self) -> Result<(), &'static str> {
+        Ok(())
+    }
+    fn closed(&self, _yes: bool) {}
+}
+
+fn owner_says_yes() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    aibd::owner_ok::set_presence(
+        std::sync::Arc::new(Yes(n.clone())),
+        std::sync::Arc::new(Open),
+    );
+    n
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_switch_on_the_page_opens_a_dgrs_seat() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    // A11 (SPEC r2 §3.1): a dgrs open asks the owner; here an owner who says yes
+    let asked = owner_says_yes();
     let dir = kept_dir();
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
+    let open = |ticket: Option<&str>| {
+        let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "dgrs",
+                           "persona_uid": "un0eba", "idem_key": "d-1"});
+        if let Some(t) = ticket {
+            b["ticket"] = json!(t);
+        }
+        b.to_string()
+    };
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&open(None)))
+        .await;
+    assert_eq!(r.code, 202, "reason: dgrs_opened_unasked {}", r.body);
+    let ticket = r.json["ticket"].as_str().unwrap().to_owned();
+    for _ in 0..100 {
+        if asked.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
     let r = d
         .call(
             "POST",
             "/api/v1/act",
             Some(&cred),
-            Some(
-                &json!({"type": "seat_open", "provider": "claude", "mode": "dgrs",
-                        "persona_uid": "un0eba", "idem_key": "d-1"})
-                .to_string(),
-            ),
+            Some(&open(Some(&ticket))),
         )
         .await;
     assert_eq!(r.code, 201, "{}", r.body);

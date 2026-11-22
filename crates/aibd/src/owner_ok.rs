@@ -192,11 +192,24 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
     let n = |key: &str| v[key].as_u64();
     Some(match operation {
         crate::repos::OP_REGISTER => format!("登記這個資料夾當倉:{}", piece(&v, "name")?),
-        crate::repos::OP_OPEN => format!(
-            "開一個能改程式的席,帶倉 {}({})",
-            piece(&v, "repo")?,
-            piece(&v, "provider")?
-        ),
+        // A11: a dgrs open with no repo, and a page's restart of a dgrs seat
+        crate::repos::OP_OPEN => match v["kind"].as_str() {
+            Some("open") => format!(
+                "開一個完全權限的席({}),人格 {}",
+                piece(&v, "provider")?,
+                piece(&v, "persona_uid")?
+            ),
+            Some("restart") => format!(
+                "重開完全權限的席 @{}({})",
+                seat_code(&v)?,
+                piece(&v, "provider")?
+            ),
+            _ => format!(
+                "開一個能改程式的席,帶倉 {}({})",
+                piece(&v, "repo")?,
+                piece(&v, "provider")?
+            ),
+        },
         crate::send_back::OP_SEND_BACK => format!(
             "把席 {} 的 {} 個提交、{} 個檔送回 {}",
             seat_code(&v)?,
