@@ -705,6 +705,10 @@ async fn rejoin_with(
         .and_then(|p| p.to_str().map(str::to_owned))
         .ok_or(Skip::Start)?;
         argv.extend(crate::seats::talk_args(&cfg, &mode));
+        // aibd §7 7b: a change waiting for this restart takes effect now; an item the seat does
+        // not hold is not a tool (a seat opened without a template keeps its mode's own)
+        let drop = crate::perm_apply::at_restart(st, &seat.seat_id).await;
+        crate::perm_apply::drop_tools(&mut argv, &drop);
         if let Some(g) = work_gate.as_deref() {
             crate::seats::fold_gate_into_work_settings(&mut argv, g);
         }

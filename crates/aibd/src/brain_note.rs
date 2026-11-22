@@ -710,6 +710,16 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "only a seat opened in 沙盒開發 (work) writes a note to its brain",
         );
     }
+    // aibd §7 7b: a seat whose template turned 更新第二大腦 off does not write (its tool is
+    // also left out of its list; this holds for a brand whose tools are not listed)
+    let mode = meta.mode.clone().unwrap_or_default();
+    if !crate::perm_apply::holds(&st, seat_id, &mode, "brain").await {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "item_off",
+            "這一位的權限模板沒有開「更新第二大腦」",
+        );
+    }
     let Some(route) = meta.brain_route.clone().filter(|r| !r.is_empty()) else {
         return refuse(
             status_of("brain_not_bound"),

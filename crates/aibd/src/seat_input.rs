@@ -76,6 +76,9 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::perm_tpl::ADD,
     crate::perm_tpl::SET,
     crate::perm_tpl::REMOVE,
+    crate::perm_apply::APPLY,
+    crate::perm_apply::SEAT_LOG,
+    crate::perm_apply::REVOKE,
     crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
@@ -454,6 +457,25 @@ pub async fn act(
                 crate::perm_tpl::ADD => crate::perm_tpl::add(st, body, by).await,
                 crate::perm_tpl::SET => crate::perm_tpl::set(st, body, by).await,
                 _ => crate::perm_tpl::remove(st, body, by).await,
+            };
+        }
+        // aibd §7 7b: a template applied to an open seat, its log, and taking a change back
+        // (收回): the built-in page in this pairing only; turning an item on asks the owner
+        Some(
+            k @ (crate::perm_apply::APPLY | crate::perm_apply::SEAT_LOG | crate::perm_apply::REVOKE),
+        ) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat's permissions are changed from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::perm_apply::APPLY => crate::perm_apply::apply(st, body, by).await,
+                crate::perm_apply::SEAT_LOG => crate::perm_apply::seat_log(st, body).await,
+                _ => crate::perm_apply::revoke(st, body, by).await,
             };
         }
         Some(crate::contacts_api::CONTACT_SET) => {

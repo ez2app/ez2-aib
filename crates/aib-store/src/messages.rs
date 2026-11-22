@@ -197,7 +197,8 @@ fn prepare(conn: &mut Connection) -> Result<()> {
             crate::ranks::add_tables(conn)?;
             crate::brain_notes::add_tables(conn)?;
             crate::perm_templates::add_tables(conn)?;
-            crate::registry_archive::add_tables(conn)
+            crate::registry_archive::add_tables(conn)?;
+            crate::seat_perm::add_tables(conn)
         }
         MESSAGES_SCHEMA => {
             crate::threads::add_tables(conn)?;
@@ -205,7 +206,8 @@ fn prepare(conn: &mut Connection) -> Result<()> {
             crate::ranks::add_tables(conn)?;
             crate::brain_notes::add_tables(conn)?;
             crate::perm_templates::add_tables(conn)?;
-            crate::registry_archive::add_tables(conn)
+            crate::registry_archive::add_tables(conn)?;
+            crate::seat_perm::add_tables(conn)
         }
         newer => Err(StoreError::UnknownMigration(newer)),
     }

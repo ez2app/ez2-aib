@@ -378,6 +378,8 @@ pub const WIRED: &[&str] = &[
     crate::persona_edit::OP_SET,
     // aibd §7: a permission template change that turns an item on or raises the base
     crate::perm_tpl::OP,
+    crate::perm_apply::OP_OPEN,
+    crate::perm_apply::OP_APPLY,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.

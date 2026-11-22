@@ -1115,6 +1115,10 @@ struct RawOpen {
     /// before the seat starts (PREREAD-seat-carry-a9136-1121); never from a body.
     #[serde(skip)]
     carry: Vec<(String, Vec<u8>)>,
+    /// aibd §7 7b: the template a page opened it from, as aibd expanded it (never from a body):
+    /// its items are written to `seat_perm` before the seat starts and decide its tools.
+    #[serde(skip)]
+    perm: Option<crate::perm_apply::Expanded>,
     /// `aibd ctl seat open … --handoff F [--mempack F]`: the same two file names a page gives
     /// (PREREAD-seat-carry-a9136-1121), read into `carry` before the open.
     #[serde(default)]
@@ -1623,6 +1627,16 @@ struct PageOpen {
     /// With `handoff`: its memory pack's file name (`MEMPACK-….md`).
     #[serde(default)]
     mempack: Option<String>,
+    /// aibd §7 7b: a permission template's uid (`perm_template_list`); aibd expands it itself
+    /// and its base must be `mode`.
+    #[serde(default)]
+    template: Option<String>,
+    /// With `template`: the revision the page showed (another: `template_changed`).
+    #[serde(default)]
+    template_rev: Option<i64>,
+    /// With `template`: the fingerprint ticket the first ask answered.
+    #[serde(default)]
+    template_ticket: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -1731,6 +1745,44 @@ pub async fn page_open(
             return crate::repos::not_approved();
         }
     }
+    // aibd §7 7b: a template is expanded by aibd, checked against the mode and the owner
+    // asked (unless it is exactly a safe / work mode's own), before anything is opened
+    let perm = match (req.template.as_deref(), req.template_rev) {
+        (None, None) => None,
+        (Some(uid), Some(rev)) => {
+            let e = match crate::perm_apply::template_at(&st, uid, rev).await {
+                Ok(e) => e,
+                Err(r) => return *r,
+            };
+            if e.base != req.mode {
+                return Refusal(
+                    "template",
+                    "a template opens a seat of its own base: mode must be that base",
+                )
+                .into_response();
+            }
+            if crate::perm_apply::open_needs_owner(&e.base, &e.items) {
+                let page = opened_by
+                    .get("pairing")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?");
+                let a = crate::perm_apply::ask(
+                    &e,
+                    None,
+                    serde_json::json!({"provider": req.provider, "persona_uid": req.persona_uid}),
+                    format!("page:{page}"),
+                );
+                let Some(t) = req.template_ticket.as_deref() else {
+                    return crate::repos::asked(&a);
+                };
+                if !crate::owner_ok::approved_for(t, &a) {
+                    return crate::repos::not_approved();
+                }
+            }
+            Some(e)
+        }
+        _ => return Refusal("template", "template and template_rev go together").into_response(),
+    };
     // read before anything is opened: a refused name opens nothing (PREREAD-seat-carry)
     let (ho, mp) = (req.handoff.clone(), req.mempack.clone());
     let carry = match tokio::task::spawn_blocking(move || {
@@ -1800,6 +1852,7 @@ pub async fn page_open(
         join_nodes_of: join_of,
         join_role: crate::assign::with_seat_role(req.role.as_deref()),
         carry,
+        perm,
         handoff: None,
         mempack: None,
     };
@@ -2281,6 +2334,10 @@ async fn open_checked(
             return internal();
         };
         a.extend(talk_args(&path, &req.mode));
+        // aibd §7 7b (ebab8 01:47 刀): an item the template does not hold is not a tool
+        if let Some(p) = &req.perm {
+            crate::perm_apply::drop_tools(a, &crate::perm_apply::tools_dropped(&p.items));
+        }
         if let Some(g) = work_gate.as_deref() {
             fold_gate_into_work_settings(a, g);
         }
@@ -2494,6 +2551,21 @@ async fn open_checked(
                 work_opened(&st, payload).await;
             }
             let (seat_id, card, cwd) = started;
+            // aibd §7 7b: what the template gave is kept before the seat starts (its acts read
+            // it); not kept ⇒ the seat does not start (hold less, never more)
+            if let Some(p) = &req.perm {
+                let (db, id, s) = (st.messages.clone(), seat_id.clone(), p.state());
+                let by = format!("page:{}", key.as_deref().unwrap_or("-"));
+                let kept = tokio::task::spawn_blocking(move || {
+                    db.seat_perm_open(&id, &s, &by, &now_rfc3339())
+                })
+                .await;
+                if !matches!(kept, Ok(Ok(aib_store::PermWrite::Done(_)))) {
+                    return internal();
+                }
+                response["not_enforceable"] = crate::perm_apply::not_given_json(&p.base, &p.items);
+                response["template"] = serde_json::json!({"tpl_uid": p.tpl_uid, "rev": p.rev});
+            }
             // FINDING-andy-realrun 1: a seat sharing another's folder is on that seat's items
             if let Some(other) = req.join_nodes_of.as_deref() {
                 let by = format!("with_seat:{}", seat_code(other));
@@ -3202,6 +3274,7 @@ mod tests {
             join_nodes_of: None,
             join_role: "observer",
             carry: Vec::new(),
+            perm: None,
             handoff: None,
             mempack: None,
         }
