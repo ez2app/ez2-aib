@@ -954,3 +954,19 @@ fn a_work_seat_reads_git_anywhere_and_reaches_nothing_outside() {
         "reason: test_path_not_told {note}"
     );
 }
+
+/// A14: each mode's line names the mode and its network, fixed words only.
+#[test]
+fn each_mode_is_told_by_name_with_its_network() {
+    for (m, name) in [
+        ("safe", "【安全】"),
+        ("work", "【工作】"),
+        ("dgrs", "【完全權限】"),
+    ] {
+        let t = mode_note(m);
+        assert!(t.contains(name), "reason: mode_unnamed {m} {t}");
+        assert!(t.contains(net_now(m).1), "reason: net_untold {m} {t}");
+    }
+    assert_eq!(net_now("safe").0, "none");
+    assert_eq!(net_now("work").0, "blocked");
+}

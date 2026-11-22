@@ -242,6 +242,16 @@ pub fn net_caps(os: &str, proxy: bool) -> Value {
     Value::Object(by)
 }
 
+/// A14: `{mode: {code, words}}` for every seat mode, from [`aib_seatopen::net_now`].
+pub fn mode_net() -> Value {
+    let mut m = serde_json::Map::new();
+    for mode in aib_seatopen::SEAT_MODES {
+        let (code, words) = aib_seatopen::net_now(mode);
+        m.insert((*mode).to_owned(), json!({"code": code, "words": words}));
+    }
+    Value::Object(m)
+}
+
 pub fn version_body_with(
     dgrs_input: bool,
     policy: &crate::allowlist::SessionPolicy,
@@ -272,6 +282,9 @@ pub fn version_body_with(
         "capabilities": {
             "providers": providers,
             "modes": aib_seatopen::SEAT_MODES,
+            // A14 (f163c REVIEW-a14 r0 L1): each mode's network today, the same words a seat is
+            // told at open (aib_seatopen::net_now): the page shows these, never its own
+            "mode_net": mode_net(),
             // which modes a page may type into (seat_input / message_send)
             "input_modes": if dgrs_input { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) },
             "routes": crate::guard::ROUTES,
@@ -1186,6 +1199,24 @@ mod tests {
 
     /// N-workspace-c4 C: the table and the file agree field by field, or the start keeps the
     /// file as the tree.
+    /// A14 (f163c REVIEW-a14 r0 L1): the page's network words for a mode are the words that
+    /// mode's seat is told at open, from one place.
+    #[test]
+    fn the_page_and_the_seat_say_the_same_network() {
+        let v = version_body_with(false, &policy_with(&[]), &|_| true);
+        for mode in aib_seatopen::SEAT_MODES {
+            let w = v["capabilities"]["mode_net"][*mode]["words"]
+                .as_str()
+                .unwrap();
+            assert!(
+                aib_seatopen::mode_note(mode).contains(w),
+                "reason: page_and_seat_differ {mode} {w}"
+            );
+        }
+        assert_eq!(v["capabilities"]["mode_net"]["safe"]["code"], "none");
+        assert_eq!(v["capabilities"]["mode_net"]["dgrs"]["code"], "open");
+    }
+
     #[test]
     fn the_table_and_the_file_are_checked_id_by_id() {
         let file = json!({"nodes": [

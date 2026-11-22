@@ -211,6 +211,44 @@ pub const WORK_FREE_ARGS: &[&str] = &[
     "Bash(git stash *)",
 ];
 
+/// A14 (DESIGN-a14-modeline-08de5-1123 r0; f163c REVIEW-a14 r0 L1): whether a seat of `mode`
+/// can reach the network today, as aibd opens it, in one place: `(code, words)`. The page
+/// (`GET /api/v1/version` `capabilities.providers[].net`) and the line a seat is told at open
+/// ([`mode_note`]) both read this, so the two never say different things; when a mode's network
+/// changes (sandboxnet), only this changes.
+/// - safe: no built-in tools at all (`--tools ""`; codex: read-only, no web search).
+/// - work: claude's sandbox keeps commands off the network and a work seat has no web tool;
+///   codex's profile has `network.enabled=false`. Windows: claude has no sandbox there, so a
+///   work seat's commands do not run at all.
+/// - dgrs: nothing is taken away.
+pub fn net_now(mode: &str) -> (&'static str, &'static str) {
+    match mode {
+        "safe" => ("none", "不能上網(沒有任何工具)"),
+        "work" => ("blocked", "不能上網(沙盒擋住)"),
+        "dgrs" => ("open", "可以上網"),
+        _ => ("unknown", "這一版還沒有說明"),
+    }
+}
+
+/// A14: the first line a seat is told at open and at restart: its mode, what it may do and
+/// [`net_now`]'s words. Fixed words, no word from a page or a person.
+///
+/// Telling, not a fence (f163c REVIEW-a14 r0 L2): a seat reading 「只能…」 is not what stops it;
+/// the sandbox and the tool list do. Never take a tool away thinking this line already says so.
+pub fn mode_note(mode: &str) -> String {
+    let (_, net) = net_now(mode);
+    match mode {
+        "safe" => format!("你這一席是【安全】模式:只能聊天,不能改檔、不能跑指令;{net}。"),
+        "work" => format!(
+            "你這一席是【工作】模式:只能在自己的資料夾改檔、只能跑下面列的指令;{net}。"
+        ),
+        "dgrs" => format!(
+            "你這一席是【完全權限】模式:能改這台電腦上你這個帳號能改的檔、能跑任何指令;{net};開這一席經過主人本人驗證。"
+        ),
+        other => format!("你這一席的模式:{other};{net}。"),
+    }
+}
+
 /// The words at the top of a claude work seat's system prompt (519d0 11-21 M6: a seat that
 /// does not know what it may run stops at the first refusal): its commands, read off
 /// [`WORK_ALLOWED`], and that a refusal is final (nobody is asked).

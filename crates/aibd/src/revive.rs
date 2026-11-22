@@ -761,12 +761,25 @@ async fn rejoin_with(
             .ok_or(Skip::PersonaText)?,
         );
     }
-    // 519d0 11-21 M6: a restarted work seat is told its commands as an opened one is
-    if crate::seats::told_its_commands(&meta.provider, &mode) {
-        let persona = file.clone();
+    // 519d0 11-21 M6 / A14: a restarted seat is told its mode (and a work seat its commands)
+    // as an opened one is; codex in thread/start
+    if "codex" == meta.provider {
+        let f = file.clone();
+        let card = tokio::task::spawn_blocking(move || f.map(std::fs::read_to_string).transpose())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or(Skip::PersonaText)?;
+        st.sessions.set_persona(
+            &seat.seat_id,
+            crate::seats::codex_instructions(&mode, card.as_deref()),
+        );
+    }
+    if crate::seats::told_its_mode(&meta.provider) {
+        let (persona, m) = (file.clone(), mode.clone());
         file = Some(
             tokio::task::spawn_blocking(move || {
-                crate::seats::work_prompt_file(&private, persona.as_deref()).ok()
+                crate::seats::seat_prompt_file(&private, &m, persona.as_deref()).ok()
             })
             .await
             .ok()

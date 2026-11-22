@@ -551,14 +551,27 @@ pub fn now_gate_on() -> bool {
     std::env::var(NOW_GATE_ENV).is_ok_and(|v| v == "1")
 }
 
-/// 519d0 11-21 M6: a claude `work` seat's system prompt starts with what it may run
-/// ([`aib_seatopen::work_note`]); its persona card's text (aibd's kept copy, `persona`)
-/// follows. Kept in aibd's private folder `dir` by the text's hash, as a card's text is.
-pub fn work_prompt_file(
+/// A14 (DESIGN-a14-modeline-08de5-1123 r0): what a seat is told before its card: its mode
+/// ([`aib_seatopen::mode_note`]), and for a work seat (519d0 11-21 M6) what it may run
+/// ([`aib_seatopen::work_note`]).
+pub fn seat_prompt_head(mode: &str) -> String {
+    let mut t = aib_seatopen::mode_note(mode);
+    if mode == "work" {
+        t.push_str("\n\n");
+        t.push_str(&aib_seatopen::work_note());
+    }
+    t
+}
+
+/// A claude seat's system prompt: [`seat_prompt_head`], then its persona card's text (aibd's
+/// kept copy, `persona`). Kept in aibd's private folder `dir` by the text's hash, as a card's
+/// text is.
+pub fn seat_prompt_file(
     dir: &std::path::Path,
+    mode: &str,
     persona: Option<&str>,
 ) -> std::io::Result<std::path::PathBuf> {
-    let mut text = aib_seatopen::work_note().into_bytes();
+    let mut text = seat_prompt_head(mode).into_bytes();
     if let Some(p) = persona {
         text.extend_from_slice(b"\n\n");
         text.extend(std::fs::read(p)?);
@@ -569,9 +582,20 @@ pub fn work_prompt_file(
     Ok(path)
 }
 
-/// Whether a seat of `provider` in `mode` gets [`work_prompt_file`].
-pub fn told_its_commands(provider: &str, mode: &str) -> bool {
-    provider == "claude" && mode == "work"
+/// Whether a seat of `provider` gets [`seat_prompt_file`] (A14: every claude seat is told its
+/// mode; codex is told in thread/start, [`codex_instructions`]).
+pub fn told_its_mode(provider: &str) -> bool {
+    matches!(provider, "claude")
+}
+
+/// A14: what a codex seat gets as developerInstructions: [`seat_prompt_head`], then its card.
+pub fn codex_instructions(mode: &str, card: Option<&str>) -> String {
+    let mut t = seat_prompt_head(mode);
+    if let Some(c) = card.filter(|c| !c.is_empty()) {
+        t.push_str("\n\n");
+        t.push_str(c);
+    }
+    t
 }
 
 pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
@@ -2440,13 +2464,15 @@ async fn open_checked(
         };
         a.extend(codex_talk_args(exe, data));
     }
-    let prompt_file = if told_its_commands(&req.provider, &req.mode) && !req.dry_run {
-        let (dir, persona) = (
+    let prompt_file = if told_its_mode(&req.provider) && !req.dry_run {
+        let (dir, persona, mode) = (
             st.sessions.private_dir().to_path_buf(),
             persona_file.clone(),
+            req.mode.clone(),
         );
         let kept =
-            tokio::task::spawn_blocking(move || work_prompt_file(&dir, persona.as_deref())).await;
+            tokio::task::spawn_blocking(move || seat_prompt_file(&dir, &mode, persona.as_deref()))
+                .await;
         match kept
             .ok()
             .and_then(Result::ok)
@@ -2675,11 +2701,17 @@ async fn open_checked(
                 crate::assign::join_nodes(&st, other, &seat_id, by, req.join_role).await;
             }
             // S89-live-2: codex takes the card in thread/start, not as a file in argv: the
-            // kept text (sha checked when kept) goes to the session that starts now
-            if let (Some(f), true) = (persona_file.clone(), req.provider == "codex") {
-                let text = tokio::task::spawn_blocking(move || std::fs::read_to_string(f)).await;
+            // kept text (sha checked when kept) goes to the session that starts now; A14: after
+            // its mode, also with no card
+            if req.provider == "codex" {
+                let f = persona_file.clone();
+                let text =
+                    tokio::task::spawn_blocking(move || f.map(std::fs::read_to_string).transpose())
+                        .await;
                 match text {
-                    Ok(Ok(t)) => st.sessions.set_persona(&seat_id, t),
+                    Ok(Ok(t)) => st
+                        .sessions
+                        .set_persona(&seat_id, codex_instructions(&req.mode, t.as_deref())),
                     _ => return internal(),
                 }
             }
@@ -3315,29 +3347,47 @@ mod tests {
 
     use super::*;
 
-    /// 519d0 11-21 M6: a claude work seat's prompt starts with its commands; its card follows;
-    /// other seats get the card alone.
+    /// 519d0 11-21 M6 + A14: every claude seat's prompt starts with its mode; a work seat's
+    /// then with its commands; its card follows.
     #[test]
-    fn a_work_seat_is_told_its_commands_before_its_card() {
+    fn a_seat_is_told_its_mode_then_its_commands_before_its_card() {
         let d = tempfile::tempdir().unwrap();
         let card = d.path().join("persona-ab.md");
         std::fs::write(&card, "我是測試人格").unwrap();
-        let p = work_prompt_file(d.path(), card.to_str()).unwrap();
+        let p = seat_prompt_file(d.path(), "work", card.to_str()).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with(&aib_seatopen::work_note()),
-            "reason: commands_not_first {text}"
+            text.starts_with(&aib_seatopen::mode_note("work")),
+            "reason: mode_not_first {text}"
+        );
+        assert!(
+            text.contains(&aib_seatopen::work_note()),
+            "reason: commands_lost {text}"
         );
         assert!(
             text.ends_with("\n\n我是測試人格"),
             "reason: card_lost {text}"
         );
-        let alone = std::fs::read_to_string(work_prompt_file(d.path(), None).unwrap()).unwrap();
-        assert_eq!(alone, aib_seatopen::work_note(), "reason: card_made_up");
-        assert!(told_its_commands("claude", "work"));
-        for (p, m) in [("claude", "safe"), ("claude", "dgrs"), ("codex", "work")] {
-            assert!(!told_its_commands(p, m), "reason: told {p} {m}");
+        for m in ["safe", "dgrs"] {
+            let t = std::fs::read_to_string(seat_prompt_file(d.path(), m, None).unwrap()).unwrap();
+            assert_eq!(t, aib_seatopen::mode_note(m), "reason: mode_line_wrong {m}");
+            assert!(
+                !t.contains(&aib_seatopen::work_note()),
+                "reason: commands_told {m}"
+            );
         }
+        assert!(told_its_mode("claude") && !told_its_mode("codex"));
+    }
+
+    /// A14: a codex seat's developerInstructions start with its mode, card or not.
+    #[test]
+    fn a_codex_seat_is_told_its_mode_in_thread_start() {
+        let t = codex_instructions("safe", Some("我是測試人格"));
+        assert!(
+            t.starts_with(&aib_seatopen::mode_note("safe")) && t.ends_with("\n\n我是測試人格"),
+            "reason: codex_mode_lost {t}"
+        );
+        assert_eq!(codex_instructions("work", None), seat_prompt_head("work"));
     }
 
     /// B4-1b-2b K5: the provider is told which seat and which card, by env (IFACE §4).
