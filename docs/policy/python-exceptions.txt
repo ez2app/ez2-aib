@@ -6,3 +6,5 @@
 # so a line here is never a standing pass. CI reads this list from the pull request's base, so a line must be
 # merged before the change it approves. Adding a line needs Andy's word, quoted in the last column.
 aib/tools/release/docs_only.py	ff66e29b7ae76eddb40d7c3b6d9133fe33e00179	2026-11-14	Andy 11-14 approved the S59 proposal; one-off for #745 commit 34b9f7ff (scripts/knives-approve.sh added to RUST_CI_PATHS)
+aib/tests/test-aibd-release-1ced7-1108.py	d0e82cfca095a4eb84c34ad31ff093016877cb68	2026-11-22	Andy 11-22 「核准，並且根治」 then 「核准這兩個版本」: release-notes list read from docs/aibd/, so a version bump no longer edits Python (preview.8)
+aib/tools/release/docs_only.py	1c6daa3c4cfb5c1993298a702290b20b66bb3a15	2026-11-22	Andy 11-22 「核准，並且根治」 then 「核准這兩個版本」: DOC_EXCLUDE_PREFIXES docs/aibd/RELEASE-NOTES- (preview.8)
