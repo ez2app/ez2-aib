@@ -239,15 +239,23 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// display_name}]}` in the cards file's order (043dd: the add-a-seat picker had only the
 /// uids of seats already open). The name only: never where the card text is, nor its hash.
 /// Cards that cannot be read: 503 `persona_source_unavailable`, as when a seat is opened.
+/// §7-4: each also says `usual_brain`, the uid of the second brain its seats are usually
+/// opened with ([`crate::registry::usual_brains`]), or null.
 pub async fn personas(State(st): State<AppState>) -> Response {
-    let src = st.personas.clone();
-    match tokio::task::spawn_blocking(move || src.cards()).await {
-        Ok(Ok(cards)) => Json(json!({
-            "personas": cards
-                .iter()
-                .map(|c| json!({"uid": c.uid, "display_name": c.name}))
-                .collect::<Vec<_>>(),
-        }))
+    let (src, data, store) = (
+        st.personas.clone(),
+        crate::registry::data_of(&st),
+        st.store.clone(),
+    );
+    let read = tokio::task::spawn_blocking(move || {
+        src.cards()
+            .map(|c| (c, crate::registry::usual_of(&data, &store)))
+    });
+    match read.await {
+        Ok(Ok((cards, usual))) => Json(personas_body(
+            cards.iter().map(|c| (c.uid.as_str(), c.name.as_str())),
+            &usual,
+        ))
         .into_response(),
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "persona cards unreadable");
@@ -264,6 +272,19 @@ pub async fn personas(State(st): State<AppState>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// `GET /api/v1/personas`'s body from `(uid, name)` in the cards' order.
+pub fn personas_body<'a>(
+    cards: impl Iterator<Item = (&'a str, &'a str)>,
+    usual: &std::collections::BTreeMap<String, crate::registry::Usual>,
+) -> Value {
+    json!({
+        "personas": cards
+            .map(|(uid, name)| json!({"uid": uid, "display_name": name,
+                "usual_brain": usual.get(uid).map(|u| u.brain.as_str())}))
+            .collect::<Vec<_>>(),
+    })
 }
 
 // ---------------------------------------------------------------- host
