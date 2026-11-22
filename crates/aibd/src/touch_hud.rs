@@ -33,12 +33,10 @@ function run(argv) {
   function rgb(r, g, b) { return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r / 255, g / 255, b / 255, 1); }
   var GOLD = rgb(227, 192, 106), FG = rgb(230, 232, 238), DIM = rgb(154, 163, 181);
   var WARN = rgb(232, 147, 90), PANEL = rgb(22, 27, 36), LINE = rgb(42, 50, 66);
-  var w = 460, h = 96;
-  var scr = $.NSScreen.mainScreen.visibleFrame;
-  var rect = $.NSMakeRect(scr.origin.x + scr.size.width - w - 24, scr.origin.y + scr.size.height - h - 24, w, h);
+  var h = 124;
   // the system's fingerprint window: only its owner's name and its bounds are read, never what
-  // it shows; a hint where to stand, not a defence (Andy 11-23「移到 生物辨識框的正上方」)
-  function above() {
+  // it shows; a hint where to stand, not a defence (Andy 11-23「移到 生物辨識框的正上方」「一樣寬」)
+  function fingerprintWindow() {
     var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];
     var box = null;
     for (var i = 0; i < list.length; i++) {
@@ -47,21 +45,30 @@ function run(argv) {
         if (!box || b.Width * b.Height > box.Width * box.Height) { box = b; }
       }
     }
-    if (!box) { return null; }
+    return box;
+  }
+  // it comes up after the fingerprint window: look every 0.2 s for at most 3 s
+  var box = null, started = Date.now() / 1000;
+  while (!box && Date.now() / 1000 - started < 3) {
+    box = fingerprintWindow();
+    if (!box) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.2)); }
+  }
+  var w = box ? Math.max(220, Math.min(600, box.Width)) : 260;
+  var scr = $.NSScreen.mainScreen.visibleFrame;
+  var rect = $.NSMakeRect(scr.origin.x + scr.size.width - w - 24, scr.origin.y + scr.size.height - h - 24, w, h);
+  if (box) {
     var screens = $.NSScreen.screens, top = screens.objectAtIndex(0).frame.size.height;
-    var bx = box.X, byTop = top - box.Y, byLow = top - box.Y - box.Height, area = null;
+    var byTop = top - box.Y, byLow = top - box.Y - box.Height, cx = box.X + box.Width / 2, area = scr;
     for (var k = 0; k < screens.count; k++) {
-      var f = screens.objectAtIndex(k).frame;
-      if (bx + box.Width / 2 >= f.origin.x && bx + box.Width / 2 <= f.origin.x + f.size.width && byLow >= f.origin.y && byLow <= f.origin.y + f.size.height) {
+      var sf = screens.objectAtIndex(k).frame;
+      if (cx >= sf.origin.x && cx <= sf.origin.x + sf.size.width && byLow >= sf.origin.y && byLow <= sf.origin.y + sf.size.height) {
         area = screens.objectAtIndex(k).visibleFrame;
       }
     }
-    if (!area) { area = scr; }
-    var x = bx + (box.Width - w) / 2;
-    x = Math.max(area.origin.x, Math.min(x, area.origin.x + area.size.width - w));
+    var x = Math.max(area.origin.x, Math.min(cx - w / 2, area.origin.x + area.size.width - w));
     var y = byTop + 8;
     if (y + h > area.origin.y + area.size.height) { y = byLow - 8 - h; }
-    return $.NSMakeRect(x, y, w, h);
+    rect = $.NSMakeRect(x, y, w, h);
   }
   var win = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer(rect, 1 | 128 | 32768, 2, false);
   win.titlebarAppearsTransparent = true;
@@ -94,40 +101,35 @@ function run(argv) {
   // the gold frame is an NSBox over the whole panel: a layer border on the content view does
   // not show under the window frame (ebab8 demo 11-23 02:15)
   var frame = panel(0, 0, w, h, 10, 1.5, PANEL);
-  var num = label(14, 30, 64, 36, 28, GOLD, true, true);
+  var num = label(14, h - 52, 62, 38, 30, GOLD, true, true);
   num.setAlignment(1);
-  var sec = label(14, 14, 64, 16, 11, DIM, false, false);
+  var sec = label(14, h - 66, 62, 14, 10.5, DIM, false, false);
   sec.setAlignment(1);
   sec.stringValue = '秒';
-  var act = label(92, 50, w - 108, 24, 16, FG, true, false);
+  var act = label(84, h - 60, w - 96, 44, 14.5, FG, true, false);
+  act.setLineBreakMode(0);
+  act.setMaximumNumberOfLines(2);
   act.stringValue = words;
-  var pre = label(92, 30, 52, 16, 12, DIM, false, false);
+  panel(14, 48, w - 28, 4, 2, 0, LINE);
+  var fill = panel(14, 48, w - 28, 4, 2, 0, GOLD);
+  var pre = label(14, 22, 44, 16, 12, DIM, false, false);
   pre.stringValue = '對照碼';
-  panel(138, 26, 58, 22, 6, 1, PANEL);
-  var chip = label(138, 28, 58, 16, 13, GOLD, true, true);
+  panel(58, 18, 58, 22, 6, 1, PANEL);
+  var chip = label(58, 20, 58, 16, 13, GOLD, true, true);
   chip.setAlignment(1);
   chip.stringValue = code;
-  var post = label(204, 30, w - 216, 16, 12, DIM, false, false);
-  post.stringValue = '跟系統指紋視窗上的一樣才按';
-  panel(92, 14, w - 108, 4, 2, 0, LINE);
-  var fill = panel(92, 14, w - 108, 4, 2, 0, GOLD);
-  // shown once the fingerprint window is found (every 0.2 s, at most 3 s), else at the top right
-  var started = Date.now() / 1000, shown = false, tick = 0;
+  var post = label(14, 3, w - 28, 14, 10.5, DIM, false, false);
+  post.stringValue = box ? '跟下面指紋視窗上的一樣才按' : '跟系統指紋視窗上的一樣才按';
+  win.orderFrontRegardless;
   for (;;) {
     var now = Date.now() / 1000, left = Math.ceil(until - now);
-    if (!shown && tick % 2 === 0) {
-      var at = above();
-      if (at) { win.setFrameDisplay(at, true); }
-      if (at || now - started >= 3) { win.orderFrontRegardless; shown = true; }
-    }
-    tick++;
     var late = left <= 5;
     num.stringValue = left > 0 ? String(left) : '0';
     num.setTextColor(late ? WARN : GOLD);
     fill.setFillColor(late ? WARN : GOLD);
     frame.setBorderColor(late ? WARN : GOLD);
     if (left <= 0) { act.stringValue = '這張過期了'; }
-    fill.setFrame($.NSMakeRect(92, 14, Math.max(0, (w - 108) * (until - now) / total), 4));
+    fill.setFrame($.NSMakeRect(14, 48, Math.max(0, (w - 28) * (until - now) / total), 4));
     $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
     if (left <= -2) break;
   }
