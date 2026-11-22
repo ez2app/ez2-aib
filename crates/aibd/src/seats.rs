@@ -1627,16 +1627,14 @@ struct PageOpen {
     /// With `handoff`: its memory pack's file name (`MEMPACK-….md`).
     #[serde(default)]
     mempack: Option<String>,
-    /// aibd §7 7b: a permission template's uid (`perm_template_list`); aibd expands it itself
-    /// and its base must be `mode`.
+    /// aibd §7 7b (IFACE-page2-fc7f9-1123 A): a permission template's uid (`perm_template_list`);
+    /// aibd expands it itself and its base must be `mode`. Its fingerprint ticket comes back in
+    /// `ticket` (so a template does not go with `repo`, whose ask uses that field too).
     #[serde(default)]
-    template: Option<String>,
-    /// With `template`: the revision the page showed (another: `template_changed`).
+    tpl_uid: Option<String>,
+    /// With `tpl_uid`: the revision the page showed (another: `template_changed`).
     #[serde(default)]
-    template_rev: Option<i64>,
-    /// With `template`: the fingerprint ticket the first ask answered.
-    #[serde(default)]
-    template_ticket: Option<String>,
+    rev: Option<i64>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -1747,8 +1745,15 @@ pub async fn page_open(
     }
     // aibd §7 7b: a template is expanded by aibd, checked against the mode and the owner
     // asked (unless it is exactly a safe / work mode's own), before anything is opened
-    let perm = match (req.template.as_deref(), req.template_rev) {
+    let perm = match (req.tpl_uid.as_deref(), req.rev) {
         (None, None) => None,
+        (Some(_), Some(_)) if req.repo.is_some() => {
+            return Refusal(
+                "template",
+                "a template does not go with repo yet: open from the template, then pick no repo",
+            )
+            .into_response()
+        }
         (Some(uid), Some(rev)) => {
             let e = match crate::perm_apply::template_at(&st, uid, rev).await {
                 Ok(e) => e,
@@ -1772,7 +1777,7 @@ pub async fn page_open(
                     serde_json::json!({"provider": req.provider, "persona_uid": req.persona_uid}),
                     format!("page:{page}"),
                 );
-                let Some(t) = req.template_ticket.as_deref() else {
+                let Some(t) = req.ticket.as_deref() else {
                     return crate::repos::asked(&a);
                 };
                 if !crate::owner_ok::approved_for(t, &a) {
@@ -1781,7 +1786,7 @@ pub async fn page_open(
             }
             Some(e)
         }
-        _ => return Refusal("template", "template and template_rev go together").into_response(),
+        _ => return Refusal("template", "tpl_uid and rev go together").into_response(),
     };
     // read before anything is opened: a refused name opens nothing (PREREAD-seat-carry)
     let (ho, mp) = (req.handoff.clone(), req.mempack.clone());
