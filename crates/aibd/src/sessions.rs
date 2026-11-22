@@ -676,9 +676,20 @@ struct Inner {
     /// S89-state (5d33a 853ee100 L1): the seat of each failed start that may have left a
     /// process running (`held_unknown`); such a seat stays busy, as its slot stays taken.
     held: Vec<String>,
+    /// A queued session taken off `queue` by `dequeue` and not yet in `live` or `ended`
+    /// (regate / spawn run outside the lock). `get` and `list` read it so the session is
+    /// never missing in between (#871 rust macos: GET answered 404 session_not_found).
+    leaving: Vec<(u64, Session)>,
 }
 
 impl Inner {
+    /// The session `id` is in `live` or `ended` now (or was never leaving): drop its row.
+    fn left(&mut self, id: &str) {
+        if let Some(i) = self.leaving.iter().position(|(_, s)| s.id == id) {
+            self.leaving.swap_remove(i);
+        }
+    }
+
     fn started(&mut self, seat_id: Option<&String>) {
         if let Some(sid) = seat_id {
             if let Some(i) = self.starting.iter().position(|x| x == sid) {
@@ -1113,6 +1124,7 @@ impl Sessions {
             .values()
             .map(|e| (e.order, e.rec.clone()))
             .chain(g.queue.iter().map(|q| (q.order, q.rec.clone())))
+            .chain(g.leaving.iter().cloned())
             .chain(g.ended.iter().cloned())
             .collect();
         v.sort_by_key(|(o, _)| std::cmp::Reverse(*o));
@@ -1315,6 +1327,12 @@ impl Sessions {
                 Some(rec)
             })
             .or_else(|| {
+                g.leaving
+                    .iter()
+                    .find(|(_, s)| s.id == id)
+                    .map(|(_, s)| s.clone())
+            })
+            .or_else(|| {
                 g.ended
                     .iter()
                     .find(|(_, s)| s.id == id)
@@ -1511,6 +1529,7 @@ impl Sessions {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         g.started(seat_id.as_ref());
+        g.left(&id);
         self.cv.notify_all();
         let mut run = match res {
             Ok(r) => r,
@@ -1799,6 +1818,7 @@ impl Sessions {
                 if let Some(sid) = &q.rec.seat_id {
                     g.starting.push(sid.clone());
                 }
+                g.leaving.push((q.order, q.rec.clone()));
                 q
             };
             let argv = match self.regate(&q) {
@@ -1872,6 +1892,7 @@ impl Sessions {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         g.started(q.rec.seat_id.as_ref());
+        g.left(&q.rec.id);
         self.cv.notify_all();
         let mut rec = q.rec;
         rec.state = "failed";

@@ -27,8 +27,9 @@ pr '    matches!(mode, Some("work" | "dgrs"))' '    matches!(mode, Some("work" |
 # PR8 (5d33a 題 1) a RELAY- text is not marked as data
 pr '    let text = if file.starts_with("RELAY-") {' '    let text = if file.is_empty() { // knife' \
    a_seat_reads_a_listed_kind_only_with_mail_masked
-# W1 another seat's code is written
-pr '        && writer_of(file) == Some(code)' '        && writer_of(file).is_some() // knife' \
+# W1 another seat's code is written (`code` stays read: dropping its only use is an unused
+# variable, a compile error under CI's -D warnings, and the knife missed with no test run)
+pr '        && writer_of(file) == Some(code)' '        && (writer_of(file).is_some() || code.is_empty()) // knife' \
    a_seat_writes_only_its_own_listed_names
 # W2 any kind is written
 pr '    "HANDOFF-",' '    "HANDOFF-", "RELAY-", "SUMMARY-", "DECISION-", "SIGN-", // knife' \

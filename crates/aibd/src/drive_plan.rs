@@ -187,15 +187,20 @@ mod tests {
         let good = serde_json::json!({"to": "7ebca", "text": "派工: N-1 → 7ebca", "send_key": "k:1", "action": "dispatch"});
         let mut out = String::from("some other line\n{\"to\":\"7ebca\"}\n");
         out += &line(good.clone());
-        // not listed, a nudge, an extra field, a missing field, a key with a space, empty text
+        // not listed, a nudge, an extra field, a missing field, a key with a space, empty text;
+        // each with a key of its own, so the one rule it breaks is the only reason it is refused
+        // (with good's k:1 the repeated key refused them all and DP1-DP3 could not bite)
         let mut bad = good.clone();
         bad["to"] = "51234".into();
+        bad["send_key"] = "k:4".into();
         out += &line(bad);
         let mut bad = good.clone();
         bad["action"] = "nudge".into();
+        bad["send_key"] = "k:5".into();
         out += &line(bad);
         let mut bad = good.clone();
         bad["origin_seat"] = "519d0".into();
+        bad["send_key"] = "k:6".into();
         out += &line(bad);
         let mut bad = good.clone();
         bad.as_object_mut().unwrap().remove("send_key");

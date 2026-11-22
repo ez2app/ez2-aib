@@ -3,8 +3,16 @@
 set -euo pipefail
 sq() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "source::store_queue_tests::$3" \
         -- cargo test -p aib-drive --locked --lib "source::store_queue_tests::$3"; }
-# SQK1 an empty status is not read as queued
-sq '                ("status", Value::from(status.unwrap_or("queued"))),' '                ("status", Value::from(status.unwrap_or(""))),' the_queue_read_in_process_gives_the_rows_drive_reads
+# SQK1 an empty status is not read as queued. Cut where it happens: Store::read_item runs
+# aib-dmq norm (upgrade), which already turns an empty / unknown status into "queued", so the
+# StoreQueue `unwrap_or("queued")` is a second guard no read reaches (cutting it alone MISSES,
+# CI #872 run 44928976366, measured again 11-22: the row reads "queued"). A non-empty wrong
+# value passes StoreQueue's empty-only guard, so this one cut turns the row red.
+python3 -I scripts/knife.py crates/aib-dmq/src/norm.rs \
+  '        out.insert("status".into(), Value::from("queued"));' \
+  '        out.insert("status".into(), Value::from("knifed"));' \
+  --expect-fail source::store_queue_tests::the_queue_read_in_process_gives_the_rows_drive_reads \
+  -- cargo test -p aib-drive --locked --lib source::store_queue_tests::the_queue_read_in_process_gives_the_rows_drive_reads
 # SQK2 priority as written (" URGENT " never reads as urgent: busy seats go unseen)
 sq '            let pri = aib_dmq::norm::priority(raw.get("priority"), "normal");' '            let pri = raw["priority"].as_str().unwrap_or("normal");' the_queue_read_in_process_gives_the_rows_drive_reads
 # SQK3 the tab is not filtered
