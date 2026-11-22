@@ -40,10 +40,7 @@ gr '        self.list().retain(|g| g.seat_id != seat_id);' \
 gr '        l.retain(|g| g.id != id);' \
    '        l.retain(|_| true);' \
    revoke_takes_it_back
-# HG9 the window does not say how long
-ow '        Ok(Some(h)) => format!("{plain};{}", h.words()),' \
-   '        Ok(Some(_)) => plain,' \
-   the_hold_is_in_the_window_and_in_what_was_approved
+# HG9 retired: the window's third line (3e53b touch_hud) says how long, from grants::hold_in; top_words no longer does (f163c REVIEW-touchhud M1)
 # HG10 a hold not given still raises a window
 ow '        if let Err(why) = crate::grants::hold_in(ask.operation, &ask.params) {' \
    '        if let Some(why) = None::<&'"'"'static str> {' \

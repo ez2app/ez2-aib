@@ -307,14 +307,11 @@ pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
 
 /// The window's first words: the plain sentence, or the operation's name when it has none.
 pub fn top_words(ask: &Ask) -> String {
-    let plain = plain_words(ask.operation, &ask.params)
-        .unwrap_or_else(|| action_words(ask.operation).to_owned());
-    // how long it stays open, when the operation takes a hold (grants.rs; f163c M2): the
-    // window and the countdown beside it both say it
-    match crate::grants::hold_in(ask.operation, &ask.params) {
-        Ok(Some(h)) => format!("{plain};{}", h.words()),
-        _ => plain,
-    }
+    // how long it stays open is not here: the system window's third line says it, from
+    // grants::hold_in (3e53b touch_hud; f163c REVIEW-touchhud M1: one place only). The hold
+    // is still in the parameters the owner approves (their sha), so another hold is refused.
+    plain_words(ask.operation, &ask.params)
+        .unwrap_or_else(|| action_words(ask.operation).to_owned())
 }
 
 /// Four characters of the ticket's hash, shown by the system's window and by the countdown
@@ -1609,12 +1606,11 @@ mod tests {
     fn the_hold_is_in_the_window_and_in_what_was_approved() {
         at(5000);
         let x = held(crate::grants::OP_FS_OPEN, "min15");
-        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        // the words are the third line's (3e53b), never the first line's too
         assert!(
-            w.lines().next().unwrap().contains("開放 15 分鐘"),
-            "reason: hold_words {w}"
+            !top_words(&x).contains("開放 15 分鐘"),
+            "reason: hold_in_top_words"
         );
-        assert!(top_words(&x).contains("開放 15 分鐘"), "reason: hud_words");
         let o = owner(Ok(()));
         let t = ticket(o.ask(&x, inline));
         assert!(
