@@ -110,8 +110,11 @@ pub fn parse_codex(bytes: &[u8]) -> Option<Codex> {
     Some(Codex { models, fetched_at })
 }
 
+/// When the file was last written, and its size: a read is kept while both stay.
+type Stamp = (Option<std::time::SystemTime>, u64);
+
 /// The file's bytes, or nothing (see the module note).
-fn read_capped(p: &Path) -> Option<(Vec<u8>, (Option<std::time::SystemTime>, u64))> {
+fn read_capped(p: &Path) -> Option<(Vec<u8>, Stamp)> {
     let f = open_plain(p).ok()?;
     let m = f.metadata().ok()?;
     if !plain(&m) {
@@ -125,7 +128,7 @@ fn read_capped(p: &Path) -> Option<(Vec<u8>, (Option<std::time::SystemTime>, u64
     Some((b, (m.modified().ok(), m.len())))
 }
 
-type Seen = (PathBuf, (Option<std::time::SystemTime>, u64), Option<Codex>);
+type Seen = (PathBuf, Stamp, Option<Codex>);
 /// The last read, kept while the file's time and size are the same (f163c N1).
 static LAST: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
 
