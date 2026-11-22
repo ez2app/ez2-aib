@@ -52,6 +52,7 @@ pub mod pair_carry;
 pub mod pairing;
 pub mod person;
 pub mod persona_diff;
+pub mod persona_propose;
 pub mod personas;
 pub mod plan_route;
 pub mod platform;

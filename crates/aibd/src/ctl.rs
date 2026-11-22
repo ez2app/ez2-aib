@@ -1371,6 +1371,21 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "persona_propose",
+            "description": "Propose a new text for your own persona card; you cannot write it. do=propose needs card_text (the whole card, front matter uid and code unchanged, at most 64 KiB) and why (at most 200 characters, shown to the person as your unverified reason): aibd keeps it as it is, works out the lines added and removed, and the person sees the whole difference and approves it with their own fingerprint or password, or says no. do=status / do=withdraw need request_id (only your own). At most one proposal waits per persona card; withdrawn ones count toward ten an hour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "do": {"type": "string", "enum": ["propose", "status", "withdraw"]},
+                    "card_text": {"type": "string", "description": "for do=propose: the whole new card text"},
+                    "why": {"type": "string", "description": "for do=propose: one line, at most 200 characters"},
+                    "request_id": {"type": "string", "description": "for do=status / withdraw"},
+                },
+                "required": ["do"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -1580,6 +1595,26 @@ fn seat_receipt(c: &Client, args: &Value) -> Result<String, String> {
         Some("read") => (aibd::receipt_run::READ, &["run_id"]),
         Some("withdraw") => (aibd::receipt_run::WITHDRAW, &["run_id"]),
         _ => return Err("seat_receipt needs do: ask, list, read or withdraw".into()),
+    };
+    let mut body = json!({ "type": kind });
+    for k in keys {
+        if !args[*k].is_null() {
+            body[*k] = args[*k].clone();
+        }
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
+}
+
+/// §7-2 寫回人格 (DESIGN-persona-propose-osverify-c2f0b-1123 r2): a seat proposes a new text for
+/// its own persona card through [`aibd::persona_propose`]; only the names below are passed on
+/// (no persona_uid, no seat_id: aibd takes the token's own seat and that seat's persona).
+fn persona_propose(c: &Client, args: &Value) -> Result<String, String> {
+    let (kind, keys): (&str, &[&str]) = match args["do"].as_str() {
+        Some("propose") => (aibd::persona_propose::PROPOSE, &["card_text", "why"]),
+        Some("status") => (aibd::persona_propose::STATUS, &["request_id"]),
+        Some("withdraw") => (aibd::persona_propose::WITHDRAW, &["request_id"]),
+        _ => return Err("persona_propose needs do: propose, status or withdraw".into()),
     };
     let mut body = json!({ "type": kind });
     for k in keys {
@@ -1978,6 +2013,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("seat_handoff") => seat_handoff(c, args),
                 Some("seat_tree") => seat_tree(c, args),
                 Some("seat_receipt") => seat_receipt(c, args),
+                Some("persona_propose") => persona_propose(c, args),
                 Some("seat_verify") => seat_verify(c, args),
                 Some("pending_list") => pending_list(c, args),
                 Some("pending_read") => pending_read(c, args),
@@ -3508,7 +3544,8 @@ mod tests {
                 "dm_show",
                 "dm_done",
                 "pending_write",
-                "seat_handoff"
+                "seat_handoff",
+                "persona_propose"
             ],
             "reason: extra_tool"
         );
