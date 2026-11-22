@@ -1631,7 +1631,7 @@ mod tests {
                 said[0]
             );
             assert!(
-                said[0].contains("AIB 網頁要求:repo.register|"),
+                said[0].ends_with("|repo.register") && said[0].contains("\n對象:"),
                 "reason: window_words_lost {}",
                 said[0]
             );
