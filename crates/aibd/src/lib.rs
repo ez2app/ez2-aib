@@ -45,6 +45,7 @@ pub mod mail_nudge;
 pub mod messages;
 pub mod nodes;
 pub mod now_gate;
+pub mod owner_batch;
 pub mod owner_ok;
 pub mod pair_api;
 pub mod pair_carry;
