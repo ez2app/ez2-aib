@@ -149,25 +149,6 @@ const OWN_WORDS: [(&str, &str); 5] = [
     ("開放", "開·放"),
 ];
 
-/// How long an approval opens something (DECISION-council-aipartner-ebab8-1122 第十一節,
-/// Andy 11-23「1+2 都可以」): the ticket's `open_for`, one of these fixed words, said in the
-/// window and on the page alike. Anything else is not shown, and a caller that needs one
-/// refuses the ask.
-pub const OPEN_FOR: [(&str, &str); 4] = [
-    ("once", "只這一次"),
-    ("15m", "15 分鐘"),
-    ("1h", "1 小時"),
-    ("until_close", "到這一位關掉"),
-];
-
-/// The ticket's `open_for` in the window's words; None when it has none or not one of
-/// [`OPEN_FOR`].
-pub fn open_for_words(params: &[u8]) -> Option<&'static str> {
-    let v: serde_json::Value = serde_json::from_slice(params).ok()?;
-    let w = v.get("open_for")?.as_str()?;
-    OPEN_FOR.iter().find(|(k, _)| *k == w).map(|(_, s)| *s)
-}
-
 /// The object as the window shows it, between 「」 (5d33a PREREAD-touchwords L1): cleaned as
 /// [`clean_resource`] cleans; none of the window's own marks; nothing that reads as a clock
 /// or as the window's own "請在 … 前按" (a `:` between two digits and 「請在」 are broken with
@@ -329,19 +310,18 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
 /// line, always [`WINDOW_LINES`] lines, in the order the page card and the countdown use:
 /// 1. what is done ([`top_words`], the same words the countdown's first line shows)
 /// 2. `對象:` the object ([`object_shown`]: the only line ever cut, start and end kept)
-/// 3. `對照碼 XXXX · 請在 … 前按,過了這張就作廢` and `· 開放 …` when the ticket opens something
-///    for a while ([`open_for_words`])
+/// 3. `對照碼 XXXX · 請在 … 前按,過了這張就作廢` (how long a yes opens something: only from
+///    c2f0b's `grants::hold_in` once that is in, never from the request; f163c M1)
 /// 4. `單號 …|參數 …|<operation>`
 ///
 /// No line but the second carries words of the request, and none of them can hold a line
 /// break ([`aib_approve::text::is_bad_char`]).
 pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
-    let open = open_for_words(&ask.params)
-        .map(|w| format!(" · 開放 {w}"))
-        .unwrap_or_default();
+    // how long a yes opens something is never read from the request (f163c REVIEW-touchhud M1):
+    // it comes only from c2f0b's grants::hold_in, after that slice is in; until then no line says it
     format!(
-        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{open}\n單號 {}|參數 {}|{}",
+        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢\n單號 {}|參數 {}|{}",
         top_words(ask),
         object_shown(&ask.resource),
         pair_code(ticket),
@@ -1070,7 +1050,7 @@ mod tests {
     }
 
     /// ORDER-touchhud-ebab8-3e53b-1123 第 2 項: one thing a line, the object the only line cut,
-    /// the open-for said only from the fixed table.
+    /// and no line says how long from the request.
     #[test]
     fn the_window_has_four_lines_and_only_the_object_is_cut() {
         let mut x = a();
@@ -1092,7 +1072,7 @@ mod tests {
         assert_eq!(
             l[2],
             format!(
-                "對照碼 {} · 請在 01:23:44 前按,過了這張就作廢 · 開放 15 分鐘",
+                "對照碼 {} · 請在 01:23:44 前按,過了這張就作廢",
                 pair_code("ot_1")
             ),
             "reason: code_line {w}"
@@ -1101,29 +1081,20 @@ mod tests {
             l[3].starts_with("單號 ot_1|參數 ") && l[3].ends_with(crate::seat_trust::OP),
             "reason: ticket_line {w}"
         );
-        // only the fixed words: anything else opens nothing in the window
-        for (k, words) in OPEN_FOR {
-            let p = format!(r#"{{"open_for":"{k}"}}"#);
-            assert_eq!(open_for_words(p.as_bytes()), Some(words));
-        }
+        // how long is never read from the request (f163c REVIEW-touchhud M1: hours 2 with
+        // open_for 15m said 15 minutes): no line says 開放 whatever the params carry
         for p in [
+            r#"{"open_for":"15m"}"#,
+            r#"{"hold":"min15"}"#,
             r#"{"open_for":"2h"}"#,
-            r#"{"open_for":"15 分鐘\n對照碼 0000"}"#,
-            r#"{"open_for":1}"#,
-            r#"{}"#,
-            "not json",
+            r#"{"hours":2,"open_for":"until_close"}"#,
         ] {
-            assert_eq!(
-                open_for_words(p.as_bytes()),
-                None,
-                "reason: open_for_took {p}"
+            x.params = p.as_bytes().to_vec();
+            assert!(
+                !window_text(&x, "ot_1", "u").contains("開放"),
+                "reason: open_for_shown {p}"
             );
         }
-        x.params = br#"{"open_for":"2h"}"#.to_vec();
-        assert!(
-            !window_text(&x, "ot_1", "u").contains("開放"),
-            "reason: open_for_shown"
-        );
     }
 
     /// Andy 11-21 01:23, 01:44; 5d33a PREREAD-touchwords L1.
