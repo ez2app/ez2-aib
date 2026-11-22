@@ -3809,6 +3809,27 @@ jobs:
           path: target/debug/aib-idea.exe
           if-no-files-found: error
           retention-days: 7
+      # Precheck gate 1 in observe mode (time-saving plan D1; Andy 11-22 one seat, Rust only): the
+      # knives this pull request touches are checked to still compile, the way a gate before the knife
+      # cells would. Observe: it stops nothing and is not a required result; what it prints is compared
+      # with what the knife cells then found, and it becomes a gate only when that shows it does not
+      # block good work. The last step on purpose: it writes knives into files and puts them back, and
+      # a step killed halfway must have nothing running after it (the next job's checkout resets the tree).
+      - name: knife precheck (observe)
+        if: always() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch -q --no-tags --filter=blob:none --depth=200 origin "$BASE" "$HEAD" 2>/dev/null || true
+          rc=0
+          cargo run -q --locked -p aib-xtask -- knife-precheck --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/precheck.out" 2>&1 || rc=$?
+          { echo '### knife precheck (observe)'; echo '```'; grep -vE '^KNIFE-COMPILE ok ' "$RUNNER_TEMP/precheck.out" | tail -60; echo "rc $rc"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          git status --porcelain | head -5
+          git checkout -q -- . || true
 
   cloud-knives:
     name: cloud decision knives (macOS)
@@ -4000,7 +4021,24 @@ jobs:
           cargo run -q --locked -p aib-xtask -- knife-shards plan --shards "${AIB_KNIVES_SHARD#*/}" \
             --secs crates/aib-knife/knife-secs.tsv --list "$RUNNER_TEMP/knives-list.txt" > "$RUNNER_TEMP/knives-plan.tsv"
           export AIB_KNIVES_PLAN="$RUNNER_TEMP/knives-plan.tsv"
-          bash crates/aib-knife/run-knives.sh rust
+          # every script's seconds are kept (the artifact below): the table the plan is made from
+          # is the median of several runs, and it is only as fresh as the runs it can read
+          bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"
+      - name: keep each script's seconds
+        if: always() && env.RUN == 'true'
+        shell: bash
+        run: |
+          mkdir -p knife-secs
+          grep -E '^KNIVES-(SCRIPT|PLAN|OK|RED|NONE) ' "$RUNNER_TEMP/knives-run.out" > "knife-secs/cell-${{ strategy.job-index }}.txt" 2>/dev/null || true
+          wc -l knife-secs/*.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always() && env.RUN == 'true'
+        timeout-minutes: 3
+        with:
+          name: knife-secs-${{ strategy.job-index }}
+          path: knife-secs/*.txt
+          if-no-files-found: warn
+          retention-days: 30
 
   # The one required check for the cells above (S88-split; PLAN-s88-split r2 §1: GitHub reads a skipped cell
   # as a passed required check, so the three are not required one by one). Green only when every cell's
