@@ -34,6 +34,7 @@ pub mod gh_token;
 pub mod gh_view;
 pub mod git_cred;
 pub mod guard;
+pub mod managed_test;
 pub mod net_card;
 // hostmode r3 §2 / sandboxnet r5 §3: which addresses aibd connects to for a seat (3e53b 11-23)
 pub mod host_addr;

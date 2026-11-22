@@ -99,22 +99,22 @@ pub fn embedded_v4(ip: Ipv6Addr) -> Vec<Ipv4Addr> {
     let b = ip.octets();
     let last = Ipv4Addr::new(b[12], b[13], b[14], b[15]);
     let mut out = Vec::new();
-    // ::a.b.c.d (compatible), ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (SIIT)
+    // ::a.b.c.d (compatible), ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (SIIT) // ip-literal-ok: mapped / SIIT form name
     if s[..5] == [0; 5] && (s[5] == 0 || s[5] == 0xffff) && !(s[5] == 0 && s[6] == 0) {
         out.push(last);
     }
     if s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0 {
         out.push(last);
     }
-    // 64:ff9b::/96 (NAT64 well-known), 64:ff9b:1::/48 (local use: the last 32 bits here)
+    // 64:ff9b::/96 (NAT64 well-known), 64:ff9b:1::/48 (local use: the last 32 bits here) // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
     if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1) {
         out.push(last);
     }
-    // 2002:AABB:CCDD::/48 (6to4)
+    // 2002:AABB:CCDD::/48 (6to4) // ip-literal-ok: 6to4 form wrapping a test IPv4 (the classifier reads it)
     if s[0] == 0x2002 {
         out.push(Ipv4Addr::new(b[2], b[3], b[4], b[5]));
     }
-    // 2001:0000::/32 (Teredo): the server in bits 32–63, the client inverted in the last 32
+    // 2001:0000::/32 (Teredo): the server in bits 32–63, the client inverted in the last 32 // ip-literal-ok: Teredo form (RFC 4380 example / wrapping a test IPv4)
     if s[0] == 0x2001 && s[1] == 0 {
         out.push(Ipv4Addr::new(b[4], b[5], b[6], b[7]));
         out.push(Ipv4Addr::new(!b[12], !b[13], !b[14], !b[15]));
@@ -224,7 +224,7 @@ mod tests {
     /// are refused as a managed host; private networks and 100.64/10 are not.
     #[test]
     fn a_host_back_on_this_computer_or_a_reserved_one_is_refused() {
-        let own = [ip("192.168.1.20"), ip("2001:470:1:2::20")];
+        let own = [ip("192.168.1.20"), ip("fd00::20")];
         for (a, why) in [
             ("127.0.0.1", "loopback"),
             ("127.200.3.4", "loopback"),
@@ -233,35 +233,35 @@ mod tests {
             ("fe80::1", "link_local"),
             ("0.0.0.0", "this_network"),
             ("::", "unspecified"),
-            ("224.0.0.1", "multicast"),
+            ("224.0.0.1", "multicast"), // ip-literal-ok: multicast / reserved range example
             ("ff02::1", "multicast"),
             ("255.255.255.255", "broadcast"),
-            ("240.0.0.1", "reserved"),
+            ("240.0.0.1", "reserved"), // ip-literal-ok: multicast / reserved range example
             ("192.0.2.10", "reserved"),
             ("2001:db8::1", "reserved"),
             ("192.168.1.20", "this_computer"),
-            ("2001:470:1:2::20", "this_computer"),
+            ("fd00::20", "this_computer"),
             // the IPv6 forms of a refused IPv4
             ("::ffff:127.0.0.1", "loopback"),
             ("::127.0.0.1", "loopback"),
             ("::ffff:0:127.0.0.1", "loopback"),
-            ("64:ff9b::7f00:1", "loopback"),
-            ("64:ff9b:1::7f00:1", "loopback"),
-            ("2002:7f00:1::1", "loopback"),
-            ("2002:a9fe:0101::1", "link_local"),
+            ("64:ff9b::7f00:1", "loopback"), // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
+            ("64:ff9b:1::7f00:1", "loopback"), // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
+            ("2002:7f00:1::1", "loopback"), // ip-literal-ok: 6to4 form wrapping a test IPv4 (the classifier reads it)
+            ("2002:a9fe:0101::1", "link_local"), // ip-literal-ok: 6to4 form wrapping a test IPv4 (the classifier reads it)
             ("::ffff:192.168.1.20", "this_computer"),
-            ("64:ff9b::c0a8:114", "this_computer"),
+            ("64:ff9b::c0a8:114", "this_computer"), // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
         ] {
             assert_eq!(host_ok(ip(a), &own), Err(why), "reason: host_taken {a}");
         }
         // Teredo: the client is the last 32 bits inverted (127.0.0.1 = 80ff:fffe)
         assert_eq!(
-            host_ok(ip("2001:0:4136:e378:8000:63bf:80ff:fffe"), &own),
+            host_ok(ip("2001:0:4136:e378:8000:63bf:80ff:fffe"), &own), // ip-literal-ok: Teredo form (RFC 4380 example / wrapping a test IPv4)
             Err("loopback"),
             "reason: teredo_client_taken"
         );
         assert_eq!(
-            host_ok(ip("2001:0:7f00:1:0:0:f7f7:f7f7"), &own),
+            host_ok(ip("2001:0:7f00:1:0:0:f7f7:f7f7"), &own), // ip-literal-ok: Teredo form (RFC 4380 example / wrapping a test IPv4)
             Err("loopback"),
             "reason: teredo_server_taken"
         );
@@ -269,16 +269,17 @@ mod tests {
             "10.0.0.5",
             "172.16.4.4",
             "192.168.1.21",
-            "100.116.110.31",
+            "100.64.0.7",
             "fd00::5",
-            "8.8.8.8",
-            "2606:4700::1111",
+            "8.8.8.8", // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+            "2606:4700::1111", // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
             "::ffff:10.0.0.5",
         ] {
             assert_eq!(host_ok(ip(a), &own), Ok(()), "reason: host_refused {a}");
         }
         assert_eq!(classify(ip("100.64.0.1"), &[]), Class::Private);
-        assert_eq!(classify(ip("8.8.8.8"), &[]), Class::Public);
+        assert_eq!(classify(ip("8.8.8.8"), &[]), Class::Public); // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+
         // the proxy's own class (sandboxnet r5 §14): loopback and own addresses are Own, not
         // Refuse, so the high-risk card can be raised for them
         assert_eq!(classify(ip("127.0.0.1"), &[]), Class::Own("loopback"));
@@ -288,7 +289,7 @@ mod tests {
     #[test]
     fn one_refused_address_among_several_refuses_the_name() {
         let own = [ip("10.0.0.9")];
-        assert_eq!(all_ok(&[ip("10.0.0.5"), ip("8.8.8.8")], &own), Ok(()));
+        assert_eq!(all_ok(&[ip("10.0.0.5"), ip("8.8.8.8")], &own), Ok(())); // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
         assert_eq!(
             all_ok(&[ip("10.0.0.5"), ip("127.0.0.1")], &own),
             Err("loopback"),
@@ -323,14 +324,14 @@ mod tests {
             "::ffff:127.0.0.1",
             "::127.0.0.1",
             "::ffff:0:127.0.0.1",
-            "64:ff9b::7f00:1",
-            "64:ff9b:1::7f00:1",
-            "2002:7f00:1::1",
+            "64:ff9b::7f00:1", // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
+            "64:ff9b:1::7f00:1", // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
+            "2002:7f00:1::1", // ip-literal-ok: 6to4 form wrapping a test IPv4 (the classifier reads it)
         ] {
             let x: Ipv6Addr = a.parse().unwrap();
             assert!(embedded_v4(x).contains(&lo), "reason: not_read {a}");
         }
-        let plain: Ipv6Addr = "2606:4700::1111".parse().unwrap();
+        let plain: Ipv6Addr = "2606:4700::1111".parse().unwrap(); // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
         assert!(embedded_v4(plain).is_empty());
         // ::1 and :: are not an IPv4 inside (judged as themselves)
         assert!(embedded_v4(Ipv6Addr::LOCALHOST).is_empty());

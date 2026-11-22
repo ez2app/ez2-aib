@@ -526,7 +526,7 @@ mod tests {
     /// raises the card unless listed; public passes; the strictest of several wins.
     #[test]
     fn this_computer_is_refused_private_asks_and_public_passes() {
-        let own = [ip("192.168.1.20"), ip("2a00:1450:4001::99")];
+        let own = [ip("192.168.1.20"), ip("fd00::99")];
         let none = |_: IpAddr, _: u16| false;
         let all = |_: IpAddr, _: u16| true;
         for a in [
@@ -535,9 +535,9 @@ mod tests {
             "169.254.169.254",
             "fe80::1",
             "192.168.1.20",
-            "2a00:1450:4001::99",
+            "fd00::99",
             "::ffff:127.0.0.1",
-            "64:ff9b::7f00:1",
+            "64:ff9b::7f00:1", // ip-literal-ok: NAT64 form wrapping a test IPv4 (the classifier reads it)
         ] {
             assert_eq!(
                 verdict(&[ip(a)], 47781, &own, &all),
@@ -546,7 +546,7 @@ mod tests {
             );
         }
         assert_eq!(
-            verdict(&[ip("224.0.0.1")], 1, &own, &all),
+            verdict(&[ip("224.0.0.1")], 1, &own, &all), // ip-literal-ok: multicast / reserved range example
             Verdict::Refuse("multicast")
         );
         assert_eq!(
@@ -554,8 +554,8 @@ mod tests {
             Verdict::Card(ip("10.0.0.5"))
         );
         assert_eq!(
-            verdict(&[ip("100.64.1.1")], 22, &own, &none),
-            Verdict::Card(ip("100.64.1.1"))
+            verdict(&[ip("100.64.0.1")], 22, &own, &none),
+            Verdict::Card(ip("100.64.0.1"))
         );
         assert_eq!(
             verdict(&[ip("10.0.0.5")], 22, &own, &all),
@@ -568,23 +568,23 @@ mod tests {
             "reason: list_ignores_port"
         );
         assert_eq!(
-            verdict(&[ip("8.8.8.8")], 443, &own, &none),
-            Verdict::Pass(ip("8.8.8.8"))
+            verdict(&[ip("8.8.8.8")], 443, &own, &none), // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+            Verdict::Pass(ip("8.8.8.8")) // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
         );
         // a name resolved to a public and a loopback address: refused, not the public one
         assert_eq!(
-            verdict(&[ip("1.2.3.4"), ip("127.0.0.1")], 80, &own, &all),
+            verdict(&[ip("1.2.3.4"), ip("127.0.0.1")], 80, &own, &all), // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
             Verdict::Refuse("this_computer"),
             "reason: mixed_took_public"
         );
         assert_eq!(
-            verdict(&[ip("1.2.3.4"), ip("10.0.0.5")], 80, &own, &none),
+            verdict(&[ip("1.2.3.4"), ip("10.0.0.5")], 80, &own, &none), // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
             Verdict::Card(ip("10.0.0.5"))
         );
         let only_private = |a: IpAddr, _: u16| a == ip("10.0.0.5");
         assert_eq!(
-            verdict(&[ip("1.2.3.4"), ip("10.0.0.5")], 80, &own, &only_private),
-            Verdict::Pass(ip("1.2.3.4"))
+            verdict(&[ip("1.2.3.4"), ip("10.0.0.5")], 80, &own, &only_private), // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+            Verdict::Pass(ip("1.2.3.4")) // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
         );
         assert_eq!(verdict(&[], 80, &own, &all), Verdict::Refuse("no_address"));
         assert!(LOCAL_REFUSED.contains("本機服務"));
