@@ -34,6 +34,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",
 ] }
 objc2-local-authentication = { version = "=0.3.2", default-features = false, features = [
+    "LABiometryType", # S10-2 measurement: owner_check_state reads biometryType (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
     "LAContext",
     "std",
 ] }
@@ -45,6 +46,7 @@ objc2-local-authentication = { version = "=0.3.2", default-features = false, fea
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
