@@ -31,6 +31,7 @@ pub mod folders;
 pub mod gh_token;
 pub mod gh_view;
 pub mod git_cred;
+pub mod grants;
 pub mod guard;
 pub mod hosts;
 pub mod idem;

@@ -307,8 +307,14 @@ pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
 
 /// The window's first words: the plain sentence, or the operation's name when it has none.
 pub fn top_words(ask: &Ask) -> String {
-    plain_words(ask.operation, &ask.params)
-        .unwrap_or_else(|| action_words(ask.operation).to_owned())
+    let plain = plain_words(ask.operation, &ask.params)
+        .unwrap_or_else(|| action_words(ask.operation).to_owned());
+    // how long it stays open, when the operation takes a hold (grants.rs; f163c M2): the
+    // window and the countdown beside it both say it
+    match crate::grants::hold_in(ask.operation, &ask.params) {
+        Ok(Some(h)) => format!("{plain};{}", h.words()),
+        _ => plain,
+    }
 }
 
 /// Four characters of the ticket's hash, shown by the system's window and by the countdown
@@ -573,6 +579,10 @@ impl Owner {
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
     ) -> Asked {
         let now = (self.clock)();
+        // a hold the operation does not give (or one it needs and lacks) raises no window
+        if let Err(why) = crate::grants::hold_in(ask.operation, &ask.params) {
+            return Asked::Unavailable(why);
+        }
         let Ok(ticket) = crate::sessions::new_id("ot_") else {
             return Asked::Unavailable(UNAVAILABLE);
         };
@@ -1582,6 +1592,71 @@ mod tests {
             o.state(&t, &a.by),
             State::Expired,
             "reason: late_yes_not_expired"
+        );
+    }
+
+    fn held(op: &'static str, hold: &str) -> Ask {
+        let mut x = a();
+        x.operation = op;
+        x.resource = "seat-work/seat_ab".into();
+        x.params = format!(r#"{{"folder":"seat-work/seat_ab","hold":"{hold}"}}"#).into_bytes();
+        x
+    }
+
+    /// HD1 (DESIGN-persona-propose-osverify r1 §2a): the hold is in the window's words and in
+    /// what the owner approves; a page that asks again with another hold has no approval.
+    #[test]
+    fn the_hold_is_in_the_window_and_in_what_was_approved() {
+        at(5000);
+        let x = held(crate::grants::OP_FS_OPEN, "min15");
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        assert!(
+            w.lines().next().unwrap().contains("開放 15 分鐘"),
+            "reason: hold_words {w}"
+        );
+        assert!(top_words(&x).contains("開放 15 分鐘"), "reason: hud_words");
+        let o = owner(Ok(()));
+        let t = ticket(o.ask(&x, inline));
+        assert!(
+            !o.approved_for(&t, &held(crate::grants::OP_FS_OPEN, "hour1")),
+            "reason: other_hold_approved"
+        );
+        let t = ticket(o.ask(&x, inline));
+        assert!(o.approved_for(&t, &x), "reason: same_hold_not_approved");
+    }
+
+    /// HD2: a hold the operation's row does not give, or a hold on an operation that takes
+    /// none, raises no window.
+    #[test]
+    fn a_hold_not_given_raises_no_window() {
+        at(6000);
+        let o = owner(Ok(()));
+        for (x, why) in [
+            (
+                held(crate::grants::OP_NET_LOCAL_SELF, "until_seat_ends"),
+                "local_self_until_end",
+            ),
+            (held(crate::grants::OP_NET_AIBD_SELF, "once"), "aibd_self"),
+            (held(crate::grants::OP_FS_OPEN, "2h"), "unknown_hold"),
+            (held(crate::repos::OP_REGISTER, "min15"), "not_in_table"),
+        ] {
+            assert_eq!(
+                o.ask(&x, inline),
+                Asked::Unavailable(crate::grants::NOT_ALLOWED),
+                "reason: {why}"
+            );
+        }
+        let mut x = held(crate::grants::OP_FS_OPEN, "once");
+        x.params = br#"{"folder":"seat-work/seat_ab"}"#.to_vec();
+        assert_eq!(
+            o.ask(&x, inline),
+            Asked::Unavailable(crate::grants::MISSING),
+            "reason: hold_missing"
+        );
+        // an operation with no hold is as before
+        assert!(
+            matches!(o.ask(&reg(), inline), Asked::Ticket(_)),
+            "reason: reg"
         );
     }
 }
