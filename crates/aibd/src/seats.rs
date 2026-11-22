@@ -2560,7 +2560,7 @@ async fn open_checked(
             // it); not kept ⇒ the seat does not start (hold less, never more)
             if let Some(p) = &req.perm {
                 let (db, id, s) = (st.messages.clone(), seat_id.clone(), p.state());
-                let by = format!("page:{}", key.as_deref().unwrap_or("-"));
+                let by = format!("page:{}", key.as_ref().map_or("-", |k| k.key.as_str()));
                 let kept = tokio::task::spawn_blocking(move || {
                     db.seat_perm_open(&id, &s, &by, &now_rfc3339())
                 })
