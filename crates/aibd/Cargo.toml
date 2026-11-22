@@ -42,6 +42,9 @@ getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
+# S11-2 passphrase KDF (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7): exact version, no default
+# features; only `alloc` for hash_password_into. New external crate: f163c review + lock from 90856.
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }
 subtle = "2.6.1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk"] }
 thiserror = "2.0.21"

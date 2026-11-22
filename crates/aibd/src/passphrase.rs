@@ -6,9 +6,9 @@
 //! - [`Record`]: what is kept — the KDF's name and costs, a 32-byte salt, the 32-byte result,
 //!   when it was set. Never the passphrase. A record with costs below [`MIN`] is refused when
 //!   read (a seat that lowers them in the file gets nothing: the passphrase is asked again).
-//! - [`Kdf`]: the key derivation is passed in. The Argon2id backend (m = 256 MiB, t = 3,
-//!   p = 1, about a second, f163c r7 L1) needs a new crate in Cargo.lock, which this machine
-//!   cannot update; it comes in the next part with its dependency review.
+//! - [`Kdf`]: the key derivation is passed in; [`Argon2id`] is the backend (argon2 =0.5.3, m =
+//!   256 MiB, t = 3, p = 1, about a second, f163c r7 L1). Its Cargo.lock lines come from 90856
+//!   on a test machine (this one runs no cargo); a new external crate: f163c reviews it.
 //! - [`check_new`]: the rules for a sentence the owner thinks up (§11h M1 fallback): at least
 //!   5 words or 24 characters, not the account or computer name.
 //! - [`lock_after`]: the software lock — 5 wrong in a row lock 15 minutes, each further wrong
@@ -169,6 +169,22 @@ pub fn lock_after(wrong: u32) -> u64 {
         .min(MAX_LOCK_SECS)
 }
 
+/// The Argon2id backend (argon2 0.5, version 0x13), at the costs the record names.
+pub struct Argon2id;
+
+impl Kdf for Argon2id {
+    fn name(&self) -> &'static str {
+        ARGON2ID
+    }
+    fn derive(&self, phrase: &[u8], salt: &[u8; SALT_LEN], c: Costs) -> Option<[u8; OUT_LEN]> {
+        let params = argon2::Params::new(c.m_kib, c.t, c.p, Some(OUT_LEN)).ok()?;
+        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+        let mut out = [0u8; OUT_LEN];
+        a.hash_password_into(phrase, salt, &mut out).ok()?;
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -230,6 +246,37 @@ mod tests {
         let mut r = rec();
         r.salt.pop();
         assert_eq!(usable(&r, &Fake), Err(Refused::Malformed));
+    }
+
+    /// RFC 9106 §5.3 Argon2id test vector shape is not used here (it needs secret / ad); this
+    /// checks the backend is Argon2id at small costs, deterministic, salt- and phrase-bound.
+    #[test]
+    fn the_argon2id_backend_is_deterministic_and_bound_to_salt_and_phrase() {
+        let small = Costs {
+            m_kib: 64,
+            t: 1,
+            p: 1,
+        };
+        let a = Argon2id.derive(b"phrase", &[1; SALT_LEN], small).unwrap();
+        assert_eq!(
+            a,
+            Argon2id.derive(b"phrase", &[1; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id.derive(b"phrase", &[2; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id.derive(b"phrasf", &[1; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id
+                .derive(b"phrase", &[1; SALT_LEN], Costs { t: 2, ..small })
+                .unwrap()
+        );
+        assert_eq!(Argon2id.name(), ARGON2ID);
     }
 
     #[test]
