@@ -25,6 +25,9 @@ pub enum EditError {
     Heading(&'static str),
     /// The card has no front matter `name:` to change.
     NoName,
+    /// A section holds a character a reader would not see (zero-width, a direction mark…):
+    /// f163c REVIEW-a1 pre L1, the same table as the persona diff's (tab and U+3000 allowed).
+    Hidden(&'static str),
 }
 
 impl EditError {
@@ -33,6 +36,7 @@ impl EditError {
             Self::TooLong(_) => "too_long",
             Self::Heading(_) => "section_heading",
             Self::NoName => "card_has_no_name",
+            Self::Hidden(_) => "section_hidden_char",
         }
     }
 }
@@ -76,6 +80,11 @@ fn starts_a_heading(l: &str) -> bool {
     ((1..=6).contains(&hashes) && t[hashes..].starts_with([' ', '\t'])) || t.trim_end() == "---"
 }
 
+/// A character the card's reader would not see; line ends, tab and U+3000 are text.
+fn unseen(c: char) -> bool {
+    !matches!(c, '\n' | '\t' | '\u{3000}') && aib_approve::text::is_bad_char(c)
+}
+
 /// What the page may send for a section: control characters out (line ends kept), within
 /// [`SECTION_MAX`], no line that would start a new section.
 pub fn clean_section(field: &'static str, body: &str) -> Result<String, EditError> {
@@ -89,6 +98,9 @@ pub fn clean_section(field: &'static str, body: &str) -> Result<String, EditErro
     }
     if b.lines().any(starts_a_heading) {
         return Err(EditError::Heading(field));
+    }
+    if b.chars().any(unseen) {
+        return Err(EditError::Hidden(field));
     }
     Ok(b.trim_matches('\n').to_owned())
 }

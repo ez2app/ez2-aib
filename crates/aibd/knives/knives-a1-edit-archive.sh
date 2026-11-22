@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A1 (DESIGN-a1-edit-archive-08de5-1123 r0, f163c REVIEW-a1 r0): persona sections changed with the owner, brains and roles renamed, archived and restored
+# A1 (DESIGN-a1-edit-archive-08de5-1123 r0, f163c REVIEW-a1 r0 + pre): persona sections changed with the owner, brains and roles renamed, archived and restored
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -7,6 +7,12 @@ cd "$(git rev-parse --show-toplevel)"
 python3 -I scripts/knife.py crates/aibd/src/persona_card.rs \
   '    ((1..=6).contains(&hashes) && t[hashes..].starts_with(['"'"' '"'"', '"'"'\t'"'"'])) || t.trim_end() == "---"' \
   '    hashes == 2 && t[hashes..].starts_with('"'"' '"'"')' \
+  --expect-fail persona_edit::tests::a_heading_or_a_rule_line_in_a_section_is_refused \
+  -- cargo test -p aibd --locked --lib persona_edit::tests::a_heading_or_a_rule_line_in_a_section_is_refused
+# a1-hidden
+python3 -I scripts/knife.py crates/aibd/src/persona_card.rs \
+  '    if b.chars().any(unseen) {' \
+  '    if b.is_empty() && b.chars().any(unseen) {' \
   --expect-fail persona_edit::tests::a_heading_or_a_rule_line_in_a_section_is_refused \
   -- cargo test -p aibd --locked --lib persona_edit::tests::a_heading_or_a_rule_line_in_a_section_is_refused
 # a1-tail
@@ -23,8 +29,8 @@ python3 -I scripts/knife.py crates/aibd/src/persona_edit.rs \
   -- cargo test -p aibd --locked --lib persona_edit::tests::only_the_sections_sent_change_and_the_window_says_which
 # a1-window
 python3 -I scripts/knife.py crates/aibd/src/persona_edit.rs \
-  '            card::SECTIONS.iter().any(|(_, h)| *h == name).then(|| {' \
-  '            card::SECTIONS.iter().any(|(_, h)| !h.is_empty() || *h == name).then(|| {' \
+  '        if !card::SECTIONS.iter().any(|(_, h)| *h == name) {' \
+  '        if card::SECTIONS.is_empty() {' \
   --expect-fail persona_edit::tests::the_window_says_only_known_sections \
   -- cargo test -p aibd --locked --lib persona_edit::tests::the_window_says_only_known_sections
 # a1-taken

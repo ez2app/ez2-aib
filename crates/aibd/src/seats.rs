@@ -1680,7 +1680,9 @@ pub async fn page_open(
             }
         },
     };
-    // A1: an archived persona, brain or role opens nothing (a seat already running goes on)
+    // A1: an archived persona, brain or role opens nothing (a seat already running goes on).
+    // A read that fails opens as before (f163c pre N2): archiving tidies the pickers, it is
+    // not a guard; nothing an archived card holds is unsafe to open.
     let (db, p, b, r) = (
         st.messages.clone(),
         req.persona_uid.clone(),

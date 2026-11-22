@@ -76,14 +76,18 @@ fn only(body: &Value, keys: &[&str]) -> Result<(), Response> {
     }
 }
 
+/// A uid as aibd's lists give it: 1-16 of `a-z 0-9 _` (the act and the window's words use
+/// the same rule, f163c pre N1).
+fn uid_ok(u: &str) -> bool {
+    (1..=16).contains(&u.len())
+        && u.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 fn uid_of(body: &Value, key: &str) -> Result<String, Response> {
     body.get(key)
         .and_then(Value::as_str)
-        .filter(|u| {
-            (1..=16).contains(&u.len())
-                && u.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        })
+        .filter(|u| uid_ok(u))
         .map(str::to_owned)
         .ok_or_else(|| bad(key, "a uid from aibd's list"))
 }
@@ -181,23 +185,16 @@ pub fn ask_of(
 
 /// The window's sentence for [`OP_SET`]: `改人格 <uid> 的 紅線(原 12 字 → 30 字)…`.
 pub fn plain(params: &Value) -> Option<String> {
-    let uid = params["persona_uid"]
-        .as_str()
-        .filter(|u| (1..=16).contains(&u.len()) && u.bytes().all(|b| b.is_ascii_alphanumeric()))?;
-    let parts: Vec<String> = params["sections"]
-        .as_array()?
-        .iter()
-        .map(|s| {
-            let name = s["name"].as_str()?;
-            card::SECTIONS.iter().any(|(_, h)| *h == name).then(|| {
-                format!(
-                    "{name}(原 {} 字 → {} 字)",
-                    s["before"].as_u64()?,
-                    s["after"].as_u64()?
-                )
-            })?
-        })
-        .collect::<Option<_>>()?;
+    let uid = params["persona_uid"].as_str().filter(|u| uid_ok(u))?;
+    let mut parts = Vec::new();
+    for s in params["sections"].as_array()? {
+        let name = s["name"].as_str()?;
+        if !card::SECTIONS.iter().any(|(_, h)| *h == name) {
+            return None;
+        }
+        let (before, after) = (s["before"].as_u64()?, s["after"].as_u64()?);
+        parts.push(format!("{name}(原 {before} 字 → {after} 字)"));
+    }
     (!parts.is_empty()).then(|| format!("改人格 {uid} 的 {}", parts.join("、")))
 }
 
@@ -507,7 +504,20 @@ mod tests {
                 "reason: heading_let_in {bad:?}"
             );
         }
-        assert!(new_text(CARD, &json!({"duty": "#標籤 不是標題\n-- 兩槓"})).is_ok());
+        assert!(new_text(
+            CARD,
+            &json!({"duty": "#標籤 不是標題\n-- 兩槓\t全形\u{3000}空白"})
+        )
+        .is_ok());
+        // f163c pre L1: what a reader would not see is refused, not dropped
+        for bad in ["\u{202e}", "\u{200b}", "\u{2066}", "\u{feff}"] {
+            let r = new_text(CARD, &json!({"redlines": format!("不 push{bad}。")}));
+            assert_eq!(
+                r.map(|_| ()),
+                Err(card::EditError::Hidden("redlines")),
+                "reason: hidden_char_let_in {bad:?}"
+            );
+        }
     }
 
     /// A1-2: the window's words say nothing for a section name that is not one of the three.
@@ -518,5 +528,11 @@ mod tests {
         let p =
             json!({"persona_uid": "../x", "sections": [{"name": "紅線", "before": 1, "after": 2}]});
         assert!(plain(&p).is_none());
+        // pre N1: a uid the act takes (with `_`) is named in the window, not dropped
+        let p = json!({"persona_uid": "p_ab1", "sections": [{"name": "紅線", "before": 1, "after": 2}]});
+        assert_eq!(
+            plain(&p).as_deref(),
+            Some("改人格 p_ab1 的 紅線(原 1 字 → 2 字)")
+        );
     }
 }
