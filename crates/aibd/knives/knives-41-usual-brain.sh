@@ -13,7 +13,7 @@ ut() { python3 -I scripts/knife.py crates/aibd/src/registry.rs "$1" "$2" --expec
   -- cargo test -p aibd --locked --lib "registry::tests::a_tie_at_the_same_moment_is_the_smaller_uid_and_odd_stamps_are_oldest"; }
 # UB1 the newest use is not kept, so a tie is not decided by time
 ub '        t.1 = t.1.max(utc_stamp(&m.updated_at));' \
-   '        // knife'
+   '        t.1 = t.1.max(utc_stamp("")); // knife'
 # UB2 the first brain read wins whatever the count
 ub '            Some((u, uat)) => (n, at) > (u.seats, *uat),' \
    '            Some(_) => false,'
