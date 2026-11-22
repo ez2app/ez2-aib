@@ -28,6 +28,14 @@ pub const MIN: Costs = Costs {
     p: 1,
 };
 
+/// The highest costs a kept record may name (f163c PREREAD e5f942dd L1): a seat that raises
+/// them in the file would make every check take all memory and stop aibd.
+pub const MAX: Costs = Costs {
+    m_kib: 1024 * 1024,
+    t: 10,
+    p: 4,
+};
+
 pub const SALT_LEN: usize = 32;
 pub const OUT_LEN: usize = 32;
 
@@ -93,6 +101,8 @@ pub fn same(a: &[u8], b: &[u8]) -> bool {
 pub enum Refused {
     /// Not this version, not this KDF, or costs below [`MIN`].
     Weak,
+    /// Costs above [`MAX`].
+    TooCostly,
     Malformed,
 }
 
@@ -105,9 +115,24 @@ pub fn usable(r: &Record, kdf: &dyn Kdf) -> Result<([u8; SALT_LEN], [u8; OUT_LEN
     if c.m_kib < MIN.m_kib || c.t < MIN.t || c.p < MIN.p {
         return Err(Refused::Weak);
     }
+    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {
+        return Err(Refused::TooCostly);
+    }
     let salt = unhex::<SALT_LEN>(&r.salt).ok_or(Refused::Malformed)?;
     let out = unhex::<OUT_LEN>(&r.out).ok_or(Refused::Malformed)?;
     Ok((salt, out))
+}
+
+/// The record's own hash (f163c PREREAD e5f942dd L2): aibd keeps the one it read at start and
+/// the one its setting window wrote; a record that changed otherwise is shown red and not used
+/// until the owner sets it again in the window (wired in the window's part).
+pub fn record_sha(r: &Record) -> String {
+    use sha2::{Digest, Sha256};
+    let line = format!(
+        "aibd/passphrase-record/v1\n{}\n{}\n{}/{}/{}\n{}\n{}\n{}\n",
+        r.v, r.kdf, r.costs.m_kib, r.costs.t, r.costs.p, r.salt, r.out, r.set_at
+    );
+    hex(&Sha256::digest(line.as_bytes()))
 }
 
 /// The record for a new passphrase (the salt from the caller's random source).
@@ -277,6 +302,40 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(Argon2id.name(), ARGON2ID);
+    }
+
+    /// L1: costs above the ceiling are refused before anything is derived.
+    #[test]
+    fn a_record_with_costs_above_the_ceiling_is_refused() {
+        for c in [
+            Costs {
+                m_kib: 4 * 1024 * 1024,
+                ..MIN
+            },
+            Costs { t: 1000, ..MIN },
+            Costs { p: 64, ..MIN },
+        ] {
+            let mut r = rec();
+            r.costs = c;
+            assert_eq!(usable(&r, &Fake), Err(Refused::TooCostly), "{c:?}");
+        }
+        assert!(usable(&rec(), &Fake).is_ok());
+    }
+
+    /// L2: any field changed changes the record's hash.
+    #[test]
+    fn the_record_hash_moves_with_every_field() {
+        let base = record_sha(&rec());
+        assert_eq!(base, record_sha(&rec()));
+        let mut r = rec();
+        r.out.replace_range(0..2, "zz");
+        assert_ne!(record_sha(&r), base);
+        let mut r = rec();
+        r.salt.replace_range(0..2, "zz");
+        assert_ne!(record_sha(&r), base);
+        let mut r = rec();
+        r.set_at += 1;
+        assert_ne!(record_sha(&r), base);
     }
 
     #[test]
