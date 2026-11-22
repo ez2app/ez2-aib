@@ -25,3 +25,7 @@ eg '        ("claude", "work") => "hint",' '        ("claude", "work") => "enfor
 eg '        ("claude", "work") if !proxy => "off",' '        ("claude", "work") if !proxy && os == "none" => "off", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there
 # EG10 a dgrs seat is said to be enforced
 eg '        (_, "dgrs") => "hint",' '        (_, "dgrs") => "enforced", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there
+# EG11 (A6d §18.2) the reserved range is not counted as aibd's
+eg '    if AIBD_RESERVED.contains(&port) || own_binds.contains(&port) || preview_ports.contains(&port) {' '    if own_binds.contains(&port) || preview_ports.contains(&port) || AIBD_RESERVED.is_empty() { // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
+# EG12 the reserved range stops short of the previews
+eg 'pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47799;' 'pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47780; // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is

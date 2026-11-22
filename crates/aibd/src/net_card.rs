@@ -124,6 +124,23 @@ pub fn decide(choice: Option<&str>, owner: Owner) -> Option<Verified> {
     Some(Verified { lasts })
 }
 
+/// The high-risk card's choices (A6d, DESIGN-sandboxnet r9 §18.3: a service on this computer
+/// itself): no 到這一位關掉, no 一直允許, and every yes, 只這一次 too, needs the owner.
+pub const HIGH_CHOICES: [Choice; 4] = [Choice::Deny, Choice::Once, Choice::Min15, Choice::Hour1];
+
+/// The high-risk card's answer: a choice not on it, or any yes without the owner's, refuses.
+pub fn decide_high(choice: Option<&str>, owner: Owner) -> Option<Verified> {
+    let c = Choice::parse(choice?)?;
+    if !HIGH_CHOICES.contains(&c) {
+        return None;
+    }
+    let lasts = c.lasts()?;
+    if owner != Owner::Yes {
+        return None;
+    }
+    Some(Verified { lasts })
+}
+
 /// One seat's "always allow" list: exact `ip:port`, nothing wider.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AllowList {
@@ -257,6 +274,39 @@ mod tests {
         ] {
             assert_eq!(decide(c, Owner::Yes), None, "reason: not_a_choice {c:?}");
         }
+    }
+
+    #[test]
+    fn the_high_risk_card_has_four_choices_and_every_yes_needs_the_owner() {
+        let ids: Vec<&str> = HIGH_CHOICES.iter().map(|c| c.id()).collect();
+        assert_eq!(ids, ["deny", "once", "min15", "hour1"]);
+        // once is free on the ordinary card, never here (N38)
+        assert!(decide(Some("once"), Owner::NotAsked).is_some());
+        for id in ["once", "min15", "hour1"] {
+            assert_eq!(
+                decide_high(Some(id), Owner::NotAsked),
+                None,
+                "reason: high_yes_without_owner {id}"
+            );
+            assert_eq!(
+                decide_high(Some(id), Owner::Failed),
+                None,
+                "reason: high_yes_without_owner {id}"
+            );
+            assert!(decide_high(Some(id), Owner::Yes).is_some());
+        }
+        // not on this card, whatever the owner did (N37)
+        for id in ["until_seat_ends", "always", "deny", "forever"] {
+            assert_eq!(
+                decide_high(Some(id), Owner::Yes),
+                None,
+                "reason: high_card_took {id}"
+            );
+        }
+        // a high-risk yes is never written to the always list
+        let yes = decide_high(Some("hour1"), Owner::Yes).unwrap();
+        let mut l = AllowList::new("a1b2c");
+        assert!(!l.add(at("127.0.0.1:5432"), &yes));
     }
 
     #[test]

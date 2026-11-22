@@ -246,6 +246,31 @@ pub fn verdict(
     }
 }
 
+/// Ports counted as aibd's on this computer whether or not anything listens on them
+/// (DESIGN-sandboxnet r9 §18.2, A6d): the shipped aibd 47770, the mother / page 47780 and the
+/// previews' defaults all fall here. Not listing them one by one is the point (§12 L8).
+pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47799;
+
+/// What a destination on this computer is (A6d §18.1): one of aibd's ports, refused with no card
+/// (DECISION 十三: back into aibd is not in the first version), or another program's service, the
+/// high-risk card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Local {
+    Aibd,
+    Service,
+}
+
+/// `own_binds` are the ports this aibd process bound (kept in the process); `preview_ports` are
+/// what the previews' run files say, which only ever add to the list (a deleted file still leaves
+/// the reserved range, the defence).
+pub fn local_kind(port: u16, own_binds: &[u16], preview_ports: &[u16]) -> Local {
+    if AIBD_RESERVED.contains(&port) || own_binds.contains(&port) || preview_ports.contains(&port) {
+        Local::Aibd
+    } else {
+        Local::Service
+    }
+}
+
 /// Whether the proxy that carries a seat's network is in this build. The judging above is; the
 /// sockets are the next slice (DESIGN-sandboxnet §6). Until they are, no seat's network goes
 /// through aibd, so no mode may say its rules are enforced.
@@ -271,6 +296,39 @@ pub fn net_state(os: &str, provider: &str, mode: &str, proxy: bool) -> &'static 
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is() {
+        // the reserved range, listened on or not (N36)
+        for p in [47770, 47780, 47788, 47799] {
+            assert_eq!(
+                local_kind(p, &[], &[]),
+                Local::Aibd,
+                "reason: reserved_port_open {p}"
+            );
+        }
+        // a preview's run file deleted: still in the range (N39)
+        assert_eq!(local_kind(47781, &[], &[]), Local::Aibd);
+        // outside the range: this process's own binds and the previews' listed ports
+        assert_eq!(
+            local_kind(51000, &[51000], &[]),
+            Local::Aibd,
+            "reason: own_bind_open"
+        );
+        assert_eq!(
+            local_kind(52000, &[], &[52000]),
+            Local::Aibd,
+            "reason: preview_port_open"
+        );
+        // another program's service: the high-risk card (N37)
+        for p in [22, 3000, 5432, 47769, 47800] {
+            assert_eq!(
+                local_kind(p, &[51000], &[52000]),
+                Local::Service,
+                "reason: service_refused {p}"
+            );
+        }
+    }
 
     #[test]
     fn a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there() {

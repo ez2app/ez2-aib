@@ -16,3 +16,7 @@ nc '        yes.lasts == Lasts::Always && self.rows.insert(at)' '        self.ro
 nc '        Some(open.iter().copied().filter(|o| *o == at).collect())' '        Some(open.iter().copied().filter(|o| *o == at || o.port() == 80).collect()) // knife' net_card::tests::only_always_writes_the_list_and_taking_back_closes_its_tunnels
 # NC5 the list allows the address on any port
 nc '        self.rows.contains(&SocketAddr::new(ip, port))' '        self.rows.iter().any(|r| r.ip() == ip && port > 0) // knife' net_card::tests::only_always_writes_the_list_and_taking_back_closes_its_tunnels
+# NC6 (A6d §18.3) the high-risk card takes 到這一位關掉 / 一直允許
+nc '    if !HIGH_CHOICES.contains(&c) {' '    if !HIGH_CHOICES.contains(&c) && c == Choice::Deny { // knife' net_card::tests::the_high_risk_card_has_four_choices_and_every_yes_needs_the_owner
+# NC7 (N38) the high-risk 只這一次 is taken without the owner
+nc '    if owner != Owner::Yes {' '    if owner == Owner::Failed { // knife' net_card::tests::the_high_risk_card_has_four_choices_and_every_yes_needs_the_owner
