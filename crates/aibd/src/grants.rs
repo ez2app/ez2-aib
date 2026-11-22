@@ -24,7 +24,8 @@ use std::sync::{LazyLock, Mutex};
 
 /// Host seat reading / writing its own folder (DESIGN-hostmode-3e53b r3 §9).
 pub const OP_FS_OPEN: &str = "fs.open";
-/// Private ranges, 100.64/10, link-local: sandboxnet's ordinary class.
+/// 10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7: sandboxnet's ordinary class (link-local is
+/// "this machine" and refused outright in the first version, sandboxnet r6 §15.5).
 pub const OP_NET_PRIVATE: &str = "net.private";
 /// Loopback and this machine's own interface addresses: sandboxnet's high-risk class (L8).
 pub const OP_NET_LOCAL_SELF: &str = "net.local_self";

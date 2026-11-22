@@ -2010,8 +2010,8 @@ impl Sessions {
         e.rec.holds_slot = !stop.releases_slot();
         e.stopping = false;
         let rec = e.rec.clone();
-        if let Some(seat) = rec.seat_id.as_deref() {
-            crate::grants::seat_ended(seat);
+        if let Some(ended_seat) = rec.seat_id.as_deref() {
+            crate::grants::seat_ended(ended_seat);
         }
         let (kind, payload) = match rec.state {
             "exited" => (

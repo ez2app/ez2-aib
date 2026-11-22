@@ -49,14 +49,10 @@ ow '        if let Err(why) = crate::grants::hold_in(ask.operation, &ask.params)
    '        if let Some(why) = None::<&'"'"'static str> {' \
    a_hold_not_given_raises_no_window
 # HG11 a seat that starts again keeps its grants (f163c L1)
-se '        if let Some(seat) = seat_id.as_deref() {
-            crate::grants::seat_ended(seat);' \
-   '        if let Some(seat) = None::<&str> {
-            crate::grants::seat_ended(seat);' \
+se '        if let Some(seat) = seat_id.as_deref() {' \
+   '        if let Some(seat) = None::<&str> {' \
    a_seats_grants_end_when_it_starts_again_and_when_it_ends
 # HG12 a seat that ends keeps its grants
-se '        if let Some(seat) = rec.seat_id.as_deref() {
-            crate::grants::seat_ended(seat);' \
-   '        if let Some(seat) = None::<&str> {
-            crate::grants::seat_ended(seat);' \
+se '        if let Some(ended_seat) = rec.seat_id.as_deref() {' \
+   '        if let Some(ended_seat) = None::<&str> {' \
    a_seats_grants_end_when_it_starts_again_and_when_it_ends
