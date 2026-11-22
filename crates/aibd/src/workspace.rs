@@ -177,6 +177,25 @@ pub fn note_login_home(v: &mut Value, note: &Value) {
     }
 }
 
+/// `capabilities.net`: `{provider: {mode: state}}` for every brand and mode a seat may be opened
+/// in ([`crate::egress::net_state`]).
+pub fn net_caps(os: &str, proxy: bool) -> Value {
+    let mut by = serde_json::Map::new();
+    for p in aib_seatopen::AIB2_BRANDS {
+        let modes: serde_json::Map<String, Value> = aib_seatopen::SEAT_MODES
+            .iter()
+            .map(|m| {
+                (
+                    m.to_string(),
+                    json!(crate::egress::net_state(os, p, m, proxy)),
+                )
+            })
+            .collect();
+        by.insert(p.to_string(), Value::Object(modes));
+    }
+    Value::Object(by)
+}
+
 pub fn version_body_with(
     dgrs_input: bool,
     policy: &crate::allowlist::SessionPolicy,
@@ -212,6 +231,10 @@ pub fn version_body_with(
             "routes": crate::guard::ROUTES,
             // 1a93b GAP §8: the act types a confirmed page may send (crate::seat_input::PAGE_ACTS)
             "acts": crate::seat_input::PAGE_ACTS,
+            // DESIGN-sandboxnet 16.2: per provider and mode, enforced / hint / off; the page
+            // picks its network words from this, not from the platform
+            "net": net_caps(std::env::consts::OS, crate::egress::PROXY_READY),
+            "net_enforced": crate::egress::net_state(std::env::consts::OS, "claude", "work", crate::egress::PROXY_READY) == "enforced",
         },
         // 519d0 11-21 06:45 point 1: what an open that names no model runs on, per brand
         "default_models": crate::default_model::now(),
@@ -1346,6 +1369,25 @@ mod tests {
             "reason: version_names_a_path"
         );
         assert_eq!(v["capabilities"]["input_modes"], json!(["safe", "work"]));
+        // DESIGN-sandboxnet 16.2: the page's network words come from here
+        assert_eq!(
+            v["capabilities"]["net"],
+            net_caps(std::env::consts::OS, crate::egress::PROXY_READY),
+            "reason: version_has_no_net"
+        );
+        assert_eq!(
+            v["capabilities"]["net_enforced"],
+            json!(false),
+            "reason: enforced_before_proxy"
+        );
+        let w = net_caps("windows", true);
+        assert_eq!(
+            w["claude"]["work"], "hint",
+            "reason: windows_work_not_a_hint"
+        );
+        assert_eq!(w["claude"]["safe"], "off");
+        assert_eq!(net_caps("macos", true)["claude"]["work"], "enforced");
+        assert_eq!(w["codex"]["work"], "off", "reason: codex_given_network");
         let acts = v["capabilities"]["acts"]
             .as_array()
             .expect("reason: version_has_no_acts");

@@ -19,3 +19,9 @@ eg '    if b[1] != 1 {' '    if b[1] > 3 { // knife' egress::tests::socks5_takes
 eg '    if length && chunked {' '    if length && chunked && false { // knife' egress::tests::only_connect_absolute_form_and_socks_connect_are_taken
 # EG7 a private address passes without being on the seat's list
 eg '                .all(|a| listed(*a, port))' '                .all(|a| listed(*a, port) || port != 0) // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
+# EG8 (16.2, Andy「5能上網」) a Windows work seat is said to be enforced
+eg '        ("claude", "work") => "hint",' '        ("claude", "work") => "enforced", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there
+# EG9 a mode is said to be enforced before the proxy is in the build
+eg '        ("claude", "work") if !proxy => "off",' '        ("claude", "work") if !proxy && os == "none" => "off", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there
+# EG10 a dgrs seat is said to be enforced
+eg '        (_, "dgrs") => "hint",' '        (_, "dgrs") => "enforced", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there

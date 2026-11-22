@@ -246,10 +246,70 @@ pub fn verdict(
     }
 }
 
+/// Whether the proxy that carries a seat's network is in this build. The judging above is; the
+/// sockets are the next slice (DESIGN-sandboxnet §6). Until they are, no seat's network goes
+/// through aibd, so no mode may say its rules are enforced.
+pub const PROXY_READY: bool = false;
+
+/// What the page may say about one provider's mode and the network (DESIGN-sandboxnet 16.2,
+/// Andy 11-23「5能上網」): `"enforced"` (the sandbox lets the seat reach only the proxy: Mac,
+/// claude work), `"hint"` (the rules are only a hint and this computer and the LAN are reachable:
+/// any dgrs seat, and a work seat with no sandbox, Windows), `"off"` (no network: safe and host
+/// seats have no network tool; codex is not given the network in the first version, §7-4 / 16.6).
+/// The page picks its words from this, never from the platform itself.
+pub fn net_state(os: &str, provider: &str, mode: &str, proxy: bool) -> &'static str {
+    match (provider, mode) {
+        (_, "dgrs") => "hint",
+        ("claude", "work") if !proxy => "off",
+        ("claude", "work") if os == "macos" => "enforced",
+        ("claude", "work") => "hint",
+        _ => "off",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there() {
+        // Mac claude work: enforced once the proxy is in, off before
+        assert_eq!(net_state("macos", "claude", "work", true), "enforced");
+        assert_eq!(
+            net_state("macos", "claude", "work", false),
+            "off",
+            "reason: enforced_without_proxy"
+        );
+        // Windows (and anything with no sandbox): only a hint
+        assert_eq!(
+            net_state("windows", "claude", "work", true),
+            "hint",
+            "reason: windows_said_enforced"
+        );
+        assert_eq!(net_state("linux", "claude", "work", true), "hint");
+        // dgrs is a hint everywhere; safe, host and codex have no network
+        for os in ["macos", "windows"] {
+            assert_eq!(
+                net_state(os, "claude", "dgrs", true),
+                "hint",
+                "reason: dgrs_said_enforced"
+            );
+            assert_eq!(net_state(os, "codex", "dgrs", false), "hint");
+            for (p, m) in [
+                ("claude", "safe"),
+                ("claude", "host"),
+                ("codex", "work"),
+                ("codex", "safe"),
+            ] {
+                assert_eq!(
+                    net_state(os, p, m, true),
+                    "off",
+                    "reason: no_network_mode_on {p} {m}"
+                );
+            }
+        }
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
