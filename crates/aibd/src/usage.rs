@@ -250,6 +250,13 @@ pub fn quota_of(v: &Value) -> Option<(&'static str, Value)> {
     Some(("codex", q))
 }
 
+/// Now in Unix seconds: when aibd saw a limit line.
+fn seen_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// One stdout line seen at `at`: the row after it.
 pub fn apply(row: &mut Usage, raw: &[u8], at: &str) {
     row.last_output_at = Some(at.to_owned());
@@ -262,7 +269,8 @@ pub fn apply(row: &mut Usage, raw: &[u8], at: &str) {
             .as_ref()
             .and_then(quota_of);
         if let Some((brand, mut q)) = limit {
-            q["seen_at"] = json!(at);
+            // f163c a15page pre: Unix seconds, as resets_at (the page reads both as numbers)
+            q["seen_at"] = json!(seen_secs());
             quotas().insert(brand, q);
             return;
         }
@@ -1019,6 +1027,29 @@ mod tests {
         .to_string();
         apply(&mut r, line.as_bytes(), AT);
         assert_eq!(r.used, Some(120_000), "reason: usage_skipped_on_the_word");
+    }
+
+    /// f163c a15page pre: seen_at is Unix seconds like resets_at, never a time string.
+    #[test]
+    fn a_limit_line_is_kept_with_seen_at_in_seconds() {
+        let mut r = Usage {
+            session_id: "s".into(),
+            seat_id: None,
+            model: None,
+            used: None,
+            window: None,
+            pct: None,
+            at: None,
+            last_output_at: None,
+            order: 0,
+        };
+        apply(&mut r, CLAUDE_LIMIT.as_bytes(), AT);
+        let b = quotas().body();
+        let seen = &b["claude"]["quota"]["seen_at"];
+        assert!(
+            seen.as_u64().is_some_and(|s| s > 1_700_000_000),
+            "reason: seen_at_not_seconds {seen}"
+        );
     }
 
     fn assistant(i: u64, r: u64, c: u64) -> String {

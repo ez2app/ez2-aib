@@ -45,3 +45,9 @@ python3 -I scripts/knife.py crates/aibd/src/usage.rs \
   '        if let Some((brand, mut q)) = limit.or(Some(("claude", json!({})))) {' \
   --expect-fail 'usage::tests::an_answer_naming_rate_limits_still_moves_the_usage' \
   -- cargo test -p aibd --locked --lib 'usage::tests::an_answer_naming_rate_limits_still_moves_the_usage'
+# a15-seen (f163c a15page pre: seen_at in Unix seconds like resets_at)
+python3 -I scripts/knife.py crates/aibd/src/usage.rs \
+  '        .map_or(0, |d| d.as_secs())' \
+  '        .map_or(0, |d| d.as_secs() / 1_000_000)' \
+  --expect-fail 'usage::tests::a_limit_line_is_kept_with_seen_at_in_seconds' \
+  -- cargo test -p aibd --locked --lib 'usage::tests::a_limit_line_is_kept_with_seen_at_in_seconds'
