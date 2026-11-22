@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PS1–PS8: the owner's passphrase record — costs below the floor or another KDF are refused, the comparison is whole, a short or personal sentence is not taken, five wrong lock fifteen minutes and double up to a day (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7; Andy DECISION 第十七節)
+# PS1–PS9: the owner's passphrase record — costs below the floor or another KDF are refused, the comparison is whole, a short or personal sentence is not taken, five wrong lock fifteen minutes and double up to a day (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7; Andy DECISION 第十七節)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 ps() { python3 -I scripts/knife.py crates/aibd/src/passphrase.rs "$1" "$2" --expect-fail "passphrase::tests::$3" \
@@ -36,3 +36,7 @@ ps '        .min(MAX_LOCK_SECS)' \
 ps '    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {' \
    '    if c.m_kib > u32::MAX {' \
    a_record_with_costs_above_the_ceiling_is_refused
+# PS9 (f163c e5f942dd L3) the backend runs Argon2i, not Argon2id
+ps '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);' \
+   '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2i, argon2::Version::V0x13, params);' \
+   the_argon2id_backend_gives_the_known_answer

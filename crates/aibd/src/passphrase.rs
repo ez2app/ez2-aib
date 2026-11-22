@@ -338,6 +338,28 @@ mod tests {
         assert_ne!(record_sha(&r), base);
     }
 
+    /// f163c e5f942dd L3: a known answer from two other implementations — the reference
+    /// `argon2` CLI (phc-winner-argon2: `argon2 <salt> -id -t 3 -k 64 -p 1 -l 32 -r`) and
+    /// OpenSSL 4 `kdf ARGON2ID` agree on it; Argon2i gives 61e5d232…, so a wrong algorithm fails.
+    #[test]
+    fn the_argon2id_backend_gives_the_known_answer() {
+        let out = Argon2id
+            .derive(
+                b"correct horse battery",
+                &[b'a'; SALT_LEN],
+                Costs {
+                    m_kib: 64,
+                    t: 3,
+                    p: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            hex(&out),
+            "692f3a57797a0a146543cf9bdfc2df4a28dd46209b7ee6f1833ebdb90fd04116"
+        );
+    }
+
     #[test]
     fn same_is_byte_equality() {
         assert!(same(b"abc", b"abc"));
