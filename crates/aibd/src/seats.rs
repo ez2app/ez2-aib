@@ -1676,6 +1676,38 @@ pub async fn page_open(
     if req.base.is_some() && req.repo.is_none() {
         return Refusal("base", "base goes with repo").into_response();
     }
+    // A11 (SPEC-ai-partner-open r2 §3.1「完全權限:每次開都要驗證」): a dgrs seat with no repo
+    // asks the owner before anything is opened; with a repo, repo_tree asks (once)
+    // (a brand with no dgrs mode is refused below without asking: a window for nothing)
+    if req.mode == "dgrs"
+        && req.repo.is_none()
+        && aib_seatopen::pipe_modes(&req.provider).contains(&"dgrs")
+    {
+        let (personas, uid) = (st.personas.clone(), req.persona_uid.clone());
+        let name = tokio::task::spawn_blocking(move || {
+            personas
+                .cards()
+                .ok()
+                .and_then(|c| c.into_iter().find(|x| x.uid == uid).map(|x| x.name))
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| req.persona_uid.clone());
+        let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
+        let a = crate::repos::open_ask_plain(
+            &req.provider,
+            &req.persona_uid,
+            &name,
+            format!("page:{pairing}"),
+        );
+        let Some(t) = req.ticket.as_deref() else {
+            return crate::repos::asked(&a);
+        };
+        if !crate::owner_ok::approved_for(t, &a) {
+            return crate::repos::not_approved();
+        }
+    }
     // read before anything is opened: a refused name opens nothing (PREREAD-seat-carry)
     let (ho, mp) = (req.handoff.clone(), req.mempack.clone());
     let carry = match tokio::task::spawn_blocking(move || {

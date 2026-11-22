@@ -218,8 +218,12 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         );
     }
     let fields_ok = body.as_object().is_some_and(|o| {
-        o.keys()
-            .all(|k| matches!(k.as_str(), "type" | "seat_id" | "handoff_at" | "idem_key"))
+        o.keys().all(|k| {
+            matches!(
+                k.as_str(),
+                "type" | "seat_id" | "handoff_at" | "idem_key" | "ticket"
+            )
+        })
     });
     let s = |k: &str| body.get(k).and_then(Value::as_str);
     let (Some(seat_id), Some(asked_at), Some(key)) = (s("seat_id"), s("handoff_at"), s("idem_key"))
@@ -240,6 +244,13 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             "invalid_request",
             "body must be {type, seat_id, handoff_at, idem_key (1-128)}",
         );
+    }
+    // A11 r1 L2: a new conversation starts a dgrs seat again with no sandbox: the owner first,
+    // before the key is claimed or anything stopped
+    let ticket = body.get("ticket").and_then(Value::as_str);
+    let asker = format!("page:{}", hex8(&page.digest));
+    if let Some(r) = crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker).await {
+        return r;
     }
     let mut rest = body.clone();
     if let Some(o) = rest.as_object_mut() {
