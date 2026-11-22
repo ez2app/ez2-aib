@@ -392,10 +392,32 @@ fn a_confirm_or_a_wrong_that_is_not_a_whole_event_changes_nothing() {
         v
     };
     let mut evs = vec![est.clone(), kept.clone()];
-    for field in ["id", "at", "ref"] {
+    // its own field, and each of the common ones every event carries
+    let fields = [
+        "ref",
+        "v",
+        "id",
+        "at",
+        "seat",
+        "cards",
+        "status_item",
+        "host",
+        "outcome",
+    ];
+    for field in fields {
         evs.push(cut(&whole_c, field));
         evs.push(cut(&whole_w, field));
     }
+    // a saving that lost a common field is no saving, whatever its own fields say
+    for field in &fields[1..] {
+        evs.push(cut(
+            &timesave::saved(&ctx(), &gate(4_000_000, true, true), at).expect("x"),
+            field,
+        ));
+    }
+    let mut odd_v = timesave::saved(&ctx(), &gate(8_000_000, true, true), at).expect("x");
+    odd_v["v"] = json!(2);
+    evs.push(odd_v);
     evs.push(cut(&whole_w, "penalty_ms"));
     evs.push(cut(&whole_w, "basis"));
     let mut bad_at = whole_c.clone();
@@ -420,7 +442,7 @@ fn a_confirm_or_a_wrong_that_is_not_a_whole_event_changes_nothing() {
             count: 2
         }
     );
-    assert_eq!(s.bad, 11, "{s:?}");
+    assert_eq!(s.bad, 32, "{s:?}");
 }
 
 #[test]
@@ -456,33 +478,44 @@ fn a_saving_that_was_checked_can_still_be_found_wrong() {
 #[test]
 fn an_event_dated_after_the_readers_clock_is_in_no_box() {
     let now = ms(NOW);
+    let slack = timesave::FUTURE_SLACK_MS;
     let old = timesave::saved(&ctx(), &gate(50, true, true), now - 1_000).expect("old");
+    let est = timesave::saved(&ctx(), &gate(300, false, true), now - 1_000).expect("est");
+    let far = ms("2027-11-23T02:00:00.000Z");
     let evs = vec![
         old.clone(),
-        // another machine's clock a little ahead: read
-        timesave::saved(&ctx(), &gate(1, true, true), now + 60_000).expect("near"),
-        // next year: a saving, and a wrong that would take `old` out
-        timesave::saved(
-            &ctx(),
-            &gate(1_000, true, true),
-            ms("2027-11-23T02:00:00.000Z"),
-        )
-        .expect("far"),
-        timesave::wrong(&ctx(), &id(&old), 7, "why", ms("2027-01-01T00:00:00.000Z")).expect("w"),
-        timesave::confirm(&ctx(), &id(&old), ms("2027-01-01T00:00:00.000Z")).expect("c"),
+        est.clone(),
+        // another machine's clock a little ahead, up to the slack: read
+        timesave::saved(&ctx(), &gate(1, true, true), now + slack).expect("at the slack"),
+        // one millisecond past it, and next year: not read
+        timesave::saved(&ctx(), &gate(1_000, true, true), now + slack + 1).expect("past"),
+        timesave::saved(&ctx(), &gate(10_000, true, true), far).expect("far"),
+        // a wrong from next year does not take `old` out, a confirm from next year checks nothing
+        timesave::wrong(&ctx(), &id(&old), 7, "why", far).expect("w"),
+        timesave::confirm(&ctx(), &id(&est), far).expect("c"),
     ];
     let s = timesave::summarize(&evs, now, TAIPEI);
     assert_eq!(
         s.today.precheck,
         Sum {
             confirmed_ms: 51,
-            estimated_ms: 0,
+            estimated_ms: 300,
             penalty_ms: 0,
-            count: 2
+            count: 3
         }
     );
     assert_eq!(s.all, s.today);
-    assert_eq!(s.bad, 3);
+    assert_eq!(s.bad, 4);
+    // the same confirm, dated now, does check the estimate
+    let evs = vec![
+        est.clone(),
+        timesave::confirm(&ctx(), &id(&est), now).expect("c"),
+    ];
+    let s = timesave::summarize(&evs, now, TAIPEI);
+    assert_eq!(
+        (s.all.precheck.confirmed_ms, s.all.precheck.estimated_ms),
+        (300, 0)
+    );
 }
 
 #[test]

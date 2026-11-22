@@ -306,9 +306,26 @@ fn str_of<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     o.get(k).and_then(Value::as_str)
 }
 
-fn read_saved(o: &Map<String, Value>) -> Option<(String, One)> {
+/// The nine common fields of an event, each there and of its kind; the id and the time back.
+fn common(o: &Map<String, Value>) -> Option<(&str, i64)> {
+    if o.get("v").and_then(Value::as_u64) != Some(events::V) {
+        return None;
+    }
     let id = str_of(o, "id").filter(|s| !s.is_empty())?;
     let at = parse_rfc3339_ms(str_of(o, "at")?)?;
+    str_of(o, "outcome").filter(|s| !s.is_empty())?;
+    o.get("cards")?.as_array()?;
+    for k in ["seat", "status_item", "host"] {
+        let v = o.get(k)?;
+        if !(v.is_null() || v.is_string()) {
+            return None;
+        }
+    }
+    Some((id, at))
+}
+
+fn read_saved(o: &Map<String, Value>) -> Option<(String, One)> {
+    let (id, at) = common(o)?;
     let system = System::parse(str_of(o, "system")?)?;
     if !verdict_fits(system, str_of(o, "verdict")?) {
         return None;
@@ -338,8 +355,7 @@ fn read_saved(o: &Map<String, Value>) -> Option<(String, One)> {
 
 /// A confirm's or a wrong's own id, time and `ref`, all three or nothing: (ref, at).
 fn read_mark(o: &Map<String, Value>) -> Option<(String, i64)> {
-    str_of(o, "id").filter(|s| !s.is_empty())?;
-    let at = parse_rfc3339_ms(str_of(o, "at")?)?;
+    let (_, at) = common(o)?;
     let r = str_of(o, "ref").filter(|s| !s.trim().is_empty())?;
     Some((r.to_string(), at))
 }

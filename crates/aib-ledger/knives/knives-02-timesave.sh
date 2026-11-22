@@ -55,3 +55,9 @@ tk '            Some((at, p)) if !one.wrong => {' '            Some((at, p)) if 
 # TS16 an events folder that is there and cannot be read looks like a program with no events
 tk '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,' '            Err(_) if true => continue, // knife' \
    a_folder_that_is_there_and_cannot_be_read_is_counted
+# TS17 an event that lost a common field (its outcome, its host, …) is read as whole
+tk '    str_of(o, "outcome").filter(|s| !s.is_empty())?;' '    let _ = str_of(o, "outcome"); // knife: not needed' \
+   a_confirm_or_a_wrong_that_is_not_a_whole_event_changes_nothing
+# TS18 a confirm dated next year turns an estimate into a fact today
+tk '                Some((r, at)) if at <= latest => marks.push((r, None)),' '                Some((r, _)) => marks.push((r, None)), // knife: any time' \
+   an_event_dated_after_the_readers_clock_is_in_no_box
