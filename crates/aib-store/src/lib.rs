@@ -11,6 +11,7 @@ mod messages;
 mod migrate;
 pub mod perm_templates;
 pub mod ranks;
+pub mod registry_archive;
 mod seat_meta;
 pub mod seat_moves;
 mod seats;
@@ -32,6 +33,7 @@ pub use messages::{
 };
 pub use migrate::{Migration, MIGRATIONS};
 pub use perm_templates::{PermTemplate, PermTemplateLog, TplWrite};
+pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
 pub use sessions::{seat_sessions_running_at, SessionRow, ENDED_BY_RESTART};
