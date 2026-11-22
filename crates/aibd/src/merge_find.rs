@@ -367,11 +367,13 @@ mod tests {
         let pre = vec!["吳軒".to_string(), "心+".to_string()];
         let g = find_similar(
             &[
-                it("c00001", "吳軒-客服助理", 0),
-                it("c00002", "心+-客服助理", 0),
+                it("c00001", "吳軒-AIB客服助理", 0),
+                it("c00002", "心+-AIB客服助理", 0),
             ],
             &pre,
         );
+        // without the prefix rule these two score ≥ LINK_AT (12/15 = 0.8) and would join
+        assert!(score("吳軒-AIB客服助理", "心+-AIB客服助理") >= LINK_AT);
         assert!(g.is_empty(), "{g:?}");
         let g = find_similar(
             &[it("c00001", "客服助理", 0), it("c00002", "心+-客服助理", 0)],
@@ -447,9 +449,27 @@ mod tests {
             ],
             &[],
         );
+        // every pair here is ≥ SURE_AT (same / contained), so the group is sure
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].items.len(), 3);
-        assert_eq!(g[0].sure, g[0].low >= SURE_AT);
+        assert!(g[0].sure);
+        // a chain with one pair under SURE_AT (0.70..0.85) is "maybe alike": nothing ticked
+        // (AIB2測試工程師 / -2 = 1.0; either vs AIB2測試流程工程師 = 14/18 ≈ 0.78)
+        let g = find_similar(
+            &[
+                it("f00011", "AIB2測試工程師", 0),
+                it("f00012", "AIB2測試工程師-2", 0),
+                it("f00013", "AIB2測試流程工程師", 0),
+            ],
+            &[],
+        );
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].items.len(), 3);
+        assert!(!g[0].sure, "{g:?}");
+        assert!((LINK_AT..SURE_AT).contains(&g[0].low), "{}", g[0].low);
+        assert!(g[0].ticked().is_empty());
+        // used ties, the ones without -2 tie, the longer normalised name is kept
+        assert_eq!(g[0].keep, "f00013");
     }
 
     #[test]
