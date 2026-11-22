@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TH1–TH5 (3e53b 11-23; ORDER-touchhud-ebab8-3e53b-1123, Andy「1+2 都可以」): the countdown's script
+# TH1–TH6 (3e53b 11-23; ORDER-touchhud-ebab8-3e53b-1123, Andy「1+2 都可以」): the countdown's script
 # never runs its words; the system window is four lines and only the object is ever cut; an object
 # cannot say the window's own code line; open-for comes only from the fixed table.
 set -eu
@@ -22,3 +22,6 @@ python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '    OPEN_FOR.iter().fin
 # TH5 the object line is never cut
 python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs '    if c.len() <= RESOURCE_MAX {' '    if true { // knife' \
   --expect-fail "$F" -- cargo test -p aibd --locked --lib "$F"
+# TH6 where it stands reads what another window shows (its title), not only owner and bounds
+python3 -I scripts/knife.py crates/aibd/src/touch_hud.rs "      if (o.kCGWindowOwnerName === 'coreautha' && o.kCGWindowLayer >= 1000" "      if (String(o.kCGWindowName) !== 'x' && o.kCGWindowOwnerName === 'coreautha' && o.kCGWindowLayer >= 1000" \
+  --expect-fail "$H" -- cargo test -p aibd --locked --lib "$H"

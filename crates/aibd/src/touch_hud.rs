@@ -21,72 +21,115 @@ pub const PROGRAM: &str = "/usr/bin/osascript";
 /// The whole script. Arguments: the plain sentence, the unix second the ticket expires, the
 /// code. Nothing here evaluates an argument: they are only set as a label's text.
 pub const SCRIPT: &str = r#"ObjC.import('Cocoa');
+ObjC.import('CoreGraphics');
 function run(argv) {
   if (argv.length && argv[0] === '--') { argv = argv.slice(1); }
   var words = String(argv[0] || '');
   var until = parseInt(argv[1], 10);
   var code = String(argv[2] || '');
+  var total = Math.max(1, until - Math.floor(Date.now() / 1000));
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy(1);
   function rgb(r, g, b) { return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r / 255, g / 255, b / 255, 1); }
-  var bg = rgb(0x16, 0x1b, 0x24), gold = rgb(0xe3, 0xc0, 0x6a), fg = rgb(0xe6, 0xe8, 0xee);
-  var dim = rgb(0x9a, 0xa3, 0xb5), warn = rgb(0xe8, 0x93, 0x5a);
-  var w = 460, h = 132;
+  var GOLD = rgb(227, 192, 106), FG = rgb(230, 232, 238), DIM = rgb(154, 163, 181);
+  var WARN = rgb(232, 147, 90), PANEL = rgb(22, 27, 36), LINE = rgb(42, 50, 66);
+  var w = 460, h = 96;
   var scr = $.NSScreen.mainScreen.visibleFrame;
   var rect = $.NSMakeRect(scr.origin.x + scr.size.width - w - 24, scr.origin.y + scr.size.height - h - 24, w, h);
-  var win = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer(rect, 1 | 128, 2, false);
+  // the system's fingerprint window: only its owner's name and its bounds are read, never what
+  // it shows; a hint where to stand, not a defence (Andy 11-23「移到 生物辨識框的正上方」)
+  function above() {
+    var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];
+    var box = null;
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i], b = o.kCGWindowBounds;
+      if (o.kCGWindowOwnerName === 'coreautha' && o.kCGWindowLayer >= 1000 && b && b.Width > 100 && b.Height > 100) {
+        if (!box || b.Width * b.Height > box.Width * box.Height) { box = b; }
+      }
+    }
+    if (!box) { return null; }
+    var screens = $.NSScreen.screens, top = screens.objectAtIndex(0).frame.size.height;
+    var bx = box.X, byTop = top - box.Y, byLow = top - box.Y - box.Height, area = null;
+    for (var k = 0; k < screens.count; k++) {
+      var f = screens.objectAtIndex(k).frame;
+      if (bx + box.Width / 2 >= f.origin.x && bx + box.Width / 2 <= f.origin.x + f.size.width && byLow >= f.origin.y && byLow <= f.origin.y + f.size.height) {
+        area = screens.objectAtIndex(k).visibleFrame;
+      }
+    }
+    if (!area) { area = scr; }
+    var x = bx + (box.Width - w) / 2;
+    x = Math.max(area.origin.x, Math.min(x, area.origin.x + area.size.width - w));
+    var y = byTop + 8;
+    if (y + h > area.origin.y + area.size.height) { y = byLow - 8 - h; }
+    return $.NSMakeRect(x, y, w, h);
+  }
+  var win = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer(rect, 1 | 128 | 32768, 2, false);
+  win.titlebarAppearsTransparent = true;
+  win.titleVisibility = 1;
+  win.setAppearance($.NSAppearance.appearanceNamed('NSAppearanceNameDarkAqua'));
   win.setLevel(25);
   win.setCollectionBehavior(1 | 256);
-  win.title = 'AIB';
-  win.appearance = $.NSAppearance.appearanceNamed($.NSAppearanceNameDarkAqua);
-  win.backgroundColor = bg;
+  win.setHasShadow(true);
+  win.setBackgroundColor(PANEL);
   var view = win.contentView;
-  view.wantsLayer = true;
-  view.layer.cornerRadius = 12;
-  function label(x, y, width, height, font, color) {
+  function label(x, y, ww, hh, size, color, bold, mono) {
     var t = $.NSTextField.labelWithString('');
-    t.setFrame($.NSMakeRect(x, y, width, height));
-    t.setFont(font);
+    t.setFrame($.NSMakeRect(x, y, ww, hh));
+    t.setFont(mono ? $.NSFont.monospacedSystemFontOfSizeWeight(size, 0.4) : (bold ? $.NSFont.boldSystemFontOfSize(size) : $.NSFont.systemFontOfSize(size)));
     t.setTextColor(color);
     t.setLineBreakMode(4);
     view.addSubview(t);
     return t;
   }
-  var bold = function (size) { return $.NSFont.boldSystemFontOfSize(size); };
-  var secs = label(14, 52, 72, 40, $.NSFont.monospacedDigitSystemFontOfSizeWeight(32, 0.4), gold);
-  secs.setAlignment(1);
-  var unit = label(14, 30, 72, 18, $.NSFont.systemFontOfSize(12), dim);
-  unit.setAlignment(1);
-  var x0 = 98, tw = w - x0 - 16;
-  var top = label(x0, 96, tw, 18, $.NSFont.systemFontOfSize(12), dim);
-  var act = label(x0, 66, tw, 24, bold(15), fg);
-  var pre = label(x0, 30, 54, 22, $.NSFont.systemFontOfSize(13), dim);
-  var box = label(x0 + 54, 28, 64, 26, $.NSFont.monospacedSystemFontOfSizeWeight(15, 0.4), gold);
-  box.setAlignment(1);
-  box.wantsLayer = true;
-  box.layer.borderWidth = 1;
-  box.layer.borderColor = gold.CGColor;
-  box.layer.cornerRadius = 6;
-  var post = label(x0 + 124, 30, tw - 124, 22, $.NSFont.systemFontOfSize(12), dim);
-  top.stringValue = '以系統指紋視窗上的字為準';
+  function panel(x, y, ww, hh, radius, border, fill) {
+    var b = $.NSBox.alloc.initWithFrame($.NSMakeRect(x, y, ww, hh));
+    b.setBoxType(4);
+    b.setCornerRadius(radius);
+    b.setBorderWidth(border);
+    b.setBorderColor(GOLD);
+    b.setFillColor(fill);
+    view.addSubview(b);
+    return b;
+  }
+  // the gold frame is an NSBox over the whole panel: a layer border on the content view does
+  // not show under the window frame (ebab8 demo 11-23 02:15)
+  var frame = panel(0, 0, w, h, 10, 1.5, PANEL);
+  var num = label(14, 30, 64, 36, 28, GOLD, true, true);
+  num.setAlignment(1);
+  var sec = label(14, 14, 64, 16, 11, DIM, false, false);
+  sec.setAlignment(1);
+  sec.stringValue = '秒';
+  var act = label(92, 50, w - 108, 24, 16, FG, true, false);
   act.stringValue = words;
+  var pre = label(92, 30, 52, 16, 12, DIM, false, false);
   pre.stringValue = '對照碼';
-  box.stringValue = code;
+  panel(138, 26, 58, 22, 6, 1, PANEL);
+  var chip = label(138, 28, 58, 16, 13, GOLD, true, true);
+  chip.setAlignment(1);
+  chip.stringValue = code;
+  var post = label(204, 30, w - 216, 16, 12, DIM, false, false);
   post.stringValue = '跟系統指紋視窗上的一樣才按';
-  win.orderFrontRegardless;
+  panel(92, 14, w - 108, 4, 2, 0, LINE);
+  var fill = panel(92, 14, w - 108, 4, 2, 0, GOLD);
+  // shown once the fingerprint window is found (every 0.2 s, at most 3 s), else at the top right
+  var started = Date.now() / 1000, shown = false, tick = 0;
   for (;;) {
-    var left = until - Math.floor(Date.now() / 1000);
-    if (left > 0) {
-      secs.stringValue = String(left);
-      unit.stringValue = '秒';
-      secs.setTextColor(left <= 5 ? warn : gold);
-    } else {
-      secs.stringValue = '';
-      unit.stringValue = '這張過期了';
-      unit.setTextColor(warn);
+    var now = Date.now() / 1000, left = Math.ceil(until - now);
+    if (!shown && tick % 2 === 0) {
+      var at = above();
+      if (at) { win.setFrameDisplay(at, true); }
+      if (at || now - started >= 3) { win.orderFrontRegardless; shown = true; }
     }
-    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5));
-    if (left <= -1) break;
+    tick++;
+    var late = left <= 5;
+    num.stringValue = left > 0 ? String(left) : '0';
+    num.setTextColor(late ? WARN : GOLD);
+    fill.setFillColor(late ? WARN : GOLD);
+    frame.setBorderColor(late ? WARN : GOLD);
+    if (left <= 0) { act.stringValue = '這張過期了'; }
+    fill.setFrame($.NSMakeRect(92, 14, Math.max(0, (w - 108) * (until - now) / total), 4));
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
+    if (left <= -2) break;
   }
 }"#;
 
@@ -225,9 +268,12 @@ mod tests {
             "reason: no_compare_line"
         );
         assert!(SCRIPT.contains("這張過期了"), "reason: no_expired_line");
+        // where it stands: only the fingerprint window's owner and bounds are read
         assert!(
-            SCRIPT.contains("以系統指紋視窗上的字為準"),
-            "reason: no_source_line"
+            SCRIPT.contains("o.kCGWindowOwnerName === 'coreautha'")
+                && !SCRIPT.contains("kCGWindowName")
+                && !SCRIPT.contains("CGWindowListCreateImage"),
+            "reason: hud_reads_other_windows"
         );
         // off unless the server turned it on: a test never raises a window
         assert!(
