@@ -737,7 +737,7 @@ pub async fn act(
         }
         // §7-2 寫回人格: the built-in page lists the waiting proposals and says no
         Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {
-            return crate::persona_propose::page_act(&page, body).await
+            return crate::persona_propose::page_act(&st, &page, body).await
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(

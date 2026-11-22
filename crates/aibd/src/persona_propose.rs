@@ -421,6 +421,28 @@ fn own_card(
 }
 
 /// `persona_propose` / `_status` / `_withdraw` from a seat's own token.
+/// The journal line a seat's act leaves (DESIGN r2 §1a; r7 §12): a new proposal and a
+/// withdrawal, with the seat, the id, the counts and the diff's 12; never the text or the
+/// reason. A status read and a repeat of the same text (dedup) leave none.
+pub fn journal_of(kind: &str, seat: &str, v: &Value) -> Option<(&'static str, Value)> {
+    let ev = match kind {
+        PROPOSE if v["dedup"] == false => "persona_propose.asked",
+        WITHDRAW => "persona_propose.withdrawn",
+        _ => return None,
+    };
+    Some((
+        ev,
+        json!({
+            "seat": seat,
+            "request_id": v["request_id"],
+            "state": v["state"],
+            "added": v["added"],
+            "removed": v["removed"],
+            "diff12": v["diff12"],
+        }),
+    ))
+}
+
 pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
     let kind = body
         .get("type")
@@ -435,6 +457,7 @@ pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
     }
     let now = crate::owner_ok::unix_now();
     let seat = seat.to_owned();
+    let (st_ev, kind_ev, seat_ev) = (st.clone(), kind.clone(), seat.clone());
     let done = tokio::task::spawn_blocking(move || match kind.as_str() {
         PROPOSE => {
             let text = body["card_text"].as_str().ok_or("card_text_missing")?;
@@ -473,6 +496,9 @@ pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
     .await;
     match done {
         Ok(Ok(v)) => {
+            if let Some((ev, payload)) = journal_of(&kind_ev, &seat_ev, &v) {
+                crate::seats::side_event(&st_ev, "persona_propose", ev, payload).await;
+            }
             let code = if v["state"] == "waiting" && v["dedup"] == false {
                 StatusCode::ACCEPTED
             } else {
@@ -487,36 +513,59 @@ pub async fn seat_act(st: AppState, seat: &str, body: Value) -> Response {
 
 /// `persona_proposals` / `persona_propose_deny {ids}` from a page: the built-in page in this
 /// pairing only.
-pub async fn page_act(page: &crate::pairing::PageAccess, body: Value) -> Response {
+fn hex8(d: &[u8]) -> String {
+    d.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The built-in page's list and no; a no leaves `persona_propose.denied` in the journal.
+pub async fn page_act(st: &AppState, page: &crate::pairing::PageAccess, body: Value) -> Response {
+    let (r, denied) = page_answer(page, body).await;
+    for d in denied {
+        crate::seats::side_event(st, "persona_propose", "persona_propose.denied", d).await;
+    }
+    r
+}
+
+/// [`page_act`] without the journal: the answer, and one line for each proposal said no to.
+pub async fn page_answer(page: &crate::pairing::PageAccess, body: Value) -> (Response, Vec<Value>) {
     if page.carried || crate::seat_input::held_as_user_page(page).await {
-        return refuse("persona_built_in_page_only");
+        return (refuse("persona_built_in_page_only"), Vec::new());
     }
     let now = crate::owner_ok::unix_now();
     match body.get("type").and_then(Value::as_str) {
         Some(LIST) => {
             let l: Vec<Value> = BOOK.waiting(now).iter().map(page_view).collect();
-            Json(json!({ "proposals": l })).into_response()
+            (Json(json!({ "proposals": l })).into_response(), Vec::new())
         }
         Some(DENY) => {
             let Some(ids) = body["ids"]
                 .as_array()
                 .filter(|a| (1..=20).contains(&a.len()))
             else {
-                return refuse("invalid_request");
+                return (refuse("invalid_request"), Vec::new());
             };
+            let mut denied = Vec::new();
             let out: Vec<Value> = ids
                 .iter()
                 .map(|i| {
                     let id = i.as_str().unwrap_or_default();
                     match BOOK.deny(id, now) {
-                        Ok(p) => json!({"request_id": id, "state": p.stand.word()}),
+                        Ok(p) => {
+                            denied.push(json!({"request_id": id, "seat": p.seat_id,
+                                "diff12": p.diff_sha.get(..12).unwrap_or_default()}));
+                            json!({"request_id": id, "state": p.stand.word()})
+                        }
                         Err(code) => json!({"request_id": id, "code": code}),
                     }
                 })
                 .collect();
-            Json(json!({ "results": out })).into_response()
+            let by = format!("page:{}", hex8(&page.digest));
+            for d in &mut denied {
+                d["by"] = json!(by);
+            }
+            (Json(json!({ "results": out })).into_response(), denied)
         }
-        _ => refuse("invalid_request"),
+        _ => (refuse("invalid_request"), Vec::new()),
     }
 }
 
@@ -585,6 +634,25 @@ mod tests {
             .unwrap();
         assert!(dedup);
         assert_eq!(q.id, p.id);
+    }
+
+    /// r7 §12: a new proposal and a withdrawal are journaled with counts and the diff's 12,
+    /// never the text or the reason; a status read and a repeat leave nothing.
+    #[test]
+    fn asking_and_withdrawing_are_journaled_without_the_text() {
+        let v = json!({"request_id": "pp_1", "state": "waiting", "added": 2, "removed": 1,
+            "diff12": "a1b2c3d4e5f6", "dedup": false, "card_text": "x", "why": "y"});
+        let (ev, p) = journal_of(PROPOSE, "seat_ab", &v).unwrap();
+        assert_eq!(ev, "persona_propose.asked");
+        assert_eq!(p["seat"], "seat_ab");
+        assert_eq!(p["diff12"], "a1b2c3d4e5f6");
+        assert!(p.get("card_text").is_none() && p.get("why").is_none());
+        let mut again = v.clone();
+        again["dedup"] = json!(true);
+        assert!(journal_of(PROPOSE, "seat_ab", &again).is_none());
+        assert!(journal_of(STATUS, "seat_ab", &v).is_none());
+        let (ev, _) = journal_of(WITHDRAW, "seat_ab", &v).unwrap();
+        assert_eq!(ev, "persona_propose.withdrawn");
     }
 
     #[test]
@@ -779,7 +847,8 @@ mod tests {
                 carried,
             };
             for kind in [LIST, DENY] {
-                let r = page_act(&page, json!({"type": kind, "ids": ["pp_1"]})).await;
+                let (r, denied) = page_answer(&page, json!({"type": kind, "ids": ["pp_1"]})).await;
+                assert!(denied.is_empty());
                 assert_eq!(r.status(), StatusCode::FORBIDDEN, "reason: {why} {kind}");
             }
         }

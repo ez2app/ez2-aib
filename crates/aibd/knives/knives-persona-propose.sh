@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP11: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
+# PP1–PP13: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pp() { python3 -I scripts/knife.py crates/aibd/src/persona_propose.rs "$1" "$2" --expect-fail "persona_propose::tests::$3" \
@@ -48,3 +48,11 @@ pp '    if page.carried || crate::seat_input::held_as_user_page(page).await {' \
 pp '            kept[i] = '"'"'·'"'"';' \
    '            kept[i] = '"'"':'"'"';' \
    a_proposal_is_frozen_with_its_diff_and_hash
+# PP12 (r7 §12) a repeat of the same text is journaled as a new ask
+pp '        PROPOSE if v["dedup"] == false => "persona_propose.asked",' \
+   '        PROPOSE => "persona_propose.asked",' \
+   asking_and_withdrawing_are_journaled_without_the_text
+# PP13 (r7 §12) a withdrawal leaves no journal line
+pp '        WITHDRAW => "persona_propose.withdrawn",' \
+   '        "never" => "persona_propose.withdrawn",' \
+   asking_and_withdrawing_are_journaled_without_the_text
