@@ -59,6 +59,9 @@ DOC_EXCLUDE = (
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.6.md",  # 同上;preview.6 發版時 aibd-release.yml 讀(過渡,Andy 11-15 22:2x 同意)
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.7.md",  # 同上;preview.7 發版時 aibd-release.yml 讀(過渡,照 preview.6 例;待 Andy 點頭)
 )
+# 前綴整批排除(Andy 11-22「核准，並且根治」):每一版的說明檔都被 aibd-release.yml 與 test-aibd-release 讀,
+# 用前綴認,升版就不必再改這支 Python(no-new-python 每改一次都要 Andy 核准)。上面 1–7 的字面行留著當歷史。
+DOC_EXCLUDE_PREFIXES = ("docs/aibd/RELEASE-NOTES-",)
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
 # 守門測試會找「讀 git ls-files 又看 .md」的測試,不在這份清單就紅。
@@ -111,7 +114,7 @@ def is_doc(path):
         return False
     if not p.endswith(".md"):
         return False
-    if p in DOC_EXCLUDE:
+    if p in DOC_EXCLUDE or any(p.startswith(x) for x in DOC_EXCLUDE_PREFIXES):
         return False
     if any(p.startswith(pre) for pre in DOC_PREFIXES):
         return True

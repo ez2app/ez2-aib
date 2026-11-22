@@ -333,9 +333,15 @@ class Docs(unittest.TestCase):
 CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
 # 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
 # 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
-NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md", "RELEASE-NOTES-0.2.0-preview.5.md", "RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")
+NOTES_LITERAL = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md", "RELEASE-NOTES-0.2.0-preview.5.md", "RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")
+# Andy 11-22「核准，並且根治」:preview.8 起的說明檔從資料夾讀,升版不必再改這支 Python;docs_only.py 用前綴
+# DOC_EXCLUDE_PREFIXES 認它們。上面的字面清單留著(test-docs-only 的守門要看到 1–7 每一條還有人提到)。
+NOTES = NOTES_LITERAL + tuple(sorted(
+    p.name for p in (ROOT / "docs" / "aibd").glob("RELEASE-NOTES-*.md") if p.name not in NOTES_LITERAL))
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
-CMD_PASTED = ("RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")  # Andy 11-16 09:0x: Windows install in cmd, not PowerShell
+# Andy 11-16 09:0x: Windows install in cmd, not PowerShell (preview.6 on); preview.1–5 keep PowerShell
+PS_PASTED = NOTES_LITERAL[:5]
+CMD_PASTED = tuple(f for f in NOTES if f not in PS_PASTED)
 
 
 def ver_of(f):
