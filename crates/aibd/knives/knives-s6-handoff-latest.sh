@@ -6,7 +6,7 @@ cd "$(git rev-parse --show-toplevel)"
 # s6-prefix
 python3 -I scripts/knife.py crates/aibd/src/handoff_latest.rs \
   'if !of_code(&n, code) || crate::docs::secret_name(&n) {' \
-  'if crate::docs::secret_name(&n) {' \
+  'if crate::docs::secret_name(&n) || code.is_empty() {' \
   --expect-fail 'handoff_latest::tests::a_big_folder_still_gives_the_newest' \
   -- cargo test -p aibd --locked --lib 'handoff_latest::tests::a_big_folder_still_gives_the_newest'
 # s6-cap
