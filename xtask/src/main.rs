@@ -24,6 +24,7 @@ mod deps;
 mod knife_affected;
 mod knife_anchors;
 mod knife_compile;
+mod knife_shards;
 mod knife_spec;
 mod knife_testname;
 mod no_new_python;
@@ -385,6 +386,7 @@ fn usage() -> ExitCode {
          | ui-words --base <ref> [--head <ref>] [--list-from <ref>] [--all]"
     );
     eprintln!("       {KNIFE_AFFECTED_USAGE}");
+    eprintln!("       aib-xtask knife-shards plan --shards N --secs FILE --list FILE | knife-shards secs LOG...");
     ExitCode::from(2)
 }
 
@@ -443,6 +445,7 @@ fn main() -> ExitCode {
         [cmd, tsv, root] if cmd == "knife-compile" => {
             ExitCode::from(knife_compile::run(Path::new(root), Path::new(tsv)))
         }
+        [cmd, rest @ ..] if cmd == "knife-shards" => ExitCode::from(knife_shards::run(rest)),
         [cmd, rest @ ..] if cmd == "tidy-scan" => tidy_scan_cmd(rest),
         [cmd, rest @ ..] if cmd == "ci-scope" => ci_scope_cmd(rest),
         [cmd, rest @ ..] if cmd == "knife-spec" => match knife_spec_args(rest) {
