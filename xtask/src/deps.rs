@@ -76,7 +76,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "objc2-local-authentication",
         Some("cfg(target_os = \"macos\")"),
         "=0.3.2",
-        &["LAContext", "std"],
+        // LABiometryType: S10-2 owner_check_state (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
+        &["LABiometryType", "LAContext", "std"],
     ),
 ];
 
@@ -416,11 +417,11 @@ mod tests {
             .expect("on the list");
         let (n, t, r, _) = SYS_OWN_DEPS[i];
         let mut d = allowed();
-        d[i] = dep(n, t, r, &["LAContext", "LAError", "std"]);
+        d[i] = dep(n, t, r, &["LABiometryType", "LAContext", "LAError", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, t, "^0.3.2", &["LAContext", "std"]);
+        d[i] = dep(n, t, "^0.3.2", &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, None, r, &["LAContext", "std"]);
+        d[i] = dep(n, None, r, &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
     }
 

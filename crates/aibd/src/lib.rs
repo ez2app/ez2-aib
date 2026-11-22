@@ -47,6 +47,7 @@ pub mod messages;
 pub mod nodes;
 pub mod now_gate;
 pub mod owner_ok;
+pub mod owner_probe;
 pub mod pair_api;
 pub mod pair_carry;
 pub mod pairing;

@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--handoff HANDOFF-….md [--mempack MEMPACK-….md]] [--dry-run] | seat move <seat-code> [--provider P] [--model M] [--repo R] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--handoff HANDOFF-….md [--mempack MEMPACK-….md]] [--dry-run] | seat move <seat-code> [--provider P] [--model M] [--repo R] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | owner-check probe | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -2301,6 +2301,22 @@ fn pair_key_init() -> Result<(), String> {
     Err("a fingerprint pairing key is macOS only for now (Windows Hello: not yet)".into())
 }
 
+/// `aibd ctl owner-check probe`: one JSON line of what this Mac's owner check would be
+/// ([`aibd::owner_probe`]); no window, no key.
+#[cfg(target_os = "macos")]
+fn owner_check_probe() -> Result<(), String> {
+    println!(
+        "{}",
+        aibd::owner_probe::probe(&aibd::owner_probe::Mac::read())
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn owner_check_probe() -> Result<(), String> {
+    Err("owner-check probe reads macOS LocalAuthentication; Windows Hello comes with S10-3".into())
+}
+
 /// How long `aibd ctl web` waits for an aibd launchd was asked to start, and how often it looks.
 const WAKE_WAIT: Duration = Duration::from_secs(15);
 const WAKE_POLL: Duration = Duration::from_millis(300);
@@ -2381,6 +2397,10 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     }
     if args == ["pair-key", "init"] {
         return pair_key_init();
+    }
+    // S10-2 measurement (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8): read only, asks nobody
+    if args == ["owner-check", "probe"] {
+        return owner_check_probe();
     }
     // N-web-oneline 1: the one line also starts aibd (through launchd) when it is not answering
     if args.first() == Some(&"web") {

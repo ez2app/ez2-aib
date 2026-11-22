@@ -34,6 +34,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",
 ] }
 objc2-local-authentication = { version = "=0.3.2", default-features = false, features = [
+    "LABiometryType", # S10-2 measurement: owner_check_state reads biometryType (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
     "LAContext",
     "std",
 ] }
