@@ -180,6 +180,21 @@ pub fn classify(ip: IpAddr, own: &[IpAddr]) -> Class {
     worst
 }
 
+/// This computer's interface addresses, read now (read again for each connection, 8b09a L9).
+/// Unreadable ⇒ an error, and the caller refuses: an address not known to be someone else's is
+/// not connected to.
+pub fn own_addresses() -> Result<Vec<IpAddr>, &'static str> {
+    let n = sysinfo::Networks::new_with_refreshed_list().map_err(|_| "interfaces_unreadable")?;
+    let own: Vec<IpAddr> = (&n)
+        .into_iter()
+        .flat_map(|(_, d)| d.ip_networks().iter().map(|i| i.addr))
+        .collect();
+    if own.is_empty() {
+        return Err("interfaces_unreadable");
+    }
+    Ok(own)
+}
+
 /// For a managed host (hostmode §2): only private or public addresses; the reason otherwise.
 pub fn host_ok(ip: IpAddr, own: &[IpAddr]) -> Result<(), &'static str> {
     match classify(ip, own) {
@@ -284,6 +299,21 @@ mod tests {
             Err("this_computer")
         );
         assert_eq!(all_ok(&[], &own), Err("no_address"), "reason: empty_taken");
+    }
+
+    /// N10 / hostmode §2: the interface addresses are read from the system, and every one of
+    /// them is this computer's own.
+    #[test]
+    fn this_computers_own_addresses_are_read_and_refused() {
+        let own = own_addresses().unwrap();
+        assert!(!own.is_empty(), "reason: no_interfaces");
+        for a in &own {
+            assert!(
+                matches!(classify(*a, &own), Class::Own(_) | Class::Refuse(_)),
+                "reason: own_address_taken {a}"
+            );
+            assert!(host_ok(*a, &own).is_err(), "reason: own_host_taken {a}");
+        }
     }
 
     #[test]

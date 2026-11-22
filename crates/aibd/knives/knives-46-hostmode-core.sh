@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HM1–HM9 (3e53b 11-23; DESIGN-hostmode-3e53b-1123 r3 §2–§5 H6 / H7 / W1 / W2, 8b09a REVIEW-hostnet-pre
+# HM1–HM10 (3e53b 11-23; DESIGN-hostmode-3e53b-1123 r3 §2–§5 H6 / H7 / W1 / W2, 8b09a REVIEW-hostnet-pre
 # r2 passed): which addresses aibd connects to for a seat, and the one pinned ssh command.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -29,3 +29,6 @@ hs '    a.push(t.ip.to_string());' '    a.push(t.id.to_owned()); // knife' "$S"
 hs '    if !user_ok(t.user) {' '    if !user_ok(t.user) && false { // knife' "$S"
 # HM9 the ssh program is taken without being there
 hs '    if p.is_file() {' '    if true { // knife' "$P"
+# HM10 the interface addresses are not read (none of this computer's own are refused)
+ha '        .flat_map(|(_, d)| d.ip_networks().iter().map(|i| i.addr))' '        .flat_map(|(_, d)| d.ip_networks().iter().map(|i| i.addr).take(0)) // knife' \
+   host_addr::tests::this_computers_own_addresses_are_read_and_refused
