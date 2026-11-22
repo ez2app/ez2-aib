@@ -48,6 +48,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         &[
             "Win32_Foundation",
             "Win32_Security",
+            // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
+            "Win32_Storage_FileSystem",
             "Win32_System_Console",
             "Win32_System_Diagnostics_ToolHelp",
             "Win32_System_IO",

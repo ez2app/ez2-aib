@@ -148,7 +148,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
     assert_eq!(r.json["reason"], "owner_check_not_approved", "{}", r.body);
     let after = seats(&d.call("GET", "/api/v1/seats", None, None).await.json);
     assert_eq!(after, before, "reason: refused_open_wrote");
-    let work = data.join("seat-work");
+    let work = aibd::folders::folder(&data, "seat-work");
     let trees = std::fs::read_dir(&work)
         .map(|r| {
             r.flatten()
@@ -206,7 +206,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         .clone();
     assert_eq!(
         (&row["repo_copy"]["repo"], &row["repo_copy"]["sendable"]),
-        (&json!("my-repo"), &json!(false)),
+        (&json!("my-repo"), &json!(true)),
         "reason: repo_copy_not_listed {row}"
     );
     assert_eq!(
@@ -247,9 +247,15 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         "reason: the_trail_is_not_on_its_seat_only"
     );
     let send = json!({"type": "seat_send_back", "seat_id": w1});
+    // 519d0 11-21: open and idle (not in a turn) is not busy: the send goes on to read the
+    // copy (nothing committed here, so nothing goes and no branch is written, below)
     let r = post(send.clone()).await;
-    assert_eq!(r.code, 409, "reason: running_seat_sent {}", r.body);
-    assert_eq!(r.json["code"], "seat_busy", "{}", r.body);
+    assert_ne!(
+        r.json["code"], "seat_busy",
+        "reason: idle_seat_refused {}",
+        r.body
+    );
+    assert_ne!(r.code, 200, "reason: sent_without_a_fingerprint {}", r.body);
     let mut half = send.clone();
     half["ticket"] = json!("t-made-up");
     let r = post(half).await;

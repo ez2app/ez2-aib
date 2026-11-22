@@ -39,8 +39,8 @@ python3 -I scripts/knife.py crates/aibd/src/touch.rs \
   -- cargo test -p aibd --locked --lib touch::tests::only_a_signature_that_checks_out_is_a_yes
 # TK6 the window carries a request's text (5d33a L2)
 python3 -I scripts/knife.py crates/aibd/src/pairing.rs \
-  '        let why = crate::touch::reason(who, &short, user_page);' \
-  '        let why = format!("{}{nonce_hex}", crate::touch::reason(who, &short, user_page)); // knife' \
+  '        let why = crate::touch::window(' \
+  '        let why = nonce_hex.clone() + &crate::touch::window( // knife' \
   --expect-fail pairing::tests::touchid_confirms_only_by_the_owners_fingerprint \
   -- cargo test -p aibd --locked --lib pairing::tests::touchid_confirms_only_by_the_owners_fingerprint
 # TK7 a key file others may write is taken

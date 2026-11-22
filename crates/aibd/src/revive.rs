@@ -709,18 +709,37 @@ async fn rejoin_with(
             crate::seats::fold_gate_into_work_settings(&mut argv, g);
         }
     }
+    let mut file = None;
     if let Some(path) = card.text_path.clone() {
-        let sha = card.persona_sha.clone();
-        let file = tokio::task::spawn_blocking(move || {
-            let text = crate::personas::card_text(&path, &sha).ok()?;
-            crate::personas::keep_text(&private, &sha, &text).ok()
-        })
-        .await
-        .ok()
-        .flatten()
-        .and_then(|p| p.to_str().map(str::to_owned))
-        .ok_or(Skip::PersonaText)?;
-        if !aib_seatopen::add_persona_file(&meta.provider, &mut argv, &file) {
+        let (sha, dir) = (card.persona_sha.clone(), private.clone());
+        file = Some(
+            tokio::task::spawn_blocking(move || {
+                let text = crate::personas::card_text(&path, &sha).ok()?;
+                crate::personas::keep_text(&dir, &sha, &text).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|p| p.to_str().map(str::to_owned))
+            .ok_or(Skip::PersonaText)?,
+        );
+    }
+    // 519d0 11-21 M6: a restarted work seat is told its commands as an opened one is
+    if crate::seats::told_its_commands(&meta.provider, &mode) {
+        let persona = file.clone();
+        file = Some(
+            tokio::task::spawn_blocking(move || {
+                crate::seats::work_prompt_file(&private, persona.as_deref()).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|p| p.to_str().map(str::to_owned))
+            .ok_or(Skip::PersonaText)?,
+        );
+    }
+    if let Some(f) = file {
+        if !aib_seatopen::add_persona_file(&meta.provider, &mut argv, &f) {
             return Err(Skip::Provider);
         }
     }

@@ -561,7 +561,8 @@ fn change(run_id: &str, change: impl FnOnce(&mut Run, &str) -> bool) -> Result<O
     Ok(Some(run))
 }
 
-fn find(run_id: &str) -> Option<Run> {
+/// One run by its id, of any seat (G6 [`crate::verify_run::RECEIPT`] reads them too).
+pub fn find(run_id: &str) -> Option<Run> {
     let _one = lock();
     load().into_iter().find(|r| r.run_id == run_id)
 }

@@ -24,11 +24,11 @@
   const WHY = {
     no_tree: '這一席沒有自己的一份(它不是開在倉裡的樹,或樹已經收掉了;分支還在)',
     not_reviewer: '只有被指派為審查的席能讀別席的樹',
-    tree_built_in_page_only: '只有 aibd 內建的頁面能看席的樹',
+    tree_built_in_page_only: '只有 AIB 內建的頁面能看席的樹',
     assignments_unavailable: '讀不到指派表,稍後再試',
     path: '這個路徑不在那一席的樹裡',
     git: '在那一棵樹裡跑 git 失敗',
-    offline: '連不上 aibd',
+    offline: '連不上 AIB',
   };
   const whyText = (e) => WHY[e && e.reason] || (e && e.status === 404 ? WHY.no_tree : '讀不到:' + ((e && e.message) || '不明原因'));
 

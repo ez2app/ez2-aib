@@ -102,7 +102,7 @@ fn pack_name(name: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
@@ -111,7 +111,7 @@ fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(windows)]
-fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_FLAG_OPEN_REPARSE_POINT: a link is opened as itself, and is then not a plain file
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -253,6 +253,7 @@ fn base_name(path: &str) -> String {
 /// A path a commit must not bring into the registered repo this way.
 fn refused_path(new_mode: &str, path: &str) -> bool {
     loads_as_settings(path)
+        || crate::seat_carry::in_carry(path)
         || CHECKOUT_SETTINGS.contains(&base_name(path).as_str())
         || new_mode == SYMLINK_MODE
 }
@@ -467,9 +468,9 @@ pub fn refused_response(r: &Refused) -> Response {
 }
 
 /// The seat list's `repo_copy` (IFACE-web-merge r1 §1): `{repo, sendable}` for a seat in its
-/// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat does
-/// not run now); the act itself decides.
-pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
+/// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat is
+/// not in a turn, `busy`); the act itself decides.
+pub fn repo_copy_of(cwd: &str, busy: bool) -> Value {
     let tree = Path::new(cwd);
     crate::seat_worktree::base_of(tree)
         .and_then(|(_, author)| {
@@ -481,7 +482,7 @@ pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
             // the copy's committed head, read as plain files (1a93b: the page's 跑收據 needs
             // it); null when the copy's .git names none
             let head = crate::seat_worktree::clone_head(tree).map(|(_, sha)| sha);
-            json!({"repo": repo, "sendable": !live, "head": head})
+            json!({"repo": repo, "sendable": !busy, "head": head})
         })
 }
 
@@ -514,8 +515,15 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             "a ticket comes with the head of its plan, and only then",
         );
     }
-    if st.sessions.live_seats().contains(&req.seat_id) {
-        return conflict("seat_busy", "the seat runs now; stop it first", json!({}));
+    // 519d0 11-21 (Andy in preview 51405: a seat done with its turn, open and idle, was
+    // refused three times): only a seat in a turn is refused, as 合回's author is. What goes
+    // is the copy's committed head, read here and again under the ticket (`head_moved`).
+    if st.sessions.in_turn(&req.seat_id) {
+        return conflict(
+            "seat_busy",
+            "the seat is in a turn; wait for it to finish",
+            json!({}),
+        );
     }
     let (store, sid) = (st.store.clone(), req.seat_id.clone());
     let meta = match tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await {
@@ -594,13 +602,11 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
             )
                 .into_response(),
             // one ask only: asking again could open a second window for the same send
-            crate::owner_ok::Asked::Unavailable(why) => (
-                StatusCode::FORBIDDEN,
-                Json(json!({"code": "forbidden", "reason": why,
-                    "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
-                    "request_id": crate::guard::request_id()})),
-            )
-                .into_response(),
+            crate::owner_ok::Asked::Unavailable(why) => {
+                let mut v = crate::owner_ok::refusal(why);
+                v["request_id"] = json!(crate::guard::request_id());
+                (StatusCode::FORBIDDEN, Json(v)).into_response()
+            }
         };
     };
     if !crate::owner_ok::approved_for(&ticket, &ask) {
@@ -825,6 +831,7 @@ mod tests {
             (".github/workflows/x.yml", "on: push"),
             ("sub/.gitmodules", "[submodule \"x\"]"),
             (".lfsconfig", "[lfs]"),
+            (".aib/HANDOFF-a9136-1121-1030.md", "handoff"),
         ] {
             let f = fix();
             let sha = f.commit(file, body);

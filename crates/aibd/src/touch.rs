@@ -59,6 +59,33 @@ pub fn reason(who: &Who, short_code: &str, user_page: bool) -> String {
     }
 }
 
+/// The plain sentence on top of a pairing window (Andy 11-21 01:44: 「最上方要用真人容易了解的
+/// 簡易描述，下方再接原來的內容」): what a yes does. Only aibd's own values.
+pub fn plain(who: &Who, user_page: bool) -> String {
+    let to = if user_page {
+        "你資料夾的頁"
+    } else {
+        "內建頁"
+    };
+    match who {
+        Who::Terminal => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),
+        Who::Reconfirm { act, until } => {
+            format!("讓這一頁繼續用完整權限到 {until}(起因:{act})")
+        }
+    }
+}
+
+/// The whole pairing window: [`plain`], until when to press and the code the countdown beside
+/// it shows, then [`reason`] as it always said (Andy 11-21 01:42 every window counts down;
+/// 519d0 05:49). The words are only shown; the key signs [`binding`], not these.
+pub fn window(who: &Who, short_code: &str, user_page: bool, until: &str, code: &str) -> String {
+    format!(
+        "{}({until},過了這張就作廢)對照碼 {code}\n{}",
+        plain(who, user_page),
+        reason(who, short_code, user_page)
+    )
+}
+
 /// When a pairing that has `left` to live ends, for the window: local `HH:MM` from `date(1)`
 /// (the workspace forbids `unsafe`, so no localtime_r; as aib-seatops nowline), or
 /// 「還剩 N 小時 M 分」 when `date` cannot say. Only aibd's own clock goes in.
@@ -482,6 +509,32 @@ pub mod tests {
             r,
             "aibd 網頁重新確認:升級這頁到本輪完整權限,到 23:59;起因:開席;換版前延續的配對,給 你資料夾的頁(只能打給 safe 席)。本機鑰(未登記)"
         );
+    }
+
+    #[test]
+    fn a_pairing_window_says_it_plainly_first_and_then_what_it_always_said() {
+        let w = window(
+            &Who::Terminal,
+            "123456",
+            false,
+            "請在 01:23:44 前按",
+            "123456",
+        );
+        assert_eq!(
+            w,
+            "讓這個瀏覽器分頁配對成 AIB 的內建頁(請在 01:23:44 前按,過了這張就作廢)對照碼 123456\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+        );
+        let who = Who::Reconfirm {
+            act: "開席",
+            until: "23:59".into(),
+        };
+        let w = window(&who, "", true, "請在 120 秒內按", "AB12");
+        let (top, rest) = w.split_once('\n').expect("reason: two_lines");
+        assert_eq!(
+            top,
+            "讓這一頁繼續用完整權限到 23:59(起因:開席)(請在 120 秒內按,過了這張就作廢)對照碼 AB12"
+        );
+        assert_eq!(rest, reason(&who, "", true), "reason: original_kept");
     }
 
     #[cfg(unix)]

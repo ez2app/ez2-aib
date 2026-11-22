@@ -287,9 +287,18 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
     let Some(slug) = slug_of(&t.remote) else {
         return refuse(&no(StatusCode::CONFLICT, "pr_no_github_repo"));
     };
-    // no token for this very repository: said before any window is raised, as above
+    // no token for this very repository: said before any window is raised, as above, with the
+    // repository's GitHub name so the page can offer to keep one (DESIGN-gh-token-card §1)
     if !api.ready(&slug) {
-        return refuse(&no(StatusCode::SERVICE_UNAVAILABLE, "pr_open_unavailable"));
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                json!({"code": "unavailable", "reason": "pr_open_unavailable",
+                "message": words("pr_open_unavailable"), "token_for": slug,
+                "request_id": request_id()}),
+            ),
+        )
+            .into_response();
     }
     let ask = open_ask(&t, &slug, &title, &text, by.clone());
     let Some(ticket) = req.ticket else {

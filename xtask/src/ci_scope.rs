@@ -48,6 +48,9 @@ const DOC_EXCLUDE: [&str; 10] = [
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.6.md",
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.7.md",
 ];
+/// Every release's notes are read by aibd-release.yml and test-aibd-release (Andy 11-22: a bump no
+/// longer edits Python).
+const DOC_EXCLUDE_PREFIXES: [&str; 1] = ["docs/aibd/RELEASE-NOTES-"];
 const RUST_FILES: [&str; 2] = ["Cargo.toml", "Cargo.lock"];
 const RUST_PREFIXES: [&str; 1] = ["crates/"];
 
@@ -121,6 +124,10 @@ fn clean(path: &str) -> Option<&str> {
 pub fn is_doc(path: &str) -> bool {
     let Some(p) = clean(path) else { return false };
     if !p.ends_with(".md") || DOC_EXCLUDE.contains(&p) {
+        return false;
+    }
+    // kept apart from the line above, which knives-01-ci-scope.sh CS5 is anchored on
+    if DOC_EXCLUDE_PREFIXES.iter().any(|x| p.starts_with(x)) {
         return false;
     }
     if DOC_PREFIXES.iter().any(|pre| p.starts_with(pre)) {
@@ -585,6 +592,10 @@ mod tests {
             .expect("docs_only.py");
         let own = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert_eq!(py_tuple(&py, "DOC_EXCLUDE"), own(&DOC_EXCLUDE));
+        assert_eq!(
+            py_tuple(&py, "DOC_EXCLUDE_PREFIXES"),
+            own(&DOC_EXCLUDE_PREFIXES)
+        );
         assert_eq!(py_tuple(&py, "DOC_PREFIXES"), own(&DOC_PREFIXES));
         assert_eq!(py_tuple(&py, "RUST_FILES"), own(&RUST_FILES));
         assert_eq!(py_tuple(&py, "RUST_PREFIXES"), own(&RUST_PREFIXES));

@@ -1914,7 +1914,7 @@ jobs:
       # (header timeout=, default 30m). A new crate's knives need no new step here. Scripts another job
       # names itself carry `# aib-knives: job=<that job>` (aib-cloud, aib-cloud-host) and are not run here.
       # S88-split (f1fae 11-20; Andy 11-20 00:2x): the job=rust scripts left this cell for the crate-knives job
-      # below (three macOS cells side by side, AIB_KNIVES_SHARD=k/3; this one step had taken 86+ of a 120-minute
+      # below (four macOS cells side by side, AIB_KNIVES_SHARD=k/4; this one step had taken 86+ of a 120-minute
       # cell on #865, job 135621588974). Here only the Windows scripts stay (header job=rust-windows, os=windows).
       - name: crate knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
@@ -2265,8 +2265,8 @@ jobs:
           sk locks.rs '    if enter == Enter::Reentered {' '    if enter == Enter::Reentered && false {' \
              a_move_inside_the_same_seats_transition_lock_reenters
           # DS4 the Unix folder lock is not the folder Python atomic_json flocks
-          sk locks.rs '        Level::Directory if cfg!(unix) => dir.to_path_buf(),' \
-             '        Level::Directory if cfg!(unix) && false => dir.to_path_buf(),' \
+          sk locks.rs '        Level::Directory => dir.lock_handle(DIR_LOCK_FILE),' \
+             '        Level::Directory => dir.open_private(DIR_LOCK_FILE),' \
              the_folder_lock_keeps_a_second_opener_out
           # DS5 the rev check is skipped
           sk store.rs '        let (ok, reason, cur) = rev_check(read.presence(), mv.if_rev, mv.no_rev_check);' \
@@ -3917,9 +3917,9 @@ jobs:
           retention-days: 30
 
   # S88-split (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做"): the crates/*/knives/*.sh scripts of job rust,
-  # three macOS cells side by side. run-knives.sh with AIB_KNIVES_SHARD=k/3 runs every third script that runs
-  # on macOS, so the three cells together run each exactly once; a cell that gets none is red. The cells are
-  # not required checks one by one: crate-knives-gate below is, and it is green only when all three are.
+  # four macOS cells side by side. run-knives.sh with AIB_KNIVES_SHARD=k/4 runs every fourth script that runs
+  # on macOS, so the four cells together run each exactly once; a cell that gets none is red. The cells are
+  # not required checks one by one: crate-knives-gate below is, and it is green only when all four are.
   crate-knives:
     name: crate knives (macOS, ${{ matrix.shard }})
     needs: changes
@@ -3928,9 +3928,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/3", "2/3", "3/3"]
+        shard: ["1/4", "2/4", "3/4", "4/4"]
     # the whole loop was 86+ minutes in one cell on #865 (job 135621588974); a third of it plus cache restore
-    # and the first compile, with room. Each script still has its own watchdog (header timeout=, default 30m).
+    # and the first compile, with room. #872 (run 44928976366) outgrew three: cell 1/3's scripts summed
+    # 8368 s and the step hit its 140 minutes, so four cells (about 105 minutes each on that run). Each script still has its own watchdog (header timeout=, default 30m).
     timeout-minutes: 150
     # Same runner choice as the rust job and the two knife cells above (n08; keep the four copies in step).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
@@ -4008,10 +4009,10 @@ jobs:
     permissions:
       actions: read
     steps:
-      - name: all three crate knives cells passed
+      - name: all four crate knives cells passed
         env:
           CELLS: ${{ needs.crate-knives.result }}
-          SHARDS: "3"
+          SHARDS: "4"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}

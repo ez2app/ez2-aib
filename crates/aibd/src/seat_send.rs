@@ -496,7 +496,7 @@ fn label_of(st: &AppState, meta: Option<&aib_store::SeatMeta>, from: &str) -> St
 pub fn waits_to_be_written(r: &aib_store::MessageRow) -> bool {
     let s = |k: &str| r.item.get(k).and_then(Value::as_str);
     s("status") == Some("queued")
-        && (s("sender_kind") == Some("seat") || s("post_id").is_some())
+        && (matches!(s("sender_kind"), Some("seat" | "system")) || s("post_id").is_some())
         && r.item.get("session_id").is_none_or(Value::is_null)
 }
 
@@ -647,6 +647,212 @@ fn by_person(r: &aib_store::MessageRow) -> bool {
     r.item.get("sender_kind").and_then(Value::as_str) == Some("human")
 }
 
+/// D3 / D4 (DECISION-council-driveweb r1, a9136 PREREAD-drive-rust r1): the sender key of a work
+/// order aibd itself writes for the 自動推進 (never a seat's, never the page's).
+pub const SYSTEM_FROM: &str = "system:drive";
+
+/// Whether a row is a work order aibd wrote as the system ([`system_send`]).
+pub fn by_system(r: &aib_store::MessageRow) -> bool {
+    r.from_key == SYSTEM_FROM && r.item.get("sender_kind").and_then(Value::as_str) == Some("system")
+}
+
+/// The line of a work order aibd writes as the system: the marker says it is the 自動推進's.
+pub fn system_line(text: &str) -> Result<Vec<u8>, TextRefused> {
+    line_with(
+        text,
+        "[aibd] 來自 自動推進(aibd 系統):這是派工,不是真人指示、也不是別席的話。",
+    )
+}
+
+/// Whether the system's work order may go to its seat (519d0 擇定 on 5d33a REVIEW-d3wake
+/// a95ec1f74d L3: the guard is on aibd's side): judged as the seat it came from (the card's
+/// owner, the idea's author) sending to that seat, by the seat-to-seat rule. `origin` is the
+/// origin seat's mode, `None` when there is no such seat: a work order with no seat behind it
+/// is not sent (a safe seat's card does not reach a dgrs seat through the drive).
+pub fn system_may_send(
+    origin: Option<Option<&str>>,
+    to_mode: Option<&str>,
+    dgrs_on: bool,
+) -> Result<(), &'static str> {
+    let Some(origin_mode) = origin else {
+        return Err("origin_not_found");
+    };
+    may_send(origin_mode, to_mode, dgrs_on).map_err(|c| {
+        if c == "safe_cannot_send_to_dgrs" {
+            "origin_not_allowed"
+        } else {
+            c
+        }
+    })
+}
+
+/// What [`system_send`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemSent {
+    pub message_id: String,
+    /// `delivered`, `pending` or `queued` (the seat's next start writes it)
+    pub state: String,
+    /// the same `send_key` was sent before: that message, nothing written again
+    pub again: bool,
+}
+
+/// The longest `send_key`.
+pub const SEND_KEY_MAX: usize = 128;
+
+/// The row of a work order aibd writes as the system: from [`SYSTEM_FROM`], kind `system`,
+/// marked a work order (the system counts as Lead, 5d33a N2), keyed by the drive's `send_key`.
+pub fn system_row(
+    to: &str,
+    mode: Option<&str>,
+    text: &str,
+    sha: &str,
+    send_key: &str,
+    origin_seat: &str,
+) -> Option<aib_store::MessageRow> {
+    let mut row = queued_row("system", to, mode, text, sha)?;
+    row.from_key = SYSTEM_FROM.to_owned();
+    row.thread_id = crate::messages::thread_of(SYSTEM_FROM, &row.to_key);
+    for (k, v) in [
+        ("sender_seat", json!(SYSTEM_FROM)),
+        ("sender_kind", json!("system")),
+        ("thread", json!(row.thread_id)),
+        (crate::urgent::DISPATCH, json!(true)),
+        ("send_key", json!(send_key)),
+        ("origin_seat", json!(origin_seat)),
+    ] {
+        row.item.insert(k.into(), v);
+    }
+    row.idem_owner = Some(SYSTEM_FROM.to_owned());
+    row.idem_key = Some(send_key.to_owned());
+    Some(row)
+}
+
+/// D4 (a9136): aibd writes the 自動推進's work order to a web seat as the system, marked a work
+/// order (the system counts as Lead; DECISION-council-driveweb r1). `send_key` is the drive's
+/// intent key: the same key again answers the first message and writes nothing (aibd restarted
+/// mid-round sends nothing twice). The text's first line must start 「派工:」. Refused: not a
+/// work order, a bad key, no such seat, a seat whose mode takes no input, a text the line
+/// refuses.
+pub async fn system_send(
+    st: &AppState,
+    to: &str,
+    text: &str,
+    send_key: &str,
+    origin_seat: &str,
+) -> Result<SystemSent, &'static str> {
+    if !crate::urgent::is_dispatch_text(text) {
+        return Err("not_a_work_order");
+    }
+    if send_key.is_empty()
+        || send_key.len() > SEND_KEY_MAX
+        || !send_key.bytes().all(|b| b.is_ascii_graphic())
+    {
+        return Err("send_key");
+    }
+    let (db, k) = (st.messages.clone(), send_key.to_owned());
+    if let Ok(Ok(Some(r))) = tokio::task::spawn_blocking(move || db.by_idem(SYSTEM_FROM, &k)).await
+    {
+        let state = r
+            .item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Ok(SystemSent {
+            message_id: r.message_id,
+            state,
+            again: true,
+        });
+    }
+    let store = st.store.clone();
+    let Ok(Ok(metas)) = tokio::task::spawn_blocking(move || store.seat_metas()).await else {
+        return Err("internal");
+    };
+    let Some(tm) = metas.iter().find(|m| m.seat_id == to) else {
+        return Err("seat_not_found");
+    };
+    // the origin is a seat of the same cabin, by id or code
+    let origin = resolve(origin_seat, metas.iter().filter(|m| m.cabin == tm.cabin)).ok();
+    system_may_send(
+        origin.map(|m| m.mode.as_deref()),
+        tm.mode.as_deref(),
+        crate::seat_input::dgrs_input_on(),
+    )?;
+    let origin_id = origin.map(|m| m.seat_id.clone()).unwrap_or_default();
+    let line = system_line(text).map_err(|e| e.code())?;
+    let sha = hex(&Sha256::digest(text.as_bytes()));
+    let Some(row) = system_row(to, tm.mode.as_deref(), text, &sha, send_key, &origin_id) else {
+        return Err("internal");
+    };
+    let message_id = row.message_id.clone();
+    let hand = InHand::take(&message_id);
+    let db = st.messages.clone();
+    match tokio::task::spawn_blocking(move || db.insert(row)).await {
+        Ok(Ok(aib_store::Inserted::New)) => {}
+        Ok(Ok(aib_store::Inserted::Existing(r))) => {
+            let state = r
+                .item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            return Ok(SystemSent {
+                message_id: r.message_id,
+                state,
+                again: true,
+            });
+        }
+        _ => return Err("message_not_stored"),
+    }
+    let (sessions, t) = (st.sessions.clone(), to.to_owned());
+    let written =
+        tokio::task::spawn_blocking(move || sessions.write_input_between_turns(&t, &line)).await;
+    let state = match written {
+        Ok(Ok(w)) => {
+            let how = if w.late {
+                Settled::Pending(&w.session_id)
+            } else {
+                Settled::Delivered(&w.session_id)
+            };
+            settle(st, &message_id, how).await;
+            if w.late {
+                "pending"
+            } else {
+                "delivered"
+            }
+        }
+        Ok(Err(e)) if waits_for_start(e.code()) => {
+            // in a turn, or not running: the turn's end or the seat's start writes it
+            let passed = hand.passed_over();
+            drop(hand);
+            if passed {
+                tokio::spawn(redeliver(st.clone(), to.to_owned()));
+            }
+            "queued"
+        }
+        Ok(Err(e)) => {
+            settle(st, &message_id, Settled::Failed(e.code())).await;
+            return Err("not_written");
+        }
+        Err(_) => {
+            settle(st, &message_id, Settled::Failed("internal")).await;
+            return Err("internal");
+        }
+    };
+    journal(
+        st,
+        "seat.message",
+        json!({"message_id": message_id, "from_seat": SYSTEM_FROM, "to_seat": to,
+            "len": text.len(), "sha256": sha, "state": state, "dispatch": true}),
+    )
+    .await;
+    Ok(SystemSent {
+        message_id,
+        state: state.to_owned(),
+        again: false,
+    })
+}
+
 /// B1dm-S5: `seat` started: what other seats sent it while it was not running is written now,
 /// oldest first, each settled like a send; the first that cannot be written stops the rest
 /// (they wait for the next start, in order).
@@ -686,7 +892,17 @@ pub async fn redeliver(st: AppState, seat: String) {
         // 5d33a PREREAD-seatmsg L1: judged again now, not when it was queued (the machine's
         // dgrs input switch may have changed, or a seat been reopened in another mode)
         let to_mode = mode_of(&seat);
-        let allowed = if by_person(&r) {
+        let allowed = if by_system(&r) {
+            // judged again as its origin seat sending now (519d0 擇定, 5d33a L3)
+            let origin = r.item.get("origin_seat").and_then(Value::as_str);
+            let origin = origin.and_then(|o| metas.iter().find(|m| m.seat_id == o));
+            let dgrs_on = crate::seat_input::dgrs_input_on();
+            system_may_send(
+                origin.map(|m| m.mode.as_deref()),
+                to_mode.as_deref(),
+                dgrs_on,
+            )
+        } else if by_person(&r) {
             // the person may type to any seat whose mode takes input (as on the page)
             if mode_takes_input(to_mode.as_deref(), crate::seat_input::dgrs_input_on()) {
                 Ok(())
@@ -730,7 +946,12 @@ pub async fn redeliver(st: AppState, seat: String) {
             continue;
         };
         let label = label_of(&st, metas.iter().find(|m| m.seat_id == from), &from);
-        let Ok(line) = line_for(&r, &text, &label) else {
+        let line = if by_system(&r) {
+            system_line(&text)
+        } else {
+            line_for(&r, &text, &label)
+        };
+        let Ok(line) = line else {
             settle(&st, &r.message_id, Settled::Failed("text_refused")).await;
             continue;
         };
@@ -812,6 +1033,15 @@ pub fn queued_row(
     })
 }
 
+/// Add `extra`'s fields to the answer `to`.
+fn merge(to: &mut Value, extra: &Value) {
+    if let (Some(t), Some(e)) = (to.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            t.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -881,6 +1111,181 @@ async fn settle(st: &AppState, message_id: &str, how: Settled<'_>) -> Option<i64
     }
 }
 
+/// Whether a seat of `mode` may write into a 1.x seat's ledger: work or dgrs only, whatever
+/// else (safe, none, a mode this build does not know) may not (5d33a REVIEW-g5bridge M1, L1:
+/// an allow list, as mode_takes_input).
+pub fn may_send_to_legacy(mode: Option<&str>) -> bool {
+    matches!(mode, Some("work" | "dgrs"))
+}
+
+/// A web seat's row for a letter written into the 1.x ledger is to `legacy:<code>` (its to key
+/// `seat:legacy:<code>`, as queued_row writes it).
+pub const LEGACY_TO: &str = "legacy:";
+
+/// A web seat's letter to a 1.x seat (G5 信橋, DESIGN-g5-bridge-7ebca-1121 r1 §3): the same
+/// pace as any seat_send (to `legacy:<code>`), the text checked as a page's letter is
+/// (crate::legacy_send::check_text), aibd's row first (queued), then the letter written into
+/// the ledger with the lock and file shape of dm_queue.py (aib-dmq-store; the 1.x drainer
+/// delivers it), and the row delivered with the letter's id. The sender's old code is only
+/// the one the owner's fingerprint moved (aib_store::seat_moves); a web seat without one
+/// claims no seat. No idempotency key: refused, a retry is a new letter.
+/// A letter to a 1.x seat sent again with its key: the first one's answer, nothing written
+/// again; the key with another text is refused (as a send to a web seat).
+fn ledger_again(r: &aib_store::MessageRow, sha: &str) -> Response {
+    if ledger_key_reused(r, sha) {
+        return refuse(
+            StatusCode::CONFLICT,
+            "idempotency_conflict",
+            "this key was used for another text",
+        );
+    }
+    let s = |k: &str| r.item.get(k).and_then(Value::as_str).unwrap_or_default();
+    let dm_id = s("session_id").strip_prefix(LEGACY_TO).unwrap_or_default();
+    Json(
+        json!({"message_id": r.message_id, "to": r.to_key, "state": s("status"),
+        "dm_id": dm_id, "again": true}),
+    )
+    .into_response()
+}
+
+/// Whether a kept key was used for another text.
+pub fn ledger_key_reused(r: &aib_store::MessageRow, sha: &str) -> bool {
+    r.body_sha256 != sha
+}
+
+async fn to_ledger(
+    st: &AppState,
+    from: &str,
+    fm: &aib_store::SeatMeta,
+    code: &str,
+    text: &str,
+    idem: Option<&str>,
+) -> Response {
+    // 5d33a REVIEW-g5bridge M1: a 1.x seat holds every hand (as a dgrs seat does); a safe
+    // seat reads what may carry an injection and writes into none of them
+    if !may_send_to_legacy(fm.mode.as_deref()) {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "seat_mode_cannot_send_to_legacy",
+            "only a work or dgrs seat writes into a 1.x seat's ledger",
+        );
+    }
+    if let Err((c, _)) = crate::legacy_send::check_text(text) {
+        return refuse(StatusCode::BAD_REQUEST, c, "text not sent");
+    }
+    let sha = hex(&Sha256::digest(text.as_bytes()));
+    // 0eed7 integ3 B1: a seat's MCP tool always sends a key; a 1.x ledger cannot take a letter
+    // back, so the key is kept on the row (not in memory): the same key answers the first letter
+    if let Some(k) = idem {
+        let (db, o, k) = (st.messages.clone(), format!("seat:{from}"), k.to_owned());
+        if let Ok(Ok(Some(r))) = tokio::task::spawn_blocking(move || db.by_idem(&o, &k)).await {
+            return ledger_again(&r, &sha);
+        }
+    }
+    let Some(cabin) = crate::bridge_cfg::now().legacy_cabin else {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "legacy_off",
+            "aibd is not told which cabin's old-style seats it may write to (legacy_cabin in <data>/bridge.json)",
+        );
+    };
+    let to_key = format!("{LEGACY_TO}{code}");
+    let now = Instant::now();
+    // the pace lock is dropped here, before any await
+    let admitted = pace().admit(from, &to_key, fm.cabin.as_deref().unwrap_or_default(), now);
+    if let Err(code) = admitted {
+        return refuse(StatusCode::TOO_MANY_REQUESTS, code, "not sent");
+    }
+    let Some(mut row) = queued_row(from, &to_key, fm.mode.as_deref(), text, &sha) else {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "no message id",
+        );
+    };
+    if let Some(k) = idem {
+        row.idem_owner = Some(format!("seat:{from}"));
+        row.idem_key = Some(k.to_owned());
+    }
+    let message_id = row.message_id.clone();
+    let db = st.messages.clone();
+    match tokio::task::spawn_blocking(move || db.insert(row)).await {
+        Ok(Ok(aib_store::Inserted::New)) => {}
+        // the same key sent at the same moment: the one written first answers
+        Ok(Ok(aib_store::Inserted::Existing(r))) => return ledger_again(&r, &sha),
+        _ => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "message_not_stored",
+                "nothing was written",
+            )
+        }
+    }
+    let Some(state_root) = crate::seat_move::ledger().and_then(|q| {
+        q.parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+    }) else {
+        settle(st, &message_id, Settled::Failed("legacy_off")).await;
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "legacy_off",
+            "no mail ledger",
+        );
+    };
+    let (m, f) = (st.messages.clone(), from.to_owned());
+    let old = tokio::task::spawn_blocking(move || m.moved_code(&f))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    let (c, t, id, web) = (
+        code.to_owned(),
+        text.to_owned(),
+        message_id.clone(),
+        crate::seats::seat_code(from),
+    );
+    let wrote = tokio::task::spawn_blocking(move || {
+        let who = crate::legacy_send::Sender::Seat {
+            old_code: old.as_deref(),
+            web_code: &web,
+            message_id: &id,
+        };
+        crate::legacy_send::send_as(&state_root, &cabin, &c, &t, &who, None)
+    })
+    .await;
+    let sent = match wrote {
+        Ok(Ok(s)) => s,
+        Ok(Err((c, d))) => {
+            settle(st, &message_id, Settled::Failed(c)).await;
+            let status = if c == "write_failed" {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::NOT_FOUND
+            };
+            return refuse(status, c, &d);
+        }
+        Err(_) => {
+            settle(st, &message_id, Settled::Failed("internal")).await;
+            return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not written");
+        }
+    };
+    let ledger_id = format!("{LEGACY_TO}{}", sent.id);
+    settle(st, &message_id, Settled::Delivered(&ledger_id)).await;
+    journal(
+        st,
+        "seat.message",
+        json!({"message_id": message_id, "from_seat": from, "to_seat": to_key,
+            "len": text.len(), "sha256": sha, "state": "delivered", "dm_id": sent.id}),
+    )
+    .await;
+    Json(
+        json!({"message_id": message_id, "to": to_key, "state": "delivered",
+        "dm_id": sent.id, "relay": sent.relay}),
+    )
+    .into_response()
+}
+
 pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Response {
     let Some(from) = crate::seat_token::tokens().seat(&key) else {
         return refuse(
@@ -895,7 +1300,7 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "unknown_act_type",
             // L5 (0eed7 / 5d33a; 519d0 r16 裁定 5): what a seat's token may act, all of it
             "a seat may seat_send, seat_now, thread_open, thread_send, thread_view, thread_read, \
-             message_inbox, message_read or message_done",
+             message_inbox, message_read, message_done or message_outbox",
         );
     }
     let (Some(to), Some(text)) = (
@@ -909,6 +1314,14 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
         );
     };
     let idem = body.get("idempotency_key").and_then(Value::as_str);
+    // 待審 1.5 期 (urgent.rs): a seat may ask urgent; aibd decides from the seat's rank
+    let Some(wants_urgent) = crate::urgent::asked(body.get("level")) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "level is normal or urgent",
+        );
+    };
     let store = st.store.clone();
     let metas = match tokio::task::spawn_blocking(move || store.seat_metas()).await {
         Ok(Ok(m)) => m,
@@ -927,10 +1340,31 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "this seat is gone",
         );
     };
+    // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §3): a 1.x code the owner moved into a web seat
+    // names that seat; a 1.x code with a folder in this machine's ledger and no web seat of
+    // that code is written there (to_ledger)
+    let moved_to = if aib_store::seat_moves::code_ok(to) {
+        let (m, c) = (st.messages.clone(), to.to_owned());
+        tokio::task::spawn_blocking(move || m.moved_seat(&c))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    } else {
+        None
+    };
+    let to = moved_to.as_deref().unwrap_or(to);
     // another cabin's seat is answered as no seat at all; a seat code names a seat when it is
     // the only one of the cabin with it (519d0 L1: the receive marker shows the code)
     let tm = match resolve(to, metas.iter().filter(|m| m.cabin == fm.cabin)) {
         Ok(m) => m,
+        Err("seat_not_found")
+            if moved_to.is_none()
+                && aib_store::seat_moves::code_ok(to)
+                && crate::seat_move::in_ledger(to) =>
+        {
+            return to_ledger(&st, &from, fm, to, text, idem).await;
+        }
         Err(code) => {
             return refuse(
                 if code == "seat_ambiguous" {
@@ -1034,14 +1468,45 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
         }
         return refuse(StatusCode::TOO_MANY_REQUESTS, code, "not sent");
     }
+    // 待審 1.5 期: urgent only when the seat's rank reaches the urgent act's (else plain, Q2)
+    let level = if wants_urgent {
+        let (db, f) = (st.messages.clone(), from.clone());
+        tokio::task::spawn_blocking(move || crate::urgent::judge(&db, &f, unix_now()))
+            .await
+            .unwrap_or(Err(crate::urgent::RANK_TOO_LOW))
+            .map_err(Some)
+    } else {
+        Err(None)
+    };
+    // D3 (DECISION-council-driveweb r1): a work order wakes an idle seat at once; aibd marks it,
+    // from the sender's rank, never from the text alone
+    let dispatch = crate::urgent::is_dispatch_text(text) && {
+        let (db, f) = (st.messages.clone(), from.clone());
+        tokio::task::spawn_blocking(move || crate::urgent::may_dispatch(&db, &f))
+            .await
+            .unwrap_or(false)
+    };
+    let level_answer = match &level {
+        Ok(_) => json!({"level": crate::urgent::URGENT}),
+        Err(Some(why)) => json!({"level": "normal", "level_downgraded": why}),
+        Err(None) => json!({"level": "normal"}),
+    };
     // B1dm-S5: the row first (queued), then the line; nothing is typed that is not kept
-    let Some(row) = queued_row(&from, to, fm.mode.as_deref(), text, &sha) else {
+    let Some(mut row) = queued_row(&from, to, fm.mode.as_deref(), text, &sha) else {
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "no message id",
         );
     };
+    if let Ok(by) = &level {
+        row.item
+            .insert("level".into(), json!(crate::urgent::URGENT));
+        row.item.insert("level_by".into(), json!(by));
+    }
+    if dispatch {
+        row.item.insert(crate::urgent::DISPATCH.into(), json!(true));
+    }
     let message_id = row.message_id.clone();
     let hand = InHand::take(&message_id);
     let db = st.messages.clone();
@@ -1097,8 +1562,9 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             if passed {
                 tokio::spawn(redeliver(st.clone(), to.to_owned()));
             }
-            let answer = json!({"message_id": message_id, "to": to, "state": "queued",
+            let mut answer = json!({"message_id": message_id, "to": to, "state": "queued",
                 "waits_for": why, "position": position, "journaled": journaled});
+            merge(&mut answer, &level_answer);
             if let Some(k) = idem {
                 pace().remember(&from, k, &sha, answer.clone(), now);
                 claimed.kept = true;
@@ -1147,13 +1613,14 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             let _ = tokio::task::spawn_blocking(move || db.mark_journaled(&id, rev)).await;
         }
     }
-    let answer = json!({
+    let mut answer = json!({
         "message_id": message_id,
         "to": to,
         "session_id": session_id,
         "state": state,
         "journaled": journaled,
     });
+    merge(&mut answer, &level_answer);
     if let Some(k) = idem {
         pace().remember(&from, k, &sha, answer.clone(), now);
         claimed.kept = true;
@@ -1168,6 +1635,73 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
 
 #[cfg(test)]
 mod tests {
+    // D3 / D4: a work order aibd wrote as the system waits to be written like a seat's, and
+    // reads as the 自動推進's; nothing else is taken for one
+    #[test]
+    fn a_system_work_order_waits_to_be_written_and_reads_as_the_drives() {
+        use serde_json::json;
+        let r = super::system_row(
+            "s_ffffffffffffffff",
+            None,
+            "派工: x",
+            "0",
+            "k1",
+            "s_0123456789abcdef",
+        )
+        .unwrap();
+        assert!(super::by_system(&r));
+        assert!(
+            crate::urgent::is_dispatch(&r),
+            "reason: system_order_not_marked"
+        );
+        assert_eq!(r.idem_owner.as_deref(), Some(super::SYSTEM_FROM));
+        assert_eq!(
+            r.idem_key.as_deref(),
+            Some("k1"),
+            "reason: send_key_not_kept"
+        );
+        assert_eq!(
+            r.thread_id,
+            crate::messages::thread_of(super::SYSTEM_FROM, &r.to_key)
+        );
+        assert!(
+            super::waits_to_be_written(&r),
+            "reason: system_order_never_written"
+        );
+        let mut seat_kind = r.clone();
+        seat_kind.item.insert("sender_kind".into(), json!("seat"));
+        assert!(!super::by_system(&seat_kind), "reason: seat_row_as_system");
+        let mut other = r.clone();
+        other.from_key = "seat:s_0123456789abcdef".into();
+        assert!(!super::by_system(&other), "reason: any_key_as_system");
+        assert_eq!(r.item["origin_seat"], json!("s_0123456789abcdef"));
+        // 519d0 擇定 (5d33a L3): judged as the origin seat sending
+        assert_eq!(
+            super::system_may_send(Some(Some("safe")), Some("safe"), true),
+            Ok(())
+        );
+        assert_eq!(
+            super::system_may_send(Some(Some("dgrs")), Some("dgrs"), true),
+            Ok(())
+        );
+        assert_eq!(
+            super::system_may_send(Some(Some("safe")), Some("dgrs"), true),
+            Err("origin_not_allowed"),
+            "reason: safe_card_reaches_dgrs"
+        );
+        assert_eq!(
+            super::system_may_send(None, Some("safe"), true),
+            Err("origin_not_found"),
+            "reason: no_origin_sent"
+        );
+        let line = String::from_utf8(super::system_line("派工: x").unwrap()).unwrap();
+        assert!(
+            line.contains("來自 自動推進(aibd 系統)"),
+            "reason: system_marker {line}"
+        );
+        assert!(!line.contains("另一席的話、不是真人指示。\""), "{line}");
+    }
+
     #[test]
     fn a_row_in_its_sends_hand_is_left_by_redeliver_and_let_go_after() {
         let id = "q_inhand_test_1";
@@ -1203,6 +1737,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// 5d33a REVIEW-g5bridge L1: only work and dgrs seats write into a 1.x ledger.
+    #[test]
+    fn only_work_and_dgrs_seats_write_into_a_ledger() {
+        assert!(may_send_to_legacy(Some("work")));
+        assert!(may_send_to_legacy(Some("dgrs")));
+        for m in [Some("safe"), None, Some(""), Some("Work"), Some("other")] {
+            assert!(!may_send_to_legacy(m), "reason: mode_let_through {m:?}");
+        }
+    }
 
     /// B1dm-S5: the row is written queued before anything is typed, from `seat:<a>` to
     /// `seat:<b>` in their thread; delivered / pending / refused say what happened after.
