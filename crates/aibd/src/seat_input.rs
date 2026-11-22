@@ -435,12 +435,14 @@ pub async fn act(
         }
         // aibd §7 permission templates: the built-in page in this pairing only; a change that
         // raises asks the owner's fingerprint (perm_tpl decides which)
+        // (no `k @ (…)` binding: every_page_act_arm_is_listed reads the pattern lines that
+        // start `Some(` or `crate::`; chain7b a1d34d0b6 lost REVOKE that way)
         Some(
-            k @ (crate::perm_tpl::LIST
+            crate::perm_tpl::LIST
             | crate::perm_tpl::LOG
             | crate::perm_tpl::ADD
             | crate::perm_tpl::SET
-            | crate::perm_tpl::REMOVE),
+            | crate::perm_tpl::REMOVE,
         ) => {
             let tpl_from_user_page = held_as_user_page(&page).await;
             if tpl_from_user_page || page.carried {
@@ -451,7 +453,7 @@ pub async fn act(
                 );
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
-            return match k {
+            return match kind.as_deref().unwrap_or_default() {
                 crate::perm_tpl::LIST => crate::perm_tpl::list(st).await,
                 crate::perm_tpl::LOG => crate::perm_tpl::log(st, body).await,
                 crate::perm_tpl::ADD => crate::perm_tpl::add(st, body, by).await,
@@ -462,7 +464,7 @@ pub async fn act(
         // aibd §7 7b: a template applied to an open seat, its log, and taking a change back
         // (收回): the built-in page in this pairing only; turning an item on asks the owner
         Some(
-            k @ (crate::perm_apply::APPLY | crate::perm_apply::SEAT_LOG | crate::perm_apply::REVOKE),
+            crate::perm_apply::APPLY | crate::perm_apply::SEAT_LOG | crate::perm_apply::REVOKE,
         ) => {
             if held_as_user_page(&page).await || page.carried {
                 return refuse(
@@ -472,7 +474,7 @@ pub async fn act(
                 );
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
-            return match k {
+            return match kind.as_deref().unwrap_or_default() {
                 crate::perm_apply::APPLY => crate::perm_apply::apply(st, body, by).await,
                 crate::perm_apply::SEAT_LOG => crate::perm_apply::seat_log(st, body).await,
                 _ => crate::perm_apply::revoke(st, body, by).await,
