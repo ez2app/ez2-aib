@@ -57,3 +57,9 @@ python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '        (Some(a), Some(_)) => Ok(a),' \
   --expect-fail owner_batch::tests::an_item_is_batched_only_with_one_ask \
   -- cargo test -p aibd --locked --lib owner_batch::tests::an_item_is_batched_only_with_one_ask
+# ob-delim (f163c pre N1)
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '            a.resource.len(),' \
+  '            0,' \
+  --expect-fail 'owner_batch::tests::the_hash_and_the_window_keep_the_order' \
+  -- cargo test -p aibd --locked --lib 'owner_batch::tests::the_hash_and_the_window_keep_the_order'
