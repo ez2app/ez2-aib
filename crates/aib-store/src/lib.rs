@@ -5,6 +5,7 @@
 //! The API is synchronous on purpose; async callers use `spawn_blocking`.
 
 mod alive;
+pub mod brain_notes;
 mod idem;
 mod messages;
 mod migrate;
@@ -22,6 +23,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
+pub use brain_notes::{BrainNote, NotesOf, NOTES_LIST_MAX};
 pub use idem::{IdemClaim, IN_PROGRESS};
 pub use messages::{
     Inserted, MessageDb, MessageFact, MessageRow, UnreadRow, Updated, BODY_KEEP_DAYS, IMPORTED_MAX,

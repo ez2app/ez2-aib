@@ -9,6 +9,7 @@ pub mod allowlist;
 pub mod api;
 pub mod asks;
 pub mod assign;
+pub mod brain_note;
 pub mod bridge_cfg;
 pub mod catch_up;
 pub mod codex_wire;

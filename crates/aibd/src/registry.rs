@@ -316,6 +316,36 @@ pub fn brain_root(lookup: impl Fn(&str) -> Option<String>) -> BrainRoot {
 /// The brains the library's own index lists (`<root>/.ez2/index/folder-id-index.json`): every
 /// active folder with a route key (c12 Q1: a route key means it was registered; the kind does
 /// not decide). `None` when the index cannot be read.
+/// aibd §3 brain_note (DESIGN-brainnote-08de5-1123 §1b): the folder of the active brain whose
+/// route key is `route_key`, as the library's index names it (`folderPath`, inside `root`), or
+/// why not. The path is checked to stay inside the library: `/`-separated pieces, none empty,
+/// `.` or `..`, no `\`, not absolute; the caller still walks it without following a link.
+pub fn brain_folder(root: &Path, route_key: &str) -> Result<String, &'static str> {
+    let b = std::fs::read(root.join(".ez2").join("index").join("folder-id-index.json"))
+        .map_err(|_| "brain_index_unreadable")?;
+    let v: Value = serde_json::from_slice(&b).map_err(|_| "brain_index_unreadable")?;
+    let items = v
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or("brain_index_unreadable")?;
+    let hit = items
+        .iter()
+        .find(|i| {
+            i.get("status").and_then(Value::as_str) == Some("active")
+                && i.get("routeKey").and_then(Value::as_str) == Some(route_key)
+        })
+        .ok_or("brain_unknown")?;
+    let p = hit
+        .get("folderPath")
+        .and_then(Value::as_str)
+        .ok_or("brain_unknown")?;
+    if aib_store::brain_notes::rel_path_ok(p) {
+        Ok(p.to_string())
+    } else {
+        Err("brain_path_unsafe")
+    }
+}
+
 pub fn index_candidates(root: &Path) -> Option<Vec<Candidate>> {
     let b = std::fs::read(root.join(".ez2").join("index").join("folder-id-index.json")).ok()?;
     let v: Value = serde_json::from_slice(&b).ok()?;

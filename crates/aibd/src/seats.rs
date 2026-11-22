@@ -422,6 +422,10 @@ pub const RECEIPT_TOOL: &str = "mcp__aibd__seat_receipt";
 /// the seats that read pending (work / dgrs), not to a safe seat.
 pub const VERIFY_TOOL: &str = "mcp__aibd__seat_verify";
 
+/// aibd §3 brain_note (DESIGN-brainnote-08de5-1123): a work seat adds a note to the second brain it
+/// was opened bound to; aibd refuses every other mode and a seat with no brain bound.
+pub const BRAIN_TOOL: &str = "mcp__aibd__brain_note";
+
 /// Whether a claude seat of `mode` is allowed [`RECEIPT_TOOL`].
 pub fn receipt_tool_for(mode: &str) -> bool {
     crate::receipt_run::mode_may_ask(Some(mode))
@@ -565,6 +569,9 @@ pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> 
     }
     if receipt_tool_for(mode) {
         allowed.push(RECEIPT_TOOL);
+    }
+    if crate::brain_note::mode_may_note(Some(mode)) {
+        allowed.push(BRAIN_TOOL);
     }
     if mode == "work" {
         allowed.extend(aib_seatopen::WORK_ALLOWED);
@@ -2973,6 +2980,20 @@ mod tests {
             w[3].contains(",mcp__aibd__seat_receipt,"),
             "reason: work_seat_lacks_receipt_tool {}",
             w[3]
+        );
+        // aibd §3 brain_note: a work seat's only, never a safe or a dgrs seat's
+        assert!(
+            w[3].contains(",mcp__aibd__brain_note,"),
+            "reason: work_seat_lacks_brain_tool {}",
+            w[3]
+        );
+        assert!(
+            !a[3].contains("brain_note"),
+            "reason: safe_seat_gets_brain_tool"
+        );
+        assert!(
+            !talk_args_with(p.to_str().unwrap(), "dgrs", true)[3].contains("brain_note"),
+            "reason: dgrs_seat_gets_brain_tool"
         );
         let d = talk_args_with(p.to_str().unwrap(), "dgrs", true);
         assert!(

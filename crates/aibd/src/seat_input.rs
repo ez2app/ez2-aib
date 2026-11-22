@@ -59,6 +59,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
+    crate::brain_note::LIST,
+    crate::brain_note::DELETE,
     crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
@@ -295,6 +297,18 @@ pub async fn act(
                 };
                 return crate::seat_dm::seat_act(st, &seat, body).await;
             }
+            // aibd §3 brain_note (DESIGN-brainnote-08de5-1123): a work seat adds a note to the
+            // second brain it was opened bound to; the seat is the token's, never the body's
+            if crate::brain_note::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::brain_note::seat_act(st, &seat, body).await;
+            }
             // PREREAD-seat-pending-read: a seat reads the pending folder, read-only
             if crate::seat_pending::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -384,6 +398,23 @@ pub async fn act(
     let kind = body.get("type").and_then(Value::as_str).map(str::to_owned);
     match kind.as_deref() {
         Some(KIND) => {}
+        // aibd §3 brain_note: the notes work seats wrote are listed and taken back from the
+        // built-in page in this pairing (no fingerprint: a take-back only lowers)
+        Some(k @ (crate::brain_note::LIST | crate::brain_note::DELETE)) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "brain notes are listed and taken back from the built-in page in this pairing only",
+                );
+            }
+            return if k == crate::brain_note::LIST {
+                crate::brain_note::list(st, body).await
+            } else {
+                let by = format!("page:{}", hex(&page.digest[..8]));
+                crate::brain_note::delete(st, body, by).await
+            };
+        }
         Some(crate::contacts_api::CONTACT_SET) => {
             // 5d33a L1: a user folder page does not write the person's notes either
             if body.get("note").is_some() && held_as_user_page(&page).await {
