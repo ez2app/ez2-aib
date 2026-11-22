@@ -48,6 +48,7 @@ pub mod host_addr;
 // hostmode r3 §3-4: the one pinned ssh command of host_exec (3e53b 11-23)
 pub mod guide;
 pub mod host_ssh;
+pub mod handoff_latest;
 pub mod hosts;
 pub mod idem;
 pub mod import;
