@@ -384,13 +384,17 @@ pub async fn open(st: AppState, page: crate::pairing::PageAccess, body: Value) -
     for i in &kept_at {
         let (r, got) = crate::owner_ok::collecting(send(&st, page, list[*i].1.clone())).await;
         if r.status() != StatusCode::ACCEPTED {
-            let status = r.status().as_u16();
+            let status = r.status();
             let b = body_of(r).await;
+            // f163c wire pre L2: an act that asked nothing has already been done; the page is
+            // told so as it is, never as refused
+            let (code, reason) = not_asked(status);
             return refuse(
-                StatusCode::BAD_REQUEST,
-                "batch_item_refused",
+                code,
+                reason,
                 serde_json::json!({
-                "i": i, "status": status, "why": b["reason"].as_str().or(b["code"].as_str())}),
+                "i": i, "status": status.as_u16(), "result": b,
+                "why": b["reason"].as_str().or(b["code"].as_str())}),
             );
         }
         match one(got) {
@@ -521,6 +525,16 @@ async fn run(st: AppState, ticket: String) {
 
 /// f163c list L4: in the 搬家 group an item after a failed one is not done (each step needs
 /// the one before); a send back or a push stands alone.
+/// An item that did not ask while being collected: done already (2xx) or refused; the batch
+/// stops either way (f163c wire pre L2).
+pub fn not_asked(status: StatusCode) -> (StatusCode, &'static str) {
+    if status.is_success() {
+        (StatusCode::CONFLICT, "batch_item_done_without_window")
+    } else {
+        (StatusCode::BAD_REQUEST, "batch_item_refused")
+    }
+}
+
 pub fn skips(group: Group, broke: bool) -> bool {
     broke && group == Group::Move
 }
@@ -778,5 +792,18 @@ mod tests {
             "reason: other_page_reads"
         );
         batches().remove("ot_t1");
+    }
+
+    /// f163c wire pre L2: an item done with no window is told as done, not refused.
+    #[test]
+    fn an_item_done_without_a_window_is_told_as_done() {
+        assert_eq!(
+            not_asked(StatusCode::OK).1,
+            "batch_item_done_without_window",
+            "reason: done_told_as_refused"
+        );
+        assert_eq!(not_asked(StatusCode::CREATED).0, StatusCode::CONFLICT);
+        assert_eq!(not_asked(StatusCode::BAD_REQUEST).1, "batch_item_refused");
+        assert_eq!(not_asked(StatusCode::FORBIDDEN).0, StatusCode::BAD_REQUEST);
     }
 }
