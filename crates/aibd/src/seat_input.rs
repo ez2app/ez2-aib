@@ -845,8 +845,8 @@ pub async fn act(
         // S6 (DESIGN-s6-handofflatest-08de5-1123): the newest handoff and memory pack of a seat
         // code, names and times only; the built-in page (a carried pairing too: it only reads)
         Some(crate::handoff_latest::KIND) => {
-            let user_page = held_as_user_page(&page).await;
-            if user_page {
+            let held_by_user_page = held_as_user_page(&page).await;
+            if held_by_user_page {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "page_only",
