@@ -33,8 +33,10 @@ nw crates/aibd/src/seat_input.rs '            if net_outside {' '            if 
 # NW2 a window that could not be raised locks the card (L1)
 nw crates/aibd/src/net_card_web.rs '            let window_up = r.status() == StatusCode::ACCEPTED;' '            let window_up = r.status() == StatusCode::ACCEPTED || r.status() == StatusCode::FORBIDDEN; // knife' '--test net_card' "$IT"
 # NW3 the answer does not go through aibd's own owner check (L2)
-nw crates/aibd/src/net_card_web.rs '            crate::owner_ok::approved_for,' '            |_: &str, _: &crate::owner_ok::Ask| true, // knife' '--lib' net_card_web::tests::the_answer_finishes_only_through_aibds_own_owner_check
+nw crates/aibd/src/net_card_web.rs '            crate::owner_ok::approved_for,' '            |_: &str, _: &crate::owner_ok::Ask| true, // knife' '--test net_card_owner' a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
 # NW4 the card is marked as asked before any window (L1, the pure side)
 nw crates/aibd/src/net_card.rs '            (None, State::Open) => Step::Ask(Box::new(ask)),' '            (None, State::Open) => { *state = State::Asked(c); Step::Ask(Box::new(ask)) } // knife' '--lib' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NW5 (N1) a ticket for another choice than the window's is looked up
 nw crates/aibd/src/net_card.rs '            (Some(_), State::Asked(asked)) if asked != c => Step::NotApproved,' '            (Some(_), State::Asked(asked)) if asked != c && c == Choice::Deny => Step::NotApproved, // knife' '--lib' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
+# NW6 (f163c incremental) 一直允許 is not written to the seat's list after the owner's yes
+nw crates/aibd/src/net_card_web.rs '                if yes.lasts() == Lasts::Always {' '                if yes.lasts() == Lasts::Always && false { // knife' '--test net_card_owner' a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
