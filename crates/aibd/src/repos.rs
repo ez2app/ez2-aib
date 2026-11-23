@@ -391,8 +391,21 @@ pub async fn dgrs_restart_gate(
         st.sessions.list().iter().any(|s| {
             s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
         });
-    if left_to_act(meta.mode.as_deref(), archived, runs) {
-        return None;
+    match gate_step(meta.mode.as_deref(), archived, runs) {
+        Step::Act => return None,
+        Step::Refuse(reason, message) => {
+            return Some(
+                (
+                    StatusCode::CONFLICT,
+                    Json(
+                        json!({"code": "conflict", "reason": reason, "message": message,
+                        "request_id": crate::guard::request_id()}),
+                    ),
+                )
+                    .into_response(),
+            )
+        }
+        Step::Ask => {}
     }
     let a = restart_ask(
         seat_id,
@@ -409,11 +422,29 @@ pub async fn dgrs_restart_gate(
     None
 }
 
-/// A11 (f163c REVIEW-a11 N1): a restart the act refuses anyway — not a dgrs seat, archived, or
-/// running now — is left to the act before the owner is asked: a fingerprint is never spent on
-/// a seat_archived / seat_running answer. (Not a fence: revive checks both again.)
-fn left_to_act(mode: Option<&str>, archived: bool, runs: bool) -> bool {
-    mode != Some("dgrs") || archived || runs
+/// What the dgrs gate does with a page's restart (f163c REVIEW-a11 N1 + pre-8947d325 M1).
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// not a dgrs seat: the act answers it, nobody asked
+    Act,
+    /// a dgrs seat the act would refuse anyway: refused here, with the act's own words, before
+    /// the owner is asked (no fingerprint spent) — never let through to be checked again
+    /// later, as the seat could stop in between and start with no sandbox unasked
+    Refuse(&'static str, &'static str),
+    /// the owner is asked
+    Ask,
+}
+
+fn gate_step(mode: Option<&str>, archived: bool, runs: bool) -> Step {
+    if mode != Some("dgrs") {
+        Step::Act
+    } else if archived {
+        Step::Refuse("seat_archived", "the seat is archived")
+    } else if runs {
+        Step::Refuse("seat_running", "the seat runs now")
+    } else {
+        Step::Ask
+    }
 }
 
 /// `202 {ticket}` while the owner has not answered, `403 owner_check_unavailable` when no
@@ -613,20 +644,24 @@ mod tests {
     }
     use std::process::Command;
 
-    /// A11 (f163c REVIEW-a11 N1): only a dgrs seat that is neither archived nor running asks.
+    /// A11 (f163c REVIEW-a11 N1, pre-8947d325 M1): an archived or running dgrs seat is refused
+    /// by the gate itself (no fingerprint spent, nothing let through); only a dgrs seat that is
+    /// neither asks; any other seat is the act's.
     #[test]
     fn a_restart_refused_anyway_asks_no_fingerprint() {
-        assert!(!left_to_act(Some("dgrs"), false, false));
-        assert!(
-            left_to_act(Some("dgrs"), true, false),
-            "reason: archived_asked"
+        assert_eq!(gate_step(Some("dgrs"), false, false), Step::Ask);
+        assert_eq!(
+            gate_step(Some("dgrs"), true, false),
+            Step::Refuse("seat_archived", "the seat is archived"),
+            "reason: archived_let_through"
         );
-        assert!(
-            left_to_act(Some("dgrs"), false, true),
-            "reason: running_asked"
+        assert_eq!(
+            gate_step(Some("dgrs"), false, true),
+            Step::Refuse("seat_running", "the seat runs now"),
+            "reason: running_let_through"
         );
-        assert!(left_to_act(Some("work"), false, false));
-        assert!(left_to_act(None, false, false));
+        assert_eq!(gate_step(Some("work"), false, false), Step::Act);
+        assert_eq!(gate_step(None, true, true), Step::Act);
     }
 
     /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
@@ -637,7 +672,7 @@ mod tests {
         assert_eq!(o.operation, OP_OPEN);
         assert_eq!(
             crate::owner_ok::plain_words(o.operation, &o.params).as_deref(),
-            Some("開一個完全權限的席(claude),人格 架構師")
+            Some("開一個完全權限的席(claude),人格 架構師(un0eba)")
         );
         assert!(
             o.resource.contains("架構師"),

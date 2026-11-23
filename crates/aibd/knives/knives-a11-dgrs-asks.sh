@@ -29,8 +29,8 @@ python3 -I scripts/knife.py crates/aibd/src/seat_clear.rs \
   -- cargo test -p aibd --locked --test seats_page_dgrs_asks 'a_dgrs_seat_starts_from_the_page_only_through_the_owner'
 # a11-safe
 python3 -I scripts/knife.py crates/aibd/src/repos.rs \
-  '    mode != Some("dgrs") || archived || runs' \
-  '    (mode != Some("dgrs") && mode.is_none()) || archived || runs' \
+  '    if mode != Some("dgrs") {' \
+  '    if mode != Some("dgrs") && mode.is_none() {' \
   --expect-fail 'a_dgrs_seat_starts_from_the_page_only_through_the_owner' \
   -- cargo test -p aibd --locked --test seats_page_dgrs_asks 'a_dgrs_seat_starts_from_the_page_only_through_the_owner'
 # a11-kind
@@ -53,8 +53,8 @@ python3 -I scripts/knife.py crates/aibd/src/repos.rs \
   -- cargo test -p aibd --locked --lib 'repos::tests::a_seat_record_not_read_stops_the_dgrs_gate'
 # a11-n1 (f163c REVIEW-a11 N1: an archived or running seat's restart spends no fingerprint)
 python3 -I scripts/knife.py crates/aibd/src/repos.rs \
-  '    mode != Some("dgrs") || archived || runs' \
-  '    mode != Some("dgrs") || (archived && runs) || runs' \
+  '    } else if archived {' \
+  '    } else if archived && runs {' \
   --expect-fail 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint' \
   -- cargo test -p aibd --locked --lib 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint'
 # a11-n2 (f163c REVIEW-a11 N2: the window's first line names the persona)
@@ -63,3 +63,9 @@ python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
   '                    .filter(|n| n.is_empty())' \
   --expect-fail 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other' \
   -- cargo test -p aibd --locked --lib 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other'
+# a11-n1run (f163c pre-8947d325 M1: a running dgrs seat is refused by the gate, never let through)
+python3 -I scripts/knife.py crates/aibd/src/repos.rs \
+  '    } else if runs {' \
+  '    } else if runs && archived {' \
+  --expect-fail 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint' \
+  -- cargo test -p aibd --locked --lib 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint'

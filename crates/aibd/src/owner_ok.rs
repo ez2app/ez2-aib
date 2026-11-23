@@ -194,17 +194,20 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         crate::repos::OP_REGISTER => format!("登記這個資料夾當倉:{}", piece(&v, "name")?),
         // A11: a dgrs open with no repo, and a page's restart of a dgrs seat
         crate::repos::OP_OPEN => match v["kind"].as_str() {
-            // f163c REVIEW-a11 N2: the persona by its name, a person's words cleaned as every
-            // object is (object_shown); no name, its uid
-            Some("open") => format!(
-                "開一個完全權限的席({}),人格 {}",
-                piece(&v, "provider")?,
-                v["persona_name"]
+            // f163c REVIEW-a11 N2 + pre-8947d325 L1: the persona by its name (a person's words,
+            // cleaned as every object is) and its uid, as a name can be changed or copied
+            Some("open") => {
+                let uid = piece(&v, "persona_uid")?;
+                let name = v["persona_name"]
                     .as_str()
                     .map(object_shown)
-                    .filter(|n| !n.is_empty())
-                    .map_or_else(|| piece(&v, "persona_uid"), Some)?
-            ),
+                    .filter(|n| !n.is_empty());
+                format!(
+                    "開一個完全權限的席({}),人格 {}",
+                    piece(&v, "provider")?,
+                    name.map_or_else(|| uid.clone(), |n| format!("{n}({uid})"))
+                )
+            }
             Some("restart") => format!(
                 "重開完全權限的席 @{}({})",
                 seat_code(&v)?,
