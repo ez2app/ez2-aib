@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PK1–PK8: the passphrase files and their one lock — the built-in page only reads the state, a record swapped while aibd runs is not taken, a missing tries file next to a record is locked, tries survive a restart, only the owner's own sentence is set from outside (DESIGN-persona-propose-osverify-c2f0b-1123 §11; f163c REVIEW-passphrase2 N1 N2, REVIEW-passphrase L2; ebab8 11-23 09:11 door test)
+# PK1–PK12: the passphrase files and their one lock — the built-in page only reads the state, a record swapped while aibd runs is not taken, a missing tries file next to a record is locked, tries survive a restart, only the owner's own sentence is set from outside (DESIGN-persona-propose-osverify-c2f0b-1123 §11; f163c REVIEW-passphrase2 N1 N2, REVIEW-passphrase L2; ebab8 11-23 09:11 door test)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pk() { python3 -I scripts/knife.py crates/aibd/src/passphrase_keep.rs "$1" "$2" --expect-fail "passphrase_keep::tests::$3" \
@@ -38,3 +38,19 @@ pk '                source: Source::Owner,' \
 pk '                v["swapped"] = json!(true);' \
    '                v["swapped"] = json!(false);' \
    a_record_that_does_not_read_is_swapped
+# PK9 a tries file written back to zero gives the wrong count back (f163c REVIEW-passkeep L1)
+pk '        wrong: disk.wrong.max(m.wrong),' \
+   '        wrong: disk.wrong,' \
+   a_tries_file_written_back_to_zero_does_not_give_the_tries_back
+# PK10 a tries file written back to zero lifts the lock (L1)
+pk '        locked_until: disk.locked_until.max(m.locked_until),' \
+   '        locked_until: disk.locked_until,' \
+   a_tries_file_written_back_to_zero_does_not_give_the_tries_back
+# PK11 a wrong answer whose count could not be written is answered as wrong, not locked (N2)
+pk '                if a != Answer::Yes {' \
+   '                if a != Answer::Yes && false {' \
+   a_wrong_answer_whose_count_is_not_written_is_locked
+# PK12 a carried pairing reads the state (N1)
+pk '    if page.carried || crate::seat_input::held_as_user_page(page).await {' \
+   '    if crate::seat_input::held_as_user_page(page).await {' \
+   a_carried_pairing_does_not_read_the_state

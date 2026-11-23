@@ -96,6 +96,21 @@ pub struct Keeper {
     kdf: Arc<dyn Kdf + Send + Sync>,
     /// The record aibd knows; read from `passphrase.known` once, then only set by [`Keeper::set_owner`].
     known: tokio::sync::Mutex<Option<String>>,
+    /// The tries aibd last wrote (f163c REVIEW-passkeep L1): a tries file written back to
+    /// zero does not give the tries back, the stricter of this and the file counts. Only
+    /// touched while `known` is held.
+    last: std::sync::Mutex<Option<Tries>>,
+}
+
+/// The stricter of the tries on disk and the ones aibd last wrote: more wrong, locked longer.
+pub fn stricter(disk: Tries, mem: Option<Tries>) -> Tries {
+    let Some(m) = mem else {
+        return disk;
+    };
+    Tries {
+        wrong: disk.wrong.max(m.wrong),
+        locked_until: disk.locked_until.max(m.locked_until),
+    }
 }
 
 impl Keeper {
@@ -109,14 +124,25 @@ impl Keeper {
             dir,
             kdf,
             known: tokio::sync::Mutex::new(known),
+            last: std::sync::Mutex::new(None),
         }
+    }
+
+    fn last(&self) -> std::sync::MutexGuard<'_, Option<Tries>> {
+        self.last.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The tries that count now: the file ([`read_tries`]) or aibd's own, the stricter.
+    fn tries_now(&self, record_there: bool, now: u64) -> Tries {
+        let mem = *self.last();
+        stricter(read_tries(&self.dir, record_there, now), mem)
     }
 
     /// What the page shows ([`pp::view`]); a record that does not read is `swapped`.
     pub async fn view(&self, system_usable: bool, now: u64) -> Value {
         let known = self.known.lock().await;
         let rec = read_record(&self.dir);
-        let tries = read_tries(&self.dir, rec != OnDisk::None, now);
+        let tries = self.tries_now(rec != OnDisk::None, now);
         match rec {
             OnDisk::None => pp::view(None, known.as_deref(), &tries, system_usable, now),
             OnDisk::Good(r) => pp::view(Some(&r), known.as_deref(), &tries, system_usable, now),
@@ -166,6 +192,7 @@ impl Keeper {
         *known = Some(sha);
         crate::platform::write_private_file(&self.dir.join(RECORD_FILE), &body)
             .map_err(|_| SetError::Store)?;
+        *self.last() = Some(t);
         write_tries(&self.dir, &t).map_err(|_| SetError::Store)?;
         Ok(())
     }
@@ -179,7 +206,7 @@ impl Keeper {
             OnDisk::Bad if system_usable => return Answer::UseSystem,
             OnDisk::Bad => return Answer::Swapped,
         };
-        let before = read_tries(&self.dir, rec.is_some(), now);
+        let before = self.tries_now(rec.is_some(), now);
         let (kdf, k) = (self.kdf.clone(), (*known).clone());
         let got = tokio::task::spawn_blocking(move || {
             let mut t = before;
@@ -198,6 +225,7 @@ impl Keeper {
         let Ok((a, after)) = got else {
             return Answer::Refused(Refused::Malformed);
         };
+        *self.last() = Some(after);
         if after != before {
             if let Err(e) = write_tries(&self.dir, &after) {
                 // a count that is not kept is not a wrong answer forgiven: say locked
@@ -330,6 +358,59 @@ mod tests {
         let later = 200 + pp::FIRST_LOCK_SECS + 1;
         assert_eq!(k2.answer(GOOD.into(), false, later).await, Answer::Yes);
         assert_eq!(keep(d.path()).view(false, later).await["wrong"], 0);
+    }
+
+    #[tokio::test]
+    async fn a_tries_file_written_back_to_zero_does_not_give_the_tries_back() {
+        let d = tempfile::tempdir().unwrap();
+        let k = keep(d.path());
+        set(&k).await;
+        let zero = d.path().join(DIR).join(TRIES_FILE);
+        for _ in 0..3 {
+            let _ = k.answer("不 對 的 那 一 句".into(), false, 200).await;
+        }
+        std::fs::write(&zero, br#"{"wrong":0,"locked_until":0}"#).unwrap();
+        for _ in 0..2 {
+            let _ = k.answer("不 對 的 那 一 句".into(), false, 200).await;
+        }
+        // five wrong in all: locked, the zero on disk notwithstanding
+        assert!(matches!(
+            k.answer(GOOD.into(), false, 300).await,
+            Answer::Locked { .. }
+        ));
+        // written back to zero while locked: still locked, the right sentence is not tried
+        std::fs::write(&zero, br#"{"wrong":0,"locked_until":0}"#).unwrap();
+        assert!(matches!(
+            k.answer(GOOD.into(), false, 300).await,
+            Answer::Locked { .. }
+        ));
+        assert_eq!(k.view(false, 300).await["locked"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wrong_answer_whose_count_is_not_written_is_locked() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let k = keep(d.path());
+        set(&k).await;
+        let owner = d.path().join(DIR);
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let a = k.answer("不 對 的 那 一 句".into(), false, 200).await;
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(a, Answer::Locked { .. }), "{a:?}");
+    }
+
+    #[tokio::test]
+    async fn a_carried_pairing_does_not_read_the_state() {
+        let page = crate::pairing::PageAccess {
+            digest: [0; 32],
+            confirmed: true,
+            user_page: false,
+            carried: true,
+        };
+        let r = page_act(&page).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
