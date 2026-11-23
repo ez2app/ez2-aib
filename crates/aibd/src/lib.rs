@@ -10,6 +10,7 @@ pub mod api;
 pub mod asks;
 pub mod assign;
 pub mod assistant;
+pub mod assistant_propose;
 pub mod bridge_cfg;
 pub mod catch_up;
 pub mod codex_wire;
