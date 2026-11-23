@@ -5234,7 +5234,8 @@
   // 6770f IFACE-merge r3 §2「每條可改」的 name / seat_to / rebind:受影響的名單照預覽回來、aibd 補好預設的 plan 畫(頁面不自己猜誰受影響);
   // 改了那組才送那一欄,送整張表(plan 那份 + 改的);沒改 = aibd 預設(名稱照舊、夥伴改用留下的、人格改綁留下的大腦)
   const mgPlanG = (M, keep) => { const P = M.pv && M.pv.plan; return (P && Array.isArray(P.groups) ? P.groups : []).find((x) => x && x.keep === keep) || null; };
-  const mgClean = (t) => Array.from(String(t || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()).slice(0, 20).join('');
+  // f163c r6 N1:控制字之外,零寬 / 方向字元(看不見、會讓名字看起來跟別的一樣)也拿掉;aibd 端仍會再驗
+  const mgClean = (t) => Array.from(String(t || '').replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '').trim()).slice(0, 20).join('');
   const mgOrig = (g) => String((g.items.find((x) => x.uid === g.keep) || {}).name || '');
   function mgGrpBody(M, g) {
     const q = (M.gopt || {})[g.keep] || {}, b = {}, pg = mgPlanG(M, g.keep) || {}, nm = mgClean(q.name);

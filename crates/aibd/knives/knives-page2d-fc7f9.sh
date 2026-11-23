@@ -35,3 +35,5 @@ k ' not_archived: '\''它已經不在封存區了'\'',' ' '
 k '${S.rgArchBusy ? '\''disabled'\'' : '\'''\''}>↺ 還原</button>' '>↺ 還原</button>'
 # PGAR14 (08de5 A1 已封存區 + ↺ 還原)
 k ',[data-rgao],[data-rgrs]'\'') && await rgClick(x)) return;' ''\'') && await rgClick(x)) return;'
+# PGMK17 (f163c r6 N1 合併名稱去零寬 / 方向字元)
+k 'replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20)' 'replace(/[\u0000-\u001f\u007f]/g, '\'''\'').trim()).slice(0, 20)'

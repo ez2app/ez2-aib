@@ -903,6 +903,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     cg.F.mgGrpChange(st.add, { dataset: { apmgnm: 'q1' }, value: '  甲乙\u0007丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥  ' }); await tick();
     ok(st.sent.length === 1 && st.sent[0][1].groups[0].name === '甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉' && st.sent[0][1].groups[0].seat_to.seat_a1 === 'p5', 'reason: mg_grp_name_clean_20 ' + JSON.stringify(st.sent));
     M.gopt.q1.name = '甲'; ok(!('name' in cg.F.mgGrpBody(M, g)), 'reason: mg_grp_same_name_not_sent');
+    M.pv = { plan: PLAN }; M.pvBusy = false; st.sent = []; cg.F.mgGrpChange(st.add, { dataset: { apmgnm: 'q1' }, value: '甲\u200b\u202e乙\ufeff' }); await tick(); ok(st.sent.length === 1 && st.sent[0][1].groups[0].name === '甲乙', 'reason: mg_grp_name_invisible_removed ' + JSON.stringify(st.sent));
     const B = { kind: 'brain', G: [g], prev: 'all', pv: { plan: { groups: [{ keep: 'q1', merge: ['q2'], rebind: { p5: 'q1', p6: 'q1' }, seat_to: { seat_a1: 'q1' } }] } }, gopt: { q1: { seat_to: { seat_a1: 'p5' }, rebind: { p6: 'b9' } } } };
     ok(JSON.stringify(cg.F.mgGrpBody(B, g)) === JSON.stringify({ rebind: { p5: 'q1', p6: 'b9' } }), 'reason: mg_grp_rebind_brain_only');
     st.reg = { brains: [{ uid: 'q1', name: '甲腦' }, { uid: 'b9', name: '乙腦' }] };
