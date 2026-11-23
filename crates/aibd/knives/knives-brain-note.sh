@@ -63,3 +63,9 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '    sha2::Sha256::digest(&bytes[..0])' \
   --expect-fail 'brain_note::tests::a_take_back_archives_only_the_note_written' \
   -- cargo test -p aibd --locked --lib 'brain_note::tests::a_take_back_archives_only_the_note_written'
+# bn-0700 (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
+  '            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))' \
+  '            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))' \
+  --expect-fail brain_note::tests::the_archive_folder_is_the_owners_alone \
+  -- cargo test -p aibd --locked --lib brain_note::tests::the_archive_folder_is_the_owners_alone

@@ -247,8 +247,15 @@ pub async fn personas(State(st): State<AppState>) -> Response {
     })
     .await
     {
+        // f163c regarch L3: the archived ones unread ⇒ no list, never one showing them live
+        Ok(Ok((_, None))) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"code": "internal", "reason": "archived_unreadable",
+            "message": "the archived personas cannot be read", "request_id": request_id()})),
+        )
+            .into_response(),
         // A1: an archived card is listed apart (the page's 已封存 with ↺), not in the picker
-        Ok(Ok((cards, gone))) => Json(json!({
+        Ok(Ok((cards, Some(gone)))) => Json(json!({
             "personas": cards
                 .iter()
                 .filter(|c| !gone.contains(&c.uid))

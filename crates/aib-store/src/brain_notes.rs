@@ -236,6 +236,21 @@ mod tests {
         }
     }
 
+    /// f163c bnote L2: a seat's list stops at its limit, its count does not (what a take-back of
+    /// the whole seat says is still there).
+    #[test]
+    fn a_seats_count_goes_past_its_list() {
+        let (_d, m) = db();
+        let n = NOTES_LIST_MAX + 3;
+        for i in 0..n {
+            m.brain_note_add(note(&format!("bn_{i:016x}"), "seat_a", i as i64))
+                .unwrap();
+        }
+        let of = NotesOf::Seat("seat_a".into());
+        assert_eq!(m.brain_notes(&of).unwrap().len(), NOTES_LIST_MAX);
+        assert_eq!(m.brain_note_counts("seat_a", i64::MAX).unwrap().1, n as i64);
+    }
+
     /// BN-S1: a note is kept once, listed by seat and by brain, counted, taken back once and
     /// then no longer listed (its row stays).
     #[test]

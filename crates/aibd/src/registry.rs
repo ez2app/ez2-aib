@@ -213,7 +213,9 @@ fn bad(reason: &str, message: &str) -> Response {
 pub async fn roles(State(st): State<AppState>) -> Response {
     match load(&data_dir(&st)) {
         Ok(r) => {
-            let gone = crate::persona_edit::archived_uids(&st.messages, "role");
+            let Some(gone) = crate::persona_edit::archived_uids(&st.messages, "role") else {
+                return internal("archived roles unreadable");
+            };
             Json(split_archived(roles_body(&r), "roles", &gone)).into_response()
         }
         Err(e) => internal(&e),
@@ -244,7 +246,9 @@ pub struct BrainQuery {
 pub async fn brains(State(st): State<AppState>, Query(q): Query<BrainQuery>) -> Response {
     match load(&data_dir(&st)) {
         Ok(r) => {
-            let gone = crate::persona_edit::archived_uids(&st.messages, "brain");
+            let Some(gone) = crate::persona_edit::archived_uids(&st.messages, "brain") else {
+                return internal("archived brains unreadable");
+            };
             Json(split_archived(
                 brains_body(&r, q.q.as_deref()),
                 "brains",

@@ -14,7 +14,8 @@
 //!   them back (`aibd::merge_plan::back`).
 //!
 //! In the message library's own file as tables only ever added (an older aibd never reads
-//! them). Written only by aibd.
+//! them). aibd writes them; nothing here holds off another process of the same user (a dgrs
+//! seat can open the file): these are records, not a guard (GUIDE-same-user-ai-threat-model).
 
 use crate::{MessageDb, Result, StoreError};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -73,6 +74,17 @@ pub const KINDS: [&str; 3] = ["persona", "brain", "role"];
 pub const REASONS: [&str; 2] = ["archive", "merge"];
 /// A merge batch's states.
 pub const BATCH_STATES: [&str; 5] = ["run", "done", "failed", "undone", "partial_undo"];
+
+/// The states a batch may move to `state` from (f163c regarch L2): a running batch ends done
+/// or failed; an ended one is taken back whole or in part; a part taken back is finished.
+pub fn batch_from(state: &str) -> &'static [&'static str] {
+    match state {
+        "done" | "failed" => &["run"],
+        "undone" => &["done", "failed", "partial_undo"],
+        "partial_undo" => &["done", "failed"],
+        _ => &[],
+    }
+}
 /// A step's states.
 pub const STEP_STATES: [&str; 3] = ["pending", "done", "undone"];
 /// How many alias hops a lookup follows before it gives up (a loop or a long chain).
@@ -81,6 +93,11 @@ pub const ALIAS_HOPS_MAX: usize = 4;
 pub const JSON_MAX: usize = 256 * 1024;
 /// The most rows one list gives.
 pub const LIST_MAX: u32 = 500;
+
+/// A chain `up` hops before the new alias and `down` after it: longer than a lookup follows.
+pub fn chain_too_long(up: usize, down: usize) -> bool {
+    up + 1 + down > ALIAS_HOPS_MAX
+}
 
 fn need(ok: bool, why: &'static str) -> Result<()> {
     if ok {
@@ -300,9 +317,10 @@ impl MessageDb {
         let (old, new, batch_id) = (old.to_string(), new.to_string(), batch_id.to_string());
         self.write(move |c| {
             let tx = c.transaction()?;
-            // `new` followed must not reach `old`
+            // `new` followed must not reach `old`, and must end (f163c regarch L1)
             let mut cur = new.clone();
-            for _ in 0..=ALIAS_HOPS_MAX {
+            let mut down = 0usize;
+            loop {
                 if cur == old {
                     return Err(StoreError::Invalid("alias loop"));
                 }
@@ -313,10 +331,38 @@ impl MessageDb {
                         |r| r.get(0),
                     )
                     .optional()?;
-                match next {
-                    Some(n) => cur = n,
-                    None => break,
+                let Some(n) = next else { break };
+                down += 1;
+                if down > ALIAS_HOPS_MAX {
+                    return Err(StoreError::Invalid("alias chain too long"));
                 }
+                cur = n;
+            }
+            // the longest chain that ends at `old`
+            let mut up = 0usize;
+            let mut level = vec![old.clone()];
+            loop {
+                let mut st =
+                    tx.prepare("SELECT old_uid FROM persona_aliases WHERE new_uid = ?1")?;
+                let mut before = Vec::new();
+                for x in &level {
+                    before.extend(
+                        st.query_map(params![x], |r| r.get::<_, String>(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?,
+                    );
+                }
+                if before.is_empty() {
+                    break;
+                }
+                up += 1;
+                if up > ALIAS_HOPS_MAX {
+                    return Err(StoreError::Invalid("alias chain too long"));
+                }
+                level = before;
+            }
+            // every old uid on the chain still resolves (at most ALIAS_HOPS_MAX hops)
+            if chain_too_long(up, down) {
+                return Err(StoreError::Invalid("alias chain too long"));
             }
             let n = tx.execute(
                 "INSERT OR IGNORE INTO persona_aliases (old_uid, new_uid, batch_id, at) \
@@ -350,6 +396,19 @@ impl MessageDb {
             }
         }
         Err(StoreError::Invalid("alias chain too long"))
+    }
+
+    /// Every uid of a kind archived now, with no limit (f163c regarch L3: a list that
+    /// stopped at [`LIST_MAX`] would show the rest as live).
+    pub fn archived_uids(&self, kind: &str) -> Result<Vec<String>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT uid FROM archived_items WHERE kind = ?1 AND restored_at IS NULL ORDER BY uid",
+        )?;
+        let v = st
+            .query_map(params![kind], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(v)
     }
 
     /// Take back the aliases a batch wrote; how many.
@@ -399,13 +458,23 @@ impl MessageDb {
         })
     }
 
-    /// Move a batch to another state. `false` = no such batch.
+    /// Move a batch to another state, only along [`batch_from`]. `false` = no such batch, or
+    /// not in a state that moves there.
     pub fn merge_batch_state(&self, batch_id: &str, state: &str) -> Result<bool> {
         need(BATCH_STATES.contains(&state), "unknown batch state")?;
+        let from = batch_from(state);
+        need(!from.is_empty(), "a batch does not move to that state")?;
         let (b, s) = (batch_id.to_string(), state.to_string());
+        let list = from
+            .iter()
+            .map(|f| format!("'{f}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
         self.write(move |c| {
             Ok(c.execute(
-                "UPDATE merge_batches SET state = ?2 WHERE batch_id = ?1",
+                &format!(
+                    "UPDATE merge_batches SET state = ?2 WHERE batch_id = ?1 AND state IN ({list})"
+                ),
                 params![b, s],
             )? > 0)
         })
@@ -643,16 +712,119 @@ mod tests {
         assert_eq!(m.alias_resolve("aaaaa2").unwrap(), "aaaaa1");
     }
 
+    /// f163c regarch L1: a chain is written only while every old uid on it still resolves;
+    /// one written by hand longer than that is refused when read.
     #[test]
     fn mg10_a_chain_longer_than_the_hops_is_refused() {
         let (_d, m) = db();
-        let n = ALIAS_HOPS_MAX + 2;
-        for i in 0..n {
+        for i in 0..ALIAS_HOPS_MAX {
             m.alias_set(&format!("u{}", i + 1), &format!("u{i}"), "mb_1", 1)
                 .unwrap();
         }
-        assert!(m.alias_resolve(&format!("u{n}")).is_err());
-        assert_eq!(m.alias_resolve("u1").unwrap(), "u0");
+        let top = format!("u{ALIAS_HOPS_MAX}");
+        assert_eq!(m.alias_resolve(&top).unwrap(), "u0");
+        // one more hop at either end is refused
+        let over = format!("u{}", ALIAS_HOPS_MAX + 1);
+        assert!(
+            m.alias_set(&over, &top, "mb_2", 2).is_err(),
+            "reason: long_chain_written_above"
+        );
+        assert!(
+            m.alias_set("u0", "w0", "mb_2", 2).is_err(),
+            "reason: long_chain_written_below"
+        );
+        // by hand (no check): read as too long
+        let n = ALIAS_HOPS_MAX + 2;
+        m.write(move |c| {
+            for i in 0..n {
+                c.execute(
+                    "INSERT INTO persona_aliases (old_uid, new_uid, batch_id, at) VALUES (?1, ?2, 'mb_h', 1)",
+                    params![format!("h{}", i + 1), format!("h{i}")],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(m.alias_resolve(&format!("h{n}")).is_err());
+    }
+
+    /// f163c regarch L1: two short chains joined by one alias are measured whole, and a loop
+    /// at the far end of the new one is found.
+    #[test]
+    fn mg10_two_chains_joined_are_measured_whole_and_far_loops_found() {
+        let (_d, m) = db();
+        // a → b → c (2 hops) and d → e → f (2 hops): c → d would make 5
+        for (o, n) in [
+            ("aaaaa1", "bbbbb1"),
+            ("bbbbb1", "ccccc1"),
+            ("ddddd1", "eeeee1"),
+            ("eeeee1", "fffff1"),
+        ] {
+            m.alias_set(o, n, "mb_1", 1).unwrap();
+        }
+        assert!(
+            m.alias_set("ccccc1", "ddddd1", "mb_2", 2).is_err(),
+            "reason: joined_chain_too_long"
+        );
+        assert_eq!(m.alias_resolve("aaaaa1").unwrap(), "ccccc1");
+        // a loop four hops away: g → h → i → j, then j → g
+        for (o, n) in [
+            ("ggggg1", "hhhhh1"),
+            ("hhhhh1", "iiiii1"),
+            ("iiiii1", "jjjjj1"),
+        ] {
+            m.alias_set(o, n, "mb_3", 3).unwrap();
+        }
+        assert!(
+            m.alias_set("jjjjj1", "ggggg1", "mb_4", 4).is_err(),
+            "reason: far_loop"
+        );
+        assert!(chain_too_long(ALIAS_HOPS_MAX, 0) && !chain_too_long(ALIAS_HOPS_MAX - 1, 0));
+    }
+
+    /// f163c regarch L2: a batch moves only along its table.
+    #[test]
+    fn a_batch_moves_only_along_its_table() {
+        let (_d, m) = db();
+        m.merge_batch_begin(batch("mb_1")).unwrap();
+        assert!(
+            !m.merge_batch_state("mb_1", "undone").unwrap(),
+            "reason: run_to_undone"
+        );
+        assert!(
+            m.merge_batch_state("mb_1", "run").is_err(),
+            "reason: back_to_run"
+        );
+        assert!(m.merge_batch_state("mb_1", "done").unwrap());
+        assert!(
+            !m.merge_batch_state("mb_1", "failed").unwrap(),
+            "reason: done_to_failed"
+        );
+        assert!(m.merge_batch_state("mb_1", "partial_undo").unwrap());
+        assert!(m.merge_batch_state("mb_1", "undone").unwrap());
+        assert!(
+            !m.merge_batch_state("mb_1", "done").unwrap(),
+            "reason: undone_to_done"
+        );
+        // and no step is added to a batch that is not running
+        assert!(m.merge_step_pending(step("mb_1", 9)).is_err());
+    }
+
+    /// f163c regarch L3: every archived uid, past the list's limit.
+    #[test]
+    fn every_archived_uid_is_read_past_the_list_limit() {
+        let (_d, m) = db();
+        let n = LIST_MAX as usize + 3;
+        for i in 0..n {
+            m.archive_add(item("persona", &format!("p{i:05}"), i as i64))
+                .unwrap();
+        }
+        assert_eq!(m.archived_list("persona").unwrap().len(), LIST_MAX as usize);
+        assert_eq!(
+            m.archived_uids("persona").unwrap().len(),
+            n,
+            "reason: uids_cut_at_the_list"
+        );
     }
 
     #[test]

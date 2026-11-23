@@ -463,6 +463,14 @@ fn keep_copy(keep: &Path, bytes: &[u8]) -> Result<(), &'static str> {
     use std::io::Write;
     if let Some(dir) = keep.parent() {
         std::fs::create_dir_all(dir).map_err(|_| "note_archive_failed")?;
+        // f163c bnote L3: the owner's alone on unix; on Windows the folder keeps aibd's data
+        // folder's own access list
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| "note_archive_failed")?;
+        }
     }
     match std::fs::OpenOptions::new()
         .write(true)
@@ -900,6 +908,11 @@ pub async fn list(st: AppState, body: Value) -> Response {
 /// unless `forget: true`, which takes it off the list and leaves the file where it is.
 pub async fn delete(st: AppState, body: Value, by: String) -> Response {
     let forget = body.get("forget").and_then(Value::as_bool) == Some(true);
+    let whole_seat = body
+        .get("seat")
+        .and_then(Value::as_str)
+        .filter(|s| aib_store::ranks::key_ok(s))
+        .map(str::to_owned);
     let db = st.messages.clone();
     let rows: Result<Vec<BrainNote>, &'static str> = match (
         body.get("note_id").and_then(Value::as_str),
@@ -984,12 +997,38 @@ pub async fn delete(st: AppState, body: Value, by: String) -> Response {
         };
         out.push(json!({"note_id": n.note_id, "result": result}));
     }
-    Json(json!({"results": out})).into_response()
+    // f163c bnote L2: one take-back of a whole seat reaches at most DELETE_MAX notes; how many
+    // are still there is said, so the page asks again instead of looking done
+    let mut v = json!({"results": out});
+    if let Some(seat) = whole_seat {
+        let db = st.messages.clone();
+        if let Ok(Ok((_, live))) =
+            tokio::task::spawn_blocking(move || db.brain_note_counts(&seat, i64::MAX)).await
+        {
+            v["remaining"] = json!(live);
+        }
+    }
+    Json(v).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// f163c bnote L3: the archive folder of taken-back notes is the owner's alone.
+    #[cfg(unix)]
+    #[test]
+    fn the_archive_folder_is_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let keep = d.path().join("archive").join("brain-notes").join("bn_x.md");
+        keep_copy(&keep, b"note").unwrap();
+        let mode = std::fs::metadata(keep.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "reason: archive_folder_open {mode:o}");
+    }
 
     fn head<'a>(title: Option<&'a str>) -> Head<'a> {
         Head {

@@ -286,12 +286,13 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
     }
 }
 
-/// A1: the uids of `kind` archived now (unread: none, so a list is never emptied by a read
-/// error; an open still checks each uid with [`archived_now`]).
-pub fn archived_uids(db: &aib_store::MessageDb, kind: &str) -> std::collections::BTreeSet<String> {
-    db.archived_list(kind)
-        .map(|v| v.into_iter().map(|a| a.uid).collect())
-        .unwrap_or_default()
+/// A1: every uid of `kind` archived now, with no limit; `None` when it cannot be read: the
+/// list is refused then, never shown with the archived ones as live (f163c regarch L3).
+pub fn archived_uids(
+    db: &aib_store::MessageDb,
+    kind: &str,
+) -> Option<std::collections::BTreeSet<String>> {
+    db.archived_uids(kind).ok().map(|v| v.into_iter().collect())
 }
 
 /// A1: why an open may not use these: the first archived of persona / brain / role
