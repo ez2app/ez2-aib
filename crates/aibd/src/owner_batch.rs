@@ -655,17 +655,19 @@ mod tests {
         let mut c = a.clone();
         c[1].params = b"{}".to_vec();
         assert_ne!(batch_sha(&a), batch_sha(&c), "reason: params_not_in_hash");
-        // pre N1: a resource holding line ends cannot pass for the fields after it. With the
-        // fields only split by line ends, these two lists would be the same bytes.
+        // pre N1: a resource holding line ends cannot pass for the fields after it. Without
+        // each resource's length (`0:` where the length goes, as knife ob-delim makes it), these
+        // two lists would be the same bytes; with it, they differ.
         let op = crate::repo_push::OP;
+        let l = op.len();
         let (p0, p1, p2) = (json!({"n": 0}), json!({"n": 1}), json!({"n": 2}));
         let h = |v: &Value| owner_ok::params_sha256(&serde_json::to_vec(v).unwrap());
         let d = vec![
             ask(op, "x", p0.clone()),
-            ask(op, &format!("Y\n{}\n1\n{op}\nZ", h(&p1)), p2.clone()),
+            ask(op, &format!("Y\n{}\n1\n{l}:{op}\n0:Z", h(&p1)), p2.clone()),
         ];
         let e = vec![
-            ask(op, &format!("x\n{}\n1\n{op}\nY", h(&p0)), p1),
+            ask(op, &format!("x\n{}\n1\n{l}:{op}\n0:Y", h(&p0)), p1),
             ask(op, "Z", p2),
         ];
         assert_ne!(batch_sha(&d), batch_sha(&e), "reason: fields_not_delimited");
