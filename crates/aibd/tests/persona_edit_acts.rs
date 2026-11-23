@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+#![allow(clippy::disallowed_methods)] // the shared harness polls on a plain sleep / timeout
 #![cfg(unix)]
 
 //! A1 (DESIGN-a1-edit-archive-08de5-1123 r0; f163c REVIEW-a1 r0): from the built-in page, a role
