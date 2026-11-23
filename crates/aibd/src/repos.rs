@@ -576,9 +576,11 @@ mod tests {
     /// that is not there is left to the act.
     #[test]
     fn a_seat_record_not_read_stops_the_dgrs_gate() {
-        type R = Result<Result<Option<u8>, &'static str>, &'static str>;
+        // no string errors here: apps/web/test/ws-static.test.cjs reads every `Err("…")` in
+        // this file as a refusal the page must have words for
+        type R = Result<Result<Option<u8>, ()>, ()>;
         let (some, none, db, join): (R, R, R, R) =
-            (Ok(Ok(Some(1))), Ok(Ok(None)), Ok(Err("db")), Err("join"));
+            (Ok(Ok(Some(1))), Ok(Ok(None)), Ok(Err(())), Err(()));
         assert_eq!(known_or_stop(some), Ok(Some(1)));
         assert_eq!(known_or_stop(none), Ok(None));
         assert_eq!(known_or_stop(db), Err(()), "reason: read_error_let_through");
