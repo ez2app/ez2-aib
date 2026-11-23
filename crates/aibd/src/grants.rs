@@ -20,6 +20,7 @@
 //! the choice, plus this table and this check in aibd's own process; a sandboxed seat cannot
 //! reach either. A full-rights (dgrs) seat is outside this, as it is outside every rule here.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{LazyLock, Mutex};
 
 /// Host seat reading / writing its own folder (DESIGN-hostmode-3e53b r3 §9).
@@ -212,6 +213,22 @@ impl Grants {
         l.len() != before
     }
 
+    /// Whether this seat holds a live grant for exactly this, without using it up: the proxy
+    /// judges with this (c2f0b PREREAD-sandboxnet19 G2, f163c REVIEW-sandboxnet19 r0). A
+    /// once-grant is not counted: only [`Grants::live`] answers it, and uses it.
+    pub fn holds(&self, seat_id: &str, operation: &str, resource: &str, now: u64) -> Option<Grant> {
+        let l = self.list();
+        l.iter()
+            .find(|g| {
+                g.hold != Hold::Once
+                    && g.until.is_none_or(|u| now < u)
+                    && g.seat_id == seat_id
+                    && g.operation == operation
+                    && g.resource == resource
+            })
+            .cloned()
+    }
+
     /// A seat's live grants, for its page's countdowns.
     pub fn of_seat(&self, seat_id: &str, now: u64) -> Vec<Grant> {
         let mut l = self.list();
@@ -223,6 +240,17 @@ impl Grants {
     pub fn seat_ended(&self, seat_id: &str) {
         self.list().retain(|g| g.seat_id != seat_id);
     }
+}
+
+/// One way to write `ip:port` for the window's words, the ask's parameters, the grants and the
+/// always-allow list (PREREAD-sandboxnet19 G4): an IPv4-mapped IPv6 address as the IPv4 one, no
+/// IPv6 scope or flow, IPv6 in brackets, the standard library's shortest form.
+pub fn canon(a: SocketAddr) -> String {
+    let ip = match a.ip() {
+        IpAddr::V6(x) => x.to_ipv4_mapped().map_or(IpAddr::V6(x), IpAddr::V4),
+        v4 => v4,
+    };
+    SocketAddr::new(ip, a.port()).to_string()
 }
 
 /// This aibd's grants.
@@ -373,5 +401,49 @@ mod tests {
         assert_eq!(g.of_seat("seat_ab", 1).len(), 1);
         assert!(g.live("seat_ab", OP_FS_OPEN, "f", 1));
         assert!(!g.live("seat_ab", OP_FS_OPEN, "f", 1));
+    }
+
+    /// PREREAD-sandboxnet19 G2: judging does not use a grant up, and a once-grant is never a
+    /// standing yes.
+    #[test]
+    fn holds_does_not_use_a_grant_up_and_skips_once() {
+        let g = Grants::default();
+        g.give("s1", OP_NET_PRIVATE, "10.0.0.5:22", Hold::Min15, 100)
+            .unwrap();
+        for _ in 0..3 {
+            assert!(g.holds("s1", OP_NET_PRIVATE, "10.0.0.5:22", 200).is_some());
+        }
+        assert!(g.holds("s2", OP_NET_PRIVATE, "10.0.0.5:22", 200).is_none());
+        assert!(g.holds("s1", OP_NET_PRIVATE, "10.0.0.6:22", 200).is_none());
+        // at its end and after: gone
+        assert!(g
+            .holds("s1", OP_NET_PRIVATE, "10.0.0.5:22", 100 + 15 * 60)
+            .is_none());
+        g.give("s1", OP_NET_PRIVATE, "10.0.0.7:80", Hold::Once, 100)
+            .unwrap();
+        assert!(
+            g.holds("s1", OP_NET_PRIVATE, "10.0.0.7:80", 200).is_none(),
+            "reason: once_counted_as_standing"
+        );
+        // and holds did not use the once-grant up
+        assert!(g.live("s1", OP_NET_PRIVATE, "10.0.0.7:80", 200));
+    }
+
+    /// PREREAD-sandboxnet19 G4: one spelling of one address.
+    #[test]
+    fn canon_writes_one_address_one_way() {
+        let mapped: SocketAddr = "[::ffff:10.0.0.5]:22".parse().unwrap();
+        assert_eq!(canon(mapped), "10.0.0.5:22");
+        let scoped = SocketAddr::V6(std::net::SocketAddrV6::new(
+            "fd00::5".parse().unwrap(),
+            22,
+            7,
+            3,
+        ));
+        assert_eq!(canon(scoped), "[fd00::5]:22");
+        let long: SocketAddr = "[fd00:0:0:0:0:0:0:5]:22".parse().unwrap();
+        assert_eq!(canon(long), "[fd00::5]:22");
+        let v4: SocketAddr = "10.0.0.5:22".parse().unwrap();
+        assert_eq!(canon(v4), "10.0.0.5:22");
     }
 }

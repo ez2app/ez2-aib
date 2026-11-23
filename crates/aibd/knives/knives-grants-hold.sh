@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HG1–HG12: how long an owner-approved "beyond this mode" ask stays open — the hold is in the window and the approval, the table is keyed by risk class (loopback / this machine never "until the seat ends"; back to aibd not offered), grants end on time, once is used once, and a seat's grants end when it starts again or ends (DESIGN-persona-propose-osverify-c2f0b-1123 r1 §2; f163c PREREAD r0 M2, L1)
+# HG1–HG16: how long an owner-approved "beyond this mode" ask stays open — the hold is in the window and the approval, the table is keyed by risk class (loopback / this machine never "until the seat ends"; back to aibd not offered), grants end on time, once is used once, and a seat's grants end when it starts again or ends (DESIGN-persona-propose-osverify-c2f0b-1123 r1 §2; f163c PREREAD r0 M2, L1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 gr() { python3 -I scripts/knife.py crates/aibd/src/grants.rs "$1" "$2" --expect-fail "grants::tests::$3" \
@@ -53,3 +53,19 @@ se '        if let Some(seat) = seat_id.as_deref() {' \
 se '        if let Some(ended_seat) = rec.seat_id.as_deref() {' \
    '        if let Some(ended_seat) = None::<&str> {' \
    a_seats_grants_end_when_it_starts_again_and_when_it_ends
+# HG13 a once-grant counts as a standing yes when judging (PREREAD-sandboxnet19 G1 / G2)
+gr '                g.hold != Hold::Once' \
+   '                true' \
+   holds_does_not_use_a_grant_up_and_skips_once
+# HG14 judging keeps a grant past its end
+gr '                    && g.until.is_none_or(|u| now < u)' \
+   '                    && g.until.is_none_or(|u| now < u || true)' \
+   holds_does_not_use_a_grant_up_and_skips_once
+# HG15 an IPv4-mapped address is written apart from its IPv4 one (G4)
+gr '        IpAddr::V6(x) => x.to_ipv4_mapped().map_or(IpAddr::V6(x), IpAddr::V4),' \
+   '        IpAddr::V6(x) => IpAddr::V6(x),' \
+   canon_writes_one_address_one_way
+# HG16 the address is written as it came (scope, mapped form)
+gr '    SocketAddr::new(ip, a.port()).to_string()' \
+   '    { let _ = ip; a.to_string() }' \
+   canon_writes_one_address_one_way
