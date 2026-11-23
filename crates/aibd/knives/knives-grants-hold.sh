@@ -26,7 +26,7 @@ gr '        if !row(operation).is_some_and(|r| r.contains(&hold)) {' \
    give_checks_the_table_again
 # HG5 a timed grant never ends
 gr '        l.retain(|g| g.until.is_none_or(|u| now < u)); // past its end: gone' \
-   '        l.retain(|_| true); // past its end: gone' \
+   '        l.retain(|_| { let _ = now; true }); // past its end: gone' \
    a_timed_grant_ends_on_time
 # HG6 once is not used up
 gr '        if l[i].hold == Hold::Once {' \
@@ -34,11 +34,11 @@ gr '        if l[i].hold == Hold::Once {' \
    once_is_used_by_the_first_use
 # HG7 the seat's grants outlive it
 gr '        self.list().retain(|g| g.seat_id != seat_id);' \
-   '        self.list().retain(|_| true);' \
+   '        self.list().retain(|_| { let _ = seat_id; true });' \
    until_the_seat_ends_ends_when_it_ends_or_starts_again
 # HG8 revoke takes nothing back
 gr '        l.retain(|g| g.id != id);' \
-   '        l.retain(|_| true);' \
+   '        l.retain(|_| { let _ = id; true });' \
    revoke_takes_it_back
 # HG9 retired: the window's third line (3e53b touch_hud) says how long, from grants::hold_in; top_words no longer does (f163c REVIEW-touchhud M1)
 # HG10 a hold not given still raises a window

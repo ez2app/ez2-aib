@@ -30,11 +30,11 @@ pp '                p.stand = Stand::Expired;' \
    expired_ones_are_swept_before_counting
 # PP7 (PW10) a seat reads another seat's proposal
 pp '            .find(|p| p.id == id && seat.is_none_or(|s| s == p.seat_id))' \
-   '            .find(|p| p.id == id)' \
+   '            .find(|p| p.id == id && (seat.is_none() || true))' \
    a_seat_sees_and_withdraws_only_its_own
 # PP8 (PW10) a seat withdraws another seat's proposal
 pp '            .find(|p| p.id == id && seat.is_none_or(|own| own == p.seat_id))' \
-   '            .find(|p| p.id == id)' \
+   '            .find(|p| p.id == id && (seat.is_none() || true))' \
    a_seat_sees_and_withdraws_only_its_own
 # PP9 the same text from the same seat makes a second proposal
 pp '            .find(|p| p.seat_id == ask.seat_id && p.new_sha == new_sha)' \
