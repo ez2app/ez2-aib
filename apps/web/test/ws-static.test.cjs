@@ -957,7 +957,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     S.pp.items = [P1, P2]; fpReply = async () => { throw apiErr(403, { code: 'forbidden', reason: 'owner_check_not_approved', message: 'm' }); };
     await cp.F.ppApprove('pq1'); ok(!!cp.F.ppCard('pq1') && S.pp.msg.bad && S.pp.msg.text === '沒有寫回:指紋沒過,沒有寫回;提案還在,可以再按一次', 'reason: pp_not_approved_keeps_card ' + JSON.stringify(S.pp.msg));
     fpReply = async () => { throw apiErr(409, { code: 'persona_changed', request_id: 'x' }); };
-    await cp.F.ppApprove('pq1'); ok(!cp.F.ppCard('pq1') && S.pp.msg.text === '沒有寫回:人格卡在提案之後被改過,這份提案作廢;請夥伴照新版再提' && S.pp.at === 0, 'reason: pp_gone_drops_card');
+    await cp.F.ppApprove('pq1'); ok(!cp.F.ppCard('pq1') && S.pp.msg.text === '沒有寫回:這張人格卡剛被改過或登記表剛重掃,這份提案作廢;請夥伴重掃一次卡片後再提' && S.pp.at === 0, 'reason: pp_gone_drops_card');
     S.pp.items = [P1, P2]; fpReply = async () => ({ request_id: 'pq1', state: 'writing' });
     await cp.F.ppApprove('pq1'); ok(!!cp.F.ppCard('pq1') && S.pp.msg.bad && S.pp.msg.text === '沒有寫回:AIB 沒有回「寫好了」', 'reason: pp_not_written_not_claimed');
     sent.length = 0; await cp.F.ppDeny('pq2');
