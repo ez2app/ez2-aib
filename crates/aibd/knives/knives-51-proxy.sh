@@ -27,3 +27,5 @@ px '        self.rows.retain(|(s, _, _)| s != seat);' '        self.rows.retain(
 px '        if r.len() >= CARDS_PER_WINDOW {' '        if r.len() > CARDS_PER_WINDOW { // knife' proxy::tests::six_cards_in_ten_minutes_then_later
 # PX11 (A6d) a service on this computer gets the ordinary card
 px '            (at, true)' '            (at, false) // knife' proxy::tests::a_connection_gets_the_address_judged_a_card_or_a_refusal
+# PX12 (f163c REVIEW-sandboxnet19 L3) a port taken back goes to the next seat at once
+px '                .is_some_and(|t| now < t.saturating_add(PORT_COOLDOWN))' '                .is_some_and(|t| now < *t) // knife' proxy::tests::a_seat_gets_one_port_of_the_reserved_range_never_aibds_and_none_past_it

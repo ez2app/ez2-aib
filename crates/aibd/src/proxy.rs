@@ -29,17 +29,31 @@ use crate::net_card::{Card, Lasts, Verified, CARD_SECS};
 #[derive(Debug, Default)]
 pub struct Ports {
     seat_of: BTreeMap<u16, String>,
+    /// When each port was taken back: not given again for [`PORT_COOLDOWN`] seconds, so that a
+    /// process of the seat that ended, still on its way out, is never taken for the next seat
+    /// (f163c REVIEW-sandboxnet19 L3).
+    freed: BTreeMap<u16, u64>,
 }
+
+/// How long a port taken back waits before another seat gets it.
+pub const PORT_COOLDOWN: u64 = 120;
 
 impl Ports {
     /// The seat's port: the one it has, or the first free one of the reserved range that aibd
     /// does not bind itself (`own_binds`).
-    pub fn give(&mut self, seat: &str, own_binds: &[u16]) -> Result<u16, &'static str> {
+    pub fn give(&mut self, seat: &str, own_binds: &[u16], now: u64) -> Result<u16, &'static str> {
         if let Some(p) = self.port_of(seat) {
             return Ok(p);
         }
         for p in egress::AIBD_RESERVED {
             if own_binds.contains(&p) || self.seat_of.contains_key(&p) {
+                continue;
+            }
+            if self
+                .freed
+                .get(&p)
+                .is_some_and(|t| now < t.saturating_add(PORT_COOLDOWN))
+            {
                 continue;
             }
             self.seat_of.insert(p, seat.to_owned());
@@ -60,10 +74,11 @@ impl Ports {
         self.seat_of.get(&port).map(String::as_str)
     }
 
-    /// The seat ended or restarted: its port goes back.
-    pub fn take_back(&mut self, seat: &str) -> Option<u16> {
+    /// The seat ended or restarted: its port goes back, given again only after the cooldown.
+    pub fn take_back(&mut self, seat: &str, now: u64) -> Option<u16> {
         let p = self.port_of(seat)?;
         self.seat_of.remove(&p);
+        self.freed.insert(p, now);
         Some(p)
     }
 }
@@ -338,16 +353,16 @@ mod tests {
     #[test]
     fn a_seat_gets_one_port_of_the_reserved_range_never_aibds_and_none_past_it() {
         let mut p = Ports::default();
-        let first = p.give("s0", &[47770, 47780]).unwrap();
+        let first = p.give("s0", &[47770, 47780], 0).unwrap();
         assert_eq!(first, 47771);
         assert_eq!(
-            p.give("s0", &[47770, 47780]),
+            p.give("s0", &[47770, 47780], 0),
             Ok(47771),
             "reason: second_port"
         );
         let mut got = vec![first];
         for i in 1..28 {
-            got.push(p.give(&format!("s{i}"), &[47770, 47780]).unwrap());
+            got.push(p.give(&format!("s{i}"), &[47770, 47780], 0).unwrap());
         }
         // aibd's own binds are never a seat's (N43)
         assert!(
@@ -356,19 +371,28 @@ mod tests {
         );
         assert!(got.iter().all(|x| egress::AIBD_RESERVED.contains(x)));
         // full: refused, never past the range (N42)
-        let full = p.give("s28", &[47770, 47780]);
+        let full = p.give("s28", &[47770, 47780], 0);
         assert_eq!(full.map_err(str::len), Err(16), "reason: past_range");
         assert_eq!(full.unwrap_err(), "proxy_ports_full");
         assert_eq!(p.seat(47771), Some("s0"));
-        assert_eq!(p.take_back("s0"), Some(47771));
+        assert_eq!(p.take_back("s0", 10), Some(47771));
         assert_eq!(p.seat(47771), None);
-        assert_eq!(p.give("s28", &[47770, 47780]), Ok(47771));
+        // not to the next seat while the old one may still be on its way out (f163c L3)
+        assert!(
+            p.give("s28", &[47770, 47780], 10 + PORT_COOLDOWN - 1)
+                .is_err(),
+            "reason: port_given_in_cooldown"
+        );
+        assert_eq!(
+            p.give("s28", &[47770, 47780], 10 + PORT_COOLDOWN),
+            Ok(47771)
+        );
     }
 
     #[test]
     fn a_connection_gets_the_address_judged_a_card_or_a_refusal() {
         let mut ports = Ports::default();
-        let port = ports.give("a1b2c", &[47770, 47780]).unwrap();
+        let port = ports.give("a1b2c", &[47770, 47780], 0).unwrap();
         let g = Grants::default();
         let mut lim = CardLimit::default();
         let d = |ips: &[IpAddr], p: u16, lim: &mut CardLimit, waiting: usize, now: u64| {
@@ -486,7 +510,7 @@ mod tests {
     #[test]
     fn a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close() {
         let mut ports = Ports::default();
-        let port = ports.give("a1b2c", &[]).unwrap();
+        let port = ports.give("a1b2c", &[], 0).unwrap();
         let mut g = Grants::default();
         let mut lim = CardLimit::default();
         let db = at("10.0.0.5:5432");
