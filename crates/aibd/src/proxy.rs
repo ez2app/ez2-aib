@@ -198,6 +198,13 @@ pub fn decide(
         // this computer itself (A6d): aibd's and whole-machine ports refused, the rest the
         // high-risk card, unless a grant from one holds
         Verdict::Refuse("this_computer") => {
+            // link-local stays refused, never the high-risk card (§15.5; f163c L2)
+            if ips
+                .iter()
+                .any(|ip| classify(*ip, here.own) == Class::Own("link_local"))
+            {
+                return Conn::Refuse("link_local");
+            }
             let Some(ip) = ips
                 .iter()
                 .copied()
@@ -320,6 +327,10 @@ mod tests {
         }
     }
 
+    /// Public addresses the classifier passes (the documentation ranges are refused as reserved).
+    const PUBLIC: &str = "8.8.8.8"; // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+    const PUBLIC2: &str = "1.1.1.1"; // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
+
     fn none(_: &str, _: IpAddr, _: u16) -> bool {
         false
     }
@@ -397,14 +408,8 @@ mod tests {
         );
         // public: exactly the address judged (N45)
         assert_eq!(
-            d(
-                &[ip("203.0.113.5"), ip("198.51.100.7")],
-                443,
-                &mut lim,
-                0,
-                1
-            ),
-            Conn::Pass(at("203.0.113.5:443")),
+            d(&[ip(PUBLIC), ip(PUBLIC2)], 443, &mut lim, 0, 1),
+            Conn::Pass(SocketAddr::new(ip(PUBLIC), 443)),
             "reason: other_address_connected"
         );
         // a private address: a card for it
@@ -435,6 +440,28 @@ mod tests {
             Conn::Refuse("card_later"),
             "reason: second_card_raised"
         );
+        // a name that resolves back to this computer (N41, rebinding): judged on what it
+        // resolved to, the public one beside it lets nothing through
+        assert_eq!(
+            d(&[ip(PUBLIC), ip("127.0.0.1")], 47770, &mut lim, 0, 1400),
+            Conn::Refuse("aibd_self"),
+            "reason: rebind_to_aibd"
+        );
+        assert!(
+            matches!(
+                d(&[ip(PUBLIC), ip("127.0.0.1")], 5432, &mut lim, 0, 2100),
+                Conn::Card(c) if c.high && c.dest == at("127.0.0.1:5432")
+            ),
+            "reason: rebind_passed"
+        );
+        // link-local: refused, never a card (f163c L2)
+        for a in ["169.254.169.254", "fe80::1"] {
+            assert_eq!(
+                d(&[ip(a)], 80, &mut lim, 0, 2800),
+                Conn::Refuse("link_local"),
+                "reason: link_local_carded {a}"
+            );
+        }
         // never-connected classes stay refused
         assert_eq!(
             d(&[ip("0.0.0.0")], 80, &mut lim, 0, 700),

@@ -83,6 +83,10 @@ fn v4(ip: Ipv4Addr) -> Class {
     if within([169, 254, 0, 0], 16) {
         return Class::Own("link_local");
     }
+    // Tailscale's resolver answers from this computer's own tailscaled (f163c L3)
+    if o == [100, 100, 100, 100] {
+        return Class::Own("tailscale_local");
+    }
     if within([10, 0, 0, 0], 8)
         || within([172, 16, 0, 0], 12)
         || within([192, 168, 0, 0], 16)
@@ -135,6 +139,9 @@ fn v6(ip: Ipv6Addr) -> Class {
     }
     if s[0] & 0xffc0 == 0xfe80 {
         return Class::Own("link_local");
+    }
+    if s == [0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0x53] {
+        return Class::Own("tailscale_local");
     }
     // site-local (deprecated), documentation, discard-only, ORCHID / benchmarking
     if s[0] & 0xffc0 == 0xfec0
@@ -278,6 +285,19 @@ mod tests {
             assert_eq!(host_ok(ip(a), &own), Ok(()), "reason: host_refused {a}");
         }
         assert_eq!(classify(ip("100.64.0.1"), &[]), Class::Private);
+        // this computer's tailscaled, not the tailnet (f163c L3)
+        let resolver = [
+            "100.100.100.100", // ip-literal-ok: Tailscale's fixed resolver, the same on every computer
+            "fd7a:115c:a1e0::53", // ip-literal-ok: Tailscale's fixed resolver, the same on every computer
+        ];
+        for a in resolver {
+            assert_eq!(
+                classify(ip(a), &[]),
+                Class::Own("tailscale_local"),
+                "reason: tailscaled_as_tailnet {a}"
+            );
+        }
+        assert_eq!(classify(ip("100.100.100.101"), &[]), Class::Private); // ip-literal-ok: the neighbour of Tailscale's resolver, an ordinary tailnet address
         assert_eq!(classify(ip("8.8.8.8"), &[]), Class::Public); // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
 
         // the proxy's own class (sandboxnet r5 §14): loopback and own addresses are Own, not

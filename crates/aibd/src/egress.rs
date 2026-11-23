@@ -101,6 +101,11 @@ pub fn http_head(head: &str) -> Result<Want, &'static str> {
     if head.len() > MAX_HEAD {
         return Err("head_too_long");
     }
+    // f163c REVIEW-egress L1: a lone CR or LF, a folded line, or a length / encoding said twice
+    // could be read as another request by whatever is behind
+    if head.replace("\r\n", "").contains(['\r', '\n']) {
+        return Err("bare_line_end");
+    }
     let mut lines = head.split("\r\n");
     let first = lines.next().ok_or("empty")?;
     let mut parts = first.split(' ');
@@ -114,11 +119,16 @@ pub fn http_head(head: &str) -> Result<Want, &'static str> {
     }
     let (mut length, mut chunked) = (false, false);
     for l in lines.take_while(|l| !l.is_empty()) {
+        if l.starts_with([' ', '\t']) {
+            return Err("header_folded");
+        }
         let (name, value) = l.split_once(':').ok_or("header")?;
         let value = value.trim();
         match name.trim().to_ascii_lowercase().as_str() {
             "origin" => return Err("origin_header"),
+            "content-length" if length => return Err("header_twice"),
             "content-length" => length = true,
+            "transfer-encoding" if chunked => return Err("header_twice"),
             "transfer-encoding" => {
                 if !value.eq_ignore_ascii_case("chunked") {
                     return Err("transfer_encoding");
@@ -266,8 +276,15 @@ pub enum Local {
 /// Ports where a yes would hand over the whole machine, refused with no card in the first version
 /// (f163c REVIEW-sandboxnet18 L1): ssh back into this computer, the Docker API (root), screen
 /// sharing / Apple Remote Desktop, a browser's remote debugging (the owner's signed-in browser).
-pub const MACHINE_PORTS: [std::ops::RangeInclusive<u16>; 5] =
-    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9229];
+pub const MACHINE_PORTS: [std::ops::RangeInclusive<u16>; 7] = [
+    22..=22,
+    2375..=2376,
+    3283..=3283,
+    3389..=3389,
+    5900..=5909,
+    5985..=5986,
+    9222..=9229,
+];
 
 /// `own_binds` are the ports this aibd process bound (kept in the process); `preview_ports` are
 /// what the previews' run files say, which only ever add to the list (a deleted file still leaves
@@ -299,6 +316,8 @@ pub fn net_state(os: &str, provider: &str, mode: &str, proxy: bool) -> &'static 
         ("claude", "work") if !proxy => "off",
         ("claude", "work") if os == "macos" => "enforced",
         ("claude", "work") => "hint",
+        // codex work: no network on a Mac (§16.6), and not offered elsewhere at all
+        // (aib_seatopen CODEX_MODES is safe only off macOS; f163c REVIEW-egress L6)
         _ => "off",
     }
 }
@@ -333,14 +352,19 @@ mod tests {
         );
         // another program's service: the high-risk card (N37)
         // these hand over the whole machine: refused, no card (L1, N40)
-        for p in [22, 2375, 2376, 3283, 5900, 9222, 9229] {
+        // with Windows' remote desktop and remote shell, and VNC's next displays (f163c L4)
+        for p in [
+            22, 2375, 2376, 3283, 3389, 5900, 5909, 5985, 5986, 9222, 9229,
+        ] {
             assert_eq!(
                 local_kind(p, &[], &[]),
                 Local::Machine,
                 "reason: machine_port_carded {p}"
             );
         }
-        for p in [21, 23, 3000, 5432, 9221, 9230, 47769, 47800] {
+        for p in [
+            21, 23, 3000, 3388, 3390, 5432, 5910, 5984, 5987, 9221, 9230, 47769, 47800,
+        ] {
             assert_eq!(
                 local_kind(p, &[51000], &[52000]),
                 Local::Service,
@@ -466,6 +490,13 @@ mod tests {
             Host::Ip(ip("::1"))
         );
         for (s, why) in [
+            // f163c REVIEW-egress L1
+            ("CONNECT a.example:443 HTTP/1.1\nHost: x\r\n\r\n", "bare_line_end"),
+            ("GET http://a.example/ HTTP/1.1\r\nX: 1\rTransfer-Encoding: gzip\r\n\r\n", "bare_line_end"),
+            ("GET http://a.example/ HTTP/1.1\r\nX: 1\r\n Transfer-Encoding: gzip\r\n\r\n", "header_folded"),
+            ("GET http://a.example/ HTTP/1.1\r\nX: 1\r\n\tx\r\n\r\n", "header_folded"),
+            ("GET http://a.example/ HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n", "header_twice"),
+            ("GET http://a.example/ HTTP/1.1\r\nTransfer-Encoding: chunked\r\ntransfer-encoding: chunked\r\n\r\n", "header_twice"),
             ("GET / HTTP/1.1\r\nHost: 127.0.0.1:47770\r\n\r\n", "origin_form"),
             (
                 "CONNECT example.com:443 HTTP/1.1\r\nOrigin: https://evil.test\r\n\r\n",

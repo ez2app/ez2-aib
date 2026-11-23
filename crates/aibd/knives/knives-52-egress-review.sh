@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# EV1–EV20 (f163c REVIEW-egress-3e53b-f163c-pre-2cf69f1a L1–L6): request heads read one way only,
+# link-local never carded, Tailscale's resolver is this computer, the whole-machine ports of
+# Windows and VNC (L6: codex work is not offered off a Mac, nothing to change); and the knives L5 found missing (ssh's pinned
+# options, the test machines' list, a name that resolves back to this computer).
+set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+kn() { python3 -I scripts/knife.py "crates/aibd/src/$1" "$2" "$3" --expect-fail "$4" \
+  -- cargo test -p aibd --locked --lib "$4"; }
+HEAD_T=egress::tests::only_connect_absolute_form_and_socks_connect_are_taken
+PORT_T=egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
+PX_T=proxy::tests::a_connection_gets_the_address_judged_a_card_or_a_refusal
+HA_T=host_addr::tests::a_host_back_on_this_computer_or_a_reserved_one_is_refused
+SSH_T=host_ssh::tests::the_ssh_command_is_pinned_and_goes_to_the_checked_address
+MT_C=managed_test::tests::candidates_say_name_os_and_why_not_never_where
+MT_A=managed_test::tests::an_add_names_a_trusted_machine_and_nothing_else
+# EV1 (L1) a lone CR or LF is taken as a line end
+kn egress.rs '    if head.replace("\r\n", "").contains(['"'"'\r'"'"', '"'"'\n'"'"']) {' '    if head.replace("\r\n", "").contains(['"'"'\r'"'"', '"'"'\n'"'"']) && head.is_empty() { // knife' $HEAD_T
+# EV2 (L1) a folded line is read as a header
+kn egress.rs '        if l.starts_with(['"'"' '"'"', '"'"'\t'"'"']) {' '        if l.starts_with('"'"'\u{0}'"'"') { // knife' $HEAD_T
+# EV3 (L1) Content-Length twice
+kn egress.rs '            "content-length" if length => return Err("header_twice"),' '            "content-length" if length && method.is_empty() => return Err("header_twice"), // knife' $HEAD_T
+# EV4 (L1) Transfer-Encoding twice
+kn egress.rs '            "transfer-encoding" if chunked => return Err("header_twice"),' '            "transfer-encoding" if chunked && method.is_empty() => return Err("header_twice"), // knife' $HEAD_T
+# EV5 (L2) link-local gets the high-risk card
+kn proxy.rs '                .any(|ip| classify(*ip, here.own) == Class::Own("link_local"))' '                .any(|ip| classify(*ip, here.own) == Class::Own("link_locall")) // knife' $PX_T
+# EV6 (N41) a name resolving back to aibd gets a card
+kn proxy.rs '                return Conn::Refuse(why);' '                let _ = why; // knife' $PX_T
+# EV7 (L3) Tailscale's resolver is an ordinary tailnet address
+kn host_addr.rs '    if o == [100, 100, 100, 100] {' '    if o == [100, 100, 100, 99] { // knife' $HA_T
+# EV8 (L3) its IPv6 form
+kn host_addr.rs '    if s == [0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0x53] {' '    if s == [0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0x54] { // knife' $HA_T
+# EV9 (L4) Windows remote desktop gets a card
+kn egress.rs '    3389..=3389,' '    3388..=3388, // knife' $PORT_T
+# EV10 (L4) Windows remote shell over TLS gets a card
+kn egress.rs '    5985..=5986,' '    5985..=5985, // knife' $PORT_T
+# EV11 (L4) VNC's second display gets a card
+kn egress.rs '    5900..=5909,' '    5900..=5900, // knife' $PORT_T
+# EV13 (L5) ssh reads the user's config
+kn host_ssh.rs '    let mut a: Vec<String> = ["-F", "none", "-T", "-e", "none"]' '    let mut a: Vec<String> = ["-T", "-T", "-T", "-e", "none"] // knife' $SSH_T
+# EV14 (L5) a new host key is taken
+kn host_ssh.rs '        "StrictHostKeyChecking=yes".into(),' '        "StrictHostKeyChecking=accept-new".into(), // knife' $SSH_T
+# EV15 (L5) the agent goes along
+kn host_ssh.rs '        "ForwardAgent=no".into(),' '        "ForwardAgent=yes".into(), // knife' $SSH_T
+# EV16 (L5) forwardings from a config are kept
+kn host_ssh.rs '        "ClearAllForwardings=yes".into(),' '        "ClearAllForwardings=no".into(), // knife' $SSH_T
+# EV17 (L5, HM12) this computer is offered as a test machine
+kn managed_test.rs '        Class::Own(_) => Some("this_computer"),' '        Class::Own(_) => None, // knife' $MT_C
+# EV18 (L5, HM14) the candidates say where
+kn managed_test.rs '                "os": h.os,' '                "os": h.os, "at": h.hostname, // knife' $MT_C
+# EV19 (L5, HM15) a refused address is added anyway
+kn managed_test.rs '        Some(_) => Err("host_addr_refused"),' '        Some(_) => Ok(h), // knife' $MT_A
+# EV20 (L5, HM15) a name is matched loosely
+kn managed_test.rs '        .find(|h| h.name == name)' '        .find(|h| h.name.trim() == name.trim()) // knife' $MT_A
