@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check() {
-        let long = "河邊那棵老榕樹下第三塊石頭底下的鑰匙";
+        let long = "河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地方";
         assert_eq!(
             set(
                 &Fake,
@@ -729,7 +729,17 @@ mod tests {
             Err(Weak::TooShort)
         );
         assert!(check_new("one two three four five", "x1", "y1").is_ok());
-        assert!(check_new("河邊那棵老榕樹下第三塊石頭底下的鑰匙", "x1", "y1").is_ok());
+        // no spaces: counted by characters, 24 at least (MIN_CHARS); 23 is short
+        assert!(check_new(
+            "河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地方",
+            "x1",
+            "y1"
+        )
+        .is_ok());
+        assert_eq!(
+            check_new("河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地", "x1", "y1"),
+            Err(Weak::TooShort)
+        );
         assert_eq!(
             check_new("my name is Sample and this is long", "sample", "laptop9"),
             Err(Weak::Personal)
