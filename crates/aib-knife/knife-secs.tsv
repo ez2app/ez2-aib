@@ -48,7 +48,6 @@
 107	crates/aib-knife/knives/knives-run-knives.sh
 5	crates/aib-lease/knives/knives-no-powershell.sh
 12	crates/aib-ledger/knives/knives-01-events.sh
-14	crates/aib-ledger/knives/knives-02-timesave.sh
 61	crates/aib-mergecheck/knives/knives-01-ready.sh
 8	crates/aib-mergewatch/knives/knives-01-mergewatch.sh
 3	crates/aib-notify/knives/knives-notify.sh
@@ -89,11 +88,6 @@
 8	crates/aib-sys/knives/knives-held-late-go.sh
 5	crates/aib-sys/knives/knives-presence.sh
 2	crates/aib-sys/knives/knives-stdio-only.sh
-10	crates/aib-test-audit/knives/knives-test-audit.sh
-3	crates/aib-test-cargo/knives/knives-02-state-root.sh
-4	crates/aib-test-cargo/knives/knives-test-cargo.sh
-11	crates/aib-test-core/knives/knives-02-ledger.sh
-8	crates/aib-test-core/knives/knives-test-core.sh
 7	crates/aib-tidy/knives/knives-tidy.sh
 42	crates/aibd/knives/knives-02-win4.sh
 201	crates/aibd/knives/knives-03-s89-2b.sh

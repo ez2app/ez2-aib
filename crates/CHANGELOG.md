@@ -5,6 +5,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Removed `aib-test-core`, `aib-test-cargo`, `aib-test-audit` and `aib_ledger::timesave`: the
+  skip / stop engine and its savings book live in the plugin now
+  (github.com/lfu0327/aib-skipstop, where they are developed, tested and versioned). Nothing in
+  this workspace used them; aibd reads the savings through the plugin (`time_saved`).
+
 - Page: **⏱ 節省時間** — five boxes (本日 / 本週 / 本月 / 本年 / 至今) on the built-in page. New
   read-only act `time_saved`: aibd finds the `aib-skipstop` plugin in the plugin area, runs it
   only when it is switched on and its executable is the one its file names (sha256), asks
