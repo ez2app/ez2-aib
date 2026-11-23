@@ -10,7 +10,7 @@ ps '    if c.m_kib < MIN.m_kib || c.t < MIN.t || c.p < MIN.p {' \
    a_record_with_lower_costs_or_another_kdf_is_refused
 # PS2 a record naming another KDF is used
 ps '    if r.v != 1 || r.kdf != kdf.name() {' \
-   '    if r.v != 1 {' \
+   '    if r.v != 1 || kdf.name().is_empty() {' \
    a_record_with_lower_costs_or_another_kdf_is_refused
 # PS3 the comparison looks at the first byte only
 ps '    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0' \
@@ -34,7 +34,7 @@ ps '        .min(MAX_LOCK_SECS)' \
    five_wrong_lock_fifteen_minutes_then_double_up_to_a_day
 # PS8 (f163c e5f942dd L1) a record with costs above the ceiling is used
 ps '    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {' \
-   '    if c.m_kib > u32::MAX {' \
+   '    if c.m_kib > MAX.m_kib && c.t > MAX.t && c.p > MAX.p {' \
    a_record_with_costs_above_the_ceiling_is_refused
 # PS9 (f163c e5f942dd L3) the backend runs Argon2i, not Argon2id
 ps '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);' \
@@ -42,7 +42,7 @@ ps '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Ver
    the_argon2id_backend_gives_the_known_answer
 # PS10 (S11-2 acts) two different typings set a passphrase
 ps '    if !same(n.phrase.as_bytes(), n.again.as_bytes()) {' \
-   '    if false {' \
+   '    if n.again.len() == usize::MAX {' \
    set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
 # PS11 the owner's own sentence skips the rules
 ps '    if n.source == Source::Owner {' \
@@ -70,5 +70,5 @@ ps '        *tries = Tries::default();' \
    five_wrong_lock_and_the_right_phrase_waits_for_the_lock
 # PS17 the page never hears of a swapped record
 ps '    let swapped = rec.is_some_and(|r| known_sha != Some(record_sha(r).as_str()));' \
-   '    let swapped = false;' \
+   '    let swapped = known_sha.is_some() && false;' \
    the_page_view_has_no_secret_and_says_swapped_and_locked
