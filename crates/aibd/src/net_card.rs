@@ -446,7 +446,7 @@ impl Cards {
                 return Step::Refused("net_card_used");
             }
             *state = State::Finished;
-            let yes = (c != Choice::Deny).then(|| Verified { lasts: Lasts::Once });
+            let yes = (c != Choice::Deny).then_some(Verified { lasts: Lasts::Once });
             return Step::Done(c, yes);
         }
         let ask = card.ask(c, by);
