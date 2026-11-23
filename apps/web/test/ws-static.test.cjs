@@ -55,7 +55,16 @@ for (const t of acts) {
   // a9136 feat/web-capture-a9136-1121(21a22431c / 9348a45c9,IFACE-chat-tools-aibd-a9136-1121 r1)才有:截圖 / 存圖 / webp / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
   // 519d0 DEV-drive-web D6 / D7:aibd 的 drive_status / drive_toggle 還沒寫(形狀在 OPINION-driveweb-1a93b-1121);頁面只在有時呼叫,沒有就用「自動推進的信」拼
   if (/^drive_(status|toggle)$/.test(t)) continue;
+  // 08de5 7a feat/permtpl-08de5-1123(f511716fc1 / 855a8b487d)才有 perm_template_list / _add / _set / _remove;perm_template_apply 是 7b(未開)。
+  // 頁面收到 unknown_act_type 就寫「這一版還沒有」;apply 只在 version.acts 有才放。合進來後拿掉這行
+  if (/^perm_template_(list|add|set|remove|apply)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7a f511716fc1') && ws.includes("hasAct('perm_template_apply') === true"), 'branch-only act is marked: ' + t); continue; }
   if (/^(screen_capture|media_(get|put|webp|list|delete)|send_history_(list|delete)|fav_(add|list|tag|delete)|color_(push|list))$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('IFACE-chat-tools-page-1a93b-1121') && ws.includes('const ctHas = (t) => hasAct(t) === true;'), 'branch-only act is marked: ' + t); continue; }
+  // 08de5 S6(頭 1ff6980ce5)才有 handoff_latest;頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (t === 'handoff_latest' && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 S6 handoff_latest(頭 1ff6980ce5') && ws.includes("if (hasAct('handoff_latest') !== true) return;"), 'branch-only act is marked: ' + t); continue; }
+  // 08de5 §1 才有 persona_read(還沒寫碼);頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (t === 'persona_read' && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 §1 persona_read(04:49 定形狀') && ws.includes("const rgCardOn = () => hasAct('persona_read') === true"), 'branch-only act is marked: ' + t); continue; }
+  // 08de5 7b(0742adfab8)才有 seat_perm_log / seat_perm_revoke;頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (/^seat_perm_(log|revoke)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7b perm_apply.rs(0742adfab8)') && ws.includes("if (hasAct('seat_perm_log') !== true) return") && ws.includes("const canRv = hasAct('seat_perm_revoke') === true;"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -68,6 +77,16 @@ for (const c of codes) ok(why.has(c), 'reason: repo_refusal_without_words ' + c)
 for (const c of ['owner_check_unavailable', 'owner_check_not_approved', 'preview_no_dgrs']) ok(why.has(c) && rust.includes('"' + c + '"'), 'fingerprint / preview refusal in words: ' + c);
 
 // 5. 等指紋:202 帶 ticket 才等、帶同一張單重送、等到單號到期(沒給到期 10 分)停
+// page_csp 等價(crates/aibd/tests/page_csp.rs 同規則;f163c 04:1x:頁面片本機也要跑):dist 下 .js / .html 不准寫 style 屬性或 <style>
+{ const dd = path.join(__dirname, '..', 'dist'); const bad = [];
+  for (const fn of fs.readdirSync(dd).filter((x) => /\.(js|html)$/.test(x)).sort()) fs.readFileSync(path.join(dd, fn), 'utf8').split('\n').forEach((l, i) => { const t = l.toLowerCase(); if (t.includes(' style="') || t.includes(" style='") || t.includes('<style')) bad.push(fn + ':' + (i + 1)); });
+  ok(bad.length === 0, 'reason: page_csp_inline_style ' + bad.join(',')); }
+// S1d(ORDER-s1fix 第 7 條):席位窗上方寫模式名稱 + 危險程度,不是 safe / work 代碼
+{ const src = (ws.match(/  const AP_MODE = [^\n]*\n  function seatModeTag\(m\) \{\n[\s\S]*?\n  \}\n/) || [''])[0];
+  const cx = vm.createContext({ esc: (x) => String(x) }); vm.runInContext(src + '\nthis.T = seatModeTag;', cx);
+  ok(cx.T('work') === '<em class="smode d2" title="這一位開的模式">沙盒開發 · 危險程度:中</em>' && /管理主機 · 危險程度:高/.test(cx.T('host')) && /smode d4/.test(cx.T('dgrs')) && cx.T('') === '', 'reason: s1d_seat_mode_tag');
+  ok(ws.includes("<small>${esc([modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${seatModeTag(s.mode)}"), 'reason: s1d_seat_mode_wired'); }
+const lateChecks = []; // 非同步的段各自推進來,最後一起等
 const fa = (ws.split('async function fingerAct(')[1] || '').split('\n  }\n')[0];
 ok(/__status === 202 && r\.ticket/.test(fa), 'waits only on 202 with a ticket');
 // a9136 IFACE-web-merge r1 §4:送回倉重送要多帶第一步的 plan.head ⇒ extra(first) 的欄位;沒給 extra 就是空的,其他照舊同一份
@@ -177,7 +196,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/await act\("default_model_set", \{ provider: pv\.id, model: v \}\)/.test(ws), 'reason: default_model_not_sent');
   ok(/quota: lv === 3 && str\(c\.why\) === '額度'/.test(ws), 'reason: quota_card_not_read');
   ok(/if \(x\.quota && hasAct\('seat_model_set'\) === true\)/.test(ws), 'reason: swap_shown_without_act');
-  ok(/await act\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
+  ok(/await fingerAct\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
 }
 
 // 15. b4297 CARD-add-test-host r0:測試機區塊只在 aibd 有 test_host_list 時畫;加 / 收回走指紋兩段;why 代碼都有人話
@@ -334,7 +353,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok((ws.match(/<span class="gocol"><button type="button" class="go" data-send=/g) || []).length === 4 && /\$\{enter2Box\(\)\}<\/span>/.test(ws), 'reason: enter2_box_missing');
   ok(/localStorage\.getItem\(E2K\) === '1'/.test(ws) && /catch \(e\) \{ return false; \}/.test(ws), 'reason: enter2_storage_unguarded');
   // 選字的 Enter 不算
-  ok(/e\.key === 'Enter' && !e\.isComposing && e\.keyCode !== 229/.test(ws), 'reason: ime_enter_counts');
+  ok(/e\.target\.id === 'inp' && e\.key === 'Enter' && !imeBusy\(e\)\)/.test(ws), 'reason: ime_enter_counts');
   // 0.5 秒內第二下送出、去掉換行;Shift 永遠換行;Cmd / Ctrl 永遠送出;空白不送
   ok(/now - E2\.at <= 500/.test(ws) && /t\.value\.slice\(0, i - 1\) \+ t\.value\.slice\(i\)/.test(ws) && /!e\.shiftKey && enter2On\(\)/.test(ws) && /if \(e\.metaKey \|\| e\.ctrlKey\) \{ e\.preventDefault\(\); E2\.at = 0; go\(\); \}/.test(ws) && /if \(t\.value\.trim\(\)\) go\(\)/.test(ws), 'reason: double_enter_rules');
   // 複製鈕:三種完成的訊息都有;等候列(產生中)沒有
@@ -526,4 +545,790 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/Object\.hasOwn\(DRV_STAGE_IN, String\(x\.stage/.test(dl) && !/\?\? 'sent'/.test(dl) && /Object\.hasOwn\(DRV_STAGE_WORD, r\.raw\)/.test(ws) && /'不明'/.test(ws), "a stage not in the table is 不明, never 送到 (5d33a r13 N2)");
 }
 
-console.log('ws-static: ' + n + ' 項全部通過');
+// §33 中文輸入法還沒選完字就被送出(Andy 11-22 第二次;9918e 派工;5d33a REVIEW-ime 44a5658a07 M1 / L1–L3 / N1):
+// 用合成的 composition 事件跑 ws.js 的 IME 區塊。Date.now() 與事件的 timeStamp 分開撥,量得出用的是哪一個
+{
+  const blk = (ws.split('// IME-BEGIN')[1] || '').split('// IME-END')[0].replace(/^[^\n]*\n/, '');
+  ok(blk.length > 200, 'reason: ime_block_missing');
+  const clock = { t: 1000000 };
+  const timers = [];
+  const doc = { activeElement: null };
+  const root = new EventTarget();
+  root.contains = (x) => x === 'inp';
+  const ctx = vm.createContext({ Date: { now: () => clock.t }, setTimeout: (f, ms) => timers.push({ f, at: clock.t + ms }), document: doc, E2: { at: 0 } });
+  vm.runInContext(blk + '\nthis.IME = IME; this.imeBusy = imeBusy; this.imeHold = imeHold; this.imeWire = imeWire; this.IME_GAP = IME_GAP; this.IME_MAX = IME_MAX;', ctx);
+  let drawn = 0;
+  const render = () => { if (ctx.imeHold(root)) return; drawn++; };
+  ctx.imeWire(root, render);
+  class TE extends Event { constructor(type, ts) { super(type); this.ts = ts; } get timeStamp() { return this.ts; } }
+  const fire = (type, ts) => root.dispatchEvent(new TE(type, ts == null ? clock.t : ts));
+  const runTimers = () => { for (const x of timers.splice(0)) if (x.at <= clock.t) x.f(); else timers.push(x); };
+  const enter = (ts) => ({ key: 'Enter', isComposing: false, keyCode: 13, timeStamp: ts == null ? clock.t : ts });
+  doc.activeElement = 'inp';
+  // 路 1:瀏覽器在選字後補的那個 isComposing=false 的 Enter 不算;連按兩次的計時從組字開始 / 結束後重算
+  ctx.E2.at = clock.t;
+  fire('compositionstart');
+  ok(ctx.E2.at === 0, 'reason: ime_double_enter_clock_not_reset_at_start');
+  ok(ctx.imeBusy(enter()), 'reason: ime_enter_while_composing_counts');
+  clock.t += 300; ctx.E2.at = clock.t; fire('compositionend');
+  ok(ctx.E2.at === 0, 'reason: ime_double_enter_clock_not_reset_at_end');
+  const endTs = clock.t;
+  ok(ctx.imeBusy(enter(endTs + 10)), 'reason: ime_enter_right_after_compositionend_counts');
+  // L2:中間夾一次長重畫(Date.now 已過 500 ms),事件自己的 timeStamp 只差 10 ms ⇒ 仍不算
+  clock.t += 500;
+  ok(ctx.imeBusy(enter(endTs + 10)), 'reason: ime_gap_measured_by_wall_clock');
+  ok(!ctx.imeBusy(enter(endTs + ctx.IME_GAP)), 'reason: ime_enter_blocked_forever');
+  ok(ctx.imeBusy({ key: 'Enter', isComposing: true, keyCode: 13, timeStamp: clock.t + 1e6 }) && ctx.imeBusy({ key: 'Enter', isComposing: false, keyCode: 229, timeStamp: clock.t + 1e6 }), 'reason: ime_browser_flags_ignored');
+  // 路 2:組字中重畫不換掉輸入框;組字結束後過 IME_GAP 才補畫一次(L1:先跑一次計時器,斷言還沒補畫、排的延遲 = IME_GAP)
+  drawn = 0;
+  fire('compositionstart');
+  render(); render();
+  ok(drawn === 0, 'reason: ime_render_replaces_input_while_composing');
+  clock.t += 200; fire('compositionend');
+  ok(timers.length === 1 && timers[0].at - clock.t === ctx.IME_GAP, 'reason: ime_redraw_delay_not_gap');
+  runTimers();
+  ok(drawn === 0, 'reason: ime_redraw_before_final_text');
+  clock.t += ctx.IME_GAP; runTimers();
+  ok(drawn === 1, 'reason: ime_held_render_never_redrawn');
+  // 組字卡住不能把畫面永遠凍住:焦點已不在頁面裡、或超過上限
+  fire('compositionstart'); doc.activeElement = 'elsewhere'; render();
+  ok(drawn === 2, 'reason: ime_hold_without_focus');
+  doc.activeElement = 'inp'; clock.t += ctx.IME_MAX + 1; render();
+  ok(drawn === 3, 'reason: ime_hold_forever');
+  // L3:卡超過上限也不再擋 Enter
+  ok(!ctx.imeBusy(enter(clock.t + 1e6)), 'reason: ime_enter_blocked_after_stuck_composition');
+  // 失焦也算組字結束(有些輸入法不送 compositionend)
+  ctx.IME.since = clock.t; render(); ok(drawn === 3, 'reason: ime_hold_off');
+  fire('focusout'); clock.t += ctx.IME_GAP; runTimers();
+  ok(!ctx.IME.on && drawn === 4, 'reason: ime_focusout_not_end');
+  // 接上了:render 先問 imeHold;IME 接在 document(事件視窗 dlg 掛在 body,不在 #app,M1);五個 Enter 入口都走 imeBusy
+  const rd = (ws.split('  function render() {')[1] || '').slice(0, 300);
+  ok(/if \(imeHold\(el\)\) return;/.test(rd), 'reason: render_ignores_ime');
+  ok(/imeWire\(document, render\);/.test(ws), 'reason: ime_not_wired');
+  ok(/e\.target\.id === 'inp' && !imeBusy\(e\) && !e\.metaKey/.test(ws), 'reason: ime_enter_paths history');
+  ok(/e\.target\.dataset\.ansfor && e\.key === 'Enter' && !imeBusy\(e\)\) \{ e\.preventDefault\(\); const b = \(e\.target\.closest/.test(ws), 'reason: ime_enter_paths answer');
+  ok(/matches\('\[data-ghnum\]'\) && !imeBusy\(e\)/.test(ws), 'reason: ime_enter_paths pr_number');
+  ok(/e\.target\.dataset\.ansfor && e\.key === 'Enter' && !imeBusy\(e\)\) \{ e\.preventDefault\(\); const b = e\.target\.closest\('\.ans'\) && /.test(ws), 'reason: ime_enter_paths dialog_answer');
+  ok(!/dataset\.ansfor && e\.key === 'Enter' && !e\.isComposing/.test(ws), 'reason: ime_enter_paths old_check_left');
+}
+
+// §34 現行「加一席」S0 修正(2e2cd 11-23 派工;SPEC-ai-partner-open-ebab8-1122 §8 + BRIEF-seatopen-ui-2e2cd-1122 P1 / D2)
+{
+  const addH = (ws.split('  function addHtml() {')[1] || '').split('\n  }\n')[0];
+  const doA = (ws.split('  async function doAdd() {')[1] || '').split('\n  }\n')[0];
+  ok(addH.length > 2000 && doA.length > 2000, 'reason: s0_functions_missing');
+  // 1. 點品牌不把模式打回安全
+  const apLine = (ws.match(/const ap = x\.closest\('\[data-addp\]'\); if \(ap\) \{[^\n]*/) || [''])[0];
+  ok(apLine && !/mode/.test(apLine), 'reason: s0_brand_resets_mode');
+  // 2. 人格清單回來之前不試上次的人格;回來(拿到或拿不到)才標 personasIn
+  ok(/if \(!A\.persona && !A\.personaTried && \(A\.personasIn \|\| \(S\.personaList && S\.personaList\.length\)\)\) \{ A\.personaTried = true;/.test(addH), 'reason: s0_persona_tried_too_early');
+  ok(/\n      if \(S\.add\) \{ S\.add\.personasIn = true; render\(\); \}/.test(ws), 'reason: s0_persona_list_arrival_not_marked');
+  // 3. 掛在哪一項預設不帶左樹選中的
+  ok(/const node = A\.node \|\| '';/.test(addH) && /const node = A\.node \|\| '';/.test(doA) && !/S\.sel/.test(addH) && !/S\.sel/.test(doA), 'reason: s0_node_defaults_to_tree_selection');
+  // 4. 開好切到新席
+  ok(/await tick\(true\);\n      if \(seat\.seat_id && seatById\(seat\.seat_id\)\) \{ S\.mode = seat\.seat_id; S\.atOpen = false; render\(\); \}/.test(doA), 'reason: s0_stays_on_shared_after_open');
+  ok(!/setMode\(seat\.seat_id\)/.test(doA), 'reason: s0_open_note_cleared');
+  // 5. 沒倉:跑判斷函式
+  const blk = 'function addRepoSec' + (ws.split('  function addRepoSec')[1] || '').split('  const NO_REPO')[0];
+  const S5 = { version: { repos: ['ez2-aib'] } };
+  const c5 = vm.createContext({ S: S5, inPreview: () => false, repoModes: () => ['dgrs', 'work'], curRepo: (A) => (A.repo && S5.version.repos.includes(A.repo) ? A.repo : '') });
+  vm.runInContext(blk + '\nthis.addNoRepo = addNoRepo; this.addRepoSec = addRepoSec;', c5);
+  const nr = (A) => c5.addNoRepo(Object.assign({ provider: 'claude' }, A));
+  ok(nr({ mode: 'work', repo: '' }) && nr({ mode: 'dgrs', repo: '' }), 'reason: s0_no_repo_not_flagged');
+  ok(!nr({ mode: 'work', repo: 'ez2-aib' }) && !nr({ mode: 'dgrs', repo: 'ez2-aib' }), 'reason: s0_repo_chosen_still_flagged');
+  ok(!nr({ mode: 'safe', repo: '' }), 'reason: s0_safe_flagged');
+  ok(!nr({ mode: 'work', repo: '', withSeat: 'seat_x' }), 'reason: s0_shared_folder_flagged');
+  ok(!nr({ mode: 'work', repo: '', provider: 'codex' }), 'reason: s0_codex_flagged');
+  S5.version.repos = []; ok(!nr({ mode: 'work', repo: '' }), 'reason: s0_flagged_without_registered_repos'); S5.version.repos = ['ez2-aib'];
+  // 5. 第一下只出提醒、再按一次才開;開鈕旁寫字;換倉 / 模式 / 品牌 / 共用資料夾就重來
+  ok(/if \(addNoRepo\(A\) && !A\.noRepoAsk\) \{ A\.noRepoAsk = true; return render\(\); \}/.test(doA) && doA.indexOf('addNoRepo(A) && !A.noRepoAsk') < doA.indexOf("fingerAct('seat_open'") && doA.indexOf("fingerAct('seat_open'") > 0, 'reason: s0_no_repo_opens_on_first_click');
+  ok(/const NO_REPO = '這一席沒有程式倉,改不了程式';/.test(ws) && /addNoRepo\(A\) \? `<span class="anorepo" role="alert">\$\{esc\(NO_REPO\)\}/.test(addH) && /'確定不用倉,開'/.test(addH), 'reason: s0_no_repo_words_missing');
+  for (const k of ['addrepo', 'addm', 'addp', 'addws']) ok(new RegExp("closest\\('\\[data-" + k + "\\]'\\); if \\(\\w+\\) \\{[^\\n]*noRepoAsk = false").test(ws), 'reason: s0_no_repo_ask_not_reset ' + k);
+  // 5. 只登記一個倉時預設選它(沒點過「在哪裡改」才套)
+  ok(/if \(A\.repo === undefined && addRepoSec\(A\) && addRepos\(\)\.length === 1\) A\.repo = addRepos\(\)\[0\];/.test(addH), 'reason: s0_single_repo_not_preselected');
+  ok(/\.adlg \.afoot \.anorepo\{/.test(read('apps/web/dist/ws.css')), 'reason: s0_no_repo_style');
+}
+
+// §34b S0 第 6 項:登記倉名字正規化(ebab8 FINDING-reporeg-dash-ebab8-1123;Andy 01:4x 打出 U+2212 被拒)
+{
+  const blk = 'const REPO_DASH' + (ws.split('  const REPO_DASH')[1] || '').split('  async function repoReg()')[0];
+  const c6 = vm.createContext({});
+  vm.runInContext(blk + '\nthis.norm = repoNameNorm; this.bad = repoNameBad;', c6);
+  const go = (v) => { const n = c6.norm(v).trim(); return [n, c6.bad(n)]; };
+  ok(JSON.stringify(go('ez2−aib')) === JSON.stringify(['ez2-aib', '']), 'reason: s0_6_u2212 ' + JSON.stringify(go('ez2−aib')));
+  ok(JSON.stringify(go('ｅｚ２－ａｉｂ')) === JSON.stringify(['ez2-aib', '']), 'reason: s0_6_fullwidth');
+  ok(JSON.stringify(go('EZ2-Aib')) === JSON.stringify(['ez2-aib', '']), 'reason: s0_6_upper');
+  for (const d of ['‐', '‑', '‒', '–', '—', '－']) ok(go('a' + d + 'b')[0] === 'a-b', 'reason: s0_6_dash ' + d.codePointAt(0).toString(16));
+  ok(go('ez2_aib')[1] === '第 4 個字「_」不能用', 'reason: s0_6_bad_names_char ' + go('ez2_aib')[1]);
+  ok(go('ez2 aib')[1] === '第 4 個字「 」是空白,不能用' && go('')[1] === '名字是空的' && /最多 40 個字/.test(go('a'.repeat(41))[1]), 'reason: s0_6_bad_other');
+  const rr = (ws.split('  async function repoReg() {')[1] || '').slice(0, 600);
+  ok(/const name = repoNameNorm\(F\.name\)\.trim\(\)/.test(rr) && /F\.name = name;/.test(rr) && /const bad = repoNameBad\(name\); if \(bad\) \{ F\.msg = bad \+ ';' \+ REPO_WHY\.name;/.test(rr), 'reason: s0_6_submit_not_normalized');
+  ok(/e\.target\.dataset\.addrf === 'name' && !e\.isComposing\) \{ const t = e\.target, v = repoNameNorm\(t\.value\);/.test(ws), 'reason: s0_6_field_not_normalized');
+}
+// §35 S1 新增 AI 夥伴(2e2cd 11-23,能看;SPEC-ai-partner-open-ebab8-1122 r1 + DECISION-council-aipartner-ebab8-1122 r1)
+{
+  const addH = (ws.split('  function addHtml() {')[1] || '').split('\n  }\n')[0];
+  // 用字:標題、入口、存哪裡(不是存那裡)、三種模式與危險程度、沒有刻度、沒有管理主機
+  ok(/aria-label="新增 AI 夥伴">\n      <div class="ah"><h3>新增 AI 夥伴(<small>|<\/h3>)/.test(addH) && !/<h3>加一席<\/h3>/.test(ws), 'reason: s1_title');
+  ok(/data-add="1" title="新增 AI 夥伴">\+ AI 夥伴<\/button>/.test(ws), 'reason: s1_entry');
+  ok(/'存哪裡'/.test(addH) && !/存那裡/.test(ws), 'reason: s1_where_word');
+  ok(/<b>討論研究<\/b><\/span><i>[^<]*<\/i><em class="adang d1">危險程度:低<\/em>/.test(addH) && /<em class="adang d2">危險程度:中<\/em>/.test(addH) && /<em class="adang d4">危險程度:最高<\/em>/.test(addH), 'reason: s1_mode_danger');
+  // ebab8 11-23 03:20(蓋過 S1 的「不出管理主機」):四顆都畫;S2 區塊外只有那顆灰的(這一版還沒有),能開時由 S2 的 hsModeBtn 換上
+  const noS2 = ws.replace(/ {2}\/\/ -{10} S2 管理主機[\s\S]*?(?= {2}\/\/ -{10} S3 權限模板)/, '');
+  ok(noS2.length < ws.length - 8000 && !/共 4 種/.test(ws) && /<button type="button" class="amd off" data-addm="host" disabled aria-disabled="true">[^\n]*這一版還沒有/.test(noS2) && (noS2.match(/data-addm="host"/g) || []).length === 1, 'reason: s1_host_mode_or_scale_shown');
+  // 由上而下:接回 → 最近 / 大分類 → 帶出的設定 → 開;還沒選方案不能開
+  ok(/\$\{apBack\(A\)\}\$\{apTop\(A\)\}\$\{set\}/.test(addH) && /disabled.*!A\.plan|!A\.plan \? 'disabled'/.test(addH) || /A\.busy \|\| !pv \|\| !A\.plan \? 'disabled' : ''/.test(addH), 'reason: s1_order_or_gate');
+  for (const k of ['brand', 'mode', 'persona', 'brain', 'role', 'node', 'ho']) ok(new RegExp("apRow\\(A, '" + k + "', ").test(addH), 'reason: s1_row_missing ' + k);
+  ok(/repoBlk\.trim\(\) \? apRow\(A, 'repo', '存哪裡'/.test(addH), 'reason: s1_row_missing repo');
+  ok(/'專注已有專案', esc\(nodeT \|\| node \|\| '不指定'\)/.test(addH), 'reason: s1_node_default_word');
+  // 方案資料:只用三種模式,不帶專案項目;跑 apPick
+  const blk = (ws.split('  const APS = ')[1] || '').split('  function apCounts()')[0];
+  const store = {};
+  const ctx = vm.createContext({ localStorage: { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = String(v); } }, personas: () => [['u1', '研究專家甲'], ['u2', '頁面工程師乙']], brainPreselect: (A) => { A.brain = 'b_' + A.persona; }, idem: () => 'k', personaHasBrain: (u) => u === 'u3' });
+  vm.runInContext('const APS = ' + blk + '\nthis.AP_CATS = AP_CATS; this.apPick = apPick; this.apRecent = apRecent; this.apRecentSave = apRecentSave;', ctx);
+  const modes = new Set(); for (const C of ctx.AP_CATS) for (const p of C.subs) { modes.add(p.mode); ok(!('node' in p), 'reason: s1_plan_carries_node ' + p.name); }
+  ok([...modes].every((m) => ['safe', 'work', 'dgrs', ''].includes(m)), 'reason: s1_plan_mode_not_existing');
+  ok(ctx.AP_CATS.length === 12 && ctx.AP_CATS.some((C) => C.back) && ctx.AP_CATS.some((C) => C.id === 'custom'), 'reason: s1_twelve_categories');
+  const A = { node: '', mode: 'safe' };
+  ctx.apPick(A, 'research:0');
+  ok(A.plan === 'research:0' && A.mode === 'safe' && A.persona === 'u1' && A.brain === 'b_u1' && A.node === '', 'reason: s1_pick_fills');
+  ctx.apPick(A, 'sens:0');
+  ok(A.brain === '' && A.brainTouched === true, 'reason: s1_sensitive_takes_brain');
+  ctx.apPick(A, 'video:2');
+  ok(A.persona === '' && A.pkMiss === '影片提示詞', 'reason: s1_missing_persona_not_said');
+  ctx.apPick(A, 'design:0');
+  ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
+  ctx.apRecentSave('tech:0'); ctx.apRecentSave('writing:1'); ctx.apRecentSave('tech:0'); ctx.apRecentSave('custom:0'); ctx.apRecentSave('life:0'); ctx.apRecentSave('learn:0');
+  ok(JSON.stringify(ctx.apRecent()) === JSON.stringify(['learn:0', 'life:0', 'tech:0']), 'reason: s1_recent_order ' + JSON.stringify(ctx.apRecent()));
+  // 接回:帶交接單開頭、開交接單那列;開好記最近用過
+  ok(/A\.ho = '~\/\.ez2-aib\/pending\/HANDOFF-' \+ code \+ '-'; A\.rowOpen = 'ho';/.test(ws), 'reason: s1_back_prefill');
+  ok(/apRecentSave\(A\.plan\);\n      S\.add = null;/.test(ws), 'reason: s1_recent_not_saved');
+  ok(/位在工作\$\{q \? ' \/ ' \+ q \+ ' 位排隊中' : ''\}/.test(ws), 'reason: s1_counts');
+  ok(/prefers-reduced-motion:reduce\)\{\.adlg\.ap \.apc,\.adlg\.ap \.aprb\{transition:none\}/.test(read('apps/web/dist/ws.css')), 'reason: s1_reduced_motion');
+}
+
+// §35b S1 預覽回饋修正(fc7f9 11-23,ebab8 ORDER-s1fix;Andy 在 47780 真瀏覽器看到的)
+{
+  const fnSrc = (name) => { const a = ws.indexOf('  function ' + name + '('); const b = ws.indexOf('\n  }\n', a); return a >= 0 && b > a ? ws.slice(a, b + 4) : ''; };
+  const blk = (ws.split('  const APS = ')[1] || '').split('  function apCounts()')[0];
+  const doc = { grid: null, querySelector: (q) => (q === '.adlg.ap .apcats' ? doc.grid : null), activeElement: null };
+  const ctx = vm.createContext({ document: doc, localStorage: { getItem: () => null, setItem: () => {} }, personas: () => [['u1', '研究專家甲'], ['u3', '研究專家丙'], ['u2', '頁面工程師乙']], brainPreselect: () => {}, idem: () => 'k', personaHasBrain: (u) => u === 'u3', S: {}, chBox: () => '<div class="apsubs apchat">chat</div>',
+    esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) });
+  vm.runInContext('const APS = ' + blk + fnSrc('apCols') + fnSrc('apKeep') + fnSrc('apRestore') + fnSrc('apTop') + '\nthis.F = { AP_CATS, apPick, apCols, apKeep, apRestore, apTop };', ctx);
+  const F = ctx.F;
+  // 1. 小分類插在被點那一列的最後一顆後面:3 欄時點第 5 顆(index 4)⇒ 插在 index 5 之後;深底金框小標、卡片依序浮現
+  ok(F.apCols() === 4, 'reason: s1b_cols_default');
+  const A = { cat: AP_CATS_ID(F, 4), plan: '' };
+  function AP_CATS_ID(G, i) { return G.AP_CATS[i].id; }
+  let h = F.apTop(A);
+  const order = [...h.matchAll(/data-apcat="([a-z]+)"|class="apsubs"/g)].map((m) => m[1] || 'SUBS');
+  ok(order.indexOf('SUBS') === 8 && order[7] === F.AP_CATS[7].id, 'reason: s1b_subs_not_after_row ' + order.join(','));
+  ok(new RegExp('<div class="apst">' + F.AP_CATS[4].ic + ' ' + F.AP_CATS[4].zh + ' 的方案</div>').test(h) && /data-sty="animation-delay:45ms"/.test(h) && !/ style="/.test(h), 'reason: s1b_subs_title_or_stagger');
+  doc.grid = { clientWidth: 3 * 138 - 8 }; A.cat = F.AP_CATS[0].id; h = F.apTop(A);
+  ok([...h.matchAll(/data-apcat="([a-z]+)"|class="apsubs"/g)].map((m) => m[1] || 'SUBS').indexOf('SUBS') === 3, 'reason: s1b_cols_measured');
+  ok(/<em class="">06<\/em><b>研究與數據<\/b>/.test(h) && /<em class="sens">09–12·15<\/em>/.test(h) && /class="apc  util" data-apcat="custom"/.test(h) && / · 2 個人格<\/i>/.test(F.apTop({ cat: 'research', plan: '' })), 'reason: s1b_cat_num_or_count');
+  A.cat = F.AP_CATS[F.AP_CATS.length - 1].id; h = F.apTop(A); ok(/class="apsubs apchat"/.test(h) && h.lastIndexOf('class="apsubs') > h.lastIndexOf('data-apcat='), 'reason: s1b_last_row'); // 最後一類是 ⚙️ 自訂 ⇒ 那一塊是對話框
+  const css = read('apps/web/dist/ws.css');
+  ok(/\.adlg\.ap \.apsubs\{grid-column:1\/-1;[^}]*background:var\(--bg\);border:1px solid var\(--gold\)/.test(css) && /\.adlg\.ap \.apst\{font-size:12px;color:var\(--gold\)\}/.test(css) && /animation:apdrop/.test(css) && /\.adlg\.ap \.apsubs,\.adlg\.ap \.apsubs \.apc\{animation:none\}/.test(css), 'reason: s1b_subs_css');
+  // 2. 重畫前後加夥伴視窗停在原地、焦點回到同一顆;展開的那一列捲進視野
+  const mkEl = (attrs) => ({ attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })), focused: 0, focus() { this.focused++; } });
+  const btn = mkEl({ 'data-aprow': 'mode', class: 'aprh' });
+  const dlg = { scrollTop: 420, contains: (x) => x === btn, querySelector: (q) => (q === '[data-aprow="mode"]' ? btn2 : q === '.aprow.open' ? row : null) };
+  const btn2 = mkEl({ 'data-aprow': 'mode' }); const row = { seen: 0, scrollIntoView(o) { this.seen = o && o.block === 'nearest' ? 1 : 0; } };
+  doc.activeElement = btn;
+  const root = { querySelector: (q) => (q === '.adlg' ? dlg : null) };
+  const k = F.apKeep(root);
+  ok(k && k.top === 420 && k.fk === '[data-aprow="mode"]', 'reason: s1b_keep ' + JSON.stringify(k));
+  dlg.scrollTop = 0; ctx.S.add = { reveal: true }; F.apRestore(root, k);
+  ok(dlg.scrollTop === 420 && btn2.focused === 1 && row.seen === 1 && ctx.S.add.reveal === null, 'reason: s1b_restore');
+  ok(F.apKeep({ querySelector: () => null }) === null, 'reason: s1b_keep_without_dialog');
+  // f163c L1(REVIEW-s1fix pre):焦點那顆的 data- 值含引號 / 換行,拼出來的選擇器不能讓 render 拋例外
+  { const bad = mkEl({ 'data-apsub': 'x"]\n,[y' }); const dl = { scrollTop: 5, contains: (x) => x === bad }; doc.activeElement = bad;
+    const k2 = F.apKeep({ querySelector: (q) => (q === '.adlg' ? dl : null) });
+    ok(k2 && k2.top === 5 && k2.fk === null, 'reason: s1b_keep_unsafe_value ' + JSON.stringify(k2));
+    ctx.CSS = { escape: (v) => v.replace(/["\n\]\[,]/g, (c) => '\\' + c) }; const k3 = F.apKeep({ querySelector: (q) => (q === '.adlg' ? dl : null) }); delete ctx.CSS;
+    ok(k3 && k3.fk === '[data-apsub="x\\"\\]\\\n\\,\\[y"]', 'reason: s1b_keep_css_escape ' + JSON.stringify(k3)); doc.activeElement = btn; }
+  ok(/    const apK = apKeep\(el\); \/\/ S1b 2\n/.test(ws) && /\n    apRestore\(el, apK\); \/\/ S1b 2/.test(ws) && ws.indexOf('apRestore(el, apK)') > ws.indexOf('${S.add ? addHtml() : \'\'}'), 'reason: s1b_render_not_wired');
+  ok(/S\.add\.rowOpen = S\.add\.rowOpen === rw\.dataset\.aprow \? null : rw\.dataset\.aprow; S\.add\.reveal = !!S\.add\.rowOpen;/.test(ws), 'reason: s1b_row_reveal');
+  // 3. 品牌:橫向、每家一句說明、說明不是橢圓框
+  // Andy 04:4x(ORDER-s1fix 第 6 條):品牌改下拉,一項 = 品牌 · aibd 給的預設模型;開不了的列著、disabled、寫原因;選了才換、不支援的模式退回討論研究
+  ok(ws.includes("const p = providers().find((x) => x.key === k && x.open);") && ws.includes("if (!p.modes.includes(S.add.mode)) S.add.mode = 'safe';") && /\.adlg \.apsel\{width:100%;min-height:42px/.test(css), 'reason: s1d_brand_select');
+  // S1f(08de5 A13 + Andy 05:1x):下拉逐個列 aibd 給的模型(預設第一),沒有清單才只列預設;開不了整組灰寫原因;值 = 品牌|模型;開品牌列或換一家就重讀 version + usage
+  { const src = ['  const apPvLabel = ', '  const apPvModel = ', '  function apPvOpts('].map((h) => { const i = ws.indexOf(h); return i < 0 ? '' : h.startsWith('  function') ? ws.slice(i, ws.indexOf('\n  }\n', i) + 4) : ws.slice(i, ws.indexOf('\n', i) + 1); }).join('');
+    const cx = vm.createContext({ esc: (x) => String(x).replace(/[&<>"]/g, (c) => '&#' + c.charCodeAt(0) + ';'), dfltModel: (id) => (id === 'claude' ? 'opus' : '') }); vm.runInContext(src + '\nthis.O = apPvOpts; this.M = apPvModel;', cx);
+    const cl = { key: 'claude', id: 'claude', name: 'Claude', open: true, models: [{ id: 'opus', label: 'Opus <x>', dflt: true }, { id: 'sonnet', label: 'Sonnet', used: true }] };
+    const h1 = cx.O(cl, cl, { provider: 'claude', model: 'sonnet' });
+    ok(h1.includes('<optgroup label="Claude">') && h1.includes('<option value="claude|" >Claude · Opus &#60;x&#62;(預設)</option>') && h1.includes('<option value="claude|sonnet" selected>Claude · Sonnet(用過)</option>'), 'reason: s1f_models_listed');
+    ok(/<optgroup label="Grok — 不能選:這版還不能開" disabled><option value="grok\|" disabled>Grok · 它自己的預設模型<\/option><\/optgroup>/.test(cx.O({ key: 'grok', id: 'grok', name: 'Grok', open: false, why: '這版還不能開' }, cl, {})), 'reason: s1f_closed_group');
+    ok(cx.O({ key: 'claude', id: 'claude', name: 'Claude', open: true, models: null }, cl, { provider: 'claude' }) === '<option value="claude|" selected>Claude · opus</option>' && cx.M(cl, { provider: 'claude', model: 'haiku' }) === '', 'reason: s1f_no_list_fallback');
+    ok(ws.includes("if (S.add.rowOpen === 'brand') apPvRefresh();") && ws.includes("render(); if (nw) apPvRefresh(); } return; }") && ws.includes("if (apPvModel(pv, A)) body.model = A.model;") && ws.includes("帳號額度:這一版 AIB 還沒有") && ws.includes("const [v, u] = await Promise.all([soft(get('/api/v1/version')).catch(() => null), soft(get('/api/v1/usage')).catch(() => null)]);"), 'reason: s1f_refresh_wired'); }
+  // 08de5 A15:帳號額度只寫用了幾 %、何時重算;沒 providers = 這一版還沒有;沒看過 = 照實寫;名字不認得照原字;不會有餘額
+  { const S = {}; const cq = vm.createContext({ S, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) });
+    vm.runInContext(['QW_NAME', 'QW_ST', 'qwWhen'].map((k) => (ws.match(new RegExp('  const ' + k + ' = [^\n]*\n')) || [''])[0]).join('') + fnSrc('apQuota') + '\nthis.apQuota = apQuota;', cq);
+    const CL = { id: 'claude', name: 'Claude' }, CX = { id: 'codex', name: 'Codex' };
+    ok(cq.apQuota(CL).includes('帳號額度:這一版 AIB 還沒有'), 'reason: a15_no_providers');
+    S.usage = { usage: [], providers: { claude: { quota: null, quota_reason: 'not_seen_yet' } } };
+    ok(cq.apQuota(CL).includes('這台還沒看過 Claude 的額度') && cq.apQuota(CL).includes('等它跑完第一個回合') && cq.apQuota(CX).includes('這台還沒看過 Codex 的額度') && !cq.apQuota(CX).includes('回合'), 'reason: a15_not_seen');
+    { S.usage.providers.codex = { quota: { source: 'codex_app_server' } }; let t = ''; try { t = cq.apQuota(CX); } catch (e) { t = 'threw'; } ok(t.includes('這台還沒看過 Codex 的額度'), 'reason: a15_quota_without_windows ' + t); }
+    S.usage.providers.claude = { quota: { source: 'claude_stream', status: 'allowed', seen_at: 1795400000, windows: [{ name: 'seven_day', used_pct: 42.5, resets_at: 1795400000, status: 'allowed' }, { name: 'five_hour', used_pct: 95 }, { name: 'weird_<x>', used_pct: 150 }] } };
+    S.usage.providers.codex = { quota: { source: 'codex_app_server', plan: 'plus', windows: [{ name: 'primary', used_pct: 12, window_mins: 300 }, { name: 'zz', used_pct: 3, window_mins: 10080 }] } };
+    const h = cq.apQuota(CL), x = cq.apQuota(CX);
+    ok(h.includes('<span>七天</span><progress class="usep" max="100" value="42.5"></progress><b>用了 42.5%</b>') && /重算 · 可用<\/i>/.test(h) && h.includes('qw red"><span>五小時</span>') && h.includes('<span>weird_&lt;x&gt;</span><progress class="usep" max="100" value="100">') && !/餘額 \d|剩 \d|\$/.test(h) && h.includes('沒有餘額'), 'reason: a15_windows ' + h.slice(0, 400));
+    ok(x.includes('<span>主要額度</span>') && x.includes('<span>7 天</span>') && x.includes('方案 plus'), 'reason: a15_codex_windows ' + x.slice(0, 300)); }
+  // 4. 存哪裡不再預設跟別的夥伴共用;同名人格先挑有常用第二大腦的
+  ok(!/if \(WSO\.length\) A\.withSeat = WSO\[0\]\.seat_id;/.test(ws) && /if \(!A\.dflt && pv\) \{ A\.dflt = true; if \(canW\) A\.mode = 'work'; \}/.test(ws), 'reason: s1b_shared_folder_default');
+  const B = { node: '', mode: 'safe' }; F.apPick(B, 'research:0'); ok(B.persona === 'u3', 'reason: s1b_persona_with_brain ' + B.persona);
+  // A. 照示意整套搬(Andy 11-23 03:0x):區段金框數字、設定列一個框 + 轉的箭頭、可點卡浮起光掃、底部黏住的摘要、頁首副標 + 讀到多少
+  ok(ws.includes('<span class="apstep">${R.length ? 2 : 1}</span><b>大分類</b>') && ws.includes('<i class="apchev" aria-hidden="true">⌄</i></button><div class="aprb">') && ws.includes('<small>選要做的事,人格、權限、搭檔自動配好</small></h3>') && ws.includes('<div class="apsrc">${esc(apSrc())}</div>'), 'reason: s1b_mock_structure');
+  ok(ws.includes("<span class=\"apsum\">${esc(A.plan && pv ? apSum(A, pv) : '先選一個方案')}</span>") && /function apSum\(A, pv\) \{[\s\S]{0,400}現在 \$\{run\}\/\$\{mx\} 位在工作/.test(ws), 'reason: s1b_foot_summary');
+  ok(/\.adlg\.ap \.apc::after,[^{]*\{content:"";position:absolute;inset:0;background:linear-gradient\(110deg/.test(css) && /\.adlg\.ap \.afoot\{position:sticky;bottom:0/.test(css) && /\.adlg\.ap \.aprow\.open \.apchev\{transform:rotate\(180deg\)/.test(css) && /\.adlg\.ap \.aprh\{display:grid;grid-template-columns:92px 1fr 18px/.test(css) && /\.adlg\.ap \.apc\.util\{border-style:dashed\}/.test(css), 'reason: s1b_mock_css');
+  ok(/@media \(prefers-reduced-motion:reduce\)\{\.adlg\.ap,\.adlg\.ap \.apc,[^}]*animation:none\}/.test(css), 'reason: s1b_mock_reduced_motion');
+  // B. 清單照示意 .opts / .op(一顆顆小卡、換行、長清單捲動),存哪裡的分組標題照示意
+  ok(ws.includes('<div class="asec"><span>在登記過的倉裡做(開自己的分支)</span>') && ws.includes('<div class="asec"><span>跟別席共用一個資料夾(同一份檔案,最多兩席在寫)</span>'), 'reason: s1b_folder_groups');
+  ok(/\.adlg\.ap \.apl\{flex-direction:row;flex-wrap:wrap;[^}]*max-height:236px/.test(css) && /\.adlg\.ap \.apr\.on\{border-color:var\(--mk-gold\);background:var\(--mk-gold-bg\)/.test(css) && /\.adlg\.ap \.asec>span\{font-size:11px;color:var\(--mk-gold\)\}/.test(css), 'reason: s1b_list_chips');
+  // ebab8 11-23 03:20:沒有獨立「接回」鈕;大分類「接手舊席」點了在那一列下面展開舊夥伴清單
+  ok(!ws.includes('data-apbacko') && ws.includes("{ id: 'handoff', ic: '🔁', zh: '接手舊席', back: 1") && ws.includes(" : BK ? apBack(A) : '';") && ws.includes('      ${apTop(A)}${set}\n') && ws.includes("if (C && C.back) { S.add.backOpen = !S.add.backOpen;"), 'reason: s1b_back_in_cats');
+  ok(/危險程度:中<\/em><\/button>\$\{(hsModeBtn\(A, pv\) \|\| )?apHostCard\(A, pv\)\}<button type="button" class="amd warn/.test(ws), 'reason: s1b_host_card_third'); // S2 能開時換成它的鈕
+  // 一次多 AI(示意 mates):搭檔清單(先列已勾 + 像糾察 / 審查的)、勾了「開這一組(N 位)」;這一版 AIB 還不能一次開一組 ⇒ 按了說還沒有、不送
+  { const cm = vm.createContext({ esc: (x) => String(x), personas: () => [['u1', '主寫手'], ['u2', '品管糾察大隊'], ['u3', '驗收閘門席'], ['u4', '研究員']] }); vm.runInContext(fnSrc('mateRows') + '\nthis.mateRows = mateRows;', cm);
+    const r0 = cm.mateRows({ persona: 'u1', mates: ['u4'] }), r1 = cm.mateRows({ persona: 'u1', mates: [], mq: '研究' });
+    ok(r0.includes('data-apmate="u4" aria-pressed="true"><b>✓ 研究員') && r0.includes('data-apmate="u2"') && r0.includes('data-apmate="u3"') && !r0.includes('data-apmate="u1"') && r1.includes('<b>+ 研究員') && !r1.includes('u2'), 'reason: s1b_mates_rows'); }
+  ok(!ws.includes('AP_GROUP_NO') && ws.includes("!A.busy && (A.mates || []).length ? `開這一組(${(A.mates || []).length + 1} 位)` : step") && ws.includes("${mn ? ' + ' + mn + ' 搭檔' : ''}") && ws.includes("      const mn = await apOpenMates(A, pv, body0, { nm, wait: !!sq });\n      apRecentSave(A.plan);"), 'reason: s1b_mates_group');
+  // ebab8 03:39:一次多 AI 真的送 —— 主夥伴開好後搭檔依序各一次 seat_open(人格換搭檔的、模式 / 倉照這一組,各自 idem_key);失敗的寫出來、換新鑰匙;有倉的走指紋那條
+  lateChecks.push((async () => { const sent = [], st = { add: null }, cm = vm.createContext({ S: st, esc: (x) => String(x), render: () => {}, idem: (() => { let n = 0; return () => 'k' + (++n); })(), FP_SEE: '看指紋',
+      personas: () => [['u2', '糾察'], ['u3', '寫手']], repoWhy: (e) => 'R:' + e.code, addErr: (e) => 'E:' + e.code,
+      act: async (a, b) => { sent.push(['act', a, Object.assign({}, b)]); if (b.persona_uid === 'u3') { const e = new Error('x'); e.code = 'persona_busy'; throw e; } return { seat: { seat_id: 'seat_' + b.persona_uid + 'xyz', display: '名' + b.persona_uid }, session: { state: b.persona_uid === 'u2' ? 'pending' : 'running' } }; },
+      fingerAct: async (a, b) => { sent.push(['fp', a, Object.assign({}, b)]); if (b.persona_uid === 'u3') { const e = new Error('x'); e.code = 'persona_busy'; throw e; } return b.repo ? { seat: { seat_id: 'seat_f' }, session: {} } : { seat: { seat_id: 'seat_' + b.persona_uid + 'xyz', display: '名' + b.persona_uid }, session: { state: b.persona_uid === 'u2' ? 'pending' : 'running' } }; } });
+    vm.runInContext((ws.match(/  const apPName = [^\n]*\n/) || [''])[0] + fnSrc('apGrp') + fnSrc('apOpenMates') + '\nthis.F = { apGrp, apOpenMates };', cm);
+    const A = { mates: ['u2', 'u3'] }; st.add = A;
+    const note = await cm.F.apOpenMates(A, { id: 'claude' }, { mode: 'work' }, { nm: '主', wait: false });
+    ok(sent.length === 2 && sent.every((x) => x[0] === 'fp' && x[1] === 'seat_open' && x[2].provider === 'claude' && x[2].mode === 'work' && !x[2].repo) && sent[0][2].persona_uid === 'u2' && sent[1][2].persona_uid === 'u3' && sent[0][2].idem_key !== sent[1][2].idem_key, 'reason: s1b_mates_sent');
+    ok(note === ';搭檔 1/2 位開了,沒開成:寫手(E:persona_busy)' && A.grp[1].ok && A.grp[1].why === '排隊中' && A.grp[1].nm === '@名u2' && A.grp[2].ok === false && A.mkeys.u3 !== sent[1][2].idem_key && A.mkeys.u2 === sent[0][2].idem_key, 'reason: s1b_mates_result');
+    const gh = cm.F.apGrp(A); ok(gh.includes('<div class="ok">✓ 主夥伴 @主</div>') && gh.includes('<div class="bad">✗ 搭檔 寫手 · E:persona_busy</div>'), 'reason: s1b_mates_lines');
+    sent.length = 0; await cm.F.apOpenMates({ mates: ['u2'] }, { id: 'claude' }, { mode: 'dgrs', repo: 'r1', base: 'b'.repeat(40) }, { nm: '主' });
+    ok(sent.length === 1 && sent[0][0] === 'fp' && sent[0][2].repo === 'r1' && sent[0][2].base === 'b'.repeat(40), 'reason: s1b_mates_repo_fp'); })());
+  ok(/apRow\(A, 'node', [\s\S]*?\n      \$\{apRow\(A, 'mates', '一次多 AI'/.test(ws) && ws.includes("if (e.target.dataset && e.target.dataset.apmq && S.add) { S.add.mq = e.target.value;"), 'reason: s1b_mates_row');
+  // 我的 AI 夥伴(示意 #seatsBox):整塊預設收合;逐位展開 = 它的模式那欄亮、表頭全不能點;改權限 / 請求卡 / 一直允許寫這一版還沒有
+  { const cm = vm.createContext({ esc: (x) => String(x), ptSeatBox: () => '', AP_HOST_NAME: '管理主機', AP_MODE: { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] }, isArch: () => false, seatShort: (x) => x.seat_id, present: () => [{ seat_id: 'a1', mode: 'work', persona_name: '寫手' }, { seat_id: 'b2', mode: 'dgrs' }] });
+    vm.runInContext((ws.match(/  const AP_PERMS = [^\n]*\n  const AP_LEVEL = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_NOTE = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_MINE_NO = [^\n]*\n  const AP_ASK_NO = [^\n]*\n/) || [''])[0] + fnSrc('apCmp') + fnSrc('apMine') + '\nthis.apMine = apMine;', cm);
+    const h0 = cm.apMine({}), h1 = cm.apMine({ mine: true }), h2 = cm.apMine({ mine: true, mineSeat: 'a1' });
+    ok(h0.includes('aria-expanded="false"><b>我的 AI 夥伴 · 隨時改權限</b><span class="apex">2 位在工作</span>') && !h0.includes('data-apms'), 'reason: s1b_mine_closed');
+    ok(h1.includes('data-apms="a1"') && h1.includes('data-apms="b2"') && h1.includes('這一版 AIB 還沒有(現在一律擋)') && !h1.includes('class="apcmp'), 'reason: s1b_mine_rows');
+    ok(h2.includes('<button type="button" class="apmrh" data-apms="a1" aria-expanded="true">') && h2.includes('<b class="ch off s">沙盒開發</b>') && !/data-addm=/.test(h2) && h2.includes('在這裡改已開那位的權限:這一版 AIB 還沒有'), 'reason: s1b_mine_seat_open'); }
+  ok(ws.includes('      ${apTop(A)}${set}\n      ${apMine(A)}\n') && ws.includes("if (x.closest('[data-apmine]')) { S.add.mine = !S.add.mine; return render(); }"), 'reason: s1b_mine_not_in_dialog');
+  // 專注已有專案(示意 editor('node')):「不指定」+ 搜尋 + 清單 + 說明,不用先選角色;選了專案而沒角色 ⇒ 先帶「作者」並寫出來(aibd 掛專案要角色,不默默丟掉)
+  ok(ws.includes('const where = `<div class="apl"><button type="button" class="apr ${!node ? \'on\' : \'\'}" data-addnu="" aria-pressed="${!node}"><b>不指定</b>') && ws.includes("esc(nodeT || node || '不指定'), where)") && !ws.includes('先選角色才要掛到項目'), 'reason: s1b_node_search_always');
+  ok(ws.includes("if (S.add.node && !S.add.role && roleList().some((r) => r.uid === 'author')) { S.add.role = 'author'; S.add.roleAuto = true; }") && ws.includes("S.add.role = ro.dataset.addrole; S.add.roleAuto = false;") && ws.includes("node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改'") && ws.includes("node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個"), 'reason: s1b_node_role_auto');
+  // 合併類似(示意 merge*):找名字很像的分組(幾乎一樣預設併、可能類似預設不併),◉ 選留下、點名字取消、預覽;確認合併 = 這一版還沒有、不送
+  { const st = { add: null }, cm = vm.createContext({ S: st, esc: (x) => String(x), render: () => {}, present: () => [{ persona_uid: 'p2' }], personas: () => [['p1', 'AIB2測試流程工程師-2'], ['p2', 'AIB2測試流程工程師'], ['p3', '二樓辦公室前端工程師'], ['p4', '二樓辦公室後端工程師'], ['p5', '研究員']], roleList: () => [{ uid: 'author', name: '作者', builtin: true }] });
+    vm.runInContext((ws.match(/  const MG_KN = [^\n]*\n  const MG_NO = [^\n]*\n  const mgNorm = [^\n]*\n/) || [''])[0] + fnSrc('mgScore') + fnSrc('mgItems') + fnSrc('mgFind') + fnSrc('mgOf') + fnSrc('mgBtn') + fnSrc('mgPanel') + fnSrc('mgClick') + '\nthis.F = { mgFind, mgBtn, mgPanel, mgClick, MG_NO };', cm);
+    const G = cm.F.mgFind('persona'), g0 = G.find((g) => g.items.some((x) => x.uid === 'p1')), g1 = G.find((g) => g.items.some((x) => x.uid === 'p3'));
+    ok(G.length === 2 && g0.sure && g0.keep === 'p2' && !g0.off.p1 && g1 && !g1.sure && Object.keys(g1.off).length === 1, 'reason: s1b_merge_find');
+    st.add = { merge: '' }; const ck = (d) => ({ closest: (q) => { const k = q.slice(6, -1); return Object.prototype.hasOwnProperty.call(d, k) ? { dataset: { [k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())]: d[k] } } : null; } });
+    cm.F.mgClick(ck({ 'apmg': 'persona' })); ok(st.add.merge === 'persona' && cm.F.mgBtn(st.add, 'persona').includes('⇄ 合併類似 · 2 組') && cm.F.mgPanel(st.add, 'persona').includes('找到 2 組類似的人格'), 'reason: s1b_merge_panel');
+    const gi = st.add.mx.G.indexOf(st.add.mx.G.find((g) => g.items.some((x) => x.uid === 'p1')));
+    cm.F.mgClick(ck({ 'apmgk': gi + '|p1' })); ok(st.add.mx.G[gi].keep === 'p1', 'reason: s1b_merge_keep');
+    { const hj = st.add.mx.G.findIndex((g) => !g.sure), H = st.add.mx.G[hj], o = Object.keys(H.off)[0]; cm.F.mgClick(ck({ 'apmgk': hj + '|' + o })); ok(H.keep === o && !H.off[o], 'reason: s1b_merge_keep_unoff'); }
+    cm.F.mgClick(ck({ 'apmgp': 'all' })); const pv = cm.F.mgPanel(st.add, 'persona'); ok(pv.includes('合併預覽 · 人格') && pv.includes('<span class="apmgc out">AIB2測試流程工程師</span>') && pv.includes('<b>1</b> 位工作中的夥伴受影響'), 'reason: s1b_merge_preview');
+    cm.F.mgClick(ck({ 'apmgok': '1' })); ok(st.add.mx.msg === cm.F.MG_NO && cm.F.mgPanel(st.add, 'persona').includes('合併:這一版 AIB 還沒有'), 'reason: s1b_merge_not_faked'); }
+  ok(["'persona'", "'brain'", "'role'"].every((k) => ws.includes('`${mgBtn(A, ' + k + ')}${mgPanel(A, ' + k + ')}')) && ws.includes('      if (mgClick(x)) return;\n'), 'reason: s1b_merge_rows');
+  // ⚙️ 自訂對話框(示意 chatBox / propose / chatDo):說要做什麼 ⇒ 用現有人格 / 第二大腦 / 角色 / 專案清單比對出建議卡;帶到下面真的帶;照這樣開 = 這一版還沒有、不送
+  { const st = { reg: { brains: [{ uid: 'b1', name: '家具店客製化SEO' }, { uid: 'b2', name: 'AIB 核心開發工單' }], brainsLive: true } }, picked = [];
+    const cm = vm.createContext({ S: st, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), AP_MODE: { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] },
+      personas: () => [['p1', '家具店SEO主管'], ['p2', 'AIB2網頁版頁面工程師'], ['p3', 'AIB2驗收審查員']], roleList: () => [{ uid: 'author', name: '作者' }, { uid: 'reviewer', name: '審查' }], nodeOpts: () => [['G3', '主線一 自動推進']],
+      apPick: (A, k) => { picked.push(k); A.plan = k; }, brainPreselect: () => {} });
+    vm.runInContext((ws.match(/  const mgNorm = [^\n]*\n/) || [''])[0] + (ws.match(/  const CH_HELLO = [\s\S]*?\n  \];\n/) || [''])[0] + fnSrc('chPick') + fnSrc('chClient') + fnSrc('chPropose') + fnSrc('chProp') + fnSrc('chBox') + fnSrc('chSend') + fnSrc('chDo') + '\nthis.F = { chPropose, chClient, chBox, chSend, chDo, CH_GO_NO };', cm);
+    const p1 = cm.F.chPropose('幫家具店寫 SEO 文章'), p2 = cm.F.chPropose('修 AIB 網頁版的 bug,改完給人審'), p3 = cm.F.chPropose('每天整理新聞');
+    ok(cm.F.chClient('幫家具店寫 SEO 文章', ['家具店SEO主管', '研究員']) === '家具店' && cm.F.chClient('每天整理新聞', ['家具店SEO主管']) === '' && cm.F.chClient('修 AIB 網頁版的 bug', ['AIB2網頁版頁面工程師']) === 'AIB', 'reason: s1b_chat_client_from_own_names');
+    ok(cm.F.chClient('\u0130\u0130 幫 Acme 店寫 SEO 文章', ['acme 店seo主管']) === 'Acme', 'reason: s1b_chat_client_case_offset ' + cm.F.chClient('\u0130\u0130 幫 Acme 店寫 SEO 文章', ['acme 店seo主管']));
+    ok(cm.F.chClient('寫 SEO 文章', ['家具店SEO主管']) === '' && cm.F.chPropose('幫家具店整理新聞').perNew === '家具店情報', 'reason: s1b_chat_client_skips_intent ' + cm.F.chPropose('幫家具店整理新聞').perNew);
+    // ebab8 1123:公開倉不放真實客戶名 / 主機代號(字用跳脫寫,這支測試本身也不含原字)
+    ok(["\u90a6\u5c3c", "\u5f18\u7dad", "\u6e05\u5c55", "\u82b1\u5abd", "\u5fc3+", "\u5433\u8ed2", "\u0045\u0055\u0030\u0031", "\u0065\u0075\u0030", "\u0073\u0069\u006e\u0030"].every((n) => !ws.includes(n)), 'reason: no_real_client_names_in_page');
+    ok(p1.per && p1.per.uid === 'p1' && p1.brain && p1.brain.uid === 'b1' && p1.mode === 'safe' && p1.role.uid === 'author' && !p1.mates.length, 'reason: s1b_chat_match_seo');
+    ok(p2.per.uid === 'p2' && p2.mode === 'work' && p2.mates.length === 1 && p2.mates[0].uid === 'p3' && p2.role.uid === 'author', 'reason: s1b_chat_match_dev');
+    ok(!p3.per && p3.perNew && !p3.brain && /新聞/.test(p3.brainNew) && cm.F.chBox({ chat: [{ who: 'ai', p: 0 }], props: [p3] }).includes('要新建'), 'reason: s1b_chat_new');
+    const A = {}; cm.F.chSend(A, '  幫家具店寫 SEO 文章  '); const h = cm.F.chBox(A);
+    ok(A.chat.length === 3 && A.chat[1].t === '幫家具店寫 SEO 文章' && A.props.length === 1 && h.includes('data-chdo="0|go"') && h.includes('data-chdo="0|edit"') && h.includes('不是 AI 回的') && h.includes('data-apsub="custom:0"'), 'reason: s1b_chat_send');
+    cm.F.chDo(A, 0, 'go'); ok(A.chat[A.chat.length - 1].t === cm.F.CH_GO_NO && !picked.length && !A.persona, 'reason: s1b_chat_go_not_faked');
+    cm.F.chDo(A, 0, 'edit'); ok(picked[0] === 'custom:0' && A.persona === 'p1' && A.brain === 'b1' && A.mode === 'safe' && A.role === 'author' && A.chReveal, 'reason: s1b_chat_edit_fills');
+    const X = {}; cm.F.chSend(X, '<b>x</b>'); ok(cm.F.chBox(X).includes('&lt;b&gt;x&lt;/b&gt;') && !cm.F.chBox(X).includes('<b>x</b>'), 'reason: s1b_chat_escape'); }
+  ok(ws.includes("const subs = C && C.id === 'custom' ? chBox(A) : C ?") && ws.includes("if (e.target.dataset && e.target.dataset.chin && S.add && e.key === 'Enter' && !e.shiftKey && !imeBusy(e))"), 'reason: s1b_chat_wired');
+  // 等你驗證卡照示意 verify-card:欄名是灰字、不吃全域 .k 的按鈕框
+  ok(/\.fpc \.fpt span\.k\{border:0;border-radius:0;padding:0;background:none;box-shadow:none;/.test(read('apps/web/dist/ws.css')), 'reason: s1b_fpc_label_not_button');
+  // S1c(400 寬再對示意,COMPARE r3 附 C1–C4):提示字跟著拿掉接回鈕改、底部鈕照示意尺寸、⚙️ 送出外框款、建議卡窄畫面欄名 64px
+  { const css = read('apps/web/dist/ws.css');
+    ok(ws.includes('先選要做什麼(或「接手舊席」),設定會自動帶出來') && !ws.includes('(或「接回」)'), 'reason: s1c_hint_old_word');
+    ok(/\.adlg\.ap \.afoot>\.k,\.adlg\.ap \.afoot>\.go\{flex:none;min-height:40px;border-radius:9px;font-size:14px\}/.test(css) && /\.adlg\.ap \.afoot \.apsum\{flex:1;min-width:0\}/.test(css), 'reason: s1c_foot_buttons');
+    ok(/\.adlg \.chin \.go\{background:var\(--mk-panel,var\(--panel2\)\);color:var\(--gold\);border:1px solid var\(--gold\)/.test(css) && /max-width:460px\)\{\.adlg \.chl\{grid-template-columns:64px/.test(css), 'reason: s1c_chat_style'); }
+  // S1c r2:完全權限才補「每位各要驗證一次」;底部鈕 48 高字 15、窄畫面摘要自己一行
+  { const css = read('apps/web/dist/ws.css');
+    ok(ws.includes("(A.mode === 'dgrs' ? '<div class=\"apn apwarn\">完全權限的搭檔每位各要驗證一次,不是按一次就全開</div>' : '')"), 'reason: s1c_dgrs_mates_note');
+    ok(/\.adlg\.ap \.afoot>\.k,\.adlg\.ap \.afoot>\.go\{min-height:48px;font-size:15px\}/.test(css) && /max-width:460px\)\{\.adlg\.ap \.afoot\{flex-wrap:wrap;row-gap:8px\}\.adlg\.ap \.afoot \.apsum\{flex:1 1 100%\}/.test(css), 'reason: s1c_foot_48'); }
+  // 5. 模式三顆都畫(預覽區那顆變灰寫原因);卡片直排(名稱 / 說明 / 危險程度);下面對照表,選中那欄整欄亮、表頭可點
+  ok(!ws.includes("${inPreview() ? '' : `<button type=\"button\" class=\"amd warn") && ws.includes("${canD && !inPreview() ? '' : 'off'}\" data-addm=\"dgrs\"") && ws.includes('預覽區不能開完全權限,到正式版才行'), 'reason: s1b_dgrs_hidden_in_preview');
+  const cx = vm.createContext({ esc: (x) => String(x), AP_HOST_NAME: '管理主機' }); vm.runInContext((ws.match(/  const AP_PERMS = [^\n]*\n  const AP_LEVEL = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_NOTE = [^\n]*\n/) || [''])[0] + fnSrc('apCmp') + '\nthis.apCmp = apCmp;', cx);
+  const cm = cx.apCmp({ mode: 'work' }, { work: true, dgrs: false, host: false }), nS = (cm.match(/class="[a-z]* ?s"/g) || []).length;
+  // 四欄(管理主機第三)、選中那欄整欄亮(表頭 + 11 列 + 開的時候 = 13)、開不了的表頭只是字;格子小註、上標與 ¹–⁶ 註腳照示意
+  ok(cm.includes('<button type="button" class="ch s" data-addm="work">沙盒開發</button>') && cm.includes('<b class="ch off">管理主機</b><b class="ch off">完全權限</b>') && !cm.includes('data-addm="dgrs"') && nS === 13 && cm.includes('<span>跑任何指令</span><i class="n">—</i><i class="n s">—</i><i class="n">—</i><i class="y">✓</i>'), 'reason: s1b_cmp_column ' + nS);
+  ok(cm.includes('<i class="y s">✓<small>自己那份</small></i>') && cm.includes('<i class="y">✓<small>任何地方</small></i>') && cm.includes('<span>連主機</span><i class="p">另開⁴</i><i class="p s">另開⁴</i><i class="y">✓<small>你選的那幾台</small></i>') && cm.includes('<i class="y s">✓<small>🚧³</small></i>') && cm.includes('提案²') && /¹ 帶倉時也免[\s\S]*² 提案[\s\S]*³ 🚧[\s\S]*⁴ 管理主機[\s\S]*⁵ 沒有指紋[\s\S]*⁶ 連外網/.test(cm), 'reason: s1b_cmp_notes');
+  ok(cx.apCmp({ mode: 'safe' }, { work: true, dgrs: true }).includes('data-addm="dgrs"'), 'reason: s1b_cmp_header_pick');
+  const NET_W_WORK = (c) => c.NET_WORDS.enforced;
+  { // 3e53b 05:5x:capabilities.net 每格 enforced / hint / off;頁面照欄位畫,沒給就照舊(🚧)
+    const nx = vm.createContext({ esc: (x) => String(x), AP_HOST_NAME: '管理主機', S: { version: { capabilities: { net: { claude: { safe: 'off', work: 'enforced', dgrs: 'hint' } } } } } });
+    vm.runInContext((ws.match(/  const AP_PERMS = [^\n]*\n  const AP_LEVEL = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_NOTE = [^\n]*\n/) || [''])[0] + (ws.match(/  const NET_WORDS = [^\n]*\n  const NET_CELL = [^\n]*\n/) || [''])[0] + fnSrc('apNet') + fnSrc('apNetWords') + fnSrc('apCmp') + '\nthis.apCmp = apCmp; this.apNet = apNet; this.apNetWords = apNetWords; this.NET_WORDS = NET_WORDS;', nx);
+    const pv = { id: 'claude', key: 'claude' }, c1 = nx.apCmp({ mode: 'dgrs' }, { work: true, dgrs: true, net: pv });
+    ok(c1.includes('<span>自己連外網⁶</span><i class="n" title="不能上網">—</i><i class="y" title="能上網;沙盒夥伴連不到這台電腦上的本機服務">✓<small>擋本機</small></i>') && c1.includes('<i class="w s" title="能上網;網路規則只是提示,擋不住;連得到這台電腦上的本機服務與內網">✓<small>⚠️只是提示</small></i>'), 'reason: s1g_net_cells_follow_aibd');
+    ok(nx.apNet(pv, 'host') === '' && nx.apNet({ id: 'grok', key: 'grok' }, 'safe') === '' && nx.apCmp({ mode: 'safe' }, { work: true }).includes('<i class="y s">✓<small>🚧⁷</small></i>'), 'reason: s1g_net_missing_keeps_wip');
+    ok(nx.apNetWords(pv, 'work') === NET_W_WORK(nx) && (nx.S.version.capabilities.mode_net = { safe: { code: 'none', words: '這一位沒有任何工具,不能上網' } }, nx.apNetWords(pv, 'safe') === '這一位沒有任何工具,不能上網') && nx.apNetWords(pv, 'work') === NET_W_WORK(nx), 'reason: s1g_mode_net_words_first');
+    ok(ws.includes("<i>不碰檔案、不跑指令${apNetWords(pv, 'safe') ? ';' + esc(apNetWords(pv, 'safe')) : ''}</i>") && ws.includes("'只動自己的資料夾,不推送' + (apNetWords(pv, 'work') ? ") && ws.includes("'跟你本人一樣,每次開都要驗證' + (apNetWords(pv, 'dgrs') ? "), 'reason: s1g_net_on_mode_cards');
+  }
+  // ebab8 03:39:連外網照定案四種都能(✓),討論研究 / 沙盒開發那片還沒上 ⇒ ✓ + 🚧⁷ 與註腳,不寫成 —
+  ok(cm.includes('<span>自己連外網⁶</span><i class="y">✓<small>🚧⁷</small></i><i class="y s">✓<small>🚧⁷</small></i><i class="y">✓</i><i class="y">✓</i>') && cm.includes('⁷ 🚧 這一版還沒有,沙盒連外網做好才有'), 'reason: s1b_cmp_net_wip');
+  ok(/<div class="amds">\$\{mode\}<\/div>(\$\{winHost [^\n]*?: ''\})?(\$\{ptBlock\(A\)\})?\$\{apCmp\(A, \{ work: canW, dgrs: canD && !inPreview\(\), host: (false|[^}]*) \}\)\}/.test(ws), 'reason: s1b_cmp_not_shown'); // S3 模板、S2 的 Windows 一句夾在模式卡與對照表之間
+  ok(/\.adlg \.amds\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(css) && /\.adlg \.amd \.amh\{[^}]*white-space:nowrap/.test(css) && /\.adlg \.amd\{font:inherit;display:flex;flex-direction:column;/.test(css) && /\.adlg \.apcmp \.ch\.s\{color:var\(--gold\)/.test(css), 'reason: s1b_mode_css');
+}
+
+// §36 「等你驗證」卡(fpbatch 頁面稿 r2 第 ①;verify-card 示意 Andy 02:0x 回 ok;2e2cd ORDER-s1 補段):卡元件 + fingerAct 接卡 + 取消不重送
+const fpcChecks = (async () => {
+  const blk = 'const FP_MODE' + (ws.split('  const FP_MODE')[1] || '').split('  const REPO_WHY = {')[0];
+  ok(blk.length > 3000, 'reason: fpc_block_missing');
+  const nodes = {};
+  const mk = () => ({ id: '', className: '', innerHTML: '', parentNode: null, dataset: {}, querySelector: () => null, remove() { delete nodes[this.id]; this.parentNode = null; }, addEventListener() {} });
+  const body = { appendChild(x) { x.parentNode = body; nodes[x.id] = x; } };
+  const doc = { body, getElementById: (id) => nodes[id] || null, querySelector: () => null, createElement: () => mk() };
+  const calls = [];
+  let state = 'pending';
+  const ctx = vm.createContext({
+    document: doc, Date, Math, Number, String, Array, JSON, Object, Error, Promise, crypto: globalThis.crypto, TextEncoder, Uint8Array,
+    setTimeout: (f, ms) => (ms >= 1000 && ms < 3000 ? Promise.resolve().then(f) : 0), clearTimeout: () => {},
+    esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
+    TH_EVID: '收據不算', S: {}, RG_CARD: [['duty', '職責'], ['redlines', '紅線'], ['knowledge', '知識域']], seatById: (id) => ({ seat_id: id }), seatShort: (x) => String(x.seat_id).replace(/^seat_/, ''), personas: () => [['p1', '頁面工程師']],
+    act: async (type, b) => { calls.push([type, b]); return b.ticket ? { ok: true } : { __status: 202, ticket: 'ot_1', expires_at: new Date(Date.now() + 120000).toISOString() }; },
+    get: async () => ({ state }), soft: (p) => p, REPO_WHY: {},
+    PT_ITEMS: [['chat', '對話'], ['push', '推送']], ptWords: (it) => Object.keys(it || {}).filter((k) => it[k]).join('、'), ptItems: (o) => o || {}, ptOf: () => ({ name: '模板甲', base: 'work', items: { chat: true } }),
+  });
+  vm.runInContext(blk + '\nthis.FPC = FPC; this.FP_WHAT = FP_WHAT; this.fpcOpen = fpcOpen; this.fpcDone = fpcDone; this.fpcHtml = fpcHtml; this.fingerAct = fingerAct; this.fpPairCode = fpPairCode;', ctx);
+  // 字:表裡每一種都有動作句;權杖不上卡;aibd 給了 words / shown 就照它
+  for (const [t, f] of Object.entries(ctx.FP_WHAT)) { const w = f({ name: 'n', path: '/p', mode: 'dgrs', seat_id: 'seat_a', repo: 'r', branch: 'web/x', title: 't', token: 'ghp_SECRET', provider: 'claude', old_code: 'abcde', why: 'y', every_min: 5, text: 'hi', persona_uid: 'p1' }, { plan: { head: '0123456789ab', branch: 'web/a' } }); ok(typeof w[0] === 'string' && w[0].length > 1 && Array.isArray(w[1]), 'reason: fpc_words ' + t); ok(!JSON.stringify(w).includes('ghp_SECRET'), 'reason: fpc_secret_on_card ' + t); }
+  ok(ctx.FP_WHAT.seat_open({ mode: 'dgrs', persona_uid: 'p1', repo: 'ez2-aib' })[1].some(([k, v, up]) => k === '權限' && up === true && /跟你本人一樣/.test(v)), 'reason: fpc_dgrs_not_marked_up');
+  { const r1 = ctx.FP_WHAT.seat_restart({ seat_id: 'seat_abcde' }), r2 = ctx.FP_WHAT.seat_model_set({ seat_id: 'seat_abcde', model: 'sonnet' }), r3 = ctx.FP_WHAT.seat_clear({ seat_id: 'seat_abcde', handoff_at: 'zz' }), r4 = ctx.FP_WHAT.seat_clear({ seat_id: 'seat_abcde' });
+    ok(/^重開 @/.test(r1[0]) && r1[1].some(([k, , up]) => k === '夥伴' && up) && / 換成 sonnet$/.test(r2[0]) && r2[1].some(([k, v, up]) => k === '模型' && v === 'sonnet' && up) && /^清空 @/.test(r3[0]) && r3[1].some(([k, v]) => k === '交接單' && v === 'zz') && r4[1].some(([k, v]) => k === '交接單' && v === '(沒帶)'), 'reason: a11_cards ' + JSON.stringify([r1, r2, r3])); }
+  // 08de5 A11:dgrs 席這四支都會 202 要指紋 ⇒ 頁面不准再用 act 直送
+  ok(!/\bact\(['"]seat_(open|restart|clear|model_set)['"]/.test(ws) && ['seat_restart', 'seat_clear', 'seat_model_set'].every((t) => ws.includes("fingerAct('" + t + "'") || ws.includes('fingerAct("' + t + '"')), 'reason: a11_all_via_finger');
+  ctx.fpcOpen('x', {}, { code: 'C0DE', words: 'aibd 的字', shown: [{ k: '倉', v: '/Users/a/<b>', up: true }] }, Date.now() + 60000);
+  let h = ctx.fpcHtml(ctx.FPC.cur);
+  ok(/等你驗證:aibd 的字/.test(h) && /\/Users\/a\/&lt;b&gt;/.test(h) && /class="up"/.test(h), 'reason: fpc_not_aibd_words_or_unescaped');
+  ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼\(Windows 用 Hello PIN\)/.test(h) && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
+  ok(!/late|urg/.test(h.split('"')[1]), 'reason: fpc_late_too_early');
+  { const w = ctx.FP_WHAT.managed_host_add({ from: 'trusted', name: 'lin-macmini' }); ok(w[0] === '把測試機「lin-macmini」交給夥伴管' && w[1].some(([k, v, up]) => k === '收據' && v === '收據不算' && up) && w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_test_host_card'); }
+  { const w = ctx.FP_WHAT.managed_host_add({ name: 'h1', addr: '192.0.2.1', port: 22, user: 'u', key_path: '~/.ssh/k' }); ok(w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_manual_host_fp_line'); }
+  { // f163c REVIEW-page2r8 L1:改人格卡看得到改誰、改了哪幾欄
+    ctx.S.rg = { uid: 'p1', orig: { name: '頁面工程師', duty: 'a', redlines: 'b', knowledge: 'c' } };
+    const w = ctx.FP_WHAT.persona_set({ persona_uid: 'p1', base_sha: 'x', duty: 'a2', knowledge: 'c2' });
+    ok(w[0] === '修改人格「頁面工程師」' && w[1].some(([k, v, up]) => k === '人格' && v === '頁面工程師(p1)' && up) && w[1].some(([k, v]) => k === '改了' && v === '職責(原 1 字 → 2 字)、知識域(原 1 字 → 2 字)') && !w[1].some(([k, v]) => k === '新名稱' && v), 'reason: fpc_persona_set_who_what ' + JSON.stringify(w));
+    ctx.S.rg = null; const w2 = ctx.FP_WHAT.persona_set({ uid: 'p1', name: 'n2', what: 'w' });
+    ok(w2[1].some(([k, v]) => k === '人格' && v === '頁面工程師(p1)') && !w2[1].some(([k, v]) => k === '改了' && v), 'reason: fpc_persona_set_old_body');
+  }
+  lateChecks.push((async () => { // 08de5 S6:接回自動帶最新交接單 / 記憶包,只收這一席的檔名、不收路徑
+    const fnSrc = (name) => { let a = ws.indexOf('  function ' + name + '('); if (a < 0) a = ws.indexOf('  async function ' + name + '('); const b = ws.indexOf('\n  }\n', a); return a >= 0 && b > a ? ws.slice(a, b + 4) : ''; };
+    let has = true, reply = null; const sent = [];
+    const hx = vm.createContext({ S: { add: null }, hasAct: (t) => (t === 'handoff_latest' ? has : false), act: async (t, b) => { sent.push([t, b]); if (reply instanceof Error) throw reply; return reply; }, render: () => {}, esc: (x) => String(x), tparts: () => ({ mo: '11', d: '23', h: '06', mi: '10' }) });
+    vm.runInContext((ws.match(/  const HL_FILE = [^\n]*\n/) || [''])[0] + fnSrc('hlPick') + fnSrc('hlLoad') + fnSrc('hlNote') + '\nthis.hlLoad = hlLoad; this.hlNote = hlNote;', hx);
+    const A = { from: 'a9136', ho: '~/.ez2-aib/pending/HANDOFF-a9136-', mp: '' }; hx.S.add = A;
+    reply = { code: 'a9136', handoff: { file: 'HANDOFF-a9136-1123-0510.md', mtime: 1795400000 }, mempack: { file: 'MEMPACK-a9136-1123.md', mtime: 1795400100 } };
+    await hx.hlLoad(A, 'a9136');
+    ok(sent.length === 1 && sent[0][0] === 'handoff_latest' && JSON.stringify(sent[0][1]) === '{"code":"a9136"}' && A.ho === '~/.ez2-aib/pending/HANDOFF-a9136-1123-0510.md' && A.mp === '~/.ez2-aib/pending/MEMPACK-a9136-1123.md' && /最新交接單 <b>HANDOFF-a9136-1123-0510.md<\/b>\(11\/23 06:10\)/.test(hx.hlNote(A)), 'reason: s6_latest_filled ' + hx.hlNote(A));
+    const B = { from: 'a9136', ho: '', mp: '' }; hx.S.add = B; reply = { handoff: { file: '../HANDOFF-a9136-x.md' }, mempack: { file: 'MEMPACK-b0000-1123.md' } };
+    await hx.hlLoad(B, 'a9136');
+    ok(B.ho === '' && B.mp === '' && /這一席沒有交接單/.test(hx.hlNote(B)), 'reason: s6_rejects_odd_names');
+    const C = { from: 'a9136', ho: '/my/own.md' }; hx.S.add = C; reply = { handoff: { file: 'HANDOFF-a9136-1123.md' } };
+    await hx.hlLoad(C, 'a9136'); ok(C.ho === '/my/own.md', 'reason: s6_keeps_typed_path');
+    const E = { from: 'a9136', ho: '' }; hx.S.add = E; reply = { handoff: { file: 'HANDOFF-a9136-1123.md' } }; const pe = hx.hlLoad(E, 'a9136'); E.from = 'b1234'; await pe;
+    ok(E.ho === '' && E.hl && E.hl.busy, 'reason: s6_late_reply_ignored');
+    has = false; const D = { from: 'a9136' }; hx.S.add = D; sent.length = 0; await hx.hlLoad(D, 'a9136');
+    ok(!sent.length && /這一版 AIB 還不能自動找最新那份/.test(hx.hlNote(D)), 'reason: s6_no_act_no_call');
+    ok(ws.includes("render(); hlLoad(A, code); const i = document.querySelector('[data-addho]');") && ws.includes('${A.from ? hlNote(A) : \'\'}'), 'reason: s6_wired');
+  })());
+  ok(ctx.FP_WHAT.seat_tick_set({ seat_id: 'seat_a', every_min: 5, text: 'x'.repeat(81) })[1].some(([k, v]) => k === '送' && v === 'x'.repeat(80) + '…(共 81 字)') && ctx.FP_WHAT.seat_tick_set({ seat_id: 'seat_a', every_min: 5, text: 'x'.repeat(80) })[1].some(([k, v]) => k === '送' && v === 'x'.repeat(80)), 'reason: fpc_tick_text_clip_says_total');
+  lateChecks.push((async () => {
+    // 8b09a REVIEW-fpcard M1:對照碼跟 aibd owner_ok::pair_code 同一組向量(票 ot_1;4554 = sha256("ot_1") 前 4 碼,node crypto 另算核過)
+    ok(require('crypto').createHash('sha256').update('ot_1').digest('hex').slice(0, 4).toUpperCase() === '4554' && await ctx.fpPairCode('ot_1') === '4554' && await ctx.fpPairCode('ot_2') === '5C9B', 'reason: fpc_pair_code_vector');
+    const oc = ctx.fpcOpen('x', {}, { ticket: 'ot_1' }, Date.now() + 60000); await oc.codeDone;
+    ok(/對照碼 <b data-fpcode>4554<\/b>/.test(ctx.fpcHtml(oc)), 'reason: fpc_card_shows_pair_code');
+    const og = ctx.fpcOpen('x', {}, { ticket: 'ot_1', code: 'abcd' }, Date.now() + 60000);
+    ok(og.code === 'ABCD' && !og.codeDone && /data-fpcode>ABCD</.test(ctx.fpcHtml(og)), 'reason: fpc_uses_aibd_code');
+    const on = ctx.fpcOpen('x', {}, { words: 'w' }, Date.now() + 60000);
+    ok(/data-fpcode>算不出來</.test(ctx.fpcHtml(on)) && !/對照碼<\/b>跟這張卡一樣才按/.test(ctx.fpcHtml(on)), 'reason: fpc_no_code_no_claim');
+  })());
+  ctx.FPC.cur.until = Date.now() + 25000; ok(/fpc  late /.test(ctx.fpcHtml(ctx.FPC.cur)), 'reason: fpc_no_late_at_30');
+  ctx.FPC.cur.until = Date.now() + 8000; ok(/ late urg/.test(ctx.fpcHtml(ctx.FPC.cur)), 'reason: fpc_no_urg_at_10');
+  const o = ctx.FPC.cur; ctx.fpcDone(o, true); h = ctx.fpcHtml(o); ok(/✓ 已驗證:/.test(h) && /fpc ok/.test(h) && !/取消這次/.test(h), 'reason: fpc_ok_state');
+  o.st = ''; ctx.fpcDone(o, false, '時間到了'); h = ctx.fpcHtml(o); ok(/沒有執行:/.test(h) && /時間到了 = 不執行,什麼都沒改/.test(h) && /fpc no/.test(h), 'reason: fpc_no_state');
+  // fingerAct:開卡、取消後不帶票重送、丟 finger_cancel、卡變紅
+  calls.length = 0; state = 'pending';
+  const p1 = ctx.fingerAct('seat_trust', { seat_id: 'seat_a' });
+  for (let i = 0; i < 200 && !(ctx.FPC.cur && ctx.FPC.cur.what === '@a 設為受信任'); i++) await Promise.resolve();
+  ok(ctx.FPC.cur && ctx.FPC.cur.what === '@a 設為受信任', 'reason: fpc_not_opened_by_fingerAct');
+  ctx.FPC.cur.abort = true; state = 'denied'; // 沒有取消檢查的話會走到 denied,丟的就不是 finger_cancel
+  let err = null; try { await p1; } catch (e) { err = e; }
+  ok(err && err.code === 'finger_cancel' && calls.length === 1 && !calls.some(([, b]) => b.ticket), 'reason: fpc_cancel_still_resends ' + JSON.stringify(calls));
+  ok(ctx.FPC.cur && ctx.FPC.cur.st === 'no' && ctx.FPC.cur.why === '你按了取消這次', 'reason: fpc_cancel_not_shown');
+  // 核准:帶票重送一次、卡變綠
+  calls.length = 0; state = 'approved';
+  const r2 = await ctx.fingerAct('repo_push', { repo: 'r', branch: 'web/x' });
+  ok(r2 && r2.ok && calls.length === 2 && calls[1][1].ticket === 'ot_1' && ctx.FPC.cur.st === 'ok', 'reason: fpc_approved_path');
+  // 舊的單行倒數全換成「看那張卡」
+  ok(!/還有 ' \+ sec|還有 \$\{[\w.]+\.left \| 0\} 秒/.test(ws) && (ws.match(/FP_SEE/g) || []).length >= 14, 'reason: fpc_old_countdown_left');
+  ok(/\.fpcbox\{position:fixed/.test(read('apps/web/dist/ws.css')) && /prefers-reduced-motion:reduce\)\{\.fpc,\.fpc \.fpi\{animation:none\}/.test(read('apps/web/dist/ws.css')), 'reason: fpc_css');
+})();
+
+// §37 S3 權限模板(fc7f9 11-23,ebab8 ORDER-page2;SPEC §4 + DECISION §一-5;act 對 08de5 7a perm_template_list / _add / _set / _remove,7b perm_template_apply)
+const ptChecks = (async () => {
+  const blk = (ws.split('  // ---------- S3 權限模板')[1] || '').split('  function ptFocus()')[0];
+  ok(blk.length > 6000, 'reason: pt_block_missing');
+  const store = { acts: [], has: {}, reply: {}, renders: 0 };
+  const S = { pt: { list: null, off: '', busy: false, msg: null, f: null, del: '', seat: '', seatMsg: null }, add: null };
+  const ctx = vm.createContext({
+    S, Array, Object, String, Number, JSON, Error, Promise, Math,
+    esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
+    hasAct: (t) => (t in store.has ? store.has[t] : null), render: () => { store.renders++; }, isArch: () => false, idem: () => 'k2', errText: (e) => 'ERR:' + (e && e.message),
+    FP_MODE: { safe: '討論研究', work: '沙盒開發', dgrs: '完全權限' }, FP_SEE: '等你驗證 · 看畫面上那張卡', REPO_WHY: { owner_check_not_approved: '指紋沒過' }, document: { querySelector: () => null }, ptFocus: () => {},
+    act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return typeof r === 'function' ? r(b) : r || {}; },
+  });
+  ctx.fingerAct = ctx.act;
+  vm.runInContext('// x' + blk + '\nthis.F = { ptItems, ptWords, ptNeedFp, ptRaised, ptCheck, ptLoad, ptBlock, ptForm, ptSave, ptRemove, ptSeatBtn, ptSeatBox, ptApply, ptClick, ptNeWords, ptBlank, ptFine, PT_GIVES, PT_OFF, PT_NO_APPLY, PT_NO_OPEN, ptWhy, ptRes, ptLogLoad, ptLogHtml, ptRevoke };', ctx);
+  const F = ctx.F;
+  const aerr = (code, status) => Object.assign(new Error(code), { status: status || 400, code: '', body: { error: { code } } });
+  // 11 項、鍵照 08de5 perm_tpl::ITEMS(順序也一樣)
+  const rsItems = ['chat', 'code', 'own', 'cmd', 'persona', 'brain', 'any', 'anycmd', 'net', 'push', 'host'];
+  ok(JSON.stringify(Object.keys(F.ptItems({}))) === JSON.stringify(rsItems), 'reason: pt_item_keys');
+  ok(Object.values(F.ptItems({ chat: 1, code: true, own: 'yes' })).filter(Boolean).length === 1, 'reason: pt_items_only_true_counts');
+  // 要驗證:完全權限、或資料夾外 / 任何指令 / 推送 / 連主機(SPEC §4)
+  for (const k of ['any', 'anycmd', 'push', 'host']) ok(F.ptNeedFp('safe', { [k]: true }), 'reason: pt_fp_missing ' + k);
+  ok(F.ptNeedFp('dgrs', {}) && !F.ptNeedFp('work', { chat: true, code: true, own: true, cmd: true, brain: true, net: true }), 'reason: pt_fp_base');
+  // 改模板:每一項單獨從關變開都算調高;底往上、跨 host 軸也算;調低 / 改名不算
+  const w0 = { base: 'work', items: F.ptItems({ chat: true }) };
+  for (const k of rsItems.filter((k) => k !== 'chat')) ok(F.ptRaised(w0, { base: 'work', items: F.ptItems({ chat: true, [k]: true }) }), 'reason: pt_raise_missed ' + k);
+  ok(F.ptRaised(w0, { base: 'dgrs', items: w0.items }) && F.ptRaised(w0, { base: 'host', items: w0.items }) && F.ptRaised({ base: 'host', items: w0.items }, { base: 'safe', items: w0.items }), 'reason: pt_raise_base');
+  ok(!F.ptRaised(w0, { base: 'safe', items: F.ptItems({}) }) && !F.ptRaised(w0, { base: 'work', items: w0.items }), 'reason: pt_lower_counted_as_raise');
+  // 名稱:空白、超過 20 字、四種模式(中英、大小寫)、重名都擋;改自己同名不擋
+  const L = [{ tpl_uid: 'tpl_a', name: 'SEO 寫手', base: 'safe', rev: 1, items: { chat: true } }];
+  ok(F.ptCheck({ name: '  ', base: 'safe' }, L) === '模板要有名稱', 'reason: pt_blank_name');
+  ok(/最多 20/.test(F.ptCheck({ name: '一二三四五六七八九十一二三四五六七八九十一', base: 'safe' }, L)) && !F.ptCheck({ name: '一二三四五六七八九十一二三四五六七八九十', base: 'safe' }, L), 'reason: pt_name_length');
+  for (const n of ['討論研究', '管理主機', 'DGRS', 'Work']) ok(/四種模式/.test(F.ptCheck({ name: n, base: 'safe' }, L)), 'reason: pt_reserved_name ' + n);
+  ok(/重複/.test(F.ptCheck({ name: 'SEO 寫手', base: 'safe' }, L)) && !F.ptCheck({ uid: 'tpl_a', name: 'SEO 寫手', base: 'safe' }, L), 'reason: pt_dup_name');
+  // 「把這組存成模板」照 aibd 今天給的帶(08de5 gives_now),不帶它做不到的
+  ok(JSON.stringify(F.PT_GIVES) === JSON.stringify({ safe: ['chat'], work: ['chat', 'code', 'own', 'cmd', 'brain'], dgrs: ['chat', 'code', 'own', 'cmd', 'brain', 'any', 'anycmd', 'net', 'push'] }), 'reason: pt_gives_not_aibd');
+  const bw = F.ptBlank('work', true); ok(bw.base === 'work' && F.ptWords(bw.items) === '對話、叫別席、寫程式、讀寫自己資料夾的檔、跑名單內的指令、更新第二大腦', 'reason: pt_save_this_set ' + F.ptWords(bw.items));
+  ok(F.ptWords(F.ptBlank('dgrs', false).items) === '對話、叫別席', 'reason: pt_new_starts_small');
+  // aibd 沒有(unknown_act_type)⇒ 寫「這一版還沒有」,不假裝
+  store.reply.perm_template_list = aerr('unknown_act_type');
+  await F.ptLoad();
+  ok(S.pt.off === F.PT_OFF && /這一版 AIB 還沒有/.test(F.ptBlock({})) && !/data-ptnew/.test(F.ptBlock({})), 'reason: pt_off_not_said');
+  store.has.perm_template_list = false; S.pt.off = ''; store.acts.length = 0;
+  await F.ptLoad(); ok(S.pt.off === F.PT_OFF && store.acts.length === 0, 'reason: pt_off_by_version_acts');
+  // 有 7a、沒有 7b:列得出、能增改刪;模板按鈕灰、寫「用模板開夥伴:這一版還沒有」
+  delete store.has.perm_template_list; S.pt.off = '';
+  store.reply.perm_template_list = { templates: [{ tpl_uid: 'tpl_a', name: 'SEO <寫手>', base: 'work', rev: 3, items: F.ptItems({ chat: true, own: true, net: true }), not_enforceable: ['net'] }, { bad: 1 }] };
+  await F.ptLoad();
+  ok(S.pt.list.length === 1 && !S.pt.off, 'reason: pt_list_read');
+  let h = F.ptBlock({ tpl: '' });
+  ok(/SEO &lt;寫手&gt;/.test(h) && !/SEO <寫手>/.test(h), 'reason: pt_name_unescaped');
+  ok(/data-ptpick="tpl_a" disabled/.test(h) && h.includes(F.PT_NO_OPEN), 'reason: pt_pick_without_7b');
+  ok(/這幾項這一版還沒有,用它開的夥伴實際拿不到:自己連外網/.test(h), 'reason: pt_not_enforceable_not_shown');
+  ok(/data-ptnew="1">\+ 新增權限模板/.test(h) && !/data-ptsave/.test(ws) && /data-ptedit="tpl_a"/.test(h) && /data-ptdel="tpl_a"/.test(h), 'reason: pt_buttons');
+  // 新增:送 name / base / 11 項;要驗證的走 fingerAct(同一條),成功重讀
+  const mk = (sel) => ({ closest: (q) => (q === sel ? { dataset: { ptnew: '1', ptfine: '1', ptedit: 'tpl_a', ptdel: 'tpl_a', ptdelok: 'tpl_a', ptit: 'push', ptbase: 'dgrs', ptpick: 'tpl_a', ptsa: 'seat_x', ptap: 'tpl_a' } } : null) });
+  // ebab8 03:20 第 4 條:逐項調整 = 對照表下面一條;打開照現在的模式帶出逐項(S3 表單),再按一次收起;表單只畫在那裡,不重複出現在模板區
+  S.add = { mode: 'work', tpl: '' }; S.pt.f = null;
+  ok(await F.ptClick(mk('[data-ptfine]')) && S.pt.f && S.pt.f.fine && S.pt.f.base === 'work' && S.pt.f.items.code === true, 'reason: pt_fine_open');
+  { const fh = F.ptFine(S.add), bh = F.ptBlock(S.add); ok(/class="apfine open"/.test(fh) && /aria-expanded="true"/.test(fh) && fh.includes(F.ptForm()) && !bh.includes(F.ptForm()), 'reason: pt_fine_form_place'); }
+  await F.ptClick(mk('[data-ptfine]')); ok(S.pt.f === null && !/class="apfine open"/.test(F.ptFine(S.add)), 'reason: pt_fine_close');
+  ok(ws.includes('host: hsCan(pv) && !hsWinWait(), net: pv })}${ptFine(A)}'), 'reason: pt_fine_not_in_mode_row');
+  S.add = { mode: 'safe', tpl: '' };
+  ok(await F.ptClick(mk('[data-ptnew]')) && S.pt.f && S.pt.f.base === 'safe' && !S.pt.f.uid, 'reason: pt_new_form');
+  S.pt.f.name = '討論研究'; store.acts.length = 0;
+  await F.ptClick(mk('[data-ptok]')); ok(store.acts.length === 0 && S.pt.msg && S.pt.msg.bad, 'reason: pt_reserved_sent');
+  S.pt.f.name = ' 推送手 '; await F.ptClick(mk('[data-ptit]'));
+  ok(S.pt.f.items.push === true && /新增時要驗證/.test(F.ptForm()), 'reason: pt_toggle_or_fp_hint');
+  store.reply.perm_template_add = { done: true, tpl_uid: 'tpl_b', rev: 1 }; store.acts.length = 0;
+  await F.ptClick(mk('[data-ptok]'));
+  const sent = store.acts.find(([t]) => t === 'perm_template_add');
+  ok(sent && sent[1].name === '推送手' && sent[1].base === 'safe' && Object.keys(sent[1].items).length === 11 && sent[1].items.push === true && sent[1].items.chat === true && !('tpl_uid' in sent[1]), 'reason: pt_add_body ' + JSON.stringify(sent));
+  ok(store.acts.some(([t]) => t === 'perm_template_list') && S.pt.f === null && /已新增模板「推送手」/.test(S.pt.msg.text), 'reason: pt_add_reload');
+  // 沒存成(aibd 沒回 done)不說已存
+  store.reply.perm_template_add = { __status: 200 }; await F.ptClick(mk('[data-ptnew]')); S.pt.f.name = '乙'; await F.ptClick(mk('[data-ptok]'));
+  ok(S.pt.msg.bad && /沒有新增/.test(S.pt.msg.text) && S.pt.f, 'reason: pt_add_claims_without_done');
+  // 改:帶 tpl_uid + rev;rev 對不上 ⇒ 重讀、寫白話
+  await F.ptClick(mk('[data-ptedit]'));
+  ok(S.pt.f.uid === 'tpl_a' && S.pt.f.rev === 3 && S.pt.f.was && /只有調低或改名/.test(F.ptForm()), 'reason: pt_edit_form');
+  await F.ptClick(mk('[data-ptit]')); ok(/這次有調高/.test(F.ptForm()) && /已經用它開好的夥伴不會跟著變/.test(F.ptForm()), 'reason: pt_edit_raise_hint');
+  store.reply.perm_template_set = aerr('template_changed', 409); store.acts.length = 0;
+  await F.ptClick(mk('[data-ptok]'));
+  const st = store.acts.find(([t]) => t === 'perm_template_set');
+  ok(st && st[1].tpl_uid === 'tpl_a' && st[1].rev === 3 && st[1].items.push === true, 'reason: pt_set_body');
+  ok(store.acts.some(([t]) => t === 'perm_template_list') && /剛被改過/.test(S.pt.msg.text) && S.pt.f === null, 'reason: pt_changed_reload');
+  // 刪:先問、帶 rev;選著的模板一起清掉
+  S.add.tpl = 'tpl_a'; await F.ptClick(mk('[data-ptdel]')); ok(/刪掉模板「SEO &lt;寫手&gt;」\?用它開好的夥伴權限不變/.test(F.ptBlock(S.add)), 'reason: pt_delete_confirm');
+  store.reply.perm_template_remove = { done: true }; store.acts.length = 0;
+  await F.ptClick(mk('[data-ptdelok]'));
+  ok(store.acts[0][0] === 'perm_template_remove' && store.acts[0][1].tpl_uid === 'tpl_a' && store.acts[0][1].rev === 3 && S.add.tpl === '' && /已刪模板/.test(S.pt.msg.text), 'reason: pt_remove');
+  // 有 7b:模板能選、選了底跟著換;夥伴列能套,結果只說「重開之後才生效」
+  store.has.perm_template_apply = true;
+  ok(!/data-ptpick="tpl_a" disabled/.test(F.ptBlock(S.add)), 'reason: pt_pick_with_7b');
+  await F.ptClick(mk('[data-ptpick]')); ok(S.add.tpl === 'tpl_a' && S.add.mode === 'work', 'reason: pt_pick_sets_base');
+  ok(/data-ptsa="seat_x"/.test(F.ptSeatBtn({ seat_id: 'seat_x' })), 'reason: pt_seat_btn');
+  await F.ptClick(mk('[data-ptsa]')); ok(S.pt.seat === 'seat_x' && /data-ptap="tpl_a"/.test(F.ptSeatBox({ seat_id: 'seat_x' })) && /重開這一位之後才生效/.test(F.ptSeatBox({ seat_id: 'seat_x' })), 'reason: pt_seat_box');
+  store.reply.perm_template_apply = { done: true, not_enforceable: ['net'] }; store.acts.length = 0;
+  await F.ptClick(mk('[data-ptap]'));
+  const ap = store.acts.find(([t]) => t === 'perm_template_apply');
+  ok(ap && ap[1].seat_id === 'seat_x' && ap[1].tpl_uid === 'tpl_a' && ap[1].rev === 3 && Object.keys(ap[1]).length === 3, 'reason: pt_apply_body');
+  ok(/已套用「SEO <寫手>」:重開這一位之後才生效;這幾項這一版還沒有/.test(S.pt.seatMsg.text) && !/已調低|立刻生效/.test(blk), 'reason: pt_apply_says_now');
+  // 08de5 11-23 02:56:not_enforceable 是 [{item, platform, words}];調高驗證後回 pending_restart
+  ok(F.ptNeWords([{ item: 'net', platform: 'windows', words: 'x' }, { item: 'base:host' }]) === '這幾項這一版還沒有,用它開的夥伴實際拿不到:自己連外網(windows)、連主機的模式' && F.ptNeWords(['push']) === '這幾項這一版還沒有,用它開的夥伴實際拿不到:推送 / 開 PR', 'reason: pt_ne_object_shape');
+  store.reply.perm_template_apply = { pending_restart: true }; await F.ptApply('seat_x', 'tpl_a');
+  ok(/已套用「SEO <寫手>」:驗證過了;重開這一位之後才生效/.test(S.pt.seatMsg.text), 'reason: pt_pending_restart_words');
+  store.reply.perm_template_apply = { restarting: true }; await F.ptApply('seat_x', 'tpl_a');
+  ok(/AIB 正在重開這一位,重開完才生效/.test(S.pt.seatMsg.text), 'reason: pt_restarting_words');
+  // 沒有 7b ⇒ 夥伴列只寫「這一版還沒有」、不送
+  store.has.perm_template_apply = false; store.acts.length = 0;
+  ok(F.ptSeatBox({ seat_id: 'seat_x' }).includes(F.PT_NO_APPLY) && !/data-ptap/.test(F.ptSeatBox({ seat_id: 'seat_x' })), 'reason: pt_apply_without_7b');
+  await F.ptApply('seat_x', 'tpl_a'); ok(store.acts.length === 0 && S.pt.seatMsg.bad, 'reason: pt_apply_sent_without_7b');
+  // 接線:模式列放模板塊、選模式清模板、開對話框讀模板、開夥伴帶 tpl_uid + rev、夥伴列兩個掛點、驗證卡字
+  ok(/<div class="amds">\$\{mode\}<\/div>(?:\$\{winHost [^\n]*?: ''\})?\$\{ptBlock\(A\)\}\$\{apCmp\(A, /.test(ws), 'reason: pt_not_in_mode_row');
+  ok(/S\.add\.mode = am\.dataset\.addm; S\.add\.tpl = '';/.test(ws), 'reason: pt_mode_keeps_tpl');
+  ok(/loadRegistry\(\);\n      if \(!S\.pt\.off\) ptLoad\(\);/.test(ws), 'reason: pt_not_loaded_on_open');
+  ok(/if \(T\) \{ body\.tpl_uid = T\.tpl_uid; body\.rev = T\.rev; body\.mode = T\.base; \}/.test(ws) && ws.includes("const r = await fingerAct('seat_open', body, (t, sec) => {"), 'reason: pt_open_body');
+  ok(/\$\{trustHtml\(s\)\}\$\{ptSeatBtn\(s\)\}/.test(ws) && /\$\{hoBox\(s\)\}\$\{ptSeatBox\(s\)\}/.test(ws), 'reason: pt_seat_hooks');
+  ok(/perm_template_add: \(b\) => \['新增權限模板「'/.test(ws) && /perm_template_apply: \(b\) =>/.test(ws) && /\['生效', '重開這一位之後'\]/.test(ws), 'reason: pt_card_words');
+  // IFACE-page2 r2 A(08de5 04:09):錯碼的字、套用回應三種 + 重開不成的原因、權限紀錄與收回(只在 version.acts 有才讀 / 才放收回鈕)
+  { const ae = (code, extra) => Object.assign(new Error(code), { status: 409, code: '', body: { error: Object.assign({ code }, extra || {}) } });
+    ok(F.ptWhy(ae('template_more_than_given', { message: '這一版關不掉:推送 / 開 PR' })) === '這一版關不掉:推送 / 開 PR' && F.ptWhy(ae('template_more_than_given')) === '模板關了這一版還關不掉的項目' && /換底模式請開一位新的/.test(F.ptWhy(ae('template_base_differs'))) && F.ptWhy(ae('revoked_already')) === '這一筆已經收回了' && /開席那一筆不能收回/.test(F.ptWhy(ae('nothing_to_revoke'))), 'reason: pt_r2_errors');
+    ok(F.ptRes({ seat_id: 's', unchanged: true }) === '沒有變(權限跟現在一樣)' && F.ptRes({ restarting: true, session_id: 'x' }) === 'AIB 正在重開這一位,重開完才生效' && F.ptRes({ pending_restart: true, restart_failed: true }) === '驗證過了;重開這一位之後才生效(重開沒成功,請手動重開這一位)' && F.ptRes({ done: true }) === '', 'reason: pt_r2_result_words');
+    S.pt.seat = 'seat_a'; S.pt.log = {}; delete store.has.seat_perm_log;
+    ok(/權限紀錄與收回:這一版 AIB 還沒有/.test(F.ptLogHtml('seat_a')), 'reason: pt_log_not_gated');
+    store.has.seat_perm_log = true; store.has.seat_perm_revoke = true; store.acts.length = 0;
+    store.reply.seat_perm_log = { now: { tpl_uid: null, base: 'work' }, pending: null, log: [{ log_id: 7, action: 'lower', at: '2026-11-23T04:10:00Z', by: 'page', from: { base: 'dgrs' }, to: { base: 'work' }, revoked_at: null }, { log_id: 6, action: 'open', at: '2026-11-23T03:00:00Z', from: null, to: { base: 'dgrs' } }, { log_id: 5, action: 'raise_pending', at: 'x', from: { base: 'safe' }, to: { base: 'dgrs' }, revoked_at: '2026' }] };
+    await F.ptLogLoad('seat_a'); const lh = F.ptLogHtml('seat_a');
+    ok(store.acts[0][0] === 'seat_perm_log' && store.acts[0][1].seat_id === 'seat_a' && lh.includes('現在:沙盒開發') && lh.includes('data-ptrv="7"') && !lh.includes('data-ptrv="6"') && !lh.includes('data-ptrv="5"') && lh.includes('已收回') && lh.includes('完全權限 → 沙盒開發'), 'reason: pt_log_rows');
+    store.acts.length = 0; store.reply.seat_perm_revoke = { seat_id: 'seat_a', restarting: true, session_id: 'z', not_enforceable: [] };
+    await F.ptRevoke('seat_a', '7');
+    ok(store.acts[0][0] === 'seat_perm_revoke' && JSON.stringify(store.acts[0][1]) === '{"seat_id":"seat_a","log_id":7}' && S.pt.seatMsg.text === '已收回:AIB 正在重開這一位,重開完才生效' && store.acts[1][0] === 'seat_perm_log', 'reason: pt_revoke_sent');
+    store.reply.seat_perm_revoke = {}; await F.ptRevoke('seat_a', '7'); ok(S.pt.seatMsg.bad && /沒有收回:AIB 沒有回結果/.test(S.pt.seatMsg.text), 'reason: pt_revoke_claims_without_result');
+    store.reply.seat_perm_revoke = ae('revoked_already'); await F.ptRevoke('seat_a', '7'); ok(S.pt.seatMsg.bad && S.pt.seatMsg.text === '沒有收回:這一筆已經收回了', 'reason: pt_revoke_error');
+    S.pt.seat = ''; }
+  ok(ws.includes("if (T && body.repo) { A.busy = false; A.msg = PT_WHY.template; A.err = true; return render(); }") && ws.includes("if (hasAct('seat_perm_log') === true) await ptLogLoad(seatId);"), 'reason: pt_tpl_with_repo_sent');
+  ok(/\.adlg \.ptsw\[aria-checked="true"\]/.test(read('apps/web/dist/ws.css')) && /\.ptseat\{/.test(read('apps/web/dist/ws.css')), 'reason: pt_css');
+})();
+
+// §38 S4 人格 / 第二大腦 / 角色 改、封存、還原(fc7f9 11-23,ebab8 ORDER-page2 第 2 項;SPEC §5;act 等 08de5 §1,名字只在 RG_ACTS)
+const rgChecks = (async () => {
+  const blk = (ws.split('  // ---------- S4 人格 / 第二大腦 / 角色')[1] || '').split("  const ICO_SAFE = '<svg")[0];
+  ok(blk.length > 5000, 'reason: rg_block_missing');
+  // act 名只從 RG_ACTS 出來;aibd 還沒有的一律要經 rgHas 才送(第 3 段抓不到變數名,這裡補)
+  const names = [...(blk.split('const RG_ACTS = {')[1] || '').split('\n  };')[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  ok(names.length === 9, 'reason: rg_acts_table ' + names.length);
+  for (const t of names) if (!rust.includes('"' + t + '"')) ok(/if \(!rgHas\(R\.kind, 'set'\)\)/.test(blk) && /if \(!rgHas\(R\.kind, 'archive'\)\)/.test(blk) && /undo: rgHas\(R\.kind, 'restore'\)/.test(blk), 'reason: rg_act_sent_ungated ' + t);
+  ok(!/(?:act|fingerAct)\('(persona|brain|role)_(set|archive|restore)'/.test(ws), 'reason: rg_act_name_outside_table');
+  const store = { acts: [], has: {}, reply: {} };
+  const S = { rg: null, rgMsg: null, rgMsgKind: '', add: { persona: 'p1', brain: 'b1', role: 'rol_x' }, seats: [{ seat_id: 'seat_aaaaa', persona_uid: 'p2' }], sessions: [{ seat_id: 'seat_aaaaa', state: 'running' }], personaList: [['p1', '寫手<甲>'], ['p2', '審查乙']], reg: { brains: [{ uid: 'b1', name: '大腦一', sug: ['p1', 'p3'] }], roles: [{ uid: 'author', name: '作者', builtin: true }, { uid: 'rol_x', name: '排版', what: '排', builtin: false }] } };
+  const ctx = vm.createContext({
+    S, Array, Object, String, Number, JSON, Error, Promise,
+    esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
+    hasAct: (t) => (t in store.has ? store.has[t] : null), render: () => {}, isArch: () => false, seatShort: (x) => x.seat_id.replace(/^seat_/, ''), errText: (e) => 'ERR', REPO_WHY: {},
+    personas: () => S.personaList, roleList: () => S.reg.roles, REG_KIND: { role: ['角色', 'role_add', 20, 80], persona: ['人格', 'persona_add', 40, 500], brain: ['第二大腦', 'brain_add', 40, 500] }, document: { querySelector: () => null },
+    act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
+  });
+  ctx.fingerAct = ctx.act;
+  vm.runInContext('// x' + blk + '\nthis.F = { rgWrap, rgBox, rgClick, rgNote, rgHas, RG_ACTS };', ctx);
+  const F = ctx.F;
+  const mk = (sel, ds) => ({ closest: (q) => (q === sel ? { dataset: ds || {} } : null) });
+  // 旁邊 ✎ / 🗑;內建角色 🔒、點不開
+  let h = F.rgWrap('persona', 'p1', '<button class="apr">x</button>');
+  ok(/data-rgedit="persona:p1"/.test(h) && /data-rgdel="persona:p1"/.test(h), 'reason: rg_buttons');
+  h = F.rgWrap('role', 'author', '<b>作者</b>', true); ok(/🔒/.test(h) && !/data-rgedit/.test(h), 'reason: rg_builtin_not_locked');
+  await F.rgClick(mk('[data-rgedit]', { rgedit: 'role:author' })); ok(S.rg === null, 'reason: rg_builtin_opens');
+  // 沒有 §1 ⇒ 表單看得到,存的時候寫「這一版還沒有」、不送
+  await F.rgClick(mk('[data-rgedit]', { rgedit: 'persona:p1' }));
+  ok(S.rg && S.rg.op === 'edit' && S.rg.name === '寫手<甲>', 'reason: rg_edit_opens');
+  h = F.rgBox('persona', 'p1'); ok(/改人格/.test(h) && /value="寫手&lt;甲&gt;"/.test(h) && /這一版 AIB 還沒有/.test(h) && h.includes('data-rgf="duty"') && h.includes('data-rgf="knowledge"') && /職責 \/ 紅線 \/ 知識域:這一版 AIB 還沒有/.test(h), 'reason: rg_edit_form');
+  S.rg.name = '寫手丙'; await F.rgClick(mk('[data-rgok]'));
+  ok(store.acts.length === 0 && S.rg.msg && S.rg.msg.bad && /改人格:這一版 AIB 還沒有/.test(S.rg.msg.text), 'reason: rg_sent_without_act');
+  // 有 §1:送 uid / name / what;aibd 回 done 才改清單
+  store.has.persona_set = true; store.reply.persona_set = {};
+  await F.rgClick(mk('[data-rgok]')); ok(S.rg && S.rg.msg.bad && S.personaList[0][1] === '寫手<甲>', 'reason: rg_claims_without_done');
+  store.reply.persona_set = { done: true }; store.acts.length = 0;
+  await F.rgClick(mk('[data-rgok]'));
+  ok(store.acts[0][0] === 'persona_set' && store.acts[0][1].uid === 'p1' && store.acts[0][1].name === '寫手丙' && 'what' in store.acts[0][1], 'reason: rg_set_body');
+  ok(S.rg === null && S.personaList[0][1] === '寫手丙' && /已改人格「寫手丙」/.test(F.rgNote('persona')) && F.rgNote('brain') === '', 'reason: rg_set_after');
+  // S1d(08de5 04:49):有 persona_read ⇒ 開表單先讀卡預填三欄 + base_sha;存送 {persona_uid, base_sha, name, duty, redlines, knowledge};# / --- 開頭的行不送;persona_changed 重讀
+  { store.has.persona_read = true; store.has.persona_set = true; store.acts.length = 0; S.rg = null;
+    store.reply.persona_read = { name: '寫手丙', duty: '寫稿', redlines: '- 不推送', knowledge: 'SEO', base_sha: 'sha1' };
+    await F.rgClick(mk('[data-rgedit]', { rgedit: 'persona:p1' }));
+    ok(store.acts.length > 0 && store.acts[0][0] === 'persona_read' && store.acts[0][1].persona_uid === 'p1' && S.rg.sha === 'sha1' && S.rg.duty === '寫稿' && S.rg.redlines === '- 不推送' && S.rg.orig && S.rg.orig.duty === '寫稿' && S.rg.orig.redlines === '- 不推送', 'reason: rg_card_prefill');
+    h = F.rgBox('persona', 'p1'); ok(/>寫稿<\/textarea>/.test(h) && !/rgta"[^>]*disabled/.test(h) && !/這一版 AIB 還沒有,先只改名稱/.test(h) && !h.includes('data-rgf="what"'), 'reason: rg_card_form_on');
+    ok(/\.adlg \.apl:has\(\.rgw\.open\)\{max-height:none\}/.test(read('apps/web/dist/ws.css')), 'reason: s1e_form_clipped');
+    store.acts.length = 0; S.rg.knowledge = '# 標題'; await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts.length === 0 && !!S.rg.msg && /知識域:不能有 # 或 --- 開頭的行/.test(S.rg.msg.text), 'reason: rg_card_hash_line_sent');
+    // 08de5 A1:人格名稱藏起來、沒改不送;f163c REVIEW-a1 L2:要指紋之前先看差異
+    S.rg.knowledge = 'SEO'; S.rg.msg = null; await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts.length === 0 && S.rg.msg && S.rg.msg.text === '沒有改動,不用送', 'reason: a1_no_change_not_sent');
+    ok(ws.includes("S.rg[e.target.dataset.rgf] = e.target.value; if (S.rg.review) { S.rg.review = false; const d = document.querySelector('.rgdiff'); if (d) d.remove(); } return; }"), 'reason: a1_edit_after_review_resets');
+    h = F.rgBox('persona', 'p1'); ok(h.includes('名稱 <b>寫手丙</b>:這版 AIB 還不能改人格名稱') && /<input class="apq" hidden data-rgf="name"/.test(h), 'reason: a1_name_hidden');
+    S.rg.knowledge = 'SEO\n- GEO\u200b'; await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts.length === 0 && !S.rg.review && !!S.rg.msg && S.rg.msg.text === '知識域:有看不見的零寬或方向字元,請刪掉再存' && ws.includes("section_hidden_char: '段落裡有看不見的零寬或方向字元"), 'reason: a1_hidden_char_blocked');
+    { const o0 = S.rg.orig; S.rg.orig = Object.assign({}, o0, { redlines: '- 不推送\u2060' }); S.rg.knowledge = 'SEO'; S.rg.msg = null; await F.rgClick(mk('[data-rgok]')); ok(!!S.rg && S.rg.review === true, 'reason: a1_review_first_old'); const hh = F.rgBox('persona', 'p1'); ok(store.acts.length === 0 && hh.includes('<div class="rgdl del">- - 不推送⟦U+2060⟧</div>'), 'reason: a1_diff_marks_hidden_in_old'); S.rg.orig = o0; S.rg.review = false; }
+    { const o0 = S.rg.orig; S.rg.orig = Object.assign({}, o0, { redlines: '- 不改別人的稿\n- 不推送\u00ad\nx\r' }); S.rg.redlines = '- 不推送\u00ad\n- 不改別人的稿'; S.rg.knowledge = 'SEO'; S.rg.msg = null; await F.rgClick(mk('[data-rgok]')); ok(!!S.rg && S.rg.review === true, 'reason: a1_reorder_review'); const hh = F.rgBox('persona', 'p1'); ok(hh.includes('<div class="rgdl add">+ - 不改別人的稿</div>') && hh.includes('不推送⟦U+00AD⟧</div>') && hh.includes('<div class="rgdl del">- x␍</div>'), 'reason: a1_diff_reorder_shown ' + hh.slice(hh.indexOf('rgdiff'), hh.indexOf('rgdiff') + 500)); S.rg.orig = o0; S.rg.redlines = '- 不推送'; S.rg.review = false; }
+    { const o0 = S.rg.orig, big = Array.from({ length: 401 }, (_, i) => 'L' + i).join('\n'); S.rg.orig = Object.assign({}, o0, { redlines: big }); S.rg.redlines = big + '\nZ'; S.rg.knowledge = 'SEO'; S.rg.msg = null; await F.rgClick(mk('[data-rgok]')); ok(!!S.rg && S.rg.review === true, 'reason: a1_big_review'); const hh = F.rgBox('persona', 'p1'); ok((hh.match(/rgdl del/g) || []).length === 401 && (hh.match(/rgdl add/g) || []).length === 402, 'reason: a1_big_section_no_lcs'); S.rg.orig = o0; S.rg.redlines = '- 不推送'; S.rg.review = false; }
+    S.rg.knowledge = 'SEO\n- GEO\t '; store.reply.persona_set = { done: true }; await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts.length === 0 && S.rg && S.rg.review === true, 'reason: a1_review_first');
+    h = F.rgBox('persona', 'p1');
+    ok(store.acts.length === 0 && S.rg.review && h.includes('指紋窗只列段名與字數,內容以這裡為準') && h.includes('知識域(原 3 字 → 11 字)') && h.includes('<div class="rgdl add">+ - GEO⇥·</div>') && h.includes('<div class="rgdl ">  SEO</div>') && h.includes('data-rgback="1"'), 'reason: a1_diff_before_finger ' + h.slice(h.indexOf('rgdiff'), h.indexOf('rgdiff') + 600));
+    await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts.length > 0 && store.acts[0][0] === 'persona_set' && JSON.stringify(store.acts[0][1]) === JSON.stringify({ persona_uid: 'p1', base_sha: 'sha1', knowledge: 'SEO\n- GEO\t ' }), 'reason: rg_card_body ' + JSON.stringify(store.acts[0] && store.acts[0][1]));
+    await F.rgClick(mk('[data-rgedit]', { rgedit: 'persona:p1' })); store.acts.length = 0;
+    store.reply.persona_set = Object.assign(new Error('x'), { status: 409, body: { error: { code: 'persona_changed' } } }); store.reply.persona_read = Object.assign({}, store.reply.persona_read, { base_sha: 'sha2' });
+    S.rg.duty = '寫稿2'; await F.rgClick(mk('[data-rgok]')); await F.rgClick(mk('[data-rgok]'));
+    ok(store.acts[1] && store.acts[1][0] === 'persona_read' && S.rg.sha === 'sha2' && !S.rg.review && /剛被別人改過/.test(S.rg.msg.text), 'reason: rg_card_changed_reload');
+    delete store.has.persona_read; delete store.has.persona_set; S.rg = null; }
+  // 第二大腦改名不送說明;移除寫「筆記檔案不會刪」+ 幾個人格預設綁它
+  store.has.brain_set = true; store.reply.brain_set = { done: true }; store.acts.length = 0;
+  await F.rgClick(mk('[data-rgedit]', { rgedit: 'brain:b1' })); S.rg.name = '大腦二'; await F.rgClick(mk('[data-rgok]'));
+  ok(store.acts[0][0] === 'brain_set' && !('what' in store.acts[0][1]) && S.reg.brains[0].name === '大腦二', 'reason: rg_brain_set');
+  await F.rgClick(mk('[data-rgdel]', { rgdel: 'brain:b1' })); h = F.rgBox('brain', 'b1');
+  ok(/從清單移除「大腦二」\?裡面的筆記檔案不會刪。有 2 個人格預設綁它/.test(h) && /data-rgdelok="1"[^>]*>移除/.test(h), 'reason: rg_brain_remove_words');
+  store.has.brain_archive = true; store.has.brain_restore = true; store.reply.brain_archive = { done: true }; store.acts.length = 0;
+  await F.rgClick(mk('[data-rgdelok]'));
+  ok(store.acts[0][0] === 'brain_archive' && Object.keys(store.acts[0][1]).join() === 'uid' && S.reg.brains.length === 0 && S.add.brain === '', 'reason: rg_brain_archive');
+  h = F.rgNote('brain'); ok(/已移除第二大腦「大腦二」;筆記檔案沒動/.test(h) && /data-rgundo="1">↺ 還原/.test(h), 'reason: rg_undo_offered');
+  store.reply.brain_restore = { done: true }; store.acts.length = 0;
+  await F.rgClick(mk('[data-rgundo]')); ok(store.acts[0][0] === 'brain_restore' && store.acts[0][1].uid === 'b1' && /已還原第二大腦/.test(F.rgNote('brain')), 'reason: rg_restore');
+  // 人格:有夥伴在用 ⇒ 不能封存、不送
+  store.has.persona_archive = true; store.reply.persona_archive = { done: true }; store.acts.length = 0;
+  await F.rgClick(mk('[data-rgdel]', { rgdel: 'persona:p2' }));
+  ok(/不能封存<\/b>:@aaaaa 正在用這個人格/.test(F.rgBox('persona', 'p2')) && !/data-rgdelok/.test(F.rgBox('persona', 'p2')), 'reason: rg_persona_in_use');
+  await F.rgClick(mk('[data-rgdelok]')); ok(store.acts.length === 0, 'reason: rg_in_use_sent');
+  // 沒人用的人格:封存 = 編號保留、可還原;沒有 restore 就不出 ↺
+  await F.rgClick(mk('[data-rgno]')); await F.rgClick(mk('[data-rgdel]', { rgdel: 'persona:p1' }));
+  ok(/封存「寫手丙」\?不再出現在清單;編號保留、不會給別人用,之後可以還原。/.test(F.rgBox('persona', 'p1')), 'reason: rg_persona_archive_words');
+  await F.rgClick(mk('[data-rgdelok]'));
+  ok(store.acts[0][0] === 'persona_archive' && S.add.persona === '' && !S.personaList.some(([u]) => u === 'p1') && !/rgundo/.test(F.rgNote('persona')), 'reason: rg_persona_archive');
+  // 自訂角色刪除的字
+  await F.rgClick(mk('[data-rgdel]', { rgdel: 'role:rol_x' })); ok(/刪除自訂角色「排版」\?已掛上這個角色的項目會改成不掛。/.test(F.rgBox('role', 'rol_x')), 'reason: rg_role_words');
+  // 接線:三列都包、三列底下有結果行、點擊與輸入有接
+  ok(/rgWrap\('persona', u, /.test(ws) && /rgWrap\('brain', b\.uid, /.test(ws) && /rgWrap\('role', r\.uid, [\s\S]{0,400}, r\.builtin\)/.test(ws), 'reason: rg_rows_not_wrapped');
+  ok(/\$\{rgNote\('persona'\)\}/.test(ws) && /\$\{rgNote\('brain'\)\}/.test(ws) && /\$\{rgNote\('role'\)\}/.test(ws), 'reason: rg_notes');
+  ok(/await rgClick\(x\)\) return;/.test(ws) && /e\.target\.dataset\.rgf && S\.rg\) \{ S\.rg\[e\.target\.dataset\.rgf\] = e\.target\.value; if \(S\.rg\.review\)/.test(ws), 'reason: rg_events');
+  ok(/\.rgr>\.apr,\.rgr>\.arc\{flex:1/.test(read('apps/web/dist/ws.css')), 'reason: rg_css');
+})();
+
+// §39 S2 管理主機(fc7f9 11-23,ebab8 ORDER-page2 第 3 項;3e53b DESIGN-hostmode r4 §1 §2):預設不顯示、勾主機、加 / 拿掉、開席帶 hosts
+const hsChecks = (async () => {
+  const blk = (ws.split('  // ---------- S2 管理主機')[1] || '').split('  // ---------- S3 權限模板')[0];
+  ok(blk.length > 6000, 'reason: hs_block_missing');
+  const names = [...(blk.split('const HS_ACTS = {')[1] || '').split('};')[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  ok(names.length === 5 && names.includes('managed_host_candidates'), 'reason: hs_acts_table');
+  for (const t of names) if (!rust.includes('"' + t + '"')) ok(/const hsCan = \(pv\) => [^\n]*hsHas\('list'\)/.test(blk) && /if \(!hsHas\('list'\)\)/.test(blk) && /const form = !hsHas\('add'\) \? ''/.test(blk) && /\$\{hsHas\('remove'\) \?/.test(blk), 'reason: hs_act_sent_ungated ' + t);
+  ok(!/(?:act|fingerAct)\('managed_host_/.test(ws), 'reason: hs_act_name_outside_table');
+  const store = { acts: [], has: {}, reply: {} };
+  const S = { hs: { list: null, f: null, del: '', busy: false, msg: null }, add: { mode: 'host', hosts: [] }, version: { os: 'macos', capabilities: {} } };
+  const ctx = vm.createContext({
+    S, Array, Object, String, Number, JSON, Error, Promise,
+    esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
+    hasAct: (t) => (t in store.has ? store.has[t] : null), render: () => {}, errText: () => 'ERR', REPO_WHY: {}, idem: () => 'k', document: { querySelector: () => null },
+    AP_MODE: {}, FP_MODE: {}, ICO_HOST: '<svg/>', FP_SEE: '等你驗證', rgOk: (r) => !!r && (r.done === true || (Number(r.__status) >= 200 && Number(r.__status) < 300 && Number(r.__status) !== 202)),
+    apRow: (A, k, label, sum, body) => `<row ${k}|${label}|${sum}>${body}</row>`,
+    act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
+  });
+  ctx.fingerAct = ctx.act;
+  vm.runInContext('// x' + blk + '\nthis.F = { hsModeBtn, hsCan, hsLoad, hsRow, hsRowOff, hsCheck, hsClick, HS_SHELL, hsWinWait, HS_WIN_NET, hsWhy, hsLogLoad, hsLogHtml, HS_WHY, hsTestChips, hsTestAdd, hsCandLoad, TH_EVID };', ctx);
+  const F = ctx.F;
+  ok(ctx.AP_MODE.host[0] === '管理主機' && ctx.AP_MODE.host[1] === '高', 'reason: hs_mode_words');
+  // 預設不顯示:能力沒列 host、或沒有主機清單 act ⇒ 整顆不畫(不放灰的)
+  const pvH = { modes: ['safe', 'work', 'host'] }, pvN = { modes: ['safe', 'work', 'dgrs'] };
+  ok(F.hsModeBtn({}, pvN) === '' && F.hsModeBtn({}, pvH) === '' && F.hsModeBtn({}, null) === '', 'reason: hs_shown_by_default');
+  store.has.managed_host_list = true;
+  ok(F.hsModeBtn({}, pvN) === '' && /data-addm="host"[^>]*>[\s\S]*<b>管理主機<\/b><\/span><i>[^<]*<\/i><em class="adang d3">危險程度:高<\/em>/.test(F.hsModeBtn({ mode: 'host' }, pvH)) && /class="amd on"/.test(F.hsModeBtn({ mode: 'host' }, pvH)), 'reason: hs_mode_button');
+  // Windows 沒量過 ⇒ 灰掉寫「Windows 待驗」、不能選;量過(host_windows_verified)才放開;Windows 上模式列寫完全權限以外不能上網
+  S.version = { os: 'windows', capabilities: {} };
+  ok(F.hsWinWait() && /class="amd off" data-addm="host" disabled[\s\S]*<i>Windows 待驗<\/i>/.test(F.hsModeBtn({}, pvH)), 'reason: hs_windows_not_grey');
+  S.version.capabilities.host_windows_verified = true; ok(!F.hsWinWait() && !/disabled/.test(F.hsModeBtn({}, pvH)), 'reason: hs_windows_verified_still_grey');
+  S.version = { os: 'macos', capabilities: {} };
+  ok(F.HS_WIN_NET === 'Windows:沒有對等的沙盒,網路規則只是提示、擋不住(跟完全權限同一句)' && ws.includes('${winHost && !(S.version && S.version.capabilities && (S.version.capabilities.net || S.version.capabilities.mode_net)) ? `<div class="apn">${esc(HS_WIN_NET)}</div>` : \'\'}${ptBlock(A)}') && !ws.includes('可以查網頁'), 'reason: hs_windows_net_words');
+  { // 3e53b DESIGN-hostmode 13.3 / 13.6:測試機交給夥伴管
+    const keep = { has: { ...store.has }, reply: { ...store.reply }, hs: { ...S.hs }, hosts: S.add.hosts };
+    store.has.managed_host_candidates = true; store.has.managed_host_list = true; store.has.managed_host_add = true; store.acts.length = 0;
+    store.reply.managed_host_candidates = { hosts: [{ name: 'lin-macmini', os: 'macos' }, { name: 'andymini', already: true }, { name: 'pro13', refused: 'test_host_busy' }, { name: '' }] };
+    S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
+    const h = F.hsTestChips();
+    ok(store.acts.some(([t, b]) => t === 'managed_host_candidates' && JSON.stringify(b) === '{\"kind\":\"test\"}') && S.hs.cand.length === 3 && h.includes(F.TH_EVID) && h.includes('data-hstadd=\"lin-macmini\"') && h.includes('<b>andymini</b><i>已交給夥伴管</i>') && h.includes('<b>pro13</b><i>這台測試機正在跑收據,跑完才能交給夥伴</i>') && !h.includes('data-hstadd=\"andymini\"'), 'reason: th_candidates_drawn ' + h);
+    store.acts.length = 0; store.reply.managed_host_add = { done: true, id: 'mh_9' }; S.add.hosts = [];
+    await F.hsTestAdd('lin-macmini');
+    ok(store.acts[0] && store.acts[0][0] === 'managed_host_add' && JSON.stringify(store.acts[0][1]) === '{\"from\":\"trusted\",\"name\":\"lin-macmini\"}' && S.add.hosts.includes('mh_9') && S.hs.msg.text.includes(F.TH_EVID), 'reason: th_add_body ' + JSON.stringify(store.acts));
+    store.has = keep.has; store.reply = keep.reply; S.hs = keep.hs; S.add.hosts = keep.hosts; store.acts.length = 0;
+  }
+  // 清單:讀 hosts、壞的丟掉;勾 / 取消勾;固定寫「代連 = 交出 shell」;沒有 add / remove 就不出那兩個
+  store.reply.managed_host_list = { hosts: [{ id: 'h1', name: '測試機<1>', addr: '10.0.0.5', port: 22, user: 'ops', hostkey_sha256: 'SHA256:abcdefghijklmnopqrstu' }, { name: '沒有 id' }] };
+  await F.hsLoad();
+  ok(S.hs.list.length === 1 && store.acts[0][0] === 'managed_host_list', 'reason: hs_list');
+  let h = F.hsRow(S.add);
+  ok(h.includes(F.HS_SHELL) && F.HS_SHELL === '代連 = 把那台主機的 shell 交給這位 AI,不是唯讀。', 'reason: hs_shell_words');
+  ok(/<row hosts\|可管的主機\|還沒選>/.test(h) && /測試機&lt;1&gt;/.test(h) && /10\.0\.0\.5:22 · 使用者 ops · 指紋 SHA256:abcdefghijklmnopqrstu</.test(h) && !/data-hsnew|data-hsdel=/.test(h), 'reason: hs_row');
+  const mk = (sel, ds) => ({ closest: (q) => (q === sel ? { dataset: ds || {} } : null) });
+  await F.hsClick(mk('[data-hspick]', { hspick: 'h1' })); ok(S.add.hosts.join() === 'h1' && /aria-checked="true"/.test(F.hsRow(S.add)) && /\|測試機<1>>/.test(F.hsRow(S.add)) === false && /\|測試機&lt;1&gt;>/.test(F.hsRow(S.add)), 'reason: hs_pick');
+  await F.hsClick(mk('[data-hspick]', { hspick: 'h1' })); ok(S.add.hosts.length === 0, 'reason: hs_unpick');
+  // 加主機:表單檢查(user 形狀、金鑰路徑完整、不能 - 開頭、埠範圍);送 name / addr / port / user / key_path,走驗證,done 才算
+  store.has.managed_host_add = true; store.has.managed_host_remove = true;
+  ok(/data-hsnew="1"/.test(F.hsRow(S.add)) && /data-hsdel="h1"/.test(F.hsRow(S.add)), 'reason: hs_add_remove_buttons');
+  const good = { name: 'n', addr: 'h.example', port: '', user: 'ops', key: '~/.ssh/id_ed25519' };
+  ok(F.hsCheck(good) === '', 'reason: hs_check_good');
+  for (const [k, v] of [['user', '-oProxyCommand=x'], ['user', 'a b'], ['key', '-i'], ['key', 'id_ed25519'], ['addr', '-oX'], ['addr', 'a b'], ['port', '70000'], ['name', '']]) ok(F.hsCheck(Object.assign({}, good, { [k]: v })) !== '', 'reason: hs_check_lets ' + k + '=' + v);
+  await F.hsClick(mk('[data-hsnew]')); Object.assign(S.hs.f, good, { port: '2222' });
+  store.reply.managed_host_add = { done: true, id: 'h2' }; store.acts.length = 0;
+  await F.hsClick(mk('[data-hsok]'));
+  const ad = store.acts.find(([t]) => t === 'managed_host_add');
+  ok(ad && JSON.stringify(ad[1]) === JSON.stringify({ name: 'n', addr: 'h.example', port: 2222, user: 'ops', key_path: '~/.ssh/id_ed25519' }), 'reason: hs_add_body ' + JSON.stringify(ad));
+  ok(S.hs.f === null && S.add.hosts.includes('h2') && store.acts.some(([t]) => t === 'managed_host_list'), 'reason: hs_add_after');
+  store.reply.managed_host_add = {}; await F.hsClick(mk('[data-hsnew]')); Object.assign(S.hs.f, good); await F.hsClick(mk('[data-hsok]'));
+  ok(S.hs.f && S.hs.msg.bad && /沒有加/.test(S.hs.msg.text), 'reason: hs_add_claims_without_done');
+  // 拿掉:先問(寫立刻生效、正在跑的會停)、不用驗證、拿掉後也從這次勾選拿掉
+  S.hs.f = null; S.add.hosts = ['h1']; await F.hsClick(mk('[data-hsdel]', { hsdel: 'h1' }));
+  ok(/從清單拿掉「測試機&lt;1&gt;」\?立刻生效:用它的夥伴之後連不到,正在跑的會被停掉。/.test(F.hsRow(S.add)), 'reason: hs_remove_ask');
+  store.reply.managed_host_remove = { done: true }; store.acts.length = 0;
+  await F.hsClick(mk('[data-hsdelok]', { hsdelok: 'h1' }));
+  ok(store.acts[0][0] === 'managed_host_remove' && JSON.stringify(store.acts[0][1]) === '{"id":"h1"}' && S.add.hosts.length === 0 && /正在跑的已停/.test(S.hs.msg.text), 'reason: hs_remove');
+  // 接線:不能開就退回 safe、模式列第四顆、列放在模式之後、開席帶 hosts 且一台都沒勾不送、host 開席走驗證、卡上列主機
+  // S1d(ebab8 04:4x 第 2 條):「可管的主機」每種模式都有、預設不開;非管理主機模式點主機只寫這一版還沒有,不改 A.hosts、不送
+  { store.reply.managed_host_list = { hosts: [{ id: 'h1', name: '測試機', addr: '10.0.0.5', port: 22, user: 'ops' }] }; await F.hsLoad();
+    const A = { mode: 'work', rowOpen: 'hosts' }; const h = F.hsRowOff(A);
+    ok(h.includes('<div class="aplab apgold">伺服器</div><div class="apl hsoff">') && h.includes('不開(看不到也碰不到任何主機)') && h.includes('data-hsoff="h1"') && h.includes('點一下開') && !h.includes('data-hspick'), 'reason: s1d_hosts_off_row');
+    S.add = A; store.acts.length = 0; await F.hsClick(mk('[data-hsoff]', { hsoff: 'h1' })); S.add = null;
+    ok(store.acts.length === 0 && !A.hosts, 'reason: s1d_hosts_off_sends'); }
+  ok(ws.includes("const hso = x.closest('[data-hsoff]'); if (hso) { S.add.hsOffMsg = HS_OTHER_NO; return render(); }") && ws.includes("S.pt.seat = S.add.mineSeat; S.pt.seatMsg = null;") && ws.includes("<div class=\"aplab\">套用我的權限模板</div>${ptSeatBox(x) || "), 'reason: s1d_mine_wired');
+  ok(ws.includes("${chips}${hsTestChips()}${msg}") && ws.includes("${rows}${form}${hsTestChips()}") && ws.includes("if (x.closest('[data-hstest]')) { S.add.hsOffMsg = HS_TEST_NO; return render(); }") && !ws.includes('猜 managed_host_list'), 'reason: s1f_hosts_groups');
+  // IFACE-page2 r2 C(3e53b 04:03):host_addr_refused 的 reason 寫出來、拿掉回 stopped 數、做過什麼(managed_host_log,只在 version.acts 有才讀)
+  { const ae = (code, reason) => Object.assign(new Error(code), { status: 400, code: '', body: { error: { code, reason } } });
+    ok(F.hsWhy(ae('host_addr_refused', 'this_computer')) === '這個位址不能加:這台電腦自己' && F.hsWhy(ae('host_addr_refused', 'weird')) === F.HS_WHY.host_addr_refused && /OpenSSH/.test(F.hsWhy(ae('host_ssh_missing'))) && /主機驗證沒過/.test(F.hsWhy(ae('host_verify_failed'))), 'reason: hs_r2_errors');
+    store.reply.managed_host_list = { hosts: [{ id: 'h1', name: '測試機', addr: '10.0.0.5', port: 22, user: 'ops', hostkey_sha256: 'SHA256:abc' }] }; await F.hsLoad();
+    store.reply.managed_host_remove = { done: true, stopped: 2 }; await F.hsClick(mk('[data-hsdel]', { hsdel: 'h1' })); await F.hsClick(mk('[data-hsdelok]', { hsdelok: 'h1' }));
+    ok(/正在跑的已停\(2 個\)/.test(S.hs.msg.text), 'reason: hs_r2_stopped');
+    store.reply.managed_host_list = { hosts: [{ id: 'h1', name: '測試機', addr: '10.0.0.5', port: 22, user: 'ops' }] }; await F.hsLoad();
+    store.reply.managed_host_remove = { done: true, stopped: 0 }; await F.hsClick(mk('[data-hsdel]', { hsdel: 'h1' })); await F.hsClick(mk('[data-hsdelok]', { hsdelok: 'h1' }));
+    ok(/當下沒有在跑的/.test(S.hs.msg.text), 'reason: hs_r2_stopped_zero');
+    delete store.has.managed_host_log; ok(/連主機做過什麼<\/div><div class="apn">這一版 AIB 還沒有/.test(F.hsLogHtml('seat_h')), 'reason: hs_log_not_gated');
+    store.has.managed_host_log = true; store.acts.length = 0; store.reply.managed_host_log = { items: [{ at: '2026-11-23T04:20:00Z', seat_id: 'seat_h', host_id: 'h9', ip_port: '192.0.2.4:22', command: 'uptime <x>', rc: 0, out_bytes: 3, stopped: false }, { at: '2026-11-23T04:21:00Z', host_id: 'h9', command: 'sleep 99', rc: null, stopped: true }] };
+    await F.hsLogLoad('seat_h'); const lh = F.hsLogHtml('seat_h');
+    ok(store.acts[0][0] === 'managed_host_log' && JSON.stringify(store.acts[0][1]) === '{"seat_id":"seat_h","limit":20}' && lh.includes('uptime &lt;x&gt;') && lh.includes('rc 0') && lh.includes('被停掉') && lh.includes('紀錄,不是防線'), 'reason: hs_log_rows'); }
+  ok(ws.includes("${apCmp({ mode: m }, { ro: true })}${m === 'host' ? hsLogHtml(id) : ''}") && ws.includes("if (c === 'host_ssh_missing' || c === 'host_verify_failed') return HS_WHY[c] + '。席沒有開';"), 'reason: hs_r2_wired');
+  ok(/if \(A\.mode === 'host' && \(!hsCan\(pv\) \|\| hsWinWait\(\)\)\) A\.mode = 'safe';/.test(ws), 'reason: hs_mode_not_reset');
+  ok(ws.includes('危險程度:中</em></button>${hsModeBtn(A, pv) || apHostCard(A, pv)}<button') && /A\.mode !== 'dgrs' && A\.mode !== 'work' && A\.mode !== 'host' \? 'on'/.test(ws) && ws.includes('host: hsCan(pv) && !hsWinWait(), net: pv })}'), 'reason: hs_mode_row'); // 第三顆;能開才換上、對照表那欄才能點
+  ok(/\$\{A\.mode === 'host' \? hsRow\(A\) : hsRowOff\(A\)\}\n      \$\{repoBlk\.trim\(\) \? apRow\(A, 'repo', '存哪裡'/.test(ws), 'reason: hs_row_place');
+  ok(/if \(body\.mode === 'host'\) \{ const ids = [^\n]*if \(!ids\.length\) \{ A\.busy = false; A\.msg = HS_WHY\.hosts_missing;[^\n]*body\.hosts = ids; \}/.test(ws) && ws.includes("const r = await fingerAct('seat_open', body, (t, sec) => {"), 'reason: hs_open_body');
+  ok(/\['可管的主機', Array\.isArray\(b\.hosts\)/.test(ws) && /managed_host_add: \(b\) =>/.test(ws), 'reason: hs_card_words');
+  ok(/\.adlg \.adang\.d3\{color:var\(--orange\)\}/.test(read('apps/web/dist/ws.css')), 'reason: hs_css');
+  const mainClick = (ws.split('  async function onMainClick(e) {')[1] || '').slice(0, 1500);
+  ok(/if \(x\.closest\('\[data-hspick\],\[data-hsnew\],\[data-hsno\],\[data-hsok\],\[data-hsdel\],\[data-hsdelno\],\[data-hsdelok\]'\) && await hsClick\(x\)\) return;/.test(mainClick), 'reason: hs_click_not_wired');
+  ok(/if \(x\.closest\('\[data-ptnew\],\[data-ptfine\],\[data-ptedit\],\[data-ptdel\],\[data-ptdelno\],\[data-ptdelok\],\[data-ptbase\],\[data-ptit\],\[data-ptno\],\[data-ptok\],\[data-ptpick\],\[data-ptsa\],\[data-ptap\],\[data-ptrv\]'\) && await ptClick\(x\)\) return;/.test(mainClick), 'reason: pt_click_not_wired');
+})();
+
+Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });
