@@ -213,6 +213,20 @@ pub struct Card {
     pub expires_at: u64,
     /// A service on this computer itself (A6d): the high-risk card.
     pub high: bool,
+    /// On the high-risk card: which program listens on that port, when aibd could tell
+    /// (f163c REVIEW-sandboxnet18 L1: a hint, not a defence).
+    pub listener: Option<String>,
+}
+
+/// Whether a connection to this computer itself gets the high-risk card (A6d, DESIGN-sandboxnet
+/// r9 §18): aibd's own ports and the ones that hand over the whole machine are refused with no
+/// card; any other port gets it.
+pub fn local_card(port: u16, own_binds: &[u16], preview_ports: &[u16]) -> Result<(), &'static str> {
+    match crate::egress::local_kind(port, own_binds, preview_ports) {
+        crate::egress::Local::Aibd => Err("aibd_self"),
+        crate::egress::Local::Machine => Err("machine_port"),
+        crate::egress::Local::Service => Ok(()),
+    }
 }
 
 impl Card {
@@ -258,6 +272,10 @@ impl Card {
         });
         if let Some(w) = &self.why {
             v["why"] = serde_json::json!(w);
+        }
+        if self.high {
+            v["risk"] = serde_json::json!("high");
+            v["listener"] = serde_json::json!(self.listener.as_deref().unwrap_or("查不到"));
         }
         v
     }
@@ -576,7 +594,36 @@ mod tests {
             why: None,
             expires_at: 1_000,
             high,
+            listener: None,
         }
+    }
+
+    #[test]
+    fn a_local_service_gets_the_high_risk_card_and_aibd_or_the_whole_machine_none() {
+        assert_eq!(local_card(5432, &[], &[]), Ok(()));
+        assert_eq!(local_card(3000, &[51000], &[52000]), Ok(()));
+        for p in [47770, 47788, 51000, 52000] {
+            assert_eq!(
+                local_card(p, &[51000], &[52000]),
+                Err("aibd_self"),
+                "reason: aibd_carded {p}"
+            );
+        }
+        for p in [22, 2375, 5900, 9222] {
+            assert_eq!(
+                local_card(p, &[], &[]),
+                Err("machine_port"),
+                "reason: machine_carded {p}"
+            );
+        }
+        let v = card("r1", true).shown();
+        assert_eq!(v["risk"], "high");
+        assert_eq!(v["listener"], "查不到", "reason: listener_unknown_not_said");
+        assert_eq!(v["category"], "local_self");
+        let mut c = card("r2", true);
+        c.listener = Some("postgres".into());
+        assert_eq!(c.shown()["listener"], "postgres");
+        assert!(card("r3", false).shown().get("risk").is_none());
     }
 
     fn approve(ok: bool) -> impl FnOnce(&str, &crate::owner_ok::Ask) -> bool {
