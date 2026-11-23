@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PS1–PS9: the owner's passphrase record — costs below the floor or another KDF are refused, the comparison is whole, a short or personal sentence is not taken, five wrong lock fifteen minutes and double up to a day (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7; Andy DECISION 第十七節)
+# PS1–PS17: the owner's passphrase record — costs below the floor or another KDF are refused, the comparison is whole, a short or personal sentence is not taken, five wrong lock fifteen minutes and double up to a day (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7; Andy DECISION 第十七節)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 ps() { python3 -I scripts/knife.py crates/aibd/src/passphrase.rs "$1" "$2" --expect-fail "passphrase::tests::$3" \
@@ -40,3 +40,35 @@ ps '    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {' \
 ps '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);' \
    '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2i, argon2::Version::V0x13, params);' \
    the_argon2id_backend_gives_the_known_answer
+# PS10 (S11-2 acts) two different typings set a passphrase
+ps '    if !same(n.phrase.as_bytes(), n.again.as_bytes()) {' \
+   '    if false {' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS11 the owner's own sentence skips the rules
+ps '    if n.source == Source::Owner {' \
+   '    if n.source == Source::Generated {' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS12 a passphrase is set where the system check works
+ps '        return Err(SetError::UseSystem);' \
+   '        let _ = SetError::UseSystem;' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS13 the answer goes on where the system check works
+ps '        return Answer::UseSystem;' \
+   '        let _ = Answer::UseSystem;' \
+   the_answer_checks_the_system_then_the_record_then_the_lock
+# PS14 a record swapped outside the window is used
+ps '    if known_sha != Some(record_sha(r).as_str()) {' \
+   '    if known_sha.is_none() {' \
+   the_answer_checks_the_system_then_the_record_then_the_lock
+# PS15 the lock does not hold the right phrase back
+ps '    if now < tries.locked_until {' \
+   '    if false {' \
+   five_wrong_lock_and_the_right_phrase_waits_for_the_lock
+# PS16 a right answer leaves the wrong count
+ps '        *tries = Tries::default();' \
+   '        let _ = &tries;' \
+   five_wrong_lock_and_the_right_phrase_waits_for_the_lock
+# PS17 the page never hears of a swapped record
+ps '    let swapped = rec.is_some_and(|r| known_sha != Some(record_sha(r).as_str()));' \
+   '    let swapped = false;' \
+   the_page_view_has_no_secret_and_says_swapped_and_locked

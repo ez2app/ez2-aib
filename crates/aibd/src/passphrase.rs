@@ -210,6 +210,186 @@ impl Kdf for Argon2id {
     }
 }
 
+// ---- S11-2 second part: the acts (set / answer / what the page shows), still pure ----------
+
+/// The count of wrong answers kept between asks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tries {
+    pub wrong: u32,
+    /// unix seconds; 0 = not locked
+    pub locked_until: u64,
+}
+
+/// Why a new passphrase is not set. The page shows [`SetError::code`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetError {
+    /// The system's own owner check works here: no passphrase (§11a).
+    UseSystem,
+    /// The two typings differ.
+    NotSame,
+    Weak(Weak),
+    /// The KDF failed (out of memory).
+    Kdf,
+}
+
+impl SetError {
+    pub fn code(self) -> &'static str {
+        match self {
+            SetError::UseSystem => "owner_check_use_system",
+            SetError::NotSame => "passphrase_not_same",
+            SetError::Weak(Weak::TooShort) => "passphrase_too_short",
+            SetError::Weak(Weak::Personal) => "passphrase_personal",
+            SetError::Kdf => "passphrase_kdf_failed",
+        }
+    }
+}
+
+/// Who thought up the sentence: aibd's six words are taken as they are, the owner's own go
+/// through [`check_new`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Generated,
+    Owner,
+}
+
+/// What the setting window hands over.
+pub struct NewPhrase<'a> {
+    pub phrase: &'a str,
+    pub again: &'a str,
+    pub source: Source,
+    pub account: &'a str,
+    pub computer: &'a str,
+}
+
+/// Set (or set again) the passphrase. The caller has the owner's yes for the setting window
+/// and keeps [`record_sha`] of the result as the known record; the tries start over.
+pub fn set(
+    kdf: &dyn Kdf,
+    n: &NewPhrase<'_>,
+    system_usable: bool,
+    salt: [u8; SALT_LEN],
+    now: u64,
+) -> Result<(Record, Tries), SetError> {
+    if system_usable {
+        return Err(SetError::UseSystem);
+    }
+    if !same(n.phrase.as_bytes(), n.again.as_bytes()) {
+        return Err(SetError::NotSame);
+    }
+    if n.source == Source::Owner {
+        check_new(n.phrase, n.account, n.computer).map_err(SetError::Weak)?;
+    }
+    let r = record(kdf, n.phrase.as_bytes(), salt, now).ok_or(SetError::Kdf)?;
+    Ok((r, Tries::default()))
+}
+
+/// What one answer came to. The page shows [`Answer::code`] for everything but `Yes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    /// Wrong; `locked_until` is 0 while tries are left.
+    No {
+        wrong: u32,
+        locked_until: u64,
+    },
+    /// Locked: not even derived.
+    Locked {
+        until: u64,
+    },
+    NotSet,
+    /// The record is not the one aibd knows (f163c e5f942dd L2): set it again in the window.
+    Swapped,
+    Refused(Refused),
+    /// The system's own owner check works here (§11a: before every ask).
+    UseSystem,
+}
+
+impl Answer {
+    pub fn code(self) -> &'static str {
+        match self {
+            Answer::Yes => "ok",
+            Answer::No { .. } => "passphrase_wrong",
+            Answer::Locked { .. } => "passphrase_locked",
+            Answer::NotSet => "passphrase_not_set",
+            Answer::Swapped => "passphrase_record_swapped",
+            Answer::Refused(Refused::Weak) => "passphrase_record_weak",
+            Answer::Refused(Refused::TooCostly) => "passphrase_record_too_costly",
+            Answer::Refused(Refused::Malformed) => "passphrase_record_malformed",
+            Answer::UseSystem => "owner_check_use_system",
+        }
+    }
+}
+
+/// One answer to "type your passphrase". The order is the rule: the system check first, then
+/// a record at all, then the record aibd knows, then the lock (nothing derived while locked),
+/// then the costs, then the phrase. Only a derived wrong answer counts against the tries.
+pub fn answer(
+    kdf: &dyn Kdf,
+    rec: Option<&Record>,
+    known_sha: Option<&str>,
+    tries: &mut Tries,
+    phrase: &[u8],
+    system_usable: bool,
+    now: u64,
+) -> Answer {
+    if system_usable {
+        return Answer::UseSystem;
+    }
+    let Some(r) = rec else {
+        return Answer::NotSet;
+    };
+    if known_sha != Some(record_sha(r).as_str()) {
+        return Answer::Swapped;
+    }
+    if now < tries.locked_until {
+        return Answer::Locked {
+            until: tries.locked_until,
+        };
+    }
+    if let Err(e) = usable(r, kdf) {
+        return Answer::Refused(e);
+    }
+    if verify(r, kdf, phrase) {
+        *tries = Tries::default();
+        return Answer::Yes;
+    }
+    tries.wrong = tries.wrong.saturating_add(1);
+    let lock = lock_after(tries.wrong);
+    tries.locked_until = if lock == 0 {
+        0
+    } else {
+        now.saturating_add(lock)
+    };
+    Answer::No {
+        wrong: tries.wrong,
+        locked_until: tries.locked_until,
+    }
+}
+
+/// What the page shows about the passphrase (IFACE-passphrase-c2f0b-1123 §1); never the
+/// record's salt, result or hash.
+pub fn view(
+    rec: Option<&Record>,
+    known_sha: Option<&str>,
+    tries: &Tries,
+    system_usable: bool,
+    now: u64,
+) -> serde_json::Value {
+    let swapped = rec.is_some_and(|r| known_sha != Some(record_sha(r).as_str()));
+    let locked = now < tries.locked_until;
+    serde_json::json!({
+        "v": 1,
+        "available": !system_usable,
+        "set": rec.is_some(),
+        "set_at": rec.map(|r| r.set_at),
+        "swapped": swapped,
+        "wrong": tries.wrong,
+        "tries_left": FREE_TRIES.saturating_sub(tries.wrong),
+        "locked": locked,
+        "locked_until": if locked { Some(tries.locked_until) } else { None },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -357,6 +537,176 @@ mod tests {
         assert_eq!(
             hex(&out),
             "692f3a57797a0a146543cf9bdfc2df4a28dd46209b7ee6f1833ebdb90fd04116"
+        );
+    }
+
+    const P: &str = "正確 的 那 一 句";
+
+    fn np<'a>(phrase: &'a str, again: &'a str, source: Source) -> NewPhrase<'a> {
+        NewPhrase {
+            phrase,
+            again,
+            source,
+            account: "sample",
+            computer: "laptop9",
+        }
+    }
+
+    #[test]
+    fn set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check() {
+        let long = "河邊那棵老榕樹下第三塊石頭底下的鑰匙";
+        assert_eq!(
+            set(
+                &Fake,
+                &np(long, long, Source::Owner),
+                true,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::UseSystem)
+        );
+        assert_eq!(
+            set(
+                &Fake,
+                &np(long, "河邊", Source::Owner),
+                false,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::NotSame)
+        );
+        assert_eq!(
+            set(
+                &Fake,
+                &np("太短", "太短", Source::Owner),
+                false,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::Weak(Weak::TooShort))
+        );
+        // aibd's own words are not put through the owner's rules
+        assert!(set(
+            &Fake,
+            &np("太短", "太短", Source::Generated),
+            false,
+            [7; SALT_LEN],
+            1
+        )
+        .is_ok());
+        let (r, t) = set(
+            &Fake,
+            &np(long, long, Source::Owner),
+            false,
+            [7; SALT_LEN],
+            1,
+        )
+        .unwrap();
+        assert!(verify(&r, &Fake, long.as_bytes()));
+        assert_eq!(t, Tries::default());
+        assert_eq!(SetError::UseSystem.code(), "owner_check_use_system");
+    }
+
+    #[test]
+    fn the_answer_checks_the_system_then_the_record_then_the_lock() {
+        let r = rec();
+        let k = record_sha(&r);
+        let mut t = Tries::default();
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), true, 0),
+            Answer::UseSystem
+        );
+        assert_eq!(
+            answer(&Fake, None, None, &mut t, P.as_bytes(), false, 0),
+            Answer::NotSet
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some("00"), &mut t, P.as_bytes(), false, 0),
+            Answer::Swapped
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), false, 0),
+            Answer::Yes
+        );
+        assert_eq!(t, Tries::default());
+    }
+
+    /// The right phrase while locked is still refused, and nothing is derived.
+    #[test]
+    fn five_wrong_lock_and_the_right_phrase_waits_for_the_lock() {
+        let r = rec();
+        let k = record_sha(&r);
+        let mut t = Tries::default();
+        for i in 1..=4 {
+            assert_eq!(
+                answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, 100),
+                Answer::No {
+                    wrong: i,
+                    locked_until: 0
+                }
+            );
+        }
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, 100),
+            Answer::No {
+                wrong: 5,
+                locked_until: 100 + FIRST_LOCK_SECS
+            }
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), false, 101),
+            Answer::Locked {
+                until: 100 + FIRST_LOCK_SECS
+            }
+        );
+        assert_eq!(t.wrong, 5, "a locked answer does not count");
+        let after = 100 + FIRST_LOCK_SECS;
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, after),
+            Answer::No {
+                wrong: 6,
+                locked_until: after + 2 * FIRST_LOCK_SECS
+            }
+        );
+        let later = after + 2 * FIRST_LOCK_SECS;
+        assert_eq!(
+            answer(
+                &Fake,
+                Some(&r),
+                Some(&k),
+                &mut t,
+                P.as_bytes(),
+                false,
+                later
+            ),
+            Answer::Yes
+        );
+        assert_eq!(t, Tries::default());
+    }
+
+    #[test]
+    fn the_page_view_has_no_secret_and_says_swapped_and_locked() {
+        let r = rec();
+        let k = record_sha(&r);
+        let t = Tries {
+            wrong: 5,
+            locked_until: 200,
+        };
+        let v = view(Some(&r), Some(&k), &t, false, 100);
+        let s = v.to_string();
+        assert!(!s.contains(&r.salt) && !s.contains(&r.out) && !s.contains(&k));
+        assert_eq!(v["locked"], true);
+        assert_eq!(v["locked_until"], 200);
+        assert_eq!(v["tries_left"], 0);
+        assert_eq!(v["swapped"], false);
+        assert_eq!(view(Some(&r), Some("00"), &t, false, 300)["swapped"], true);
+        assert_eq!(view(Some(&r), Some(&k), &t, false, 300)["locked"], false);
+        assert_eq!(
+            view(None, None, &Tries::default(), true, 0)["available"],
+            false
         );
     }
 
