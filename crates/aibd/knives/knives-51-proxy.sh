@@ -36,7 +36,7 @@ px '            if holds(grants, seat, at, true, here.now) {' '            if ho
 # PX15 (same) a tunnel to this computer's service is kept by a LAN grant
 px '                        && !holds(grants, s, *at, *by == By::HeldLocal, now)' '                        && !holds(grants, s, *at, false, now) // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX16 (SPEC r2 U8 跨席冒用) one seat's grant lets another seat through
-python3 -I scripts/knife.py crates/aibd/src/grants.rs '                    && g.seat_id == seat_id' '                    && !g.seat_id.is_empty() // knife' --expect-fail proxy::tests::a_seat_never_rides_on_another_seats_grant \
+python3 -I scripts/knife.py crates/aibd/src/grants.rs '                    && g.seat_id == seat_id' '                    && (g.seat_id == seat_id || !g.seat_id.is_empty()) // knife' --expect-fail proxy::tests::a_seat_never_rides_on_another_seats_grant \
   -- cargo test -p aibd --locked --lib proxy::tests::a_seat_never_rides_on_another_seats_grant
 # PX17 (same) the always list is asked for some other seat
 px '        allowed(seat, ip, p) || holds(grants, seat, SocketAddr::new(ip, p), false, here.now)' '        allowed("a1b2c", ip, p) || holds(grants, seat, SocketAddr::new(ip, p), false, here.now) // knife' proxy::tests::a_seat_never_rides_on_another_seats_grant
