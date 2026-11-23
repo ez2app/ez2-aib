@@ -685,6 +685,18 @@ impl MessageDb {
         })
     }
 
+    /// The switch `seat_next` read is applied: remove that row only (a later batch's row for
+    /// the same seat, written meanwhile, stays). Whether it was removed.
+    pub fn seat_next_done(&self, seat_id: &str, batch_id: &str, at: i64) -> Result<bool> {
+        let (s, b) = (seat_id.to_string(), batch_id.to_string());
+        self.write(move |c| {
+            Ok(c.execute(
+                "DELETE FROM seat_next WHERE seat_id = ?1 AND batch_id = ?2 AND at = ?3",
+                params![s, b, at],
+            )? > 0)
+        })
+    }
+
     /// Take back the switches a batch wrote (its undo); how many.
     pub fn seat_next_clear_batch(&self, batch_id: &str) -> Result<usize> {
         let b = batch_id.to_string();
@@ -1063,6 +1075,14 @@ mod tests {
         m.seat_next_set("s2", Some("aaaaa1"), None, "mb_2", 1)
             .unwrap();
         assert_eq!(m.seat_next_clear_batch("mb_1").unwrap(), 1);
+        // done removes only the row that was read
+        m.seat_next_set("s3", Some("aaaaa1"), None, "mb_3", 5)
+            .unwrap();
+        m.seat_next_set("s3", None, Some("r.1"), "mb_4", 6).unwrap();
+        assert!(!m.seat_next_done("s3", "mb_3", 5).unwrap());
+        assert!(m.seat_next("s3").unwrap().is_some());
+        assert!(m.seat_next_done("s3", "mb_4", 6).unwrap());
+        assert!(m.seat_next("s3").unwrap().is_none());
         assert!(m.seat_next("s1").unwrap().is_none());
         assert!(m.seat_next("s2").unwrap().is_some());
     }

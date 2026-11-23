@@ -87,6 +87,7 @@ pub mod seat_fetch;
 pub mod seat_input;
 pub mod seat_model;
 pub mod seat_move;
+pub mod seat_next_apply;
 pub mod seat_now;
 pub mod seat_now_all;
 pub mod seat_pending;
