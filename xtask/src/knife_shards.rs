@@ -162,7 +162,43 @@ pub fn secs_from_logs(texts: &[String]) -> BTreeMap<String, u64> {
     runs.into_iter().map(|(f, v)| (f, median(&v))).collect()
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...";
+/// A script has grown when it took more than this many times its seconds in the table…
+pub const GREW_TIMES: u64 = 2;
+/// …and at least this many seconds more (a 3 s script that took 8 s has not grown).
+pub const GREW_MORE_S: u64 = 60;
+
+/// One script that is not where the table has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Grew {
+    /// In the table at `table` seconds, and far over it now.
+    Over { file: String, table: u64, now: u64 },
+    /// Not in the table (it is placed as a median script) and heavy now.
+    NewHeavy { file: String, now: u64 },
+}
+
+/// The scripts of `now` (this run's seconds) the plan was wrong about: the cells were laid
+/// out from `table`, so each of these made its cell longer than planned. A script that got
+/// faster, and a light new one, are not said.
+pub fn grew(table: &BTreeMap<String, u64>, now: &BTreeMap<String, u64>) -> Vec<Grew> {
+    now.iter()
+        .filter_map(|(file, &n)| match table.get(file) {
+            Some(&t) if n > t.saturating_mul(GREW_TIMES) && n >= t.saturating_add(GREW_MORE_S) => {
+                Some(Grew::Over {
+                    file: file.clone(),
+                    table: t,
+                    now: n,
+                })
+            }
+            None if n >= GREW_MORE_S => Some(Grew::NewHeavy {
+                file: file.clone(),
+                now: n,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -221,10 +257,46 @@ fn secs_cmd(args: &[String]) -> Result<String, String> {
     Ok(t.iter().map(|(f, s)| format!("{s}\t{f}\n")).collect())
 }
 
+/// `grew --secs FILE LOG...`: one line per script the table is wrong about, then the count.
+/// Always rc 0 when the files were read: it says, it does not stop anything.
+fn grew_cmd(args: &[String]) -> Result<String, String> {
+    let [flag, table, logs @ ..] = args else {
+        return Err(USAGE.into());
+    };
+    if flag != "--secs" || logs.is_empty() || logs.iter().any(|a| a.starts_with("--")) {
+        return Err(USAGE.into());
+    }
+    let table = parse_secs(&read(table)?).map_err(|e| format!("{table}: {e}"))?;
+    let texts = logs
+        .iter()
+        .map(|a| read(a))
+        .collect::<Result<Vec<_>, _>>()?;
+    let now = secs_from_logs(&texts);
+    let found = grew(&table, &now);
+    let mut out = String::new();
+    for g in &found {
+        match g {
+            Grew::Over { file, table, now } => {
+                out.push_str(&format!("KNIVES-GREW {file} table={table} now={now}\n"))
+            }
+            Grew::NewHeavy { file, now } => {
+                out.push_str(&format!("KNIVES-NEW-HEAVY {file} now={now}\n"))
+            }
+        }
+    }
+    out.push_str(&format!(
+        "KNIVES-GREW-CHECK scripts={} off_the_table={}\n",
+        now.len(),
+        found.len()
+    ));
+    Ok(out)
+}
+
 pub fn run(args: &[String]) -> u8 {
     let r = match args {
         [cmd, rest @ ..] if cmd == "plan" => plan_cmd(rest),
         [cmd, rest @ ..] if cmd == "secs" => secs_cmd(rest),
+        [cmd, rest @ ..] if cmd == "grew" => grew_cmd(rest),
         _ => Err(USAGE.into()),
     };
     match r {
@@ -242,6 +314,44 @@ pub fn run(args: &[String]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_script_far_over_its_seconds_is_said_and_one_a_little_over_is_not() {
+        let t = |rows: &[(&str, u64)]| -> BTreeMap<String, u64> {
+            rows.iter().map(|(f, s)| (f.to_string(), *s)).collect()
+        };
+        let table = t(&[
+            ("a.sh", 100),
+            ("b.sh", 3),
+            ("c.sh", 100),
+            ("d.sh", 40),
+            ("e.sh", 100),
+        ]);
+        let now = t(&[
+            ("a.sh", 201), // over twice, and 60 more
+            ("b.sh", 20),  // six times, but 17 s more: a light script
+            ("c.sh", 200), // exactly twice: not over
+            ("d.sh", 99),  // over twice, 59 s more
+            ("e.sh", 10),  // faster
+            ("new-heavy.sh", 60),
+            ("new-light.sh", 59),
+        ]);
+        assert_eq!(
+            grew(&table, &now),
+            vec![
+                Grew::Over {
+                    file: "a.sh".into(),
+                    table: 100,
+                    now: 201
+                },
+                Grew::NewHeavy {
+                    file: "new-heavy.sh".into(),
+                    now: 60
+                },
+            ]
+        );
+        assert!(grew(&table, &BTreeMap::new()).is_empty());
+    }
 
     fn table(rows: &[(&str, u64)]) -> BTreeMap<String, u64> {
         rows.iter().map(|(p, s)| (p.to_string(), *s)).collect()

@@ -35,3 +35,15 @@ ks '        if !seen.insert(line.to_string()) {' \
 ks '            let Some((file, tail)) = rest.split_once(": rc=0 secs=") else {' \
    '            let Some((file, tail)) = rest.split_once(" secs=") else {' \
    the_table_is_the_median_of_the_green_runs_only
+# KH-G1 a light script a few seconds over is said to have grown (every run would shout)
+ks '            Some(&t) if n > t.saturating_mul(GREW_TIMES) && n >= t.saturating_add(GREW_MORE_S) => {' \
+   '            Some(&t) if n > t.saturating_mul(GREW_TIMES) => {' \
+   a_script_far_over_its_seconds_is_said_and_one_a_little_over_is_not
+# KH-G2 a script exactly at twice its seconds is said to have grown
+ks '            Some(&t) if n > t.saturating_mul(GREW_TIMES) && n >= t.saturating_add(GREW_MORE_S) => {' \
+   '            Some(&t) if n >= t.saturating_mul(GREW_TIMES) && n >= t.saturating_add(GREW_MORE_S) => {' \
+   a_script_far_over_its_seconds_is_said_and_one_a_little_over_is_not
+# KH-G3 a heavy script the table does not know is not said
+ks '            None if n >= GREW_MORE_S => Some(Grew::NewHeavy {' \
+   '            None if n > GREW_MORE_S => Some(Grew::NewHeavy {' \
+   a_script_far_over_its_seconds_is_said_and_one_a_little_over_is_not
