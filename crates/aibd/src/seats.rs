@@ -555,7 +555,7 @@ pub fn now_gate_on() -> bool {
 /// ([`aib_seatopen::mode_note`]), and for a work seat (519d0 11-21 M6) what it may run
 /// ([`aib_seatopen::work_note`]).
 pub fn seat_prompt_head(mode: &str) -> String {
-    let mut t = aib_seatopen::mode_note(mode);
+    let mut t = aib_seatopen::mode_note(mode, crate::workspace::work_net_blocked());
     if mode == "work" {
         t.push_str("\n\n");
         t.push_str(&aib_seatopen::work_note());
@@ -3357,7 +3357,10 @@ mod tests {
         let p = seat_prompt_file(d.path(), "work", card.to_str()).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with(&aib_seatopen::mode_note("work")),
+            text.starts_with(&aib_seatopen::mode_note(
+                "work",
+                crate::workspace::work_net_blocked()
+            )),
             "reason: mode_not_first {text}"
         );
         assert!(
@@ -3370,7 +3373,11 @@ mod tests {
         );
         for m in ["safe", "dgrs"] {
             let t = std::fs::read_to_string(seat_prompt_file(d.path(), m, None).unwrap()).unwrap();
-            assert_eq!(t, aib_seatopen::mode_note(m), "reason: mode_line_wrong {m}");
+            assert_eq!(
+                t,
+                aib_seatopen::mode_note(m, crate::workspace::work_net_blocked()),
+                "reason: mode_line_wrong {m}"
+            );
             assert!(
                 !t.contains(&aib_seatopen::work_note()),
                 "reason: commands_told {m}"
@@ -3384,7 +3391,10 @@ mod tests {
     fn a_codex_seat_is_told_its_mode_in_thread_start() {
         let t = codex_instructions("safe", Some("我是測試人格"));
         assert!(
-            t.starts_with(&aib_seatopen::mode_note("safe")) && t.ends_with("\n\n我是測試人格"),
+            t.starts_with(&aib_seatopen::mode_note(
+                "safe",
+                crate::workspace::work_net_blocked()
+            )) && t.ends_with("\n\n我是測試人格"),
             "reason: codex_mode_lost {t}"
         );
         assert_eq!(codex_instructions("work", None), seat_prompt_head("work"));

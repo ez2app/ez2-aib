@@ -963,10 +963,25 @@ fn each_mode_is_told_by_name_with_its_network() {
         ("work", "【工作】"),
         ("dgrs", "【完全權限】"),
     ] {
-        let t = mode_note(m);
-        assert!(t.contains(name), "reason: mode_unnamed {m} {t}");
-        assert!(t.contains(net_now(m).1), "reason: net_untold {m} {t}");
+        for blocked in [true, false] {
+            let t = mode_note(m, blocked);
+            assert!(t.contains(name), "reason: mode_unnamed {m} {t}");
+            assert!(
+                t.contains(net_now(m, blocked).1),
+                "reason: net_untold {m} {t}"
+            );
+        }
     }
-    assert_eq!(net_now("safe").0, "none");
-    assert_eq!(net_now("work").0, "blocked");
+    assert_eq!(net_now("safe", false).0, "none");
+    assert_eq!(net_now("work", true).0, "blocked");
+    // f163c REVIEW-a14code L2: the work line follows what aibd says, both ways
+    assert_eq!(net_now("work", false).0, "open");
+    // f163c REVIEW-a14code L1: opening a dgrs seat takes this Mac's switch, not always the
+    // owner's own check (a seat opened without a repo is not asked): never told it was
+    let d = mode_note("dgrs", true);
+    assert!(!d.contains("驗證"), "reason: dgrs_told_owner_checked {d}");
+    assert!(
+        d.contains("主人在這台打開"),
+        "reason: dgrs_switch_untold {d}"
+    );
 }

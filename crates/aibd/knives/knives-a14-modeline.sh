@@ -11,7 +11,7 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs \
   -- cargo test -p aibd --locked --lib 'workspace::tests::the_page_and_the_seat_say_the_same_network'
 # a14-head
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
-  '    let mut t = aib_seatopen::mode_note(mode);' \
+  '    let mut t = aib_seatopen::mode_note(mode, crate::workspace::work_net_blocked());' \
   '    let mut t = String::new();' \
   --expect-fail 'seats::tests::a_seat_is_told_its_mode_then_its_commands_before_its_card' \
   -- cargo test -p aibd --locked --lib 'seats::tests::a_seat_is_told_its_mode_then_its_commands_before_its_card'
