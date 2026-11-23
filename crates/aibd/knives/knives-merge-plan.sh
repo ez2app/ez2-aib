@@ -24,7 +24,7 @@ python3 -I scripts/knife.py crates/aibd/src/merge_plan.rs \
 # mp-undone
 python3 -I scripts/knife.py crates/aibd/src/merge_plan.rs \
   'if state == StepState::Undone {' \
-  'if false {' \
+  'if state == StepState::Undone && false {' \
   --expect-fail 'merge_plan::tests::mg12_a_done_step_changed_since_is_left_alone' \
   -- cargo test -p aibd --locked --lib 'merge_plan::tests::mg12_a_done_step_changed_since_is_left_alone'
 # mp-owner
