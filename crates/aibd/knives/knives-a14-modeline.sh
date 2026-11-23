@@ -18,7 +18,7 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
 # a14-codex
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '    let mut t = seat_prompt_head(mode);' \
-  '    let mut t = String::new();' \
+  '    let mut t = seat_prompt_head(&mode[..0]);' \
   --expect-fail 'seats::tests::a_codex_seat_is_told_its_mode_in_thread_start' \
   -- cargo test -p aibd --locked --lib 'seats::tests::a_codex_seat_is_told_its_mode_in_thread_start'
 # a14-page
