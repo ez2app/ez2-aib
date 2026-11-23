@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn a_short_or_personal_sentence_is_not_taken() {
-        assert_eq!(check_new("太短了", "andy", "mac"), Err(Weak::TooShort));
+        assert_eq!(check_new("太短了", "sample", "mac"), Err(Weak::TooShort));
         assert_eq!(
             check_new("one two three four", "x1", "y1"),
             Err(Weak::TooShort)
@@ -378,11 +378,11 @@ mod tests {
         assert!(check_new("one two three four five", "x1", "y1").is_ok());
         assert!(check_new("河邊那棵老榕樹下第三塊石頭底下的鑰匙", "x1", "y1").is_ok());
         assert_eq!(
-            check_new("my name is Andy and this is long", "andy", "pro16"),
+            check_new("my name is Sample and this is long", "sample", "laptop9"),
             Err(Weak::Personal)
         );
         assert_eq!(
-            check_new("pro16 is the best laptop i own", "zz9", "Pro16"),
+            check_new("laptop9 is the best laptop i own", "zz9", "Laptop9"),
             Err(Weak::Personal)
         );
     }
