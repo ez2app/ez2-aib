@@ -4658,7 +4658,7 @@
     // 3e53b IFACE-netcard:網路例外卡要驗證的選項(15 分鐘 / 1 小時 / 到這一位關掉 / 一直允許)
     // c2f0b S2-2:窗上(aibd 寫)是人格名 · +N −M 行 · 對照碼 diff12;卡上照同一份提案印
     persona_propose_approve: (b) => { const p = ppCard(b.request_id) || {}; return ['把提案寫回人格卡「' + String(p.persona_name || p.persona_uid || '') + '」', [['夥伴', p.seat_id ? fpAt(p.seat_id) : ''], ['改動', '+' + (Number(p.added) || 0) + ' −' + (Number(p.removed) || 0) + ' 行', true], ['對照碼', String(p.diff12 || String(b.diff_sha || '').slice(0, 12)), true]]]; },
-    net_card_answer: (b) => { const c = netCard(b.request_id) || {}, o = (c.choices || []).find((x) => x && x.id === b.choice) || {}; return ['讓 ' + (c.seat_id ? fpAt(c.seat_id) : '夥伴') + ' 連 ' + String(c.dest_name || c.dest_ip || '內網'), [['夥伴', c.seat_id ? fpAt(c.seat_id) : ''], ['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true], ['開放', String(o.words || b.choice), true]]]; },
+    net_card_answer: (b) => { const c = netCard(b.request_id) || {}, o = (c.choices || []).find((x) => x && x.id === b.choice) || {}; return ['讓 ' + (c.seat_id ? fpAt(c.seat_id) : '夥伴') + ' 連 ' + String(c.dest_name || c.dest_ip || '內網'), [['夥伴', c.seat_id ? fpAt(c.seat_id) : ''], ['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true], ['開放', o.id ? netAlwaysWords(o, c) : String(b.choice), true]].concat(b.choice === 'always' ? [['影響', netAlwaysWho(c), true]] : [])]; },
     // 08de5 A11(734e430144):完全權限的席重開 / 換模型 / 清空也要本人驗證
     seat_restart: (b) => ['重開 ' + fpAt(b.seat_id), [['夥伴', fpAt(b.seat_id), true], ['之後', '接原本的對話,照原本的權限繼續跑']]],
     seat_model_set: (b) => ['把 ' + fpAt(b.seat_id) + ' 換成 ' + b.model, [['夥伴', fpAt(b.seat_id)], ['模型', b.model, true], ['之後', '下一個回合起用新模型']]],
@@ -5067,6 +5067,11 @@
   const NET_HINT = '這只是提示,夥伴也可能不經過這裡直接連';
   // 3e53b(f163c REVIEW-sandboxnet19 N2):允許綁「位址 + 埠」;換位址的網站(CDN)會一直出卡,一直允許也只記這一個位址
   const NET_BIND = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡,選「一直允許」也只記這一個位址';
+  // ebab8 DECISION-council-netallow-store r1:一直允許綁人格 + 這台、每筆最長 30 天(aibd 給 always_days 就用它的);頁面字照實寫
+  const netAlwaysDays = (c) => { const n = Number(c && c.always_days); return Number.isInteger(n) && n > 0 && n <= 3650 ? n : 30; };
+  const netPersonaSeats = (uid) => (uid ? (S.seats || []).filter((x) => x && x.persona_uid === uid && String(x.state || '').toLowerCase() !== 'archived').length : 0);
+  const netAlwaysWords = (o, c) => String(o.words || '') + (o.id === 'always' && !/\d+\s*天/.test(String(o.words || '')) ? '(每 ' + netAlwaysDays(c) + ' 天再確認一次)' : '');
+  const netAlwaysWho = (c) => '綁人格「' + String(c.persona_name || c.persona_uid || '這個人格') + '」:現在 ' + netPersonaSeats(c.persona_uid) + ' 位,之後開的同人格也算;合併或封存這個人格就收回';
   const netHas = (k) => hasAct(NET_ACTS[k]) === true;
   const netWhy = (e) => NET_WHY[rgCode(e)] || errText(e);
   const netCard = (rid) => ((S.net && S.net.items) || []).find((x) => x && x.request_id === rid) || null;
@@ -5099,7 +5104,7 @@
     const why = c.source === 'net_ask' && c.why ? `<div class="netwhy"><i>夥伴寫的理由:</i>${esc(String(c.why))}</div>` : '';
     // f163c r5km L1:驗證窗開過(沒過)⇒ aibd 那張卡只剩拒絕(別的選項回 net_card_used),只畫拒絕
     const asked = !!(N.asked && N.asked[c.request_id]);
-    const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(o.words)}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
+    const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(netAlwaysWords(o, c))}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
     return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
   }
   function netAskHtml() {
@@ -5138,7 +5143,7 @@
     const msg = N.amsg && N.amsg.seat === sid ? `<div class="trm${N.amsg.bad ? ' bad' : ''}">${esc(N.amsg.text)}</div>` : '';
     if (!Array.isArray(L)) return `<div class="trm bad">讀不到:${esc(L.err || '')}</div>` + msg;
     const rv = netHas('revoke');
-    return (L.length ? `<div class="netal">${L.map((x) => `<div class="netar"><code>${esc(String(x.ip))}:${esc(String(x.port))}</code>${rv ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
+    return (L.length ? `<div class="netal">${L.map((x) => `<div class="netar"><code>${esc(String(x.ip))}:${esc(String(x.port))}</code>${x.expires_at ? ` <span class="apn">到 ${esc(fpWhen(x.expires_at))} 要再確認</span>` : ''}${rv ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
   }
   async function netRevoke(sid, ip, port) {
     const N = (S.net = S.net || {}); if (!netHas('revoke') || N.rv) return;

@@ -37,3 +37,25 @@ k '${S.rgArchBusy ? '\''disabled'\'' : '\'''\''}>↺ 還原</button>' '>↺ 還�
 k ',[data-rgao],[data-rgrs]'\'') && await rgClick(x)) return;' ''\'') && await rgClick(x)) return;'
 # PGMK17 (f163c r6 N1 合併名稱去零寬 / 方向字元)
 k 'replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20)' 'replace(/[\u0000-\u001f\u007f]/g, '\'''\'').trim()).slice(0, 20)'
+# PGNL1 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k 'o.id === '\''always'\'' && !/\d+\s*天/.test(String(o.words || '\'''\''))' 'false && !/\d+\s*天/.test(String(o.words || '\'''\''))'
+# PGNL2 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k '&& !/\d+\s*天/.test(String(o.words || '\'''\'')) ? '\''(每 '\''' '&& true ? '\''(每 '\'''
+# PGNL3 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k 'n <= 3650 ? n : 30; };' 'n <= 3650 ? n : 90; };'
+# PGNL4 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k 'return Number.isInteger(n) && n > 0 && n <= 3650' 'return false && n > 0 && n <= 3650'
+# PGNL5 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k ' && String(x.state || '\'''\'').toLowerCase() !== '\''archived'\'').length : 0);' ').length : 0);'
+# PGNL6 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k '.concat(b.choice === '\''always'\'' ? [['\''影響'\'', netAlwaysWho(c), true]] : [])]; },' ']; },'
+# PGNL7 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k 'b.choice === '\''always'\'' ? [['\''影響'\'', netAlwaysWho(c), true]]' 'true ? [['\''影響'\'', netAlwaysWho(c), true]]'
+# PGNL8 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k '>${esc(netAlwaysWords(o, c))}${o.needs_owner ? '\'' · 要驗證'\'' : '\'''\''}</button>' '>${esc(o.words)}${o.needs_owner ? '\'' · 要驗證'\'' : '\'''\''}</button>'
+# PGNL9 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k '${x.expires_at ? ` <span class="apn">到' '${false ? ` <span class="apn">到'
+# PGNL10 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k '到 ${esc(fpWhen(x.expires_at))} 要再確認' '到 ${fpWhen(x.expires_at)} 要再確認'
+# PGNL11 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
+k ''\''綁人格「'\'' + String(c.persona_name || c.persona_uid || '\''這個人格'\'')' ''\''綁人格「'\'' + String(c.persona_uid || '\''這個人格'\'')'
