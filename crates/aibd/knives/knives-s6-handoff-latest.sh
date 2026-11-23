@@ -45,3 +45,9 @@ python3 -I scripts/knife.py crates/aibd/src/handoff_latest.rs \
   '"mempack": one(crate::seat_carry::HANDOFF),' \
   --expect-fail 'handoff_latest::tests::the_newest_of_the_seats_own_is_given' \
   -- cargo test -p aibd --locked --lib 'handoff_latest::tests::the_newest_of_the_seats_own_is_given'
+# s6-userpage (f163c REVIEW-s6code C1; ebab8 11-23 09:11 standing rule: built-in-page gates have an integration test and a knife)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+  '            if held_by_user_page {' \
+  '            if held_by_user_page && false {' \
+  --expect-fail only_the_built_in_page_lists_a_seats_newest_handoff \
+  -- cargo test -p aibd --locked --test handoff_latest_userpage only_the_built_in_page_lists_a_seats_newest_handoff
