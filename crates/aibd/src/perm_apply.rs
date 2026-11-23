@@ -310,19 +310,56 @@ pub async fn template_at(
 /// then the tools its items do not hold. A seat with no row keeps its mode's own.
 pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
     let (db, id) = (st.messages.clone(), seat_id.to_owned());
-    let row = tokio::task::spawn_blocking(move || {
-        let _ = db.seat_perm_take_pending(&id, "aibd:restart", &crate::sessions::now_rfc3339());
-        db.seat_perm(&id)
+    let read = tokio::task::spawn_blocking(move || {
+        let took = db
+            .seat_perm_take_pending(&id, "aibd:restart", &crate::sessions::now_rfc3339())
+            .is_ok();
+        (took, db.seat_perm(&id).map(|r| r.map(|p| p.now.items_json)))
     })
     .await;
+    let (took, row) = match read {
+        Ok((took, Ok(row))) => (took, Ok(row)),
+        Ok((took, Err(_))) => (took, Err(())),
+        Err(_) => (false, Err(())),
+    };
+    if !took {
+        // f163c REVIEW-papply M1: the change waiting for this restart was not written; say so
+        tracing::warn!(
+            seat_id,
+            "seat_perm pending not applied at restart: brain held back"
+        );
+        let ev = crate::sessions::new_id("ev_")
+            .ok()
+            .map(|id| aib_store::NewEvent {
+                event_id: id.clone(),
+                aggregate_type: "seat_perm".into(),
+                aggregate_id: id,
+                sequence: 1,
+                event_type: "seat.perm.restart_unapplied".into(),
+                correlation_id: None,
+                occurred_at: crate::sessions::now_rfc3339(),
+                payload: json!({"seat_id": seat_id, "held_back": [crate::seats::BRAIN_TOOL]}),
+            });
+        let store = st.store.clone();
+        let _ = tokio::task::spawn_blocking(move || ev.map(|ev| store.append(vec![ev]))).await;
+    }
+    restart_drop(took, row)
+}
+
+/// [`at_restart`] on what was read: `written` = the waiting change was written (or there was none).
+/// Not written, or the row unread: hold less, never more (f163c REVIEW-papply M1: a lowering
+/// waiting for this restart must not be skipped by running on the old items).
+pub fn restart_drop(written: bool, row: Result<Option<String>, ()>) -> Vec<&'static str> {
+    if !written {
+        return vec![crate::seats::BRAIN_TOOL];
+    }
     match row {
-        Ok(Ok(Some(p))) => serde_json::from_str::<Value>(&p.now.items_json)
+        Ok(Some(items_json)) => serde_json::from_str::<Value>(&items_json)
             .ok()
             .and_then(|v| Items::parse(&v))
             .map_or_else(|| vec![crate::seats::BRAIN_TOOL], |i| tools_dropped(&i)),
-        Ok(Ok(None)) => Vec::new(),
-        // unread: hold less, never more
-        _ => vec![crate::seats::BRAIN_TOOL],
+        Ok(None) => Vec::new(),
+        Err(()) => vec![crate::seats::BRAIN_TOOL],
     }
 }
 
@@ -372,7 +409,11 @@ fn fields(body: &Value) -> Option<(String, String, i64, Option<String>)> {
 
 /// The seat's mode and what it holds now (a seat with no row gets one: its mode's own, so a
 /// change has a `from`).
-async fn now_of(st: &AppState, seat_id: &str) -> Result<(String, Items), Box<Response>> {
+/// The seat's mode, the items it runs with now, and the change waiting for its restart.
+async fn now_of(
+    st: &AppState,
+    seat_id: &str,
+) -> Result<(String, Items, Option<Items>), Box<Response>> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
     let mode = match tokio::task::spawn_blocking(move || store.seat_metas()).await {
         Ok(Ok(m)) => m.into_iter().find(|x| x.seat_id == id).and_then(|x| x.mode),
@@ -412,19 +453,42 @@ async fn now_of(st: &AppState, seat_id: &str) -> Result<(String, Items), Box<Res
             "seat permissions unreadable",
         )));
     };
-    // what it runs with is what it would run with at its next start: a change waiting counts
-    let s = p.pending.unwrap_or(p.now);
-    let Some(items) = serde_json::from_str::<Value>(&s.items_json)
-        .ok()
-        .and_then(|v| Items::parse(&v))
-    else {
-        return Err(Box::new(refuse(
+    let parse = |j: &str| {
+        serde_json::from_str::<Value>(j)
+            .ok()
+            .and_then(|v| Items::parse(&v))
+    };
+    let unreadable = || {
+        Box::new(refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "seat permissions unreadable",
-        )));
+        ))
     };
-    Ok((mode, items))
+    let now = parse(&p.now.items_json).ok_or_else(unreadable)?;
+    let pending = match p.pending {
+        None => None,
+        Some(w) => Some(parse(&w.items_json).ok_or_else(unreadable)?),
+    };
+    Ok((mode, now, pending))
+}
+
+/// An apply of `new` to a seat of `mode` running `now`, with `pending` waiting for its restart.
+/// Measured against what it would start with next (`pending`, or `now`); and a raise over
+/// what it runs `now` is a raise even under a waiting raise it stays within: the owner
+/// approved that template, not this one (f163c REVIEW-papply L5).
+pub fn change_with_pending(
+    mode: &str,
+    now: &Items,
+    pending: Option<&Items>,
+    new: &Items,
+) -> Change {
+    let next = change_of(mode, pending.unwrap_or(now), mode, new);
+    if next != Change::Same && change_of(mode, now, mode, new) == Change::Raise {
+        Change::Raise
+    } else {
+        next
+    }
 }
 
 /// Apply `e` to `seat_id` (an apply, or a take-back: `action` `revoke`).
@@ -436,7 +500,7 @@ async fn apply_to(
     by: &str,
     revoking: Option<i64>,
 ) -> Response {
-    let (mode, old) = match now_of(st, seat_id).await {
+    let (mode, now, pending) = match now_of(st, seat_id).await {
         Ok(x) => x,
         Err(r) => return *r,
     };
@@ -447,14 +511,14 @@ async fn apply_to(
             "這個模板的底模式跟這一位不同;換底模式請開一位新的",
         );
     }
-    let change = change_of(&mode, &old, &e.base, &e.items);
+    let change = change_with_pending(&mode, &now, pending.as_ref(), &e.items);
     if change == Change::Same {
         return Json(json!({"seat_id": seat_id, "unchanged": true,
             "not_enforceable": not_given_json(&e.base, &e.items)}))
         .into_response();
     }
     if change == Change::Raise {
-        let raised = turned_on(&old, &e.items);
+        let raised = turned_on(&now, &e.items);
         let a = ask(
             e,
             Some(seat_id),
@@ -809,6 +873,56 @@ mod tests {
                 .contains("if !crate::perm_apply::holds(&st, seat_id, &mode, \"brain\").await {"),
             "reason: brain_act_ignores_template"
         );
+    }
+
+    /// f163c REVIEW-papply L5: under a waiting raise H, a smaller template M (within H, above
+    /// now) is still a raise: asked, and it waits for a restart instead of restarting now.
+    #[test]
+    fn a_smaller_template_under_a_waiting_raise_is_still_asked() {
+        let it = |on: &[&str]| Items::from_keys(on);
+        let now = it(&["chat"]);
+        let high = it(&["chat", "code", "cmd"]);
+        let mid = it(&["chat", "code"]);
+        assert_eq!(
+            change_with_pending("safe", &now, Some(&high), &mid),
+            Change::Raise,
+            "reason: smaller_under_pending_raise_not_asked"
+        );
+        assert_eq!(
+            change_with_pending("safe", &now, Some(&high), &high),
+            Change::Same
+        );
+        assert_eq!(
+            change_with_pending("safe", &now, Some(&high), &now),
+            Change::Lower
+        );
+        assert_eq!(change_with_pending("safe", &now, None, &mid), Change::Raise);
+        assert_eq!(
+            change_with_pending("safe", &high, None, &mid),
+            Change::Lower
+        );
+    }
+
+    /// f163c REVIEW-papply M1: a restart whose waiting change was not written holds the brain
+    /// back, whatever the old items say; an unread row too; a seat with no row keeps its mode's.
+    #[test]
+    fn a_restart_that_could_not_take_its_change_holds_less() {
+        let on: Value = {
+            let mut m = serde_json::Map::new();
+            for (k, _) in ITEMS {
+                m.insert(k.to_owned(), Value::Bool(gives_now("work").contains(&k)));
+            }
+            Value::Object(m)
+        };
+        let on = on.to_string();
+        assert!(restart_drop(true, Ok(Some(on.clone()))).is_empty());
+        assert_eq!(
+            restart_drop(false, Ok(Some(on))),
+            vec![crate::seats::BRAIN_TOOL],
+            "reason: unapplied_lowering_ran_on_old_items"
+        );
+        assert_eq!(restart_drop(true, Err(())), vec![crate::seats::BRAIN_TOOL]);
+        assert!(restart_drop(true, Ok(None)).is_empty());
     }
 
     /// f163c bnote L1 (bound to 7b): a seat whose template has 第二大腦 off does not hold it,

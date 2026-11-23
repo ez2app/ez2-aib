@@ -69,3 +69,45 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '        && req.mode == "dgrs"' \
   --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
   -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
+# pa-m1 (f163c REVIEW-papply M1)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '    if !written {' \
+  '    if false && !written {' \
+  --expect-fail perm_apply::tests::a_restart_that_could_not_take_its_change_holds_less \
+  -- cargo test -p aibd --locked --lib perm_apply::tests::a_restart_that_could_not_take_its_change_holds_less
+# pa-l5 (f163c REVIEW-papply L5)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '    if next != Change::Same && change_of(mode, now, mode, new) == Change::Raise {' \
+  '    if false && next != Change::Same && change_of(mode, now, mode, new) == Change::Raise {' \
+  --expect-fail perm_apply::tests::a_smaller_template_under_a_waiting_raise_is_still_asked \
+  -- cargo test -p aibd --locked --lib perm_apply::tests::a_smaller_template_under_a_waiting_raise_is_still_asked
+# pa-applyok (f163c REVIEW-papply L2)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '        if !crate::owner_ok::approved_for(&t, &a) {' \
+  '        if t.is_empty() {' \
+  --expect-fail a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket \
+  -- cargo test -p aibd --locked --test perm_apply_owner a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket
+# pa-rev (f163c REVIEW-papply L2)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '    if t.rev != rev {' \
+  '    if t.rev != rev && false {' \
+  --expect-fail a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket \
+  -- cargo test -p aibd --locked --test perm_apply_owner a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket
+# pa-userpage (f163c REVIEW-papply L2)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+  '            if apply_from_user_page || page.carried {' \
+  '            if false && apply_from_user_page || page.carried {' \
+  --expect-fail a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket \
+  -- cargo test -p aibd --locked --test perm_apply_owner a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket
+# tpl-ticket (f163c REVIEW-papply L2 page_open)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '                if !crate::owner_ok::approved_for(t, &a) {' \
+  '                if t.is_empty() {' \
+  --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
+  -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
+# tpl-pair (f163c REVIEW-papply L2 page_open)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '        _ => return Refusal("template", "tpl_uid and rev go together").into_response(),' \
+  '        _ => None,' \
+  --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
+  -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked

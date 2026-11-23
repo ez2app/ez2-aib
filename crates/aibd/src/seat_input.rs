@@ -466,7 +466,8 @@ pub async fn act(
         Some(
             crate::perm_apply::APPLY | crate::perm_apply::SEAT_LOG | crate::perm_apply::REVOKE,
         ) => {
-            if held_as_user_page(&page).await || page.carried {
+            let apply_from_user_page = held_as_user_page(&page).await;
+            if apply_from_user_page || page.carried {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "page_only",

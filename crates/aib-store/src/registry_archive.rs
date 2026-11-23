@@ -80,8 +80,10 @@ pub const BATCH_STATES: [&str; 5] = ["run", "done", "failed", "undone", "partial
 pub fn batch_from(state: &str) -> &'static [&'static str] {
     match state {
         "done" | "failed" => &["run"],
-        "undone" => &["done", "failed", "partial_undo"],
-        "partial_undo" => &["done", "failed"],
+        // f163c N4: a failed batch was already rolled back (IFACE r2 §3); undoing it again
+        // would undo the rolled-back steps once more
+        "undone" => &["done", "partial_undo"],
+        "partial_undo" => &["done"],
         _ => &[],
     }
 }
@@ -808,6 +810,14 @@ mod tests {
         );
         // and no step is added to a batch that is not running
         assert!(m.merge_step_pending(step("mb_1", 9)).is_err());
+        // a failed batch was rolled back already: it is not undone again (f163c N4)
+        m.merge_batch_begin(batch("mb_2")).unwrap();
+        assert!(m.merge_batch_state("mb_2", "failed").unwrap());
+        assert!(
+            !m.merge_batch_state("mb_2", "undone").unwrap(),
+            "reason: failed_undone_again"
+        );
+        assert!(!m.merge_batch_state("mb_2", "partial_undo").unwrap());
     }
 
     /// f163c regarch L3: every archived uid, past the list's limit.

@@ -39,3 +39,9 @@ python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
   '            "SELECT uid FROM archived_items WHERE kind = ?1 AND restored_at IS NULL ORDER BY uid LIMIT 500",' \
   --expect-fail registry_archive::tests::every_archived_uid_is_read_past_the_list_limit \
   -- cargo test -p aib-store --locked --lib registry_archive::tests::every_archived_uid_is_read_past_the_list_limit
+# ra-failed (f163c regarch N4)
+python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
+  '        "undone" => &["done", "partial_undo"],' \
+  '        "undone" => &["done", "failed", "partial_undo"],' \
+  --expect-fail registry_archive::tests::a_batch_moves_only_along_its_table \
+  -- cargo test -p aib-store --locked --lib registry_archive::tests::a_batch_moves_only_along_its_table

@@ -1012,11 +1012,15 @@ pub async fn delete(st: AppState, body: Value, by: String) -> Response {
     let mut v = json!({"results": out});
     if let Some(seat) = whole_seat {
         let db = st.messages.clone();
-        if let Ok(Ok((_, live))) =
-            tokio::task::spawn_blocking(move || db.brain_note_counts(&seat, i64::MAX)).await
+        // f163c N6: unread is null, never left out (the page would read it as all taken back)
+        v["remaining"] = match tokio::task::spawn_blocking(move || {
+            db.brain_note_counts(&seat, i64::MAX)
+        })
+        .await
         {
-            v["remaining"] = json!(live);
-        }
+            Ok(Ok((_, live))) => json!(live),
+            _ => Value::Null,
+        };
     }
     Json(v).into_response()
 }
