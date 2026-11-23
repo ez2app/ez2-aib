@@ -82,6 +82,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::preview::ACTIVE,
     crate::persona_propose::LIST,
     crate::persona_propose::DENY,
+    crate::passphrase_keep::STATE,
     crate::receipt_run::REQUEST,
     crate::receipt_run::READ,
     crate::receipt_run::WITHDRAW,
@@ -738,6 +739,10 @@ pub async fn act(
         // §7-2 寫回人格: the built-in page lists the waiting proposals and says no
         Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {
             return crate::persona_propose::page_act(&st, &page, body).await
+        }
+        // S11-3 密語備援: the built-in page reads the passphrase state (never the phrase)
+        Some(crate::passphrase_keep::STATE) => {
+            return crate::passphrase_keep::page_act(&page).await;
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(

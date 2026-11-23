@@ -230,6 +230,8 @@ pub enum SetError {
     Weak(Weak),
     /// The KDF failed (out of memory).
     Kdf,
+    /// The record could not be written (passphrase_keep).
+    Store,
 }
 
 impl SetError {
@@ -240,6 +242,7 @@ impl SetError {
             SetError::Weak(Weak::TooShort) => "passphrase_too_short",
             SetError::Weak(Weak::Personal) => "passphrase_personal",
             SetError::Kdf => "passphrase_kdf_failed",
+            SetError::Store => "passphrase_store_failed",
         }
     }
 }

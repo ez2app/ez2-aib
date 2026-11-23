@@ -52,6 +52,7 @@ pub mod pair_api;
 pub mod pair_carry;
 pub mod pairing;
 pub mod passphrase;
+pub mod passphrase_keep;
 pub mod person;
 pub mod persona_diff;
 pub mod persona_propose;

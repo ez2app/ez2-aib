@@ -83,6 +83,8 @@ pub async fn run(
     let dirs = platform::OsDirs(cfg.data_dir.clone());
     // N-web-dmbridge: <data>/bridge.json is where legacy_send reads its switch
     crate::bridge_cfg::set_dir(&cfg.data_dir);
+    // S11-3 密語備援: the passphrase files and their one lock (passphrase_keep.rs)
+    crate::passphrase_keep::set_dir(&cfg.data_dir);
     // DESIGN-pr-api-7b81e-1121: what a pull request is opened with, where the platform has it
     if let Some(api) = crate::pr_api::platform_api() {
         crate::pr_open::set_api(api);
