@@ -355,6 +355,66 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
     Ok(o)
 }
 
+/// The pairing channel's variable, and the value the owner's fingerprint asks need.
+pub const PAIRING_ENV: &str = "AIBD_PAIRING";
+pub const PAIRING_TOUCHID: &str = "touchid";
+
+/// FINDING-reporeg-ownercheck-ebab8-1123 (9918e 派工 11-23): `AIBD_OWNER_TOUCH=1` works only
+/// with `AIBD_PAIRING=touchid` (owner_ok.rs, [`crate::owner_ok::SWITCH`]); with any other
+/// pairing every page ask answers `owner_check_unavailable`. So an install never writes the
+/// one without the other:
+/// - the switch off: nothing to do (`Ok(false)`);
+/// - the pairing already `touchid`: nothing to do;
+/// - the pairing missing or only kept from the old plist: raised to `touchid` (`Ok(true)`;
+///   touchid is the stricter channel, the weak `terminal-unverified` is never kept beside it);
+/// - the pairing named in this command (`pairing_named`: `--env` / `--unset-env`) as anything
+///   else: refused, the command contradicts itself;
+/// - a platform with no fingerprint pairing in aibd yet (Windows Hello is not in aibd):
+///   refused, never a weaker channel.
+///
+/// Against slips, not a defence: the same user can write the plist by hand
+/// (GUIDE-same-user-ai-threat-model); the defence is the fingerprint itself.
+pub fn owner_touch_env(
+    env: &mut BTreeMap<String, String>,
+    pairing_named: bool,
+    os: &str,
+) -> Result<bool, String> {
+    let switch = crate::owner_ok::SWITCH;
+    if !crate::owner_ok::switch_on(env.get(switch).cloned()) {
+        return Ok(false);
+    }
+    if os != "macos" {
+        return Err(format!(
+            "{switch}=1 needs the owner's fingerprint pairing, which aibd does not have on {os} yet (Windows Hello later); not writing it"
+        ));
+    }
+    match env.get(PAIRING_ENV).map(String::as_str) {
+        Some(PAIRING_TOUCHID) => Ok(false),
+        other if pairing_named => Err(format!(
+            "{switch}=1 needs {PAIRING_ENV}={PAIRING_TOUCHID}, but this command sets {PAIRING_ENV} to {}; the page's fingerprint asks would stay unavailable",
+            other.unwrap_or("nothing")
+        )),
+        _ => {
+            env.insert(PAIRING_ENV.into(), PAIRING_TOUCHID.into());
+            Ok(true)
+        }
+    }
+}
+
+/// The step left after an install that pairs by fingerprint: the key is made once, by the owner
+/// at this Mac (`aibd ctl pair-key init`); this command never asks for a fingerprint itself.
+pub fn pair_key_next(env: &BTreeMap<String, String>, data: &Path) -> Option<String> {
+    let key = crate::touch::key_dir(data);
+    (env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID)
+        && !(key.join("key.blob").exists() && key.join("key.pub").exists()))
+    .then(|| {
+        format!(
+            "NEXT aibd ctl pair-key init (no fingerprint key in {} yet: pairing and the page's fingerprint asks stay unavailable until the owner makes it at this Mac)",
+            key.display()
+        )
+    })
+}
+
 fn env_key_ok(k: &str) -> bool {
     !k.is_empty()
         && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -1313,6 +1373,37 @@ fn install_steps(
         return Err(why);
     }
     let mut out = Out::default();
+    // environment: the old plist's keys stay unless unset (5d33a L2); --env wins. Worked out
+    // before anything is stopped or copied, so a refused combination changes nothing.
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    if !o.adopt {
+        let given: Vec<&str> = o.env.iter().map(|(k, _)| k.as_str()).collect();
+        if let Some(ex) = &existing {
+            for (k, v) in &ex.env {
+                if k == "PATH" {
+                    continue;
+                }
+                if o.unset_env.iter().any(|u| u == k) {
+                    out.say(format!("UNSET-ENV {k}"));
+                    continue;
+                }
+                if !given.contains(&k.as_str()) {
+                    out.say(format!("KEPT-ENV {k}"));
+                }
+                env.insert(k.to_owned(), v.to_owned());
+            }
+        }
+        for (k, v) in &o.env {
+            env.insert(k.clone(), v.clone());
+        }
+        let named = given.contains(&PAIRING_ENV) || o.unset_env.iter().any(|u| u == PAIRING_ENV);
+        if owner_touch_env(&mut env, named, h.os)? {
+            out.say(format!(
+                "SET-ENV {PAIRING_ENV}={PAIRING_TOUCHID} ({}=1 needs it)",
+                crate::owner_ok::SWITCH
+            ));
+        }
+    }
     // 5d33a T97-2m r1 M1: an aibd already in launchd is taken out (and waited for) before
     // the plist is rewritten; otherwise bootstrap answers 5 and the new plist is not used
     if !o.no_start {
@@ -1360,6 +1451,13 @@ fn install_steps(
             "ADOPTED {} (record only; executable and plist untouched)",
             rec.exe
         ));
+        // adopt never writes the plist, so a mismatched pair is only reported here
+        if owner_touch_env(&mut rec.env.clone(), true, h.os).is_err() {
+            out.say(format!(
+                "WARN-ENV {}=1 without {PAIRING_ENV}={PAIRING_TOUCHID}: the page's fingerprint asks stay unavailable; aibd install --no-start --env {PAIRING_ENV}={PAIRING_TOUCHID}",
+                crate::owner_ok::SWITCH
+            ));
+        }
         out.say(format!("RECORD {}", record_path(&data).display()));
         return Ok(out);
     }
@@ -1415,27 +1513,6 @@ fn install_steps(
         out.say(format!("COPIED {target_s}"));
     }
 
-    // environment: the old plist's keys stay unless unset (5d33a L2); --env wins
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
-    let given: Vec<&str> = o.env.iter().map(|(k, _)| k.as_str()).collect();
-    if let Some(ex) = &existing {
-        for (k, v) in &ex.env {
-            if k == "PATH" {
-                continue;
-            }
-            if o.unset_env.iter().any(|u| u == k) {
-                out.say(format!("UNSET-ENV {k}"));
-                continue;
-            }
-            if !given.contains(&k.as_str()) {
-                out.say(format!("KEPT-ENV {k}"));
-            }
-            env.insert(k.clone(), v.clone());
-        }
-    }
-    for (k, v) in &o.env {
-        env.insert(k.clone(), v.clone());
-    }
     env.entry("PATH".into())
         .or_insert_with(|| format!("{}:{PATH_TAIL}", dir.display()));
     let log = pl
@@ -1473,6 +1550,9 @@ fn install_steps(
     let data = data_dir_for(h, &rec.env)?;
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
+    if let Some(next) = pair_key_next(&rec.env, &data) {
+        out.say(next);
+    }
 
     // moved with --dir: take away the old copy when it is still the recorded build
     if let Some(r) = &old_rec {
@@ -2102,6 +2182,205 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// FINDING-reporeg-ownercheck-ebab8-1123: the switch never without the touchid pairing.
+    #[test]
+    fn owner_touch_needs_the_touchid_pairing_or_is_refused() {
+        let sw = crate::owner_ok::SWITCH;
+        // switch off (or not exactly 1): untouched
+        for v in [None, Some("0"), Some("true")] {
+            let mut e = env_of(&[(PAIRING_ENV, "terminal-unverified")]);
+            if let Some(v) = v {
+                e.insert(sw.into(), v.into());
+            }
+            let before = e.clone();
+            assert_eq!(owner_touch_env(&mut e, true, "macos"), Ok(false), "{v:?}");
+            assert_eq!(e, before);
+        }
+        // already touchid
+        let mut e = env_of(&[(sw, "1"), (PAIRING_ENV, PAIRING_TOUCHID)]);
+        assert_eq!(owner_touch_env(&mut e, true, "macos"), Ok(false));
+        // kept from the old plist / missing, not named this time: raised to touchid
+        for kept in [Some("terminal-unverified"), Some("off"), None] {
+            let mut e = env_of(&[(sw, "1")]);
+            if let Some(k) = kept {
+                e.insert(PAIRING_ENV.into(), k.into());
+            }
+            assert_eq!(
+                owner_touch_env(&mut e, false, "macos"),
+                Ok(true),
+                "{kept:?}"
+            );
+            assert_eq!(
+                e[PAIRING_ENV], PAIRING_TOUCHID,
+                "reason: pairing_not_raised"
+            );
+        }
+        // named this time as something else, or unset by name: refused, nothing changed
+        for named in [Some("terminal-unverified"), None] {
+            let mut e = env_of(&[(sw, "1")]);
+            if let Some(n) = named {
+                e.insert(PAIRING_ENV.into(), n.into());
+            }
+            let before = e.clone();
+            let r = owner_touch_env(&mut e, true, "macos");
+            assert!(r.is_err(), "reason: contradiction_allowed {named:?}");
+            assert!(r.unwrap_err().contains(PAIRING_TOUCHID));
+            assert_eq!(e, before);
+        }
+        // no fingerprint pairing on this platform yet: refused, never a weaker channel
+        for os in ["windows", "linux"] {
+            let mut e = env_of(&[(sw, "1"), (PAIRING_ENV, PAIRING_TOUCHID)]);
+            let r = owner_touch_env(&mut e, false, os);
+            assert!(r.is_err(), "reason: off_mac_allowed {os}");
+            assert!(r.unwrap_err().contains("Windows Hello"));
+        }
+    }
+
+    fn plist_env(m: &Mac) -> BTreeMap<String, String> {
+        seen(&parse_plist(&std::fs::read_to_string(m.plist()).unwrap()).unwrap()).env
+    }
+
+    #[test]
+    fn install_writes_owner_touch_only_with_touchid_and_keeps_the_aibd_keys() {
+        let sw = crate::owner_ok::SWITCH;
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        let ot = format!("{sw}=1");
+        // the weak pairing named next to the switch: refused before anything is written
+        let o = m.run(
+            "install",
+            &[
+                "--no-start",
+                "--env",
+                &ot,
+                "--env",
+                "AIBD_PAIRING=terminal-unverified",
+            ],
+            &svc,
+        );
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(!m.plist().exists(), "reason: plist_written_on_refusal");
+        assert!(!m.p("bin/aibd").exists(), "reason: copied_on_refusal");
+        // the incident's plist: weak pairing and a session limit
+        let o = m.run(
+            "install",
+            &[
+                "--no-start",
+                "--env",
+                "AIBD_PAIRING=terminal-unverified",
+                "--env",
+                "AIBD_MAX_SESSIONS=8",
+            ],
+            &svc,
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            !o.stdout.contains("NEXT aibd ctl pair-key init"),
+            "{}",
+            o.stdout
+        );
+        // the switch added later: the kept weak pairing is raised, the limit stays
+        let o = m.run("install", &["--no-start", "--env", &ot], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            o.stdout.contains("SET-ENV AIBD_PAIRING=touchid"),
+            "{}",
+            o.stdout
+        );
+        assert!(
+            o.stdout.contains("NEXT aibd ctl pair-key init"),
+            "{}",
+            o.stdout
+        );
+        let e = plist_env(&m);
+        assert_eq!(e.get(sw).map(String::as_str), Some("1"));
+        assert_eq!(e[PAIRING_ENV], PAIRING_TOUCHID, "reason: weak_pairing_kept");
+        assert_eq!(e["AIBD_MAX_SESSIONS"], "8");
+        // a plain reinstall keeps all three, says nothing new
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        for k in [sw, PAIRING_ENV, "AIBD_MAX_SESSIONS"] {
+            assert!(
+                o.stdout.contains(&format!("KEPT-ENV {k}")),
+                "{k}: {}",
+                o.stdout
+            );
+        }
+        assert!(!o.stdout.contains("SET-ENV"), "{}", o.stdout);
+        assert_eq!(plist_env(&m), e, "reason: reinstall_dropped_keys");
+        // unsetting the pairing by name while the switch stays: refused, plist as it was
+        let o = m.run("install", &["--no-start", "--unset-env", PAIRING_ENV], &svc);
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert_eq!(plist_env(&m), e);
+        // with the key made, no NEXT line
+        let key = crate::touch::key_dir(&m.p("data"));
+        std::fs::create_dir_all(&key).unwrap();
+        std::fs::write(key.join("key.blob"), b"b").unwrap();
+        std::fs::write(key.join("key.pub"), b"p").unwrap();
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(!o.stdout.contains("NEXT"), "{}", o.stdout);
+        assert!(f.calls().is_empty(), "{:?}", f.calls());
+    }
+
+    #[test]
+    fn a_refused_pairing_stops_nothing_that_runs() {
+        // without --no-start the check still comes before launchd is touched
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let ot = format!("{}=1", crate::owner_ok::SWITCH);
+        let o = m.run(
+            "install",
+            &["--env", &ot, "--env", "AIBD_PAIRING=terminal-unverified"],
+            &f.svc(&hl),
+        );
+        assert_ne!(o.code, RC_OK, "{o:?}");
+        assert!(
+            f.calls().is_empty(),
+            "reason: stopped_before_refusal {:?}",
+            f.calls()
+        );
+        assert!(!o.stderr.contains("aibd was stopped"), "{}", o.stderr);
+    }
+
+    #[test]
+    fn adopt_reports_a_switch_without_touchid() {
+        let sw = crate::owner_ok::SWITCH;
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let pl = PlistSpec {
+            label: "app.ez2.aibd.unit".into(),
+            exe: m.p("src/aibd").display().to_string(),
+            log: m.p("log").display().to_string(),
+            env: env_of(&[
+                (sw, "1"),
+                (PAIRING_ENV, "terminal-unverified"),
+                ("AIBD_DATA_DIR", &m.p("data").display().to_string()),
+            ]),
+        };
+        std::fs::create_dir_all(m.plist().parent().unwrap()).unwrap();
+        std::fs::write(m.plist(), render_plist(&pl)).unwrap();
+        let before = std::fs::read(m.plist()).unwrap();
+        // --adopt takes no --dir, which Mac::run adds for install
+        let a = m.args(&["--no-start", "--adopt"]);
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        let o = run("install", &a, &m.h, &f.svc(&hl));
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(o.stdout.contains("WARN-ENV"), "{}", o.stdout);
+        assert_eq!(std::fs::read(m.plist()).unwrap(), before);
     }
 
     #[cfg(target_os = "macos")]
