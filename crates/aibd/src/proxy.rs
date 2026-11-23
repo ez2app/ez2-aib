@@ -636,6 +636,62 @@ mod tests {
         );
     }
 
+    /// SPEC r2 U8「跨席冒用」: one seat's grant, port or always row never lets another seat
+    /// through; a connection is the seat its port was given to.
+    #[test]
+    fn a_seat_never_rides_on_another_seats_grant() {
+        let mut ports = Ports::default();
+        let pa = ports.give("a1b2c", &[], 0).unwrap();
+        let pb = ports.give("d3e4f", &[], 0).unwrap();
+        let g = Grants::default();
+        let db = at("10.0.0.5:5432");
+        let min15 = yes_of(Some("min15"), Owner::Yes).unwrap();
+        assert!(give(&g, "a1b2c", db, false, &min15, 1_000));
+        let only_a = |s: &str, _: IpAddr, _: u16| s == "a1b2c";
+        let mut lim = CardLimit::default();
+        for (port, list) in [
+            (pb, &none as &dyn Fn(&str, IpAddr, u16) -> bool),
+            (pb, &only_a),
+        ] {
+            let r = decide(
+                &ports,
+                port,
+                "db",
+                &[db.ip()],
+                5432,
+                here(1_001),
+                &WHO,
+                &g,
+                list,
+                &mut lim,
+                0,
+                "r".into(),
+            );
+            assert!(
+                matches!(&r, Conn::Card(c) if c.seat_id == "d3e4f"),
+                "reason: rode_another_seats_grant {r:?}"
+            );
+            lim = CardLimit::default();
+        }
+        assert_eq!(
+            decide(
+                &ports,
+                pa,
+                "db",
+                &[db.ip()],
+                5432,
+                here(1_001),
+                &WHO,
+                &g,
+                &none,
+                &mut lim,
+                0,
+                "r".into(),
+            ),
+            Conn::Pass(db)
+        );
+    }
+
     #[test]
     fn taking_always_back_closes_what_rests_on_it_only() {
         let g = Grants::default();
