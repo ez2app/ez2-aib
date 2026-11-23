@@ -193,7 +193,8 @@ pub const OP_PRIVATE: &str = "net.private";
 /// A service on this computer itself (the same word as `grants::OP_NET_LOCAL_SELF`).
 pub const OP_LOCAL_SELF: &str = "net.local_self";
 
-/// How long a card waits for the owner; then it is a refusal (IFACE-netcard §1).
+/// How long a card stays in the table after its `expires_at` (f163c N3): answers then get
+/// `net_card_expired`, not `net_card_unknown`. How long a card waits is the proxy's `expires_at`.
 pub const CARD_SECS: u64 = 120;
 
 /// One card: a seat's connection held while the owner decides. Made only by aibd's proxy (or
@@ -323,7 +324,8 @@ impl Card {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Open,
-    /// A window was asked for this choice; only the ticket's resend finishes it.
+    /// A window was raised for this choice (marked only once aibd answered 202, f163c L1);
+    /// only the ticket's resend finishes it.
     Asked(Choice),
     Finished,
 }
@@ -374,6 +376,21 @@ impl Cards {
             .iter()
             .find(|(c, _)| c.request_id == request_id)
             .map(|(c, _)| c.clone())
+    }
+
+    /// The owner's window for choice `c` is up (aibd answered 202 with a ticket): from now on
+    /// only that ticket finishes the card. A window that could not be raised marks nothing, so
+    /// the card can be answered again (f163c REVIEW-netcardact L1).
+    pub fn opened(&mut self, request_id: &str, c: Choice) {
+        if let Some((_, s)) = self
+            .rows
+            .iter_mut()
+            .find(|(card, _)| card.request_id == request_id)
+        {
+            if *s == State::Open {
+                *s = State::Asked(c);
+            }
+        }
     }
 
     /// Cards still waiting for the owner (`net_cards` on `GET /api/v1/seats`).
@@ -434,12 +451,12 @@ impl Cards {
         }
         let ask = card.ask(c, by);
         match (ticket, *state) {
-            (None, State::Open) => {
-                *state = State::Asked(c);
-                Step::Ask(Box::new(ask))
-            }
+            // the window; the card is marked only once it is up (Cards::opened)
+            (None, State::Open) => Step::Ask(Box::new(ask)),
             // the second send without the ticket (IFACE r1)
             (None, _) => Step::Refused("net_card_used"),
+            // a ticket for another choice than the window's (f163c N1): not even looked up
+            (Some(_), State::Asked(asked)) if asked != c => Step::NotApproved,
             (Some(t), State::Asked(_)) => {
                 if !approved(t, &ask) {
                     return Step::NotApproved;
@@ -641,6 +658,15 @@ mod tests {
             panic!("reason: no_window");
         };
         assert_eq!(ask.operation, OP_PRIVATE);
+        // L1: a window that could not be raised marks nothing; asking again raises it again
+        assert!(
+            matches!(
+                cs.answer("r1", "min15", None, 900, "page:1", approve(true)),
+                Step::Ask(_)
+            ),
+            "reason: card_locked_without_window"
+        );
+        cs.opened("r1", Choice::Min15);
         // NA2 the second send without the ticket
         assert_eq!(
             cs.answer("r1", "min15", None, 901, "page:1", approve(true)),
@@ -666,15 +692,9 @@ mod tests {
             cs.answer("r2", "min15", None, 900, "page:1", approve(true)),
             Step::Ask(_)
         ));
+        cs.opened("r2", Choice::Min15);
         assert_eq!(
-            cs.answer(
-                "r2",
-                "hour1",
-                Some("ot_good"),
-                901,
-                "page:1",
-                approve(false)
-            ),
+            cs.answer("r2", "hour1", Some("ot_good"), 901, "page:1", approve(true)),
             Step::NotApproved,
             "reason: other_choice_taken"
         );
@@ -694,6 +714,13 @@ mod tests {
     #[test]
     fn the_window_binds_only_this_card_and_this_choice() {
         let c = card("r9", false);
+        // N4: each choice is in its own parameters
+        let m = c.ask(Choice::Min15, "page:1");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&m.params).unwrap(),
+            serde_json::json!({"request_id": "r9", "hold": "min15"}),
+            "reason: choice_not_bound"
+        );
         let a = c.ask(Choice::Hour1, "page:1");
         let p: serde_json::Value = serde_json::from_slice(&a.params).unwrap();
         assert_eq!(p, serde_json::json!({"request_id": "r9", "hold": "hour1"}));

@@ -15,6 +15,9 @@
 //! What is not here yet: the proxy that holds a connection and makes a card, and so what a yes
 //! does to a live connection (the answer is recorded and a 「一直允許」 row is written; nothing
 //! is let through yet). Until then no card exists and `net_cards` is 0.
+//! - The 「一直允許」 rows are kept in aibd's process only for now: they last until aibd restarts
+//!   (f163c N2). Where they are stored for good (aib_store, bound to the seat) is decided with
+//!   the proxy slice, and the window's words with it.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -117,29 +120,44 @@ struct Answer {
     ticket: Option<String>,
 }
 
-/// `net_card_answer`, for the built-in page `by`.
-pub async fn answer(st: AppState, body: Value, by: String) -> Response {
-    let Ok(req) = serde_json::from_value::<Answer>(body) else {
-        return refuse(StatusCode::BAD_REQUEST, "body");
-    };
-    let step = with_cards(|c| {
-        // the seat and the address are the card's, for the always row
+/// The card's answer through aibd's own owner check (`owner_ok::approved_for`): the card as it
+/// was, and the step.
+fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step)> {
+    with_cards(|c| {
         let held = c.find(&req.request_id);
         let step = c.answer(
             &req.request_id,
             &req.choice,
             req.ticket.as_deref(),
             now(),
-            &by,
+            by,
             crate::owner_ok::approved_for,
         );
         (held, step)
-    });
-    let Some((held, step)) = step else {
+    })
+}
+
+/// `net_card_answer`, for the built-in page `by`.
+pub async fn answer(st: AppState, body: Value, by: String) -> Response {
+    let Ok(req) = serde_json::from_value::<Answer>(body) else {
+        return refuse(StatusCode::BAD_REQUEST, "body");
+    };
+    let Some((held, step)) = step(&req, &by) else {
         return refuse(StatusCode::INTERNAL_SERVER_ERROR, "cards");
     };
     match step {
-        Step::Ask(ask) => crate::repos::asked(&ask),
+        Step::Ask(ask) => {
+            let r = crate::repos::asked(&ask);
+            // the card waits for the ticket only once the window is up (f163c L1): busy,
+            // cooling, limited or no verification here leaves it to be answered again
+            let window_up = r.status() == StatusCode::ACCEPTED;
+            if window_up {
+                if let Some(c) = crate::net_card::Choice::parse(&req.choice) {
+                    with_cards(|cards| cards.opened(&req.request_id, c));
+                }
+            }
+            r
+        }
         Step::NotApproved => crate::repos::not_approved(),
         Step::Refused(why) => refuse(status_of(why), why),
         Step::Done(choice, yes) => {
@@ -166,7 +184,6 @@ pub async fn answer(st: AppState, body: Value, by: String) -> Response {
         }
     }
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AllowQuery {
@@ -237,6 +254,43 @@ pub async fn allow_revoke(st: AppState, body: Value, by: String) -> Response {
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    fn held(id: &str) -> Card {
+        Card {
+            request_id: id.into(),
+            seat_id: "a1b2c".into(),
+            persona_uid: "p_1".into(),
+            persona_name: "x".into(),
+            dest_name: "db.lan".into(),
+            dest: "10.0.0.5:5432".parse().unwrap(),
+            source: "proxy",
+            why: None,
+            expires_at: now() + 100,
+            high: false,
+            listener: None,
+        }
+    }
+
+    /// ebab8 11-23 09:11 standing rule: the answer goes through aibd's own owner check. In this
+    /// test binary no owner is wired, so no ticket is ever approved: a ticket for a window that
+    /// is up still does not finish the card.
+    #[test]
+    fn the_answer_finishes_only_through_aibds_own_owner_check() {
+        raise(held("rq_u_owner"));
+        with_cards(|c| c.opened("rq_u_owner", crate::net_card::Choice::Min15));
+        let req = Answer {
+            _kind: ANSWER.into(),
+            request_id: "rq_u_owner".into(),
+            choice: "min15".into(),
+            ticket: Some("ot_forged".into()),
+        };
+        let (_, s) = step(&req, "page:1").unwrap();
+        assert_eq!(
+            s,
+            Step::NotApproved,
+            "reason: ticket_not_checked_by_owner_ok"
+        );
+    }
 
     #[test]
     fn the_page_sees_each_always_row_as_ip_and_a_numeric_port() {

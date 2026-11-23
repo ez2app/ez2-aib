@@ -550,8 +550,8 @@ pub async fn act(
             | crate::net_card_web::ALLOW_LIST
             | crate::net_card_web::ALLOW_REVOKE),
         ) => {
-            let from_user_page = held_as_user_page(&page).await;
-            if from_user_page || page.carried {
+            let net_outside = held_as_user_page(&page).await || page.carried;
+            if net_outside {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "page_only",
