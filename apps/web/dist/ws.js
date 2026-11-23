@@ -982,7 +982,7 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
-    return h + testHostHtml() + timeSavedHtml();
+    return h + testHostHtml() + timeSavedHtml() + pluginsHtml();
   }
   // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
   const TH_WHY = {
@@ -1027,6 +1027,52 @@
       h += `<div class="tsx"><i>${name}</i><b>${esc(tsDur(b.clock_ms))}</b>${more ? `<span class="hv" title="這幾次有省到,但沒有全部真跑的那一次可以比,所以時間不算進來">另 ${more} 次未計</span>` : ''}</div>`;
     }
     return h + '</div>';
+  }
+  // c5d88 PLAN-skipstop H1b:外掛區(~/.ez2-aib/plugins)。列出裝了哪些、開著還是關著、現在能不能跑;開關是使用者的,蓋過外掛自己的預設。
+  // 這裡不安裝、不移除、不執行外掛
+  const PLG_RUNS = {
+    ok: '可以跑', off: '已關閉', paid_not_checked: '付費外掛:這一版還不會讀授權', no_such_command: '說明檔沒有這個指令', no_command: '說明檔沒有指令',
+    no_sum: '說明檔沒有登記執行檔的雜湊', missing: '執行檔不在', outside: '執行檔不在外掛自己的資料夾裡', not_a_file: '執行檔不是一般檔案',
+    sum_differs: '執行檔和安裝時登記的不一樣,不會執行', switches_unread: '開關檔讀不懂,所以全部當成關',
+  };
+  const PLG_ERR = { page_only: '只有這台 AIB 的內建頁能開關外掛', no_such_plugin: '沒有裝這個外掛', bad_plugin_set: '送出的內容不對', switch_not_written: '開關檔寫不進去(或讀不懂),沒有改動', plugins_unreadable: '外掛區讀不到' };
+  async function plgLoad() {
+    if (hasAct('plugin_list') !== true || (S.plg && S.plg.loading)) return;
+    S.plg = Object.assign(S.plg || {}, { loading: true });
+    try { S.plg = { r: (await act('plugin_list', {})) || {}, at: Date.now() }; }
+    catch (e) { S.plg = { err: PLG_ERR[e && e.code] || errText(e), at: Date.now() }; }
+    render();
+  }
+  async function plgSet(name, on) {
+    if (!S.plg || S.plg.busy) return;
+    S.plg = Object.assign(S.plg, { busy: name, msg: '' }); render();
+    try { S.plg = { r: (await act('plugin_set', { name, on })) || {}, at: Date.now() }; }
+    catch (e) { S.plg = Object.assign(S.plg, { busy: '', msg: PLG_ERR[e && e.code] || errText(e) }); }
+    S.ts = null; // 省時外掛被開或關,上面的省時數字要重讀
+    render();
+  }
+  function pluginsHtml() {
+    if (hasAct('plugin_list') !== true) return '';
+    const T = S.plg;
+    if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(plgLoad, 0); return '<div class="thh"><b>外掛</b><span class="hv">讀取中…</span></div>'; }
+    const head = '<div class="thh"><b>外掛</b><button type="button" class="k" data-plgreload="1" title="重讀外掛區">重讀</button></div>';
+    if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
+    if (T.r.state !== 'ok' || !Array.isArray(T.r.plugins)) return head + '<div class="thr hv">外掛區讀不到</div>';
+    if (!T.r.plugins.length) return head + '<div class="thr hv">還沒有裝任何外掛</div>';
+    let h = head;
+    const canSet = hasAct('plugin_set') === true;
+    for (const p of T.r.plugins) {
+      if (p.problem) { h += `<div class="thr"><span class="hd hr"></span><span class="hn">${esc(String(p.folder || ''))}</span><span class="hv">❌ 說明檔讀不懂</span></div>`; continue; }
+      const nm = String(p.name || ''), on = p.on === true, runs = String(p.runs || '');
+      const dot = runs === 'ok' ? 'hg' : on ? 'hr' : '';
+      const st = runs === 'ok' ? '✅ 開著' : on ? '⚠️ ' + (PLG_RUNS[runs] || '不能跑') : (PLG_RUNS[runs] || '已關閉');
+      const btn = canSet && p.on !== null ? `<button type="button" class="k ${on ? '' : 'g'}" data-plgset="${esc(nm)}" data-plgon="${on ? '0' : '1'}" ${T.busy ? 'disabled' : ''}>${on ? '關閉' : '打開'}</button>` : '';
+      h += `<div class="thr"><span class="hd ${dot}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(String(p.version || ''))}${p.paid ? ' · 付費' : ''}</i></span><span class="hv">${esc(st)}</span>${btn}<div class="thm">${esc(String(p.summary || ''))}</div></div>`;
+    }
+    if (T.r.switches_readable === false) h += '<div class="thr bad">開關檔讀不懂:所有外掛都當成關,而且這裡改不了;請修好或刪掉那個檔</div>';
+    if (Array.isArray(T.r.stray) && T.r.stray.length) h += `<div class="thr hv">開關檔裡有沒裝的名字:${esc(T.r.stray.join('、'))}</div>`;
+    if (T.msg) h += `<div class="thm bad" role="alert">${esc(T.msg)}</div>`;
+    return h;
   }
   async function thLoad() {
     if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
@@ -5977,6 +6023,8 @@
     const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
     if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
     if (x.closest('[data-tsreload]')) { S.ts = null; return tsLoad(); }
+    if (x.closest('[data-plgreload]')) { S.plg = null; return plgLoad(); }
+    const plgB = x.closest('[data-plgset]'); if (plgB) return plgSet(plgB.dataset.plgset, plgB.dataset.plgon === '1');
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);

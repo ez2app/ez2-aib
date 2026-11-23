@@ -110,6 +110,91 @@ async fn the_page_gets_the_plugin_s_boxes_and_nobody_else_does() {
     .await;
     assert_eq!(other.json, json!({"state": "off"}), "{}", other.body);
 
+    // the plugin area on the page: the list (the plugin is off since the lines above), and
+    // the switch moved from the built-in page
+    let l = act(&d, Some(&page), json!({"type": "plugin_list"})).await;
+    assert_eq!(
+        (l.code, l.json["state"].as_str()),
+        (200, Some("ok")),
+        "{}",
+        l.body
+    );
+    let row = &l.json["plugins"][0];
+    assert_eq!(
+        (
+            row["name"].as_str(),
+            row["on"].as_bool(),
+            row["runs"].as_str()
+        ),
+        (Some("aib-skipstop"), Some(false), Some("off")),
+        "{}",
+        l.body
+    );
+    let s = act(
+        &d,
+        Some(&page),
+        json!({"type": "plugin_set", "name": "aib-skipstop", "on": true}),
+    )
+    .await;
+    assert_eq!(
+        (
+            s.code,
+            s.json["plugins"][0]["on"].as_bool(),
+            s.json["plugins"][0]["runs"].as_str()
+        ),
+        (200, Some(true), Some("ok")),
+        "{}",
+        s.body
+    );
+    let s = act(
+        &d,
+        Some(&page),
+        json!({"type": "plugin_set", "name": "nothing-here", "on": false}),
+    )
+    .await;
+    assert_eq!(
+        (s.code, s.json["code"].as_str()),
+        (404, Some("no_such_plugin")),
+        "{}",
+        s.body
+    );
+    let s = act(
+        &d,
+        None,
+        json!({"type": "plugin_set", "name": "aib-skipstop", "on": false}),
+    )
+    .await;
+    assert!(s.code == 401 || s.code == 403, "{} {}", s.code, s.body);
+    let l = act(&d, Some(&page), json!({"type": "plugin_list"})).await;
+    assert_eq!(
+        l.json["plugins"][0]["on"], true,
+        "a call with no credential moved the switch: {}",
+        l.body
+    );
+
+    // a user folder page (a page an AI may have written) may not move a switch, and a seat's
+    // own token may not either: the switch stays where the built-in page put it
+    let user = d.page_form(true, "&to=user").await;
+    let off = json!({"type": "plugin_set", "name": "aib-skipstop", "on": false});
+    let r = act(&d, Some(&user), off.clone()).await;
+    assert_eq!(
+        (r.code, r.json["code"].as_str()),
+        (403, Some("page_only")),
+        "{}",
+        r.body
+    );
+    let (seat, _) = d.open("safe", &harness::seat_dir(dir.path(), "a")).await;
+    let tok = aibd::seat_token::tokens().issue(&seat).unwrap();
+    let r = act(&d, Some(&tok), off).await;
+    assert!(
+        r.code >= 400,
+        "a seat's token switched a plugin: {} {}",
+        r.code,
+        r.body
+    );
+    let l = act(&d, Some(&page), json!({"type": "plugin_list"})).await;
+    assert_eq!(l.json["plugins"][0]["on"], true, "{}", l.body);
+
     // without the page's credential: not answered
     let r = act(&d, None, ask.clone()).await;
     assert!(r.code == 401 || r.code == 403, "{} {}", r.code, r.body);

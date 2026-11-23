@@ -207,6 +207,14 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(ws.includes('tsDur(b.clock_ms)') && !/tsDur\(b\.total/.test(ws), 'reason: time_saved_shows_unit_time_sum');
   for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: time_saved_state_without_words ' + w);
 }
+// 15d. c5d88 H1b 外掛區:沒有 plugin_list 不畫;開關只在有 plugin_set 且開關檔讀得懂(on 不是 null)時才有鈕;每個 runs 字與錯誤碼都有人話
+{
+  ok(/if \(hasAct\('plugin_list'\) !== true\) return '';/.test(ws), 'reason: plugins_without_act');
+  ok(/const btn = canSet && p\.on !== null \?/.test(ws), 'reason: plugin_switch_shown_when_it_cannot_be_moved');
+  ok(/act\('plugin_set', \{ name, on \}\)/.test(ws), 'reason: plugin_set_sends_more_than_name_and_on');
+  for (const w of ['ok', 'off', 'paid_not_checked', 'no_such_command', 'no_sum', 'missing', 'outside', 'not_a_file', 'sum_differs', 'switches_unread']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: plugin_runs_without_words ' + w);
+  for (const w of ['page_only', 'no_such_plugin', 'bad_plugin_set', 'switch_not_written']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: plugin_error_without_words ' + w);
+}
 // 15c. c5d88 F2 省時看板(saved.html):CSP 是 style-src 'self' ⇒ 不可以有 style="";只畫 aibd 給的數字;
 //      缺一個數字整份不畫;只有數字變了才翻(沒有用時鐘加秒);每個 state 都有人話
 {

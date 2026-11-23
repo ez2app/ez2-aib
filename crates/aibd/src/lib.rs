@@ -53,6 +53,7 @@ pub mod person;
 pub mod personas;
 pub mod plan_route;
 pub mod platform;
+pub mod plugins_page;
 pub mod pr_api;
 pub mod pr_open;
 pub mod preview;

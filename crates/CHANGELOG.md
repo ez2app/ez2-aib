@@ -5,6 +5,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Page: **外掛** — the plugin area on the built-in page. New acts `plugin_list` (every folder
+  under `<AIB home>/plugins`: name, version, on or off, and whether its command can be run now,
+  with the reason when not; a folder whose file is not understood is listed, never left out)
+  and `plugin_set` (`{name, on}`: the user's switch for an installed plugin, from the built-in
+  page in this pairing only). A plugin is on by default when its file says so; the user's
+  switch wins. Nothing here installs, removes or runs a plugin.
+
 - Removed `aib-test-core`, `aib-test-cargo`, `aib-test-audit` and `aib_ledger::timesave`: the
   skip / stop engine and its savings book live in the plugin now
   (github.com/lfu0327/aib-skipstop, where they are developed, tested and versioned). Nothing in

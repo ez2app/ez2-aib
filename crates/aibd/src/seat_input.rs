@@ -56,6 +56,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::seat_move::UNMOVE,
     crate::test_host_web::LIST,
     crate::time_saved::KIND,
+    crate::plugins_page::LIST,
+    crate::plugins_page::SET,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
@@ -453,6 +455,22 @@ pub async fn act(
         // DESIGN-page-gh-view-1a93b r1 (ORDER-today 11-21): the built-in page reads a pull
         // request, its checks or a run through aibd's own gh (read-only: no fingerprint; its
         // own switch)
+        // H1b: the plugin area. The list is read only; a switch is moved from the built-in
+        // page in this pairing only (a page an AI can write must not turn a plugin on or off)
+        Some(crate::plugins_page::LIST) => {
+            return crate::plugins_page::list_act().await;
+        }
+        Some(crate::plugins_page::SET) => {
+            let not_this_built_in_page = held_as_user_page(&page).await || page.carried;
+            if not_this_built_in_page {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a plugin is switched from the built-in page in this pairing only",
+                );
+            }
+            return crate::plugins_page::set_act(body).await;
+        }
         // F2: the plugin's time-saved numbers; read only, nothing of the caller's is run
         Some(crate::time_saved::KIND) => {
             return crate::time_saved::page_act(body).await;
@@ -1291,6 +1309,28 @@ mod tests {
 
     /// DESIGN-page-gh-view-1a93b r1 §2: the page's gh_view arm refuses a user folder page and
     /// lets a carried pairing read (it is the one page act that does).
+    #[test]
+    fn a_plugin_is_switched_from_the_built_in_page_in_this_pairing_only() {
+        let src = include_str!("seat_input.rs").replace("\r\n", "\n");
+        let at = src
+            .find("        Some(crate::plugins_page::SET) => {")
+            .expect("reason: arm_moved");
+        let arm = &src[at..at + src[at..].find("\n        }\n").unwrap()];
+        // the refusal stands before the switch is moved, for a user folder page and for a
+        // pairing carried over an update
+        let gate = arm
+            .find(&format!(
+                "held_as_user_page(&page).await || page.carried;\n            if {} {{\n                return refuse(",
+                "not_this_built_in_page"
+            ))
+            .expect("reason: a_user_page_or_a_carried_pairing_switches_a_plugin");
+        let moved = arm
+            .find("return crate::plugins_page::set_act(body).await;")
+            .expect("reason: arm_does_not_switch");
+        assert!(gate < moved, "reason: switched_before_the_gate");
+        assert!(arm.contains("\"page_only\""));
+    }
+
     #[test]
     fn github_is_not_read_from_a_user_folder_page() {
         let src = include_str!("seat_input.rs").replace("\r\n", "\n");
