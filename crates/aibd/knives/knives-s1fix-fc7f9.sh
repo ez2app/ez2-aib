@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SF1–SF64 + HS17 (no SF19; fc7f9 11-23; SF16 / SF30 / SF34 written for the page2 stack top — S3 template block, 逐項調整, S2 Windows line and host button sit in the mode row)
+# 刀名一律 PG 前綴(下面寫的是舊名):SF1–SF64 + HS17 (no SF19; fc7f9 11-23; SF16 / SF30 / SF34 written for the page2 stack top — S3 template block, 逐項調整, S2 Windows line and host button sit in the mode row)
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs) red.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -97,7 +97,7 @@ k ' : node && !A.role ? '\'';掛到專案要一個角色,請在角色那列選�
 # PGSF46
 k '<b>不指定</b><i>自由發揮,不綁專案</i></button></div>' '</div>'
 # PGSF47
-k 'if (x.closest('\''[data-apmgok]'\'')) { A.mx.msg = MG_NO; render(); return true; }' ''
+k 'if (x.closest('\''[data-apmgok]'\'')) { if (mgCanRun(A)) { mgRun(A); return true; } A.mx.msg = MG_NO; render(); return true; }' ''
 # PGSF48
 k 'if (v >= 0.85) { hi.add(i); hi.add(j); }' ''
 # PGSF49

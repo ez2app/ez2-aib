@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# IM1 / IM2 / IM3 / IM4 / IM5 / IM6 / IM7 / IM8 / IM9 / IM10 / IM11 / IM12 / IM13 / IM14 / GH1 / DL1 / DL2 / GAP1 / TS1 / MX1(1a93b 11-23 輸入法;90856 照 pending KNIVES-ime-1a93b-014aa1c76d.tsv 逐把轉寫,f163c REVIEW M1)
+# 刀名一律 PG 前綴(下面寫的是舊名):IM1 / IM2 / IM3 / IM4 / IM5 / IM6 / IM7 / IM8 / IM9 / IM10 / IM11 / IM12 / IM13 / IM14 / GH1 / DL1 / DL2 / GAP1 / TS1 / MX1(1a93b 11-23 輸入法;90856 照 pending KNIVES-ime-1a93b-014aa1c76d.tsv 逐把轉寫,f163c REVIEW M1)
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs) red.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
