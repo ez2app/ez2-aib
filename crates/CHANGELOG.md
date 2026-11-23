@@ -5,6 +5,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- `skipstop.stop.json`: this repo's checks for `aib-skipstop stop` (the plugin's stop system),
+  to run before a push or a long knife run: the branch merges into main (`git merge-tree`),
+  every knife's text is in its file once (`knife-anchors`), the knives this change touches
+  compile (`knife-precheck`). `aib-skipstop stop check` runs them (about 90 s here);
+  `aib-skipstop stop --mode real -- <command>` does not start the command when one has a
+  finding. What each says it saves is a typed estimate and is recorded as one.
+
 - Page: **外掛** — the plugin area on the built-in page. New acts `plugin_list` (every folder
   under `<AIB home>/plugins`: name, version, on or off, and whether its command can be run now,
   with the reason when not; a folder whose file is not understood is listed, never left out)

@@ -1,0 +1,25 @@
+{"checks": [
+  {
+    "id": "merge-main",
+    "kind": "reject",
+    "cmd": ["git", "merge-tree", "--write-tree", "--quiet", "HEAD", "origin/main"],
+    "avoids": "a CI round on a branch that cannot be merged into main",
+    "saves_ms": 3600000
+  },
+  {
+    "id": "knife-anchors",
+    "kind": "reject",
+    "cmd": ["cargo", "run", "-q", "-p", "aib-xtask", "--locked", "--", "knife-anchors"],
+    "avoids": "a CI round that goes red on a knife whose text is no longer in its file once",
+    "saves_ms": 3600000,
+    "timeout_s": 900
+  },
+  {
+    "id": "knife-compile",
+    "kind": "reject",
+    "cmd": ["cargo", "run", "-q", "-p", "aib-xtask", "--locked", "--", "knife-precheck", "--base", "origin/main", "--head", "HEAD"],
+    "avoids": "a knife cell run to its end over a knife that does not compile",
+    "saves_ms": 4800000,
+    "timeout_s": 3000
+  }
+]}
