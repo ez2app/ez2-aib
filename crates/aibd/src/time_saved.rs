@@ -104,6 +104,8 @@ pub fn shape(text: &str) -> Result<Value, String> {
                 // runs that reused something with no full run to compare with: saved, by a
                 // time that is not known
                 "clock_unknown_runs": num(b, "skip_clock_unknown_runs")?,
+                // the skip system's share of clock_ms (the rest is the stops' confirmed time)
+                "skip_clock_ms": num(b, "skip_clock_ms")?,
                 "total": sum(b, "total")?,
                 "skip": sum(b, "skip")?,
                 "stop": sum(b, "stop")?,
@@ -248,6 +250,7 @@ mod tests {
         assert_eq!(got["boxes"]["today"]["clock_ms"], 1000);
         assert_eq!(got["boxes"]["all"]["clock_ms"], 5000);
         assert_eq!(got["boxes"]["week"]["clock_unknown_runs"], 1);
+        assert_eq!(got["boxes"]["week"]["skip_clock_ms"], 2000);
         assert_eq!(got["boxes"]["year"]["total"]["confirmed_ms"], 7);
         assert_eq!(got["boxes"]["year"]["stop"]["count"], 2);
         // five boxes, and nothing of the answer that was not asked for
@@ -278,6 +281,7 @@ mod tests {
             ),
             whole.replacen("\"count\":2", "\"count\":2.5", 1),
             whole.replacen("\"penalty_ms\":1,", "", 1),
+            whole.replacen("\"skip_clock_ms\":1000,", "", 1),
             said(1, "\"<b>now</b>\""),
             said(1, "7"),
             whole.replacen("\"v\":1,", "\"v\":1,\"v\":1,", 1),

@@ -1014,7 +1014,7 @@
     if (hasAct('time_saved') !== true) return '';
     const T = S.ts;
     if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tsLoad, 0); return '<div class="thh"><b>⏱ 節省時間</b><span class="hv">讀取中…</span></div>'; }
-    const head = '<div class="thh"><b>⏱ 節省時間</b><button type="button" class="k" data-tsreload="1" title="重讀省時外掛的數字">重讀</button></div>';
+    const head = '<div class="thh"><b>⏱ 節省時間</b><a class="k" href="saved.html" title="翻牌看板:今天、本週、本月、本年、至今">看板</a><button type="button" class="k" data-tsreload="1" title="重讀省時外掛的數字">重讀</button></div>';
     if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
     const st = String(T.r.state || '');
     if (st !== 'ok') return head + `<div class="thr hv">${esc(TS_WHY[st] || '讀不到省時數字')}</div>`;

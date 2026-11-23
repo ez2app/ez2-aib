@@ -10,6 +10,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   (github.com/lfu0327/aib-skipstop, where they are developed, tested and versioned). Nothing in
   this workspace used them; aibd reads the savings through the plugin (`time_saved`).
 
+- Page: **省時看板** (`saved.html`, linked from ⏱ 節省時間) — the board Andy settled on 11-22
+  (PREVIEW-timesave-board-7b81e): gold bar, the wooden flip board for today (hours : minutes :
+  seconds, the tens of minutes and seconds turn 0–5 only), four tiles (本週 / 本月 / 本年 / 至今總省)
+  with 預檢 · 影子 apart, estimates and what was taken back beside and never in the large number.
+  It draws only what `time_saved` gives, flips only when a number it read has changed (no
+  counting by the clock), and with no whole answer it says why and shows no board. The other
+  sections of that page (the gates' pipeline, the 15 gates) wait for the gates' own books.
 - Page: **⏱ 節省時間** — five boxes (本日 / 本週 / 本月 / 本年 / 至今) on the built-in page. New
   read-only act `time_saved`: aibd finds the `aib-skipstop` plugin in the plugin area, runs it
   only when it is switched on and its executable is the one its file names (sha256), asks

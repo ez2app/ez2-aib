@@ -1,0 +1,91 @@
+/* 省時看板(saved.html)。樣式取自定版頁 PREVIEW-timesave-board-7b81e-1122.html(Andy 11-22「就這麼決定」)的
+   金條 / 木紋翻牌主看板 / 四格三段,一字未改;其餘區塊(關卡流水線、15 條…)要等各閘有自己的帳才搬,不放假數字。
+   CSP 是 style-src 'self':頁面不寫 style="",進場延遲用下面的 .d1–.d5。 */
+/* 版面:AIB 2.0 深色頁。金條 → 木紋翻牌主看板 → 四格 → 關卡流水線(事件卡同色)→ 兩類閘 → 15 條(篩選)→ 開工順序 → 完成定義。
+   一套規矩:大數字一律 Oswald;圓角 16 / 12 / 99;區塊間距 56;進場一次、事件才動;懸停一律金邊。 */
+:root{
+  --bg:#252422; --card:#151413; --card-hi:#1C1A17; --line:#34312C; --ink:#EDEAE3; --muted:#9C978C; --faint:#6F6A61;
+  --gold1:#C9A35A; --gold2:#E3C072; --gold-ink:#1E1A12; --brass:#B9A27A;
+  --green:#5BB56A; --green-soft:#1F3A24; --green-line:#2F5A37;
+  --pre:#E8833A; --pre-bg:#2C231D; --sha:#6FA0E8; --sha-bg:#1E2530; --stop:#D25A48; --stop-bg:#341D19;
+  --track:#3A3833;
+  --r-lg:16px; --r-md:12px; --gap:14px; --sec:56px;
+  --ease:cubic-bezier(.2,.7,.2,1);
+  --f-num:"Oswald","DIN Condensed","Arial Narrow",sans-serif;
+  --f-body:-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+  --f-mono:ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.65;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 72px}
+.wrap{max-width:1120px;margin:0 auto}
+h1,h2,h3{text-wrap:balance;margin:0}
+.mono{font-family:var(--f-mono);font-size:.88em}
+.n{font-family:var(--f-num);font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.p{color:var(--pre)} .h{color:var(--sha)}
+button{font:inherit}
+:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);transition:border-color .25s var(--ease),background .25s var(--ease)}
+.card.hov:hover{border-color:var(--gold1)}
+
+/* 進場:先可見,只輕輕上浮一次 */
+.in{animation:rise .7s var(--ease) both}
+@keyframes rise{from{transform:translateY(10px);opacity:.001}to{transform:none;opacity:1}}
+
+/* ── 金條 ── */
+.bar{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding:14px 16px 14px 24px;border-radius:var(--r-lg);
+  background:linear-gradient(100deg,var(--gold1),var(--gold2) 55%,var(--gold1));background-size:220% 100%;animation:sheen 10s ease-in-out infinite;color:var(--gold-ink)}
+@keyframes sheen{50%{background-position:100% 0}}
+.bar h1{font-size:19px;font-weight:700;display:flex;gap:4px 12px;align-items:baseline;flex-wrap:wrap;min-width:0}
+.bar h1 small{font-size:13.5px;font-weight:500;opacity:.75}
+.pill{background:#1A1814;color:var(--gold2);border-radius:99px;padding:7px 16px;font-weight:700;font-size:15px;white-space:nowrap;display:inline-flex;gap:8px;align-items:center}
+.pill .n{font-size:16px;font-weight:600}
+
+/* ── 主看板:復古木紋翻牌 ── */
+.board{position:relative;margin-top:var(--gap);border-radius:var(--r-lg);padding:18px clamp(16px,3vw,32px) 18px;display:grid;gap:14px;justify-items:center;
+  background:radial-gradient(120% 150% at 50% 0%,#2B231B 0%,#17130F 72%);border:1px solid #3B3125;
+  box-shadow:inset 0 1px 0 rgba(255,220,170,.07),inset 0 -14px 30px rgba(0,0,0,.45),0 12px 30px rgba(0,0,0,.3)}
+.b-head{width:100%;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px 16px}
+.b-k{color:var(--gold2);font-weight:700;letter-spacing:.18em;font-size:13.5px}
+.b-s{font-size:13.5px;color:var(--muted)}
+.b-row{display:flex;align-items:flex-start;gap:clamp(8px,1.6vw,18px);font-size:clamp(40px,8vw,84px)}
+.b-grp{display:grid;justify-items:center;gap:10px}
+.b-pair{display:flex;gap:.08em}
+.b-lab{font-size:12.5px;letter-spacing:.32em;color:var(--brass);padding-left:.32em}
+.b-colon{display:grid;gap:.22em;padding-top:.36em}
+.b-colon i{width:.11em;height:.11em;border-radius:50%;background:radial-gradient(circle at 35% 35%,#F0D9A2,#8A6A34);box-shadow:0 1px 2px rgba(0,0,0,.6)}
+.b-plus{position:absolute;right:clamp(16px,3vw,32px);bottom:18px;background:var(--green-soft);color:var(--green);border:1px solid var(--green-line);border-radius:99px;padding:2px 12px;font-weight:700;font-size:14px;opacity:0;pointer-events:none}
+@media (max-width:560px){.b-plus{position:static;justify-self:end}}
+.flap{--wood:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='w'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.32' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0.47  0 0 0 0 0.28  0 0 0 0 0.14  0 0 0 1.1 -0.2'/%3E%3C/filter%3E%3Crect width='120' height='120' fill='%23573319'/%3E%3Crect width='120' height='120' filter='url(%23w)' opacity='.85'/%3E%3C/svg%3E");position:relative;display:inline-block;width:.72em;height:1.18em;perspective:400px;
+  font-family:var(--f-num);font-weight:600;font-variant-numeric:tabular-nums;color:#F3E5C4;border-radius:.07em;
+  box-shadow:0 1px 0 #2A170A,0 .04em 0 #22130A,0 .08em 0 #190E06,0 .14em .2em rgba(0,0,0,.6)}
+.flap>span{position:absolute;left:0;right:0;height:50%;overflow:hidden;backface-visibility:hidden;
+  background-image:linear-gradient(180deg,rgba(255,226,180,.14),rgba(0,0,0,0) 45%,rgba(0,0,0,.25)),var(--wood);
+  background-size:100% 100%,260% 230%;background-position:0 0,var(--gx) 0}
+.flap .f-top{top:0;border-radius:.07em .07em 0 0;transform-origin:50% 100%;box-shadow:inset 0 1px 0 rgba(255,230,190,.3)}
+.flap .f-bot{bottom:0;border-radius:0 0 .07em .07em;transform-origin:50% 0;background-position:0 0,var(--gx) 100%;
+  background-image:linear-gradient(180deg,rgba(0,0,0,.3),rgba(0,0,0,.05) 50%,rgba(0,0,0,.2)),var(--wood);box-shadow:inset 0 -1px 0 rgba(0,0,0,.45)}
+.flap i{position:absolute;left:0;right:0;height:200%;display:flex;align-items:center;justify-content:center;font-style:normal;line-height:1;
+  text-shadow:0 -1px 0 rgba(0,0,0,.5),0 1px 0 rgba(255,240,210,.22),0 .03em .05em rgba(0,0,0,.45)}
+.flap .f-top i{top:0}.flap .f-bot i{bottom:0}
+.flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;background:linear-gradient(#0E0803,#33200F);z-index:3}
+.flap .leaf{z-index:2}
+
+/* ── 四格 ── */
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);margin-top:var(--gap)}
+@media (max-width:900px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:460px){.tiles{grid-template-columns:1fr}}
+.tile{padding:14px 18px;display:grid;gap:2px;min-width:0}
+.tile .k{color:var(--muted);font-size:13px}
+.tile .v{color:var(--green);font-size:clamp(22px,2.2vw,28px);font-weight:600;line-height:1.3}
+.tile .s{font-size:13.5px}
+.tile .x{font-size:12.5px;color:var(--faint)}
+
+/* 這一頁自己的:進場延遲(定版頁寫在 style="" 裡,這裡 CSP 不准)、狀態卡、回工作台 */
+.d1{animation-delay:.06s}.d2{animation-delay:.12s}.d3{animation-delay:.16s}.d4{animation-delay:.2s}.d5{animation-delay:.24s}
+.bar a{color:inherit;font-size:13.5px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.note{margin-top:var(--gap);padding:18px 22px;color:var(--muted)}
+.note b{color:var(--ink);display:block;margin-bottom:2px}
+.foot{margin-top:var(--gap);font-size:12.5px;color:var(--faint)}
+[hidden]{display:none!important}

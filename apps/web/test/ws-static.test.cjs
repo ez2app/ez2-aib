@@ -207,6 +207,20 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(ws.includes('tsDur(b.clock_ms)') && !/tsDur\(b\.total/.test(ws), 'reason: time_saved_shows_unit_time_sum');
   for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: time_saved_state_without_words ' + w);
 }
+// 15c. c5d88 F2 省時看板(saved.html):CSP 是 style-src 'self' ⇒ 不可以有 style="";只畫 aibd 給的數字;
+//      缺一個數字整份不畫;只有數字變了才翻(沒有用時鐘加秒);每個 state 都有人話
+{
+  const html = read('apps/web/dist/saved.html'), js = read('apps/web/dist/saved.js'), css = read('apps/web/dist/saved.css');
+  ok(!/\sstyle=/.test(html) && !/innerHTML|insertAdjacentHTML|document\.write/.test(js), 'reason: saved_inline_style_or_html_injection');
+  ok(/<script src="saved\.js" defer><\/script>/.test(html) && !/<script>[^<]/.test(html), 'reason: saved_inline_script');
+  ok(js.includes("type: 'time_saved'") && !/\bDate\.now\(\)/.test(js), 'reason: saved_counts_by_the_clock');
+  ok(/if \(n\.some\(\(x\) => typeof x !== 'number' \|\| !\(x >= 0\)\)\) return null;/.test(js), 'reason: saved_missing_number_is_drawn');
+  ok(/\$\('board'\)\.hidden = \$\('tiles'\)\.hidden = \$\('pill'\)\.hidden = !whole;/.test(js), 'reason: saved_board_shown_without_a_whole_answer');
+  ok(/else if \(c\.target !== d\[i\]\) roll\(/.test(js), 'reason: saved_flips_without_a_change');
+  for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer', 'no_credential', 'offline']) ok(new RegExp('\\b' + w + ': \\[').test(js), 'reason: saved_state_without_words ' + w);
+  ok(/\.flap\{--wood:url\("data:image\/svg\+xml/.test(css) && !/url\(["']?(https?:|\/)/i.test(css) && !/@import|@font-face/.test(css), 'reason: saved_css_fetches_something');
+  ok(ws.includes('href="saved.html"'), 'reason: saved_page_not_linked');
+}
 // 15. b4297 CARD-add-test-host r0:測試機區塊只在 aibd 有 test_host_list 時畫;加 / 收回走指紋兩段;why 代碼都有人話
 {
   ok(/if \(hasAct\('test_host_list'\) !== true\) return '';/.test(ws), 'reason: test_host_without_act');
