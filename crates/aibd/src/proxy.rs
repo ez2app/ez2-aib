@@ -121,12 +121,17 @@ pub fn op_of(high: bool) -> &'static str {
     }
 }
 
-/// Whether the seat holds a grant for `at` now, of either kind, without using one up.
-pub fn holds(grants: &crate::grants::Grants, seat: &str, at: SocketAddr, now: u64) -> bool {
-    let r = canon(at);
-    [OP_NET_PRIVATE, OP_NET_LOCAL_SELF]
-        .into_iter()
-        .any(|op| grants.holds(seat, op, &r, now).is_some())
+/// Whether the seat holds a grant of this kind for `at` now, without using one up. Only the
+/// kind asked: a LAN grant never lets a service of this computer through, should this computer
+/// come to have that address (f163c REVIEW-egress-ff804ceb L1).
+pub fn holds(
+    grants: &crate::grants::Grants,
+    seat: &str,
+    at: SocketAddr,
+    high: bool,
+    now: u64,
+) -> bool {
+    grants.holds(seat, op_of(high), &canon(at), now).is_some()
 }
 
 /// At most one card waiting per seat, and six in ten minutes (§15, 16.7).
@@ -206,7 +211,7 @@ pub fn decide(
         return Conn::Refuse("unknown_port");
     };
     let held = |ip: IpAddr, p: u16| {
-        allowed(seat, ip, p) || holds(grants, seat, SocketAddr::new(ip, p), here.now)
+        allowed(seat, ip, p) || holds(grants, seat, SocketAddr::new(ip, p), false, here.now)
     };
     let (at, high) = match egress::verdict(ips, dest_port, here.own, &held) {
         Verdict::Pass(ip) => return Conn::Pass(SocketAddr::new(ip, dest_port)),
@@ -234,7 +239,7 @@ pub fn decide(
                 return Conn::Refuse(why);
             }
             let at = SocketAddr::new(ip, dest_port);
-            if holds(grants, seat, at, here.now) {
+            if holds(grants, seat, at, true, here.now) {
                 return Conn::Pass(at);
             }
             (at, true)
@@ -264,8 +269,10 @@ pub fn decide(
 pub enum By {
     /// Let through once, or a public address: nothing to end it but itself.
     Once,
-    /// A grant for a while, or the always list.
+    /// A LAN grant for a while, or the always list.
     Held,
+    /// A grant for a while for a service of this computer (the high-risk card).
+    HeldLocal,
 }
 
 /// The open tunnels.
@@ -299,8 +306,8 @@ impl Tunnels {
             std::mem::take(&mut self.rows)
                 .into_iter()
                 .partition(|(_, s, at, by)| {
-                    *by == By::Held
-                        && !holds(grants, s, *at, now)
+                    matches!(by, By::Held | By::HeldLocal)
+                        && !holds(grants, s, *at, *by == By::HeldLocal, now)
                         && !allowed(s, at.ip(), at.port())
                 });
         self.rows = kept;
@@ -535,7 +542,10 @@ mod tests {
                 "reason: {c}_granted"
             );
         }
-        assert!(!holds(&g, "a1b2c", other, 1_000), "reason: once_held");
+        assert!(
+            !holds(&g, "a1b2c", other, false, 1_000),
+            "reason: once_held"
+        );
         let mut d = |now: u64, g: &Grants| {
             decide(
                 &ports,
@@ -572,10 +582,10 @@ mod tests {
         // until the seat ends: no end of time, gone with the seat (N50)
         let until = yes_of(Some("until_seat_ends"), Owner::Yes).unwrap();
         assert!(give(&g, "a1b2c", db, false, &until, 2_000));
-        assert!(holds(&g, "a1b2c", db, u64::MAX));
+        assert!(holds(&g, "a1b2c", db, false, u64::MAX));
         g.seat_ended("a1b2c");
         assert!(
-            !holds(&g, "a1b2c", db, 2_001),
+            !holds(&g, "a1b2c", db, false, 2_001),
             "reason: grant_outlived_seat"
         );
         // a high-risk yes is a grant for this computer's service, not the LAN's
@@ -585,6 +595,44 @@ mod tests {
             g.holds("a1b2c", OP_NET_LOCAL_SELF, "127.0.0.1:5432", 3_000)
                 .is_some(),
             "reason: local_under_private_op"
+        );
+        // f163c REVIEW-egress-ff804ceb L1: a LAN grant for 10.0.0.5:5432, then this computer
+        // comes to have 10.0.0.5: the high-risk card, not the LAN grant
+        let g = Grants::default();
+        assert!(give(&g, "a1b2c", db, false, &min15, 4_000));
+        let own = [db.ip()];
+        let moved = Here {
+            own: &own,
+            own_binds: &[],
+            preview_ports: &[],
+            now: 4_001,
+        };
+        let mut lim = CardLimit::default();
+        let r = decide(
+            &ports,
+            port,
+            "db",
+            &[db.ip()],
+            5432,
+            moved,
+            &WHO,
+            &g,
+            &none,
+            &mut lim,
+            0,
+            "r".into(),
+        );
+        assert!(
+            matches!(&r, Conn::Card(c) if c.high),
+            "reason: lan_grant_let_local_through {r:?}"
+        );
+        // and a tunnel to a service of this computer rests on its own kind only
+        let mut t = Tunnels::default();
+        let id = t.open("a1b2c", db, By::HeldLocal);
+        assert_eq!(
+            t.sweep(4_001, &g, &none),
+            vec![id],
+            "reason: local_tunnel_kept_by_lan_grant"
         );
     }
 

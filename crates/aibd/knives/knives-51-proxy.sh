@@ -16,7 +16,7 @@ px '        Verdict::Pass(ip) => return Conn::Pass(SocketAddr::new(ip, dest_port
 # PX5 (N46) a grant for a while never ends
 px '            .find(|h| h.secs() == Some(d.as_secs())),' '            .find(|h| h.secs() == Some(d.as_secs())).map(|_| Hold::UntilSeatEnds), // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX6 (N47) the ended grant's tunnel is kept, the once tunnel swept
-px '                    *by == By::Held' '                    *by == By::Once // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+px '                    matches!(by, By::Held | By::HeldLocal)' '                    matches!(by, By::Once) // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX7 (N48) taking always back closes what the list still holds
 px '                        && !allowed(s, at.ip(), at.port())' '                        && (!allowed(s, at.ip(), at.port()) || true) // knife' proxy::tests::taking_always_back_closes_what_rests_on_it_only
 # PX8 (N49) a second waiting card is raised
@@ -31,3 +31,7 @@ px '            (at, true)' '            (at, false) // knife' proxy::tests::a_c
 px '                .is_some_and(|t| now < t.saturating_add(PORT_COOLDOWN))' '                .is_some_and(|t| now < *t) // knife' proxy::tests::a_seat_gets_one_port_of_the_reserved_range_never_aibds_and_none_past_it
 # PX13 a high-risk yes is written as a LAN grant
 px '    if high {' '    if !high { // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+# PX14 (f163c REVIEW-egress-ff804ceb L1) a LAN grant lets a service of this computer through
+px '            if holds(grants, seat, at, true, here.now) {' '            if holds(grants, seat, at, false, here.now) { // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+# PX15 (same) a tunnel to this computer's service is kept by a LAN grant
+px '                        && !holds(grants, s, *at, *by == By::HeldLocal, now)' '                        && !holds(grants, s, *at, false, now) // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
