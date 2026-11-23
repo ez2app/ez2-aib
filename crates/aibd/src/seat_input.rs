@@ -439,7 +439,8 @@ pub async fn act(
             | crate::perm_tpl::SET
             | crate::perm_tpl::REMOVE),
         ) => {
-            if held_as_user_page(&page).await || page.carried {
+            let tpl_from_user_page = held_as_user_page(&page).await;
+            if tpl_from_user_page || page.carried {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "page_only",

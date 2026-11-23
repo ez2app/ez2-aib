@@ -331,6 +331,18 @@ fn parse_shape(body: &Value) -> Result<(String, String, Items), (&'static str, &
     Ok((name, base, items))
 }
 
+/// The fingerprint gate of a raise, for add and set alike (f163c permtpl code L1): `Some` is
+/// the answer to give now (no ticket: asked; a ticket for other words: not approved).
+fn owner_gate(body: &Value, a: &crate::owner_ok::Ask) -> Option<Response> {
+    let Some(t) = ticket_of(body) else {
+        return Some(crate::repos::asked(a));
+    };
+    if !crate::owner_ok::approved_for(&t, a) {
+        return Some(crate::repos::not_approved());
+    }
+    None
+}
+
 fn ticket_of(body: &Value) -> Option<String> {
     body.get("ticket")
         .and_then(Value::as_str)
@@ -367,11 +379,8 @@ pub async fn add(st: AppState, body: Value, by: String) -> Response {
             window_line(&name, &base, &items, &items.keys_on()),
             by.clone(),
         );
-        let Some(t) = ticket_of(&body) else {
-            return crate::repos::asked(&a);
-        };
-        if !crate::owner_ok::approved_for(&t, &a) {
-            return crate::repos::not_approved();
+        if let Some(r) = owner_gate(&body, &a) {
+            return r;
         }
     }
     let db = st.messages.clone();
@@ -481,11 +490,8 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
             line,
             by.clone(),
         );
-        let Some(t) = ticket_of(&body) else {
-            return crate::repos::asked(&a);
-        };
-        if !crate::owner_ok::approved_for(&t, &a) {
-            return crate::repos::not_approved();
+        if let Some(r) = owner_gate(&body, &a) {
+            return r;
         }
     }
     let db = st.messages.clone();

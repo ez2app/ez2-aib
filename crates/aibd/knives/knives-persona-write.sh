@@ -75,3 +75,15 @@ python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
   '    let extra = copies.len().saturating_sub(COPIES_KEPT + 99);' \
   --expect-fail 'persona_write::tests::only_the_newest_copies_are_kept' \
   -- cargo test -p aibd --locked --lib 'persona_write::tests::only_the_newest_copies_are_kept'
+# pw-behind (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
+  '        w.list_behind = true;' \
+  '        w.list_behind = w.new_sha.is_empty();' \
+  --expect-fail persona_write::tests::a_card_written_with_the_list_behind_is_not_a_failed_write \
+  -- cargo test -p aibd --locked --lib persona_write::tests::a_card_written_with_the_list_behind_is_not_a_failed_write
+# pw-newtext (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
+  '    new_text_ok(new_text, uid)?;' \
+  '    new_text_ok(new_text, uid).ok();' \
+  --expect-fail persona_write::tests::a_new_text_that_would_not_be_this_card_is_not_written \
+  -- cargo test -p aibd --locked --lib persona_write::tests::a_new_text_that_would_not_be_this_card_is_not_written

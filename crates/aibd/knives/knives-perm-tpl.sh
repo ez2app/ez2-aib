@@ -45,3 +45,21 @@ python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
   ';多開 {}' \
   --expect-fail 'perm_tpl::tests::reserved_names_and_the_window_line' \
   -- cargo test -p aibd --locked --lib 'perm_tpl::tests::reserved_names_and_the_window_line'
+# ptl-asked (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
+  '        return Some(crate::repos::asked(a));' \
+  '        return None;' \
+  --expect-fail a_raise_goes_in_only_with_the_owners_ticket_for_it \
+  -- cargo test -p aibd --locked --test perm_tpl_owner a_raise_goes_in_only_with_the_owners_ticket_for_it
+# ptl-approved (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
+  '    if !crate::owner_ok::approved_for(&t, a) {' \
+  '    if !crate::owner_ok::approved_for(&t, a) && t.is_empty() {' \
+  --expect-fail a_raise_goes_in_only_with_the_owners_ticket_for_it \
+  -- cargo test -p aibd --locked --test perm_tpl_owner a_raise_goes_in_only_with_the_owners_ticket_for_it
+# ptl-page (f163c code review pre d698a7ef)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+  '            if tpl_from_user_page || page.carried {' \
+  '            if tpl_from_user_page && page.carried {' \
+  --expect-fail a_raise_goes_in_only_with_the_owners_ticket_for_it \
+  -- cargo test -p aibd --locked --test perm_tpl_owner a_raise_goes_in_only_with_the_owners_ticket_for_it

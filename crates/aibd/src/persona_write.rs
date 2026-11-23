@@ -50,6 +50,9 @@ pub enum WriteError {
     RegistryEdited,
     /// `cards.json` changed while it was being written (a 1.x scan ran): scan, then again.
     RegistryChanged,
+    /// The new text is not this persona's card (its front block's uid) or is too long: it
+    /// would never be written again (f163c pwrite L2).
+    TextInvalid,
 }
 
 impl WriteError {
@@ -65,6 +68,7 @@ impl WriteError {
             WriteError::Aliased => "persona_aliased",
             WriteError::RegistryEdited => "persona_registry_edited",
             WriteError::RegistryChanged => "persona_registry_changed",
+            WriteError::TextInvalid => "persona_text_invalid",
         }
     }
 }
@@ -74,6 +78,9 @@ impl WriteError {
 pub struct Written {
     pub new_sha: String,
     pub card_path: PathBuf,
+    /// The card has its new text but the list could not follow (f163c pwrite L1): written,
+    /// and the pending record brings the list up when aibd next starts.
+    pub list_behind: bool,
 }
 
 /// sha256 of `b`, 64 lowercase hex (1.x `persona_sha` is the card file's).
@@ -195,7 +202,7 @@ fn write_card_file(
     let tmp = dir.join(format!(
         ".{}.aibd-{}.tmp",
         name.to_string_lossy(),
-        std::process::id()
+        tmp_tag()
     ));
     let mode = std::fs::metadata(card_path)
         .map_err(|_| WriteError::Io)?
@@ -230,6 +237,7 @@ fn write_card_file(
     Ok(Written {
         new_sha: sha_hex(new_text),
         card_path: card_path.to_path_buf(),
+        list_behind: false,
     })
 }
 
@@ -328,7 +336,7 @@ fn fresh_beside(path: &Path, text: &[u8]) -> Result<PathBuf, WriteError> {
     let tmp = path.with_file_name(format!(
         ".{}.aibd-{}.tmp",
         name.to_string_lossy(),
-        std::process::id()
+        tmp_tag()
     ));
     let mode = std::fs::metadata(path)
         .map_err(|_| WriteError::Io)?
@@ -485,6 +493,33 @@ pub fn set_dir(dir: PathBuf) {
     let _ = DIR.set(dir);
 }
 
+/// A temporary file's tag: the process, the time and a count (f163c pwrite N1: a file left by
+/// an earlier process with the same pid does not block every later write).
+fn tmp_tag() -> String {
+    static TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = TMP.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("{}-{}-{n}", std::process::id(), now_ms())
+}
+
+/// f163c pwrite L2: the new text stays this persona's card and readable next time.
+fn new_text_ok(new_text: &[u8], uid: &str) -> Result<(), WriteError> {
+    if new_text.len() as u64 > crate::personas::MAX_PERSONA_TEXT {
+        return Err(WriteError::TextInvalid);
+    }
+    let own = std::str::from_utf8(new_text)
+        .ok()
+        .and_then(|t| {
+            front_block(t)?;
+            front_value(t, "uid")
+        })
+        .is_some_and(|u| u.as_str() == uid);
+    if own {
+        Ok(())
+    } else {
+        Err(WriteError::TextInvalid)
+    }
+}
+
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -535,6 +570,7 @@ fn write_at(
     new_text: &[u8],
     by: &str,
 ) -> Result<Written, WriteError> {
+    new_text_ok(new_text, uid)?;
     let _one = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -563,8 +599,16 @@ fn write_at(
             return Err(e);
         }
     };
-    // a failure here keeps the pending record: aibd finishes it when it starts
-    registry_point(cards_json, uid, &w.new_sha, false)?;
+    // f163c pwrite L1: the card has its new text now; the list is tried once more, and if it
+    // still cannot follow the write is told as written with the list behind (the pending
+    // record stays: aibd finishes it when it starts), never as a failed write
+    if registry_point(cards_json, uid, &w.new_sha, false).is_err()
+        && registry_point(cards_json, uid, &w.new_sha, true).is_err()
+    {
+        let mut w = w;
+        w.list_behind = true;
+        return Ok(w);
+    }
     let _ = std::fs::remove_file(pending_path(dir, uid));
     Ok(w)
 }
@@ -946,6 +990,74 @@ else:
         assert_eq!(reg_sha(&l.out, "abc001"), a, "reason: first_write_lost");
         assert_eq!(reg_sha(&l.out, "abc002"), b, "reason: second_write_lost");
         assert_eq!(l.refresh().as_deref(), Some("current"));
+    }
+
+    /// f163c pwrite L1: the card written but the list unable to follow (here: its old sha named
+    /// by two cards, so it cannot be swapped once) is a write with the list behind, not a
+    /// failed one; the pending record stays for aibd's next start.
+    #[cfg(unix)]
+    #[test]
+    fn a_card_written_with_the_list_behind_is_not_a_failed_write() {
+        let Some(l) = Lib::new() else { return };
+        let old = std::fs::read(l.card("abc001")).unwrap();
+        let (a, b) = (reg_sha(&l.out, "abc001"), reg_sha(&l.out, "abc002"));
+        let t = std::fs::read_to_string(&l.out).unwrap().replace(&b, &a);
+        std::fs::write(&l.out, &t).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&t).unwrap();
+        let prov = provenance_of(&l.out);
+        let (_, p0) = read_json(&prov).unwrap();
+        let pt = std::fs::read_to_string(&prov)
+            .unwrap()
+            .replace(
+                p0["cards_json_sha256"].as_str().unwrap(),
+                &sha_hex(t.as_bytes()),
+            )
+            .replace(
+                p0["cards_fingerprint"].as_str().unwrap(),
+                &cards_fingerprint(&doc),
+            );
+        std::fs::write(&prov, pt).unwrap();
+        assert_eq!(registry_clean(&l.out), Ok(()), "reason: fixture_not_clean");
+        let new = [old.as_slice(), "多一條。\n".as_bytes()].concat();
+        let w = write_at(&l.out, &l.dir, "abc001", &sha_hex(&old), &new, "page:t");
+        assert!(
+            w.as_ref().is_ok_and(|w| w.list_behind),
+            "reason: written_card_told_as_failed {w:?}"
+        );
+        assert_eq!(std::fs::read(l.card("abc001")).unwrap(), new);
+        assert!(
+            pending_path(&l.dir, "abc001").exists(),
+            "reason: pending_dropped"
+        );
+    }
+
+    /// f163c pwrite L2: a new text that is not this persona's card, or too long, is not
+    /// written; the card stays as it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_text_that_would_not_be_this_card_is_not_written() {
+        let Some(l) = Lib::new() else { return };
+        let old = std::fs::read(l.card("abc001")).unwrap();
+        let other = String::from_utf8(old.clone())
+            .unwrap()
+            .replace("abc001", "abc009");
+        let long = [
+            old.as_slice(),
+            &vec![b'x'; crate::personas::MAX_PERSONA_TEXT as usize][..],
+        ]
+        .concat();
+        for (why, new) in [
+            ("uid_changed", other.into_bytes()),
+            ("no_front_block", b"just text\n".to_vec()),
+            ("too_long", long),
+        ] {
+            assert_eq!(
+                write_at(&l.out, &l.dir, "abc001", &sha_hex(&old), &new, "page:t"),
+                Err(WriteError::TextInvalid),
+                "reason: {why}"
+            );
+        }
+        assert_eq!(std::fs::read(l.card("abc001")).unwrap(), old);
     }
 
     /// PW-R3: a list edited by hand is not written, and neither is the card.

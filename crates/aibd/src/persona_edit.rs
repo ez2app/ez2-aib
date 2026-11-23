@@ -268,7 +268,12 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
     }
     match crate::persona_write::write(&st, &uid, &base, new.into_bytes(), &by).await {
         Ok(w) => {
-            Json(json!({"persona_uid": uid, "new_sha": w.new_sha, "changed": true})).into_response()
+            // f163c pwrite L1: written; the list may follow only at aibd's next start
+            Json(
+                json!({"persona_uid": uid, "new_sha": w.new_sha, "changed": true,
+                        "list_behind": w.list_behind}),
+            )
+            .into_response()
         }
         Err(e) => {
             let code = match e {
