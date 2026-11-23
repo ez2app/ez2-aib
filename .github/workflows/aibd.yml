@@ -3816,7 +3816,7 @@ jobs:
       # block good work. The last step on purpose: it writes knives into files and puts them back, and
       # a step killed halfway must have nothing running after it (the next job's checkout resets the tree).
       - name: knife precheck (observe)
-        if: always() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && always() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 15
         shell: bash
@@ -4025,14 +4025,14 @@ jobs:
           # is the median of several runs, and it is only as fresh as the runs it can read
           bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"
       - name: keep each script's seconds
-        if: always() && env.RUN == 'true'
+        if: env.RUN == 'true' && always()
         shell: bash
         run: |
           mkdir -p knife-secs
           grep -E '^KNIVES-(SCRIPT|PLAN|OK|RED|NONE) ' "$RUNNER_TEMP/knives-run.out" > "knife-secs/cell-${{ strategy.job-index }}.txt" 2>/dev/null || true
           wc -l knife-secs/*.txt || true
       - uses: actions/upload-artifact@v4
-        if: always() && env.RUN == 'true'
+        if: env.RUN == 'true' && always()
         timeout-minutes: 3
         with:
           name: knife-secs-${{ strategy.job-index }}
