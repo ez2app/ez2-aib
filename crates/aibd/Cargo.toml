@@ -24,6 +24,7 @@ aib-drive = { path = "../aib-drive" }
 aib-idea = { path = "../aib-idea" }
 aib-ledger = { path = "../aib-ledger" }
 aib-notify = { path = "../aib-notify" }
+aib-plugin = { path = "../aib-plugin" }
 aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 # N-web-dmbridge: imported text cleaned with the approval window's rule (5d33a BOUNDARY §5)

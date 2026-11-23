@@ -55,6 +55,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::seat_move::MOVE,
     crate::seat_move::UNMOVE,
     crate::test_host_web::LIST,
+    crate::time_saved::KIND,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
@@ -452,6 +453,10 @@ pub async fn act(
         // DESIGN-page-gh-view-1a93b r1 (ORDER-today 11-21): the built-in page reads a pull
         // request, its checks or a run through aibd's own gh (read-only: no fingerprint; its
         // own switch)
+        // F2: the plugin's time-saved numbers; read only, nothing of the caller's is run
+        Some(crate::time_saved::KIND) => {
+            return crate::time_saved::page_act(body).await;
+        }
         Some(crate::gh_view::KIND) => {
             // a carried pairing may read (pair_carry: read and safe only); a user folder page
             // may not (an AI that can write that folder would read the repo with aibd's gh)

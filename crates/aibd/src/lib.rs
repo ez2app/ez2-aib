@@ -106,6 +106,7 @@ pub mod test_host_add;
 pub mod test_host_web;
 pub mod thermal;
 pub mod threads;
+pub mod time_saved;
 pub mod timers;
 pub mod token;
 pub mod touch;

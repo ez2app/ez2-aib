@@ -5,6 +5,14 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Page: **⏱ 節省時間** — five boxes (本日 / 本週 / 本月 / 本年 / 至今) on the built-in page. New
+  read-only act `time_saved`: aibd finds the `aib-skipstop` plugin in the plugin area, runs it
+  only when it is switched on and its executable is the one its file names (sha256), asks
+  `saved --json` on the page's clock (ended at 10 s), and builds the boxes from the answer's own
+  numbers. The time shown is time on the clock. Not installed, off, not runnable, no answer and
+  an answer not understood are each said; none is drawn as zeros. One read runs at a time and
+  an answer is kept 5 s for the same question.
+
 ## 0.2.0-preview.8 — 2026-11-22
 
 - Release: version bump stacked on integration head #872 (which contains #871: web inbox page,

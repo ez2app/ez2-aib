@@ -490,6 +490,7 @@ dependencies = [
  "aib-ledger",
  "aib-notify",
  "aib-plan",
+ "aib-plugin",
  "aib-receipt-gate",
  "aib-seatopen",
  "aib-store",

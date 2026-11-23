@@ -982,7 +982,7 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
-    return h + testHostHtml();
+    return h + testHostHtml() + timeSavedHtml();
   }
   // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
   const TH_WHY = {
@@ -995,6 +995,39 @@
     write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
     page_only: '只有這台 AIB 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
   };
+  // c5d88 PLAN-skipstop F2:省時雙系統的五格。數字是外掛 aib-skipstop 的(aibd 只讀、驗過安裝的檔才跑);
+  // 顯示的是牆鐘省下的時間(clock_ms),不是各單位時間的加總。讀不到就說讀不到,不畫 0
+  const TS_BOX = [['today', '本日'], ['week', '本週'], ['month', '本月'], ['year', '本年'], ['all', '至今']];
+  const TS_WHY = {
+    not_installed: '還沒裝省時外掛(aib-skipstop)', off: '省時外掛已關閉', not_runnable: '省時外掛不能跑:安裝的檔案和登記的不一樣',
+    unreadable: '省時外掛的設定檔讀不懂', no_answer: '省時外掛沒有回答', bad_answer: '省時外掛的回答讀不懂',
+  };
+  const tsDur = (ms) => { const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? h + ' 小時 ' + m + ' 分' : m ? m + ' 分 ' + x + ' 秒' : x + ' 秒'; };
+  async function tsLoad() {
+    if (hasAct('time_saved') !== true || (S.ts && S.ts.loading)) return;
+    S.ts = Object.assign(S.ts || {}, { loading: true });
+    try { const r = await act('time_saved', { utc_offset_min: -new Date().getTimezoneOffset() }); S.ts = { r: r || {}, at: Date.now() }; }
+    catch (e) { S.ts = { err: errText(e), at: Date.now() }; }
+    render();
+  }
+  function timeSavedHtml() {
+    if (hasAct('time_saved') !== true) return '';
+    const T = S.ts;
+    if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tsLoad, 0); return '<div class="thh"><b>⏱ 節省時間</b><span class="hv">讀取中…</span></div>'; }
+    const head = '<div class="thh"><b>⏱ 節省時間</b><button type="button" class="k" data-tsreload="1" title="重讀省時外掛的數字">重讀</button></div>';
+    if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
+    const st = String(T.r.state || '');
+    if (st !== 'ok') return head + `<div class="thr hv">${esc(TS_WHY[st] || '讀不到省時數字')}</div>`;
+    const B = (T.r.saved && T.r.saved.boxes) || {};
+    let h = head + '<div class="tsb">';
+    for (const [k, name] of TS_BOX) {
+      const b = B[k];
+      if (!b || typeof b.clock_ms !== 'number') return head + '<div class="thr hv">讀不到省時數字</div>';
+      const more = Number(b.clock_unknown_runs) || 0;
+      h += `<div class="tsx"><i>${name}</i><b>${esc(tsDur(b.clock_ms))}</b>${more ? `<span class="hv" title="這幾次有省到,但沒有全部真跑的那一次可以比,所以時間不算進來">另 ${more} 次未計</span>` : ''}</div>`;
+    }
+    return h + '</div>';
+  }
   async function thLoad() {
     if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
     S.th = Object.assign(S.th || {}, { loading: true });
@@ -5943,6 +5976,7 @@
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
     const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
     if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
+    if (x.closest('[data-tsreload]')) { S.ts = null; return tsLoad(); }
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);

@@ -199,6 +199,14 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/await fingerAct\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
 }
 
+// 15b. c5d88 PLAN-skipstop F2:省時五格只在 aibd 有 time_saved 時畫;讀不到要說讀不到,不可以畫成 0;畫的是牆鐘(clock_ms)
+{
+  ok(/if \(hasAct\('time_saved'\) !== true\) return '';/.test(ws), 'reason: time_saved_without_act');
+  ok(/if \(st !== 'ok'\) return head \+/.test(ws), 'reason: time_saved_not_ok_draws_boxes');
+  ok(/typeof b\.clock_ms !== 'number'\) return head \+/.test(ws), 'reason: time_saved_missing_number_draws_zero');
+  ok(ws.includes('tsDur(b.clock_ms)') && !/tsDur\(b\.total/.test(ws), 'reason: time_saved_shows_unit_time_sum');
+  for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: time_saved_state_without_words ' + w);
+}
 // 15. b4297 CARD-add-test-host r0:測試機區塊只在 aibd 有 test_host_list 時畫;加 / 收回走指紋兩段;why 代碼都有人話
 {
   ok(/if \(hasAct\('test_host_list'\) !== true\) return '';/.test(ws), 'reason: test_host_without_act');
