@@ -58,6 +58,19 @@ pub fn ssh_program(os: Os, base: &Path) -> Result<PathBuf, &'static str> {
     }
 }
 
+/// This computer's own ssh: `/usr/bin/ssh` on a Mac; on Windows `OpenSSH\\ssh.exe` under the
+/// system directory the OS reports ([`aib_sys::sysdir::system_dir`]), never `%SystemRoot%` or
+/// `PATH` (3e53b DEEP2 T1). Unreadable or missing ⇒ refused.
+pub fn system_ssh() -> Result<PathBuf, &'static str> {
+    match Os::here() {
+        Os::Mac => ssh_program(Os::Mac, Path::new("/")),
+        Os::Windows => {
+            let dir = aib_sys::sysdir::system_dir().ok_or("system_dir_unreadable")?;
+            ssh_program(Os::Windows, &dir)
+        }
+    }
+}
+
 /// A managed host as `host_exec` connects to it.
 pub struct Target<'a> {
     /// The list id: the known-hosts alias.
@@ -306,6 +319,25 @@ mod tests {
 
     /// W2 (hostmode §5): the ssh program is the system's, by absolute path; missing ⇒ refused
     /// and nothing on PATH is tried.
+    /// DEEP2 T1: the ssh aibd runs is found from the OS, not the environment.
+    #[test]
+    fn this_computers_ssh_is_found_from_the_os_not_the_environment() {
+        let r = system_ssh();
+        if cfg!(windows) {
+            let p = r.expect("reason: windows_ssh_not_found");
+            assert!(
+                p.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with("system32\\openssh\\ssh.exe"),
+                "reason: not_system32 {p:?}"
+            );
+        } else if Path::new("/usr/bin/ssh").is_file() {
+            assert_eq!(r, Ok(PathBuf::from("/usr/bin/ssh")), "reason: not_usr_bin");
+        } else {
+            assert_eq!(r, Err("ssh_missing"));
+        }
+    }
+
     #[test]
     fn the_ssh_program_is_the_systems_and_never_one_on_path() {
         let root = tempfile::tempdir().unwrap();

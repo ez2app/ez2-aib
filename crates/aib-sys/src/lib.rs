@@ -80,6 +80,7 @@ pub mod session;
 pub mod settle;
 #[cfg(target_os = "macos")]
 pub mod stdio_only;
+pub mod sysdir;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;

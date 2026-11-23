@@ -57,6 +57,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_IO",
             "Win32_System_JobObjects",
             "Win32_System_RemoteDesktop",
+            // sysdir: GetSystemDirectoryW for aibd host_ssh (3e53b DEEP2 T1, DESIGN-hostmode §3-4)
+            "Win32_System_SystemInformation",
             "Win32_System_Threading",
         ],
     ),

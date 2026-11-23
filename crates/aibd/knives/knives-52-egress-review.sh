@@ -64,3 +64,5 @@ kn egress.rs '    445..=445,' '    446..=446, // knife' $PORT_T
 kn egress.rs '    8888..=8888,' '    8889..=8889, // knife' $PORT_T
 # EV26 (c2f0b E6) the kubelet gets a card
 kn egress.rs '    10250..=10250,' '    10251..=10251, // knife' $PORT_T
+# EV27 (DEEP2 T1) this computer's ssh is looked for somewhere else than the system's place
+kn host_ssh.rs '        Os::Mac => ssh_program(Os::Mac, Path::new("/")),' '        Os::Mac => ssh_program(Os::Mac, Path::new("/usr/local")), // knife' host_ssh::tests::this_computers_ssh_is_found_from_the_os_not_the_environment
