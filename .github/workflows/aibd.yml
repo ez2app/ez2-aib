@@ -4027,7 +4027,10 @@ jobs:
           sed -n 's/^KNIVES-ELIGIBLE //p' "$RUNNER_TEMP/knives-list.out" > "$RUNNER_TEMP/knives-list.txt"
           cargo run -q --locked -p aib-xtask -- knife-shards plan --shards "${AIB_KNIVES_SHARD#*/}" \
             --secs crates/aib-knife/knife-secs.tsv --list "$RUNNER_TEMP/knives-list.txt" > "$RUNNER_TEMP/knives-plan.tsv"
+          cargo run -q --locked -p aib-xtask -- knife-shards limits \
+            --secs crates/aib-knife/knife-secs.tsv > "$RUNNER_TEMP/knives-limits.tsv"
           export AIB_KNIVES_PLAN="$RUNNER_TEMP/knives-plan.tsv"
+          export AIB_KNIVES_LIMITS="$RUNNER_TEMP/knives-limits.tsv"
           # every script's seconds are kept (the artifact below): the table the plan is made from
           # is the median of several runs, and it is only as fresh as the runs it can read
           bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"

@@ -582,3 +582,29 @@ fn the_plan_made_from_the_list_runs_every_script_once_over_the_cells() {
         "k2 and k4 apart: {a:?} {b:?}"
     );
 }
+
+#[test]
+fn limits_file_overrides_default_timeout() {
+    let r = repo(&[(
+        "crates/a/knives/k1.sh",
+        "#!/usr/bin/env bash\n# aib-knives: os=any\nsleep 30\n",
+    )]);
+    std::fs::write(r.join("limits.tsv"), "1\tcrates/a/knives/k1.sh\n").unwrap();
+    let o = Command::new("bash")
+        .arg(runner())
+        .arg("rust")
+        .current_dir(&r)
+        .env("AIB_KNIVES_SECS_PER_MIN", "1")
+        .env("AIB_KNIVES_LIMITS", "limits.tsv")
+        .env_remove("AIB_KNIVES_SHARD")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: not_run why_not=timeout secs="),
+        "{out}"
+    );
+    assert!(out.contains("limit=1m"), "{out}");
+}
