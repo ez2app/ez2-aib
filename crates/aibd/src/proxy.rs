@@ -333,9 +333,12 @@ mod tests {
         persona_name: "頁面工程師",
     };
 
+    /// This computer's one interface address in these tests.
+    static OWN: [IpAddr; 1] = [IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 9))];
+
     fn here(now: u64) -> Here<'static> {
         Here {
-            own: &[],
+            own: &OWN,
             own_binds: &[47770, 47780],
             preview_ports: &[],
             now,

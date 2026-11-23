@@ -52,3 +52,9 @@ kn managed_test.rs '                "os": h.os,' '                "os": h.os, "a
 kn managed_test.rs '        Some(_) => Err("host_addr_refused"),' '        Some(_) => Ok(h), // knife' $MT_A
 # EV20 (L5, HM15) a name is matched loosely
 kn managed_test.rs '        .find(|h| h.name == name)' '        .find(|h| h.name.trim() == name.trim()) // knife' $MT_A
+# EV21 (c2f0b E2) the card asks again for a private address already on the list
+kn egress.rs '                .find(|a| classify(**a, own) == Class::Private && !listed(**a, port))' '                .find(|a| classify(**a, own) == Class::Private) // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
+# EV22 (c2f0b E5) no interface address read: this computer's LAN address passes as private
+kn egress.rs '    if own.is_empty() {' '    if own.is_empty() && ips.is_empty() { // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
+# EV23 (c2f0b E5) the same for a test machine
+kn managed_test.rs '    if own.is_empty() {' '    if own.is_empty() && h.port == 0 { // knife' $MT_A

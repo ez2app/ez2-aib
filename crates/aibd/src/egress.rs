@@ -232,6 +232,11 @@ pub fn verdict(
     let Some(first) = ips.first().copied() else {
         return Verdict::Refuse("no_address");
     };
+    // no interface address read: this computer's own LAN address would pass as private
+    // (c2f0b PREREAD-egress-chain E5); every computer has at least one
+    if own.is_empty() {
+        return Verdict::Refuse("interfaces_unreadable");
+    }
     let worst = ips
         .iter()
         .map(|ip| (classify(*ip, own), *ip))
@@ -240,16 +245,15 @@ pub fn verdict(
     match worst {
         (Class::Refuse(w), _) => Verdict::Refuse(w),
         (Class::Own(_), _) => Verdict::Refuse("this_computer"),
-        (Class::Private, ip) => {
-            // every private address among them must be on the list (a public one needs none)
-            if ips
+        (Class::Private, _) => {
+            // every private address among them must be on the list (a public one needs none);
+            // the card asks for the first one that is not, so a yes moves on (c2f0b E2)
+            match ips
                 .iter()
-                .filter(|a| classify(**a, own) == Class::Private)
-                .all(|a| listed(*a, port))
+                .find(|a| classify(**a, own) == Class::Private && !listed(**a, port))
             {
-                Verdict::Pass(first)
-            } else {
-                Verdict::Card(ip)
+                None => Verdict::Pass(first),
+                Some(ip) => Verdict::Card(*ip),
             }
         }
         (Class::Public, _) => Verdict::Pass(first),
@@ -637,6 +641,19 @@ mod tests {
             Verdict::Pass(ip("1.2.3.4")) // ip-literal-ok: a public address the classifier must pass (documentation ranges are refused)
         );
         assert_eq!(verdict(&[], 80, &own, &all), Verdict::Refuse("no_address"));
+        // two private addresses: once the first is allowed the card asks for the second (c2f0b E2)
+        let first_only = |a: IpAddr, _: u16| a == ip("10.0.0.5");
+        assert_eq!(
+            verdict(&[ip("10.0.0.5"), ip("10.0.0.6")], 80, &own, &first_only),
+            Verdict::Card(ip("10.0.0.6")),
+            "reason: card_asks_listed_again"
+        );
+        // interfaces not read: nothing passes as private (c2f0b E5)
+        assert_eq!(
+            verdict(&[ip("192.168.1.20")], 80, &[], &all),
+            Verdict::Refuse("interfaces_unreadable"),
+            "reason: own_lan_as_private"
+        );
         assert!(LOCAL_REFUSED.contains("本機服務"));
     }
 }

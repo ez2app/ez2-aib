@@ -18,7 +18,7 @@ eg '    if b[1] != 1 {' '    if b[1] > 3 { // knife' egress::tests::socks5_takes
 # EG6 Content-Length beside chunked taken (request smuggling)
 eg '    if length && chunked {' '    if length && chunked && false { // knife' egress::tests::only_connect_absolute_form_and_socks_connect_are_taken
 # EG7 a private address passes without being on the seat's list
-eg '                .all(|a| listed(*a, port))' '                .all(|a| listed(*a, port) || port != 0) // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
+eg '                .find(|a| classify(**a, own) == Class::Private && !listed(**a, port))' '                .find(|a| classify(**a, own) == Class::Private && !listed(**a, port) && port == 0) // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
 # EG8 (16.2, Andy「5能上網」) a Windows work seat is said to be enforced
 eg '        ("claude", "work") => "hint",' '        ("claude", "work") => "enforced", // knife' egress::tests::a_mode_says_enforced_only_where_the_sandbox_holds_and_the_proxy_is_there
 # EG9 a mode is said to be enforced before the proxy is in the build
@@ -32,4 +32,4 @@ eg 'pub const AIBD_RESERVED: std::ops::RangeInclusive<u16> = 47770..=47799;' 'pu
 # EG13 (f163c REVIEW-sandboxnet18 L1, N40) ssh back into this computer gets a card
 eg '    } else if MACHINE_PORTS.iter().any(|r| r.contains(&port)) {' '    } else if MACHINE_PORTS.iter().any(|r| r.contains(&port) && port != 22) { // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
 # EG14 the browser's remote-debugging range is cut short
-eg '    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9229];' '    [22..=22, 2375..=2376, 3283..=3283, 5900..=5900, 9222..=9222]; // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
+eg '    9222..=9229,' '    9222..=9222, // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is

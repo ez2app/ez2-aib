@@ -54,6 +54,11 @@ impl Source {
 
 /// Why a trusted machine cannot be handed to a partner, or `None`.
 pub fn refused(h: &TrustedHost, own: &[IpAddr]) -> Option<&'static str> {
+    // this computer's addresses not read: refuse rather than take one of them as a LAN machine
+    // (c2f0b PREREAD-egress-chain E5)
+    if own.is_empty() {
+        return Some("interfaces_unreadable");
+    }
     let Ok(ip) = h.hostname.parse::<IpAddr>() else {
         return Some("not_an_address");
     };
@@ -182,6 +187,11 @@ mod tests {
                 "reason: refused_taken {n}"
             );
         }
+        assert_eq!(
+            from_trusted(&l, &[], "lin-macmini").unwrap_err(),
+            "host_addr_refused",
+            "reason: no_interfaces_taken"
+        );
         assert_eq!(Kind::Test.as_str(), "test");
         assert_eq!(Source::Trusted.as_str(), "trusted");
     }
