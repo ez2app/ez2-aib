@@ -36,7 +36,7 @@ impl aibd::owner_ok::WindowGate for Gate {
     fn page_now(&self, digest: [u8; 32]) -> Option<aibd::pairing::PageAccess> {
         PAIRED
             .load(Ordering::SeqCst)
-            .then(|| aibd::pairing::PageAccess {
+            .then_some(aibd::pairing::PageAccess {
                 digest,
                 confirmed: true,
                 user_page: false,

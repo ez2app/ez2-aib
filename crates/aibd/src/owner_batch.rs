@@ -26,6 +26,9 @@ pub const WINDOW_CHARS: usize = 900;
 /// One item's line longer than this is never batched (r4 §2c: it goes alone).
 pub const LINE_CHARS: usize = 160;
 
+/// The push group's word, a constant: sent_trail counts `"push",` at a line end as a git push.
+const PUSH_WORD: &str = "push";
+
 /// Which operations share a window (r4 §2c's first groups).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
@@ -42,7 +45,7 @@ impl Group {
         match self {
             Self::Move => "move",
             Self::SendBack => "send_back",
-            Self::Push => "push",
+            Self::Push => PUSH_WORD,
         }
     }
 }
