@@ -184,6 +184,257 @@ impl AllowList {
     }
 }
 
+/// The "always allow" operation: no hold in its parameters (not in `grants::HOLD_ALLOWED`), its
+/// own words in the window (IFACE-netcard r1).
+pub const OP_NET_ALLOW_ALWAYS: &str = "net.allow_always";
+/// A private address for a while (the same word as `grants::OP_NET_PRIVATE`; written out here so
+/// owner_ok's scan of `operation:` constants reads it).
+pub const OP_PRIVATE: &str = "net.private";
+/// A service on this computer itself (the same word as `grants::OP_NET_LOCAL_SELF`).
+pub const OP_LOCAL_SELF: &str = "net.local_self";
+
+/// How long a card waits for the owner; then it is a refusal (IFACE-netcard §1).
+pub const CARD_SECS: u64 = 120;
+
+/// One card: a seat's connection held while the owner decides. Made only by aibd's proxy (or
+/// `net_ask`); nothing of it comes from the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Card {
+    pub request_id: String,
+    pub seat_id: String,
+    pub persona_uid: String,
+    pub persona_name: String,
+    pub dest_name: String,
+    pub dest: SocketAddr,
+    /// `proxy` or `net_ask`.
+    pub source: &'static str,
+    /// The partner's own reason, `net_ask` only.
+    pub why: Option<String>,
+    pub expires_at: u64,
+    /// A service on this computer itself (A6d): the high-risk card.
+    pub high: bool,
+}
+
+impl Card {
+    /// The choices this card offers, in order.
+    pub fn choices(&self) -> Vec<Choice> {
+        if self.high {
+            HIGH_CHOICES.to_vec()
+        } else {
+            CHOICES.iter().map(|(c, _, _)| *c).collect()
+        }
+    }
+
+    /// Whether a choice of this card needs the owner (on the high-risk card every yes does).
+    pub fn needs_owner(&self, c: Choice) -> bool {
+        c != Choice::Deny && (self.high || c.needs_owner())
+    }
+
+    /// What `net_card_list` says of it (IFACE-netcard §1).
+    pub fn shown(&self) -> serde_json::Value {
+        let choices: Vec<serde_json::Value> = self
+            .choices()
+            .into_iter()
+            .map(|c| {
+                let words = CHOICES
+                    .iter()
+                    .find(|(x, _, _)| *x == c)
+                    .map_or("", |(_, _, w)| *w);
+                serde_json::json!({"id": c.id(), "words": words, "needs_owner": self.needs_owner(c)})
+            })
+            .collect();
+        let mut v = serde_json::json!({
+            "request_id": self.request_id,
+            "seat_id": self.seat_id,
+            "persona_uid": self.persona_uid,
+            "persona_name": self.persona_name,
+            "dest_name": self.dest_name,
+            "dest_ip": self.dest.ip().to_string(),
+            "dest_port": self.dest.port(),
+            "category": if self.high { "local_self" } else { "private" },
+            "source": self.source,
+            "expires_at": self.expires_at,
+            "choices": choices,
+        });
+        if let Some(w) = &self.why {
+            v["why"] = serde_json::json!(w);
+        }
+        v
+    }
+
+    /// The owner's window for choice `c`: the operation, what is shown, and parameters that bind
+    /// only this card and this choice (f163c 08:00: `request_id` + the choice, never the ticket).
+    pub fn ask(&self, c: Choice, by: &str) -> crate::owner_ok::Ask {
+        let category = aib_approve::category::Category::WindowGrant;
+        let resource = format!("{} → {} {}", self.persona_name, self.dest_name, self.dest);
+        let by = by.to_owned();
+        if c == Choice::Always {
+            let params = serde_json::json!({"request_id": self.request_id, "choice": c.id()});
+            return crate::owner_ok::Ask {
+                category,
+                operation: OP_NET_ALLOW_ALWAYS,
+                resource,
+                params: params.to_string().into_bytes(),
+                by,
+            };
+        }
+        let params = serde_json::json!({"request_id": self.request_id, "hold": c.id()})
+            .to_string()
+            .into_bytes();
+        if self.high {
+            crate::owner_ok::Ask {
+                category,
+                operation: OP_LOCAL_SELF,
+                resource,
+                params,
+                by,
+            }
+        } else {
+            crate::owner_ok::Ask {
+                category,
+                operation: OP_PRIVATE,
+                resource,
+                params,
+                by,
+            }
+        }
+    }
+}
+
+/// A card's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Open,
+    /// A window was asked for this choice; only the ticket's resend finishes it.
+    Asked(Choice),
+    Finished,
+}
+
+/// What an answer does.
+#[derive(Debug, Clone)]
+pub enum Step {
+    /// Finished: `None` refuses the held connection, `Some` lets it through for that long.
+    Done(Choice, Option<Verified>),
+    /// Raise the owner's window for this (202 with a ticket).
+    Ask(Box<crate::owner_ok::Ask>),
+    /// The ticket is not an approved one for this card and choice.
+    NotApproved,
+    Refused(&'static str),
+}
+
+impl PartialEq for Step {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Step::Done(a, x), Step::Done(b, y)) => a == b && x == y,
+            (Step::Ask(a), Step::Ask(b)) => a.operation == b.operation && a.params == b.params,
+            (Step::NotApproved, Step::NotApproved) => true,
+            (Step::Refused(a), Step::Refused(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// The open cards. Kept only while aibd runs: a card lives two minutes.
+#[derive(Debug, Default)]
+pub struct Cards {
+    rows: Vec<(Card, State)>,
+}
+
+impl Cards {
+    pub fn add(&mut self, c: Card) {
+        self.rows.push((c, State::Open));
+    }
+
+    fn sweep(&mut self, now: u64) {
+        self.rows
+            .retain(|(c, s)| *s != State::Finished && now < c.expires_at.saturating_add(CARD_SECS));
+    }
+
+    /// The card of this request, as it is now.
+    pub fn find(&self, request_id: &str) -> Option<Card> {
+        self.rows
+            .iter()
+            .find(|(c, _)| c.request_id == request_id)
+            .map(|(c, _)| c.clone())
+    }
+
+    /// Cards still waiting for the owner (`net_cards` on `GET /api/v1/seats`).
+    pub fn waiting(&mut self, now: u64) -> usize {
+        self.sweep(now);
+        self.rows.iter().filter(|(c, _)| now < c.expires_at).count()
+    }
+
+    /// `net_card_list`.
+    pub fn list(&mut self, now: u64) -> Vec<serde_json::Value> {
+        self.sweep(now);
+        self.rows
+            .iter()
+            .filter(|(c, _)| now < c.expires_at)
+            .map(|(c, _)| c.shown())
+            .collect()
+    }
+
+    /// `net_card_answer {request_id, choice, ticket?}` (IFACE-netcard r1 §2, choice (a)).
+    /// `approved` is `owner_ok::approved_for` (it uses the ticket up).
+    pub fn answer(
+        &mut self,
+        request_id: &str,
+        choice: &str,
+        ticket: Option<&str>,
+        now: u64,
+        by: &str,
+        approved: impl FnOnce(&str, &crate::owner_ok::Ask) -> bool,
+    ) -> Step {
+        let Some(i) = self
+            .rows
+            .iter()
+            .position(|(c, _)| c.request_id == request_id)
+        else {
+            return Step::Refused("net_card_unknown");
+        };
+        let (card, state) = &mut self.rows[i];
+        if *state == State::Finished {
+            return Step::Refused("net_card_used");
+        }
+        if now >= card.expires_at {
+            *state = State::Finished;
+            return Step::Refused("net_card_expired");
+        }
+        let Some(c) = Choice::parse(choice).filter(|c| card.choices().contains(c)) else {
+            return Step::Refused("not_a_choice");
+        };
+        if !card.needs_owner(c) {
+            // 拒絕 stays open while a window is asked (the owner changed their mind); 只這一次 is
+            // a first answer only
+            let first = *state == State::Open;
+            if ticket.is_some() || !(first || c == Choice::Deny) {
+                return Step::Refused("net_card_used");
+            }
+            *state = State::Finished;
+            let yes = (c != Choice::Deny).then(|| Verified { lasts: Lasts::Once });
+            return Step::Done(c, yes);
+        }
+        let ask = card.ask(c, by);
+        match (ticket, *state) {
+            (None, State::Open) => {
+                *state = State::Asked(c);
+                Step::Ask(Box::new(ask))
+            }
+            // the second send without the ticket (IFACE r1)
+            (None, _) => Step::Refused("net_card_used"),
+            (Some(t), State::Asked(_)) => {
+                if !approved(t, &ask) {
+                    return Step::NotApproved;
+                }
+                *state = State::Finished;
+                let lasts = c.lasts();
+                Step::Done(c, lasts.map(|lasts| Verified { lasts }))
+            }
+            (Some(_), _) => Step::NotApproved,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -307,6 +558,176 @@ mod tests {
         let yes = decide_high(Some("hour1"), Owner::Yes).unwrap();
         let mut l = AllowList::new("a1b2c");
         assert!(!l.add(at("127.0.0.1:5432"), &yes));
+    }
+
+    fn card(id: &str, high: bool) -> Card {
+        Card {
+            request_id: id.into(),
+            seat_id: "a1b2c".into(),
+            persona_uid: "p_1".into(),
+            persona_name: "頁面工程師".into(),
+            dest_name: "db.lan".into(),
+            dest: at(if high {
+                "127.0.0.1:5432"
+            } else {
+                "10.0.0.5:5432"
+            }),
+            source: "proxy",
+            why: None,
+            expires_at: 1_000,
+            high,
+        }
+    }
+
+    fn approve(ok: bool) -> impl FnOnce(&str, &crate::owner_ok::Ask) -> bool {
+        move |t, _| ok && t == "ot_good"
+    }
+
+    #[test]
+    fn a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket() {
+        let mut cs = Cards::default();
+        cs.add(card("r1", false));
+        cs.add(card("r2", false));
+        cs.add(card("r3", false));
+        // first send: the window
+        let Step::Ask(ask) = cs.answer("r1", "min15", None, 900, "page:1", approve(true)) else {
+            panic!("reason: no_window");
+        };
+        assert_eq!(ask.operation, OP_PRIVATE);
+        // NA2 the second send without the ticket
+        assert_eq!(
+            cs.answer("r1", "min15", None, 901, "page:1", approve(true)),
+            Step::Refused("net_card_used"),
+            "reason: second_send_without_ticket"
+        );
+        // NA1 with the approved ticket
+        let Step::Done(c, Some(yes)) =
+            cs.answer("r1", "min15", Some("ot_good"), 902, "page:1", approve(true))
+        else {
+            panic!("reason: approved_ticket_not_done");
+        };
+        assert_eq!(c, Choice::Min15);
+        assert_eq!(yes.lasts(), Lasts::For(Duration::from_secs(900)));
+        // NA4 the same ticket again
+        assert_eq!(
+            cs.answer("r1", "min15", Some("ot_good"), 903, "page:1", approve(true)),
+            Step::Refused("net_card_used"),
+            "reason: ticket_twice"
+        );
+        // NA3 a ticket the owner did not approve for this choice: nothing finished
+        assert!(matches!(
+            cs.answer("r2", "min15", None, 900, "page:1", approve(true)),
+            Step::Ask(_)
+        ));
+        assert_eq!(
+            cs.answer(
+                "r2",
+                "hour1",
+                Some("ot_good"),
+                901,
+                "page:1",
+                approve(false)
+            ),
+            Step::NotApproved,
+            "reason: other_choice_taken"
+        );
+        // 拒絕 still answers a card whose window is open
+        assert_eq!(
+            cs.answer("r2", "deny", None, 902, "page:1", approve(true)),
+            Step::Done(Choice::Deny, None)
+        );
+        // a ticket sent before any window
+        assert_eq!(
+            cs.answer("r3", "hour1", Some("ot_good"), 900, "page:1", approve(true)),
+            Step::NotApproved,
+            "reason: ticket_before_window"
+        );
+    }
+
+    #[test]
+    fn the_window_binds_only_this_card_and_this_choice() {
+        let c = card("r9", false);
+        let a = c.ask(Choice::Hour1, "page:1");
+        let p: serde_json::Value = serde_json::from_slice(&a.params).unwrap();
+        assert_eq!(p, serde_json::json!({"request_id": "r9", "hold": "hour1"}));
+        assert_eq!(
+            crate::grants::hold_in(a.operation, &a.params),
+            Ok(Some(crate::grants::Hold::Hour1))
+        );
+        let al = c.ask(Choice::Always, "page:1");
+        assert_eq!(al.operation, OP_NET_ALLOW_ALWAYS);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&al.params).unwrap(),
+            serde_json::json!({"request_id": "r9", "choice": "always"})
+        );
+        // no hold for always: grants raises a window for it
+        assert_eq!(crate::grants::hold_in(al.operation, &al.params), Ok(None));
+        let h = card("r8", true).ask(Choice::Once, "page:1");
+        assert_eq!(h.operation, OP_LOCAL_SELF);
+        assert_eq!(
+            crate::grants::hold_in(h.operation, &h.params),
+            Ok(Some(crate::grants::Hold::Once))
+        );
+        assert_eq!(OP_PRIVATE, crate::grants::OP_NET_PRIVATE);
+        assert_eq!(OP_LOCAL_SELF, crate::grants::OP_NET_LOCAL_SELF);
+        assert!(a.resource.contains("10.0.0.5:5432"));
+    }
+
+    #[test]
+    fn the_cards_list_counts_and_ends() {
+        let mut cs = Cards::default();
+        cs.add(card("r1", false));
+        cs.add(card("r2", true));
+        assert_eq!(cs.waiting(10), 2);
+        let l = cs.list(10);
+        assert_eq!(l[0]["dest_port"], 5432);
+        assert_eq!(l[0]["choices"].as_array().unwrap().len(), 6);
+        let high: Vec<(String, bool)> = l[1]["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["id"].as_str().unwrap().to_owned(),
+                    c["needs_owner"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            high,
+            [
+                ("deny", false),
+                ("once", true),
+                ("min15", true),
+                ("hour1", true)
+            ]
+            .map(|(a, b)| (a.to_owned(), b))
+        );
+        // once on the ordinary card finishes at once, without the owner
+        assert_eq!(
+            cs.answer("r1", "once", None, 11, "page:1", approve(false)),
+            Step::Done(Choice::Once, Some(Verified { lasts: Lasts::Once }))
+        );
+        assert_eq!(cs.waiting(12), 1, "reason: answered_still_counted");
+        // on the high-risk card 只這一次 raises the window, 一直允許 is not a choice
+        assert!(matches!(
+            cs.answer("r2", "once", None, 12, "p", approve(true)),
+            Step::Ask(_)
+        ));
+        assert_eq!(
+            cs.answer("r2", "always", None, 12, "p", approve(true)),
+            Step::Refused("not_a_choice")
+        );
+        // past its time: not counted, then refused
+        assert_eq!(cs.waiting(1_000), 0, "reason: expired_counted");
+        assert_eq!(
+            cs.answer("r2", "deny", None, 1_000, "p", approve(true)),
+            Step::Refused("net_card_expired")
+        );
+        assert_eq!(
+            cs.answer("zz", "deny", None, 1, "p", approve(true)),
+            Step::Refused("net_card_unknown")
+        );
     }
 
     #[test]

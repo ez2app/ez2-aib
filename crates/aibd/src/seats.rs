@@ -697,6 +697,8 @@ pub async fn list(
         _ => None,
     };
     let live = st.sessions.live_seats();
+    // IFACE-netcard r1 (fc7f9 08:00): how many network cards wait, for the person's page only
+    let net_cards = me.is_none().then(crate::net_card_web::waiting_now);
     let counted = move || -> aib_store::Result<Vec<serde_json::Value>> {
         let mut v = read_all(&st)?;
         if let Some(page) = page {
@@ -713,7 +715,11 @@ pub async fn list(
                 Some(me) => same_cabin(v, &me, &live),
                 None => v,
             };
-            Json(serde_json::json!({ "seats": v })).into_response()
+            let mut out = serde_json::json!({ "seats": v });
+            if let Some(n) = net_cards {
+                out["net_cards"] = serde_json::json!(n);
+            }
+            Json(out).into_response()
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat list failed");

@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 14] = [
+pub const ACTIONS: [(&str, &str); 17] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -126,6 +126,15 @@ pub const ACTIONS: [(&str, &str); 14] = [
     (crate::gh_token::OP, "存 GitHub 權杖"),
     (crate::provider_login::OP, "重新登入 AI"),
     (crate::drive_switch::OP, "打開自動推進派工"),
+    (crate::net_card::OP_PRIVATE, "讓 AI 夥伴連內網的一個位址"),
+    (
+        crate::net_card::OP_LOCAL_SELF,
+        "高風險:讓 AI 夥伴連這台電腦上的服務",
+    ),
+    (
+        crate::net_card::OP_NET_ALLOW_ALWAYS,
+        "一直允許 AI 夥伴連這個位址",
+    ),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -409,6 +418,10 @@ pub const WIRED: &[&str] = &[
     // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
     crate::test_host_add::OP_ADD,
     crate::test_host_add::OP_REMOVE,
+    // a seat's held connection, answered on the network card (IFACE-netcard r1, 3e53b)
+    crate::net_card::OP_PRIVATE,
+    crate::net_card::OP_LOCAL_SELF,
+    crate::net_card::OP_NET_ALLOW_ALWAYS,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.

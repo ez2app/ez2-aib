@@ -37,6 +37,7 @@ pub mod grants;
 pub mod guard;
 pub mod managed_test;
 pub mod net_card;
+pub mod net_card_web;
 // hostmode r3 §2 / sandboxnet r5 §3: which addresses aibd connects to for a seat (3e53b 11-23)
 pub mod host_addr;
 // hostmode r3 §3-4: the one pinned ssh command of host_exec (3e53b 11-23)

@@ -118,7 +118,7 @@ mod tests {
 
     fn list() -> Vec<TrustedHost> {
         vec![
-            host("andymini", "100.101.102.103"),
+            host("andymini", "100.64.0.9"),
             host("lin-macmini", "192.168.1.20"),
             host("pro16", "127.0.0.1"),
             host("self-lan", "192.168.1.9"),
@@ -149,7 +149,7 @@ mod tests {
         // nothing of where or as whom (HM14)
         let text = v.to_string();
         for x in [
-            "100.101.102.103",
+            "100.64.0.9",
             "192.168.1.20",
             "tester",
             "ssh-ed25519",

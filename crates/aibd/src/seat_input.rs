@@ -57,6 +57,10 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::test_host_web::LIST,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
+    crate::net_card_web::LIST,
+    crate::net_card_web::ANSWER,
+    crate::net_card_web::ALLOW_LIST,
+    crate::net_card_web::ALLOW_REVOKE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
     crate::seat_fetch::FETCH,
@@ -536,6 +540,30 @@ pub async fn act(
                 crate::test_host_web::LIST => crate::test_host_web::list(st).await,
                 crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
                 _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
+        // the network exception card (IFACE-netcard r1): the built-in page in this pairing only;
+        // a yes that needs the owner then needs the owner's fingerprint
+        Some(
+            k @ (crate::net_card_web::LIST
+            | crate::net_card_web::ANSWER
+            | crate::net_card_web::ALLOW_LIST
+            | crate::net_card_web::ALLOW_REVOKE),
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "network cards are answered from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::net_card_web::LIST => crate::net_card_web::list().await,
+                crate::net_card_web::ANSWER => crate::net_card_web::answer(st, body, by).await,
+                crate::net_card_web::ALLOW_LIST => crate::net_card_web::allow_list(body).await,
+                _ => crate::net_card_web::allow_revoke(st, body, by).await,
             };
         }
         // 重新登入 (DESIGN-relogin-card r2): the built-in page in this pairing only; starting a
