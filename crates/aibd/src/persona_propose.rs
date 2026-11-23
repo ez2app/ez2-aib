@@ -210,13 +210,17 @@ impl Book {
             return Err("persona_bad_char");
         }
         let new_sha = sha_hex(new.as_bytes());
+        // the same card, the same base and the same text: the same proposal (90856 5b44ae992
+        // receipt: by seat and text only, a seat's same text for another card came back as
+        // the first card's proposal)
+        let diff_sha = persona_diff::diff_sha(card.uid, card.sha, &new_sha);
         let mut l = self.list();
         Self::sweep(&mut l, now);
         let waiting = |p: &&Proposal| p.stand == Stand::Waiting;
         if let Some(p) = l
             .iter()
             .filter(waiting)
-            .find(|p| p.seat_id == ask.seat_id && p.new_sha == new_sha)
+            .find(|p| p.seat_id == ask.seat_id && p.diff_sha == diff_sha)
         {
             return Ok((p.clone(), true));
         }
@@ -245,7 +249,7 @@ impl Book {
             persona_uid: card.uid.to_owned(),
             persona_name: card.name.to_owned(),
             base_sha: card.sha.to_owned(),
-            diff_sha: persona_diff::diff_sha(card.uid, card.sha, &new_sha),
+            diff_sha,
             new_sha,
             new_text: new.to_owned(),
             diff,
