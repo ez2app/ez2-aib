@@ -328,20 +328,15 @@ pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
             seat_id,
             "seat_perm pending not applied at restart: brain held back"
         );
-        let ev = crate::sessions::new_id("ev_")
-            .ok()
-            .map(|id| aib_store::NewEvent {
-                event_id: id.clone(),
-                aggregate_type: "seat_perm".into(),
-                aggregate_id: id,
-                sequence: 1,
-                event_type: "seat.perm.restart_unapplied".into(),
-                correlation_id: None,
-                occurred_at: crate::sessions::now_rfc3339(),
-                payload: json!({"seat_id": seat_id, "held_back": [crate::seats::BRAIN_TOOL]}),
-            });
-        let store = st.store.clone();
-        let _ = tokio::task::spawn_blocking(move || ev.map(|ev| store.append(vec![ev]))).await;
+        // the house shape (seats::side_event): the event's own id as its aggregate, the seat
+        // in the payload (f163c N8: one aggregate per seat would collide on sequence 1)
+        crate::seats::side_event(
+            st,
+            "seat_perm",
+            "seat.perm.restart_unapplied",
+            json!({"seat_id": seat_id, "held_back": [crate::seats::BRAIN_TOOL]}),
+        )
+        .await;
     }
     restart_drop(took, row)
 }

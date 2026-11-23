@@ -87,3 +87,27 @@ python3 -I scripts/knife.py crates/aibd/src/persona_write.rs \
   '    new_text_ok(new_text, uid).ok();' \
   --expect-fail persona_write::tests::a_new_text_that_would_not_be_this_card_is_not_written \
   -- cargo test -p aibd --locked --lib persona_write::tests::a_new_text_that_would_not_be_this_card_is_not_written
+# pe-approved (ebab8 11-23 09:11 standing rule: owner / built-in-page gates have integration tests and knives)
+python3 -I scripts/knife.py crates/aibd/src/persona_edit.rs \
+  '        Some(t) if !crate::owner_ok::approved_for(t, &ask) => return crate::repos::not_approved(),' \
+  '        Some(t) if t.is_empty() => return crate::repos::not_approved(),' \
+  --expect-fail a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page \
+  -- cargo test -p aibd --locked --test persona_set_owner a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page
+# pe-asked (ebab8 11-23 09:11 standing rule: owner / built-in-page gates have integration tests and knives)
+python3 -I scripts/knife.py crates/aibd/src/persona_edit.rs \
+  '        None => return crate::repos::asked(&ask),' \
+  '        None => {}' \
+  --expect-fail a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page \
+  -- cargo test -p aibd --locked --test persona_set_owner a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page
+# pe-userpage (ebab8 11-23 09:11 standing rule: owner / built-in-page gates have integration tests and knives)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+  '            if registry_from_user_page || page.carried {' \
+  '            if false && registry_from_user_page || page.carried {' \
+  --expect-fail a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page \
+  -- cargo test -p aibd --locked --test persona_set_owner a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page
+# bn-userpage (ebab8 11-23 09:11 standing rule: owner / built-in-page gates have integration tests and knives)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+  '            if note_from_user_page || page.carried {' \
+  '            if false && note_from_user_page || page.carried {' \
+  --expect-fail a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page \
+  -- cargo test -p aibd --locked --test persona_set_owner a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_page

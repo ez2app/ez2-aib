@@ -419,7 +419,8 @@ pub async fn act(
         // aibd §3 brain_note: the notes work seats wrote are listed and taken back from the
         // built-in page in this pairing (no fingerprint: a take-back only lowers)
         Some(k @ (crate::brain_note::LIST | crate::brain_note::DELETE)) => {
-            if held_as_user_page(&page).await || page.carried {
+            let note_from_user_page = held_as_user_page(&page).await;
+            if note_from_user_page || page.carried {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "page_only",
@@ -523,8 +524,8 @@ pub async fn act(
             | crate::persona_edit::BRAIN_RESTORE
             | crate::persona_edit::ROLE_RESTORE,
         ) => {
-            let from_user_page = held_as_user_page(&page).await;
-            if from_user_page || page.carried {
+            let registry_from_user_page = held_as_user_page(&page).await;
+            if registry_from_user_page || page.carried {
                 return refuse(
                     StatusCode::FORBIDDEN,
                     "registry_built_in_page_only",
