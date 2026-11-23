@@ -12,7 +12,7 @@ python3 -I scripts/knife.py crates/aibd/src/usage.rs \
 # a15-num
 python3 -I scripts/knife.py crates/aibd/src/usage.rs \
   '        .filter(|n| n.is_finite() && (lo..=hi).contains(n))' \
-  '        .filter(|n| n.is_finite() && *n >= lo)' \
+  '        .filter(|n| n.is_finite() && *n >= lo && hi.is_finite())' \
   --expect-fail 'usage::tests::odd_words_and_numbers_are_dropped' \
   -- cargo test -p aibd --locked --lib 'usage::tests::odd_words_and_numbers_are_dropped'
 # a15-claude
@@ -36,7 +36,7 @@ python3 -I scripts/knife.py crates/aibd/src/usage.rs \
 # a15-ask
 python3 -I scripts/knife.py crates/aibd/src/codex_wire.rs \
   '        &json!({"jsonrpc": "2.0", "id": QUOTA_ID, "method": "account/rateLimits/read"}),' \
-  '        &json!({"jsonrpc": "2.0", "method": "initialized"}),' \
+  '        &json!({"jsonrpc": "2.0", "id": QUOTA_ID, "method": "initialized"}),' \
   --expect-fail 'codex_wire::tests::the_opening_carries_the_persona_in_the_protocol' \
   -- cargo test -p aibd --locked --lib 'codex_wire::tests::the_opening_carries_the_persona_in_the_protocol'
 # a15-wordonly (f163c pre L1)
