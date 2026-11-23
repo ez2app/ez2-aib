@@ -58,3 +58,9 @@ kn egress.rs '                .find(|a| classify(**a, own) == Class::Private && 
 kn egress.rs '    if own.is_empty() {' '    if own.is_empty() && ips.is_empty() { // knife' egress::tests::this_computer_is_refused_private_asks_and_public_passes
 # EV23 (c2f0b E5) the same for a test machine
 kn managed_test.rs '    if own.is_empty() {' '    if own.is_empty() && h.port == 0 { // knife' $MT_A
+# EV24 (c2f0b E6) SMB back into this computer gets a card
+kn egress.rs '    445..=445,' '    446..=446, // knife' $PORT_T
+# EV25 (c2f0b E6) a Jupyter server on this computer gets a card
+kn egress.rs '    8888..=8888,' '    8889..=8889, // knife' $PORT_T
+# EV26 (c2f0b E6) the kubelet gets a card
+kn egress.rs '    10250..=10250,' '    10251..=10251, // knife' $PORT_T

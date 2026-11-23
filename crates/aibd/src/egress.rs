@@ -280,14 +280,21 @@ pub enum Local {
 /// Ports where a yes would hand over the whole machine, refused with no card in the first version
 /// (f163c REVIEW-sandboxnet18 L1): ssh back into this computer, the Docker API (root), screen
 /// sharing / Apple Remote Desktop, a browser's remote debugging (the owner's signed-in browser).
-pub const MACHINE_PORTS: [std::ops::RangeInclusive<u16>; 7] = [
+pub const MACHINE_PORTS: [std::ops::RangeInclusive<u16>; 12] = [
     22..=22,
+    // file sharing back into this computer as its user (c2f0b PREREAD-egress-chain E6)
+    445..=445,
+    548..=548,
     2375..=2376,
     3283..=3283,
     3389..=3389,
     5900..=5909,
     5985..=5986,
+    // a Kubernetes API / kubelet and a Jupyter server run code on this computer (E6)
+    6443..=6443,
+    8888..=8888,
     9222..=9229,
+    10250..=10250,
 ];
 
 /// `own_binds` are the ports this aibd process bound (kept in the process); `preview_ports` are
@@ -358,7 +365,8 @@ mod tests {
         // these hand over the whole machine: refused, no card (L1, N40)
         // with Windows' remote desktop and remote shell, and VNC's next displays (f163c L4)
         for p in [
-            22, 2375, 2376, 3283, 3389, 5900, 5909, 5985, 5986, 9222, 9229,
+            22, 445, 548, 2375, 2376, 3283, 3389, 5900, 5909, 5985, 5986, 6443, 8888, 9222, 9229,
+            10250,
         ] {
             assert_eq!(
                 local_kind(p, &[], &[]),
@@ -367,7 +375,8 @@ mod tests {
             );
         }
         for p in [
-            21, 23, 3000, 3388, 3390, 5432, 5910, 5984, 5987, 9221, 9230, 47769, 47800,
+            21, 23, 444, 446, 3000, 3388, 3390, 5432, 5910, 5984, 5987, 8887, 8889, 9221, 9230,
+            10249, 10251, 47769, 47800,
         ] {
             assert_eq!(
                 local_kind(p, &[51000], &[52000]),
