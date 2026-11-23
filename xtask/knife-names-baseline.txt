@@ -1,6 +1,7 @@
 # aib-xtask knife-names baseline (6770f 11-23): the knife-name duplicates main had on 1ae3cecbdb.
 # A duplicate not listed here fails; a line here that is no longer a duplicate fails until it is taken out.
-# Only take lines out (rename a knife's name comment, not its anchor); never add one.
+# Only take lines out (rename a knife's name comment, not its anchor). A line is added only when main itself already has the duplicate (ebab8 decides), with the reason below.
+# 11-23 ebab8 12:32: cross PG1–PG4 added — main 82ceae28c1 (877) brought crates/aib-plugin/knives/knives-01-plugin.sh PG1–PG4, which collide with crates/aibd/knives/knives-14-slots.sh PG1–PG4; to be renamed (listed for Andy).
 cross AO1
 cross AO2
 cross B5
@@ -185,6 +186,10 @@ cross PC1
 cross PF1
 cross PF2
 cross PF3
+cross PG1
+cross PG2
+cross PG3
+cross PG4
 cross PK1
 cross PK2
 cross PM1
