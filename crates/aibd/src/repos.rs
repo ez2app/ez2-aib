@@ -304,6 +304,7 @@ pub fn open_ask_plain(
 ) -> crate::owner_ok::Ask {
     let params = json!({
         "kind": "open", "provider": provider, "persona_uid": persona_uid, "repo": null,
+        "persona_name": persona_name,
     });
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
@@ -369,15 +370,28 @@ pub async fn dgrs_restart_gate(
     by: String,
 ) -> Option<Response> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
-    let read = tokio::task::spawn_blocking(move || store.seat_meta(&id)).await;
+    let read = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
+        let Some(m) = store.seat_meta(&id)? else {
+            return Ok(None);
+        };
+        let archived = store
+            .seat(&id)?
+            .is_some_and(|s| aib_store::ARCHIVED == s.state);
+        Ok(Some((m, archived)))
+    })
+    .await;
     // f163c REVIEW-a11 L1: only "no such seat" is left to the act; a read that failed stops
     // here (a second read in revive could succeed and start a dgrs seat unasked)
-    let meta = match known_or_stop(read) {
+    let (meta, archived) = match known_or_stop(read) {
         Ok(Some(m)) => m,
         Ok(None) => return None,
         Err(()) => return Some(seat_unreadable()),
     };
-    if meta.mode.as_deref() != Some("dgrs") {
+    let runs =
+        st.sessions.list().iter().any(|s| {
+            s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
+        });
+    if left_to_act(meta.mode.as_deref(), archived, runs) {
         return None;
     }
     let a = restart_ask(
@@ -393,6 +407,13 @@ pub async fn dgrs_restart_gate(
         return Some(not_approved());
     }
     None
+}
+
+/// A11 (f163c REVIEW-a11 N1): a restart the act refuses anyway — not a dgrs seat, archived, or
+/// running now — is left to the act before the owner is asked: a fingerprint is never spent on
+/// a seat_archived / seat_running answer. (Not a fence: revive checks both again.)
+fn left_to_act(mode: Option<&str>, archived: bool, runs: bool) -> bool {
+    mode != Some("dgrs") || archived || runs
 }
 
 /// `202 {ticket}` while the owner has not answered, `403 owner_check_unavailable` when no
@@ -592,6 +613,22 @@ mod tests {
     }
     use std::process::Command;
 
+    /// A11 (f163c REVIEW-a11 N1): only a dgrs seat that is neither archived nor running asks.
+    #[test]
+    fn a_restart_refused_anyway_asks_no_fingerprint() {
+        assert!(!left_to_act(Some("dgrs"), false, false));
+        assert!(
+            left_to_act(Some("dgrs"), true, false),
+            "reason: archived_asked"
+        );
+        assert!(
+            left_to_act(Some("dgrs"), false, true),
+            "reason: running_asked"
+        );
+        assert!(left_to_act(Some("work"), false, false));
+        assert!(left_to_act(None, false, false));
+    }
+
     /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
     /// on the window's first line, and their tickets are bound apart (kind, seat).
     #[test]
@@ -600,7 +637,7 @@ mod tests {
         assert_eq!(o.operation, OP_OPEN);
         assert_eq!(
             crate::owner_ok::plain_words(o.operation, &o.params).as_deref(),
-            Some("開一個完全權限的席(claude),人格 un0eba")
+            Some("開一個完全權限的席(claude),人格 架構師")
         );
         assert!(
             o.resource.contains("架構師"),

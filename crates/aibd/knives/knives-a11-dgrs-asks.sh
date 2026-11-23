@@ -29,8 +29,8 @@ python3 -I scripts/knife.py crates/aibd/src/seat_clear.rs \
   -- cargo test -p aibd --locked --test seats_page_dgrs_asks 'a_dgrs_seat_starts_from_the_page_only_through_the_owner'
 # a11-safe
 python3 -I scripts/knife.py crates/aibd/src/repos.rs \
-  '    if meta.mode.as_deref() != Some("dgrs") {' \
-  '    if false {' \
+  '    mode != Some("dgrs") || archived || runs' \
+  '    (mode != Some("dgrs") && mode.is_none()) || archived || runs' \
   --expect-fail 'a_dgrs_seat_starts_from_the_page_only_through_the_owner' \
   -- cargo test -p aibd --locked --test seats_page_dgrs_asks 'a_dgrs_seat_starts_from_the_page_only_through_the_owner'
 # a11-kind
@@ -51,3 +51,15 @@ python3 -I scripts/knife.py crates/aibd/src/repos.rs \
   '        Ok(Err(_)) | Err(_) => Ok(None),' \
   --expect-fail 'repos::tests::a_seat_record_not_read_stops_the_dgrs_gate' \
   -- cargo test -p aibd --locked --lib 'repos::tests::a_seat_record_not_read_stops_the_dgrs_gate'
+# a11-n1 (f163c REVIEW-a11 N1: an archived or running seat's restart spends no fingerprint)
+python3 -I scripts/knife.py crates/aibd/src/repos.rs \
+  '    mode != Some("dgrs") || archived || runs' \
+  '    mode != Some("dgrs") || (archived && runs) || runs' \
+  --expect-fail 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint' \
+  -- cargo test -p aibd --locked --lib 'repos::tests::a_restart_refused_anyway_asks_no_fingerprint'
+# a11-n2 (f163c REVIEW-a11 N2: the window's first line names the persona)
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '                    .filter(|n| !n.is_empty())' \
+  '                    .filter(|n| n.is_empty())' \
+  --expect-fail 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other' \
+  -- cargo test -p aibd --locked --lib 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other'
