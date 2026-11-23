@@ -911,6 +911,33 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     M.pvBusy = false; M.pv = { plan: PLAN }; ok(cg.F.mgGrpHtml(st.add) !== '', 'reason: mg_grp_with_act'); st.acts = []; ok(cg.F.mgGrpHtml(st.add) === '' && cg.F.mgGrpChange(st.add, { dataset: { apmgnm: 'q1' }, value: 'x' }) === false, 'reason: mg_grp_without_act');
   })());
   ok(ws.includes("A.mx.ncBad = null; A.mx.gopt = null; render(); mgPreview(A); return true; }") && ws.includes("A.mx.ncBad = null; A.mx.gopt = null; A.mx.pvSeq") && ws.includes("if (e.target.dataset && (e.target.dataset.apmgnm !== undefined || e.target.dataset.apmgst || e.target.dataset.apmgrb) && S.add && mgGrpChange(S.add, e.target)) return;"), 'reason: mg_grp_wired_and_cleared');
+  // 08de5 A1(2b959d2275):清單的 archived 陣列 ⇒「已封存」區,按 ↺ 走 fingerAct *_restore;成功拿掉並回到清單,not_archived 也拿掉;沒有 restore act 不畫
+  lateChecks.push((async () => {
+    const ARBLK = '  // 08de5 IFACE-a1-a15 A1' + (ws.split('  // 08de5 IFACE-a1-a15 A1(2b959d2275')[1] || '').split('  // 列底下的一行結果(含 ↺ 還原)')[0];
+    const sent = [], S = { version: { capabilities: { acts: [] } }, personaList: [['p1', '甲']] }; let regLoads = 0, fpR = async () => ({ __status: 200, uid: 'x', kind: 'persona', state: 'restored' });
+    const ca = vm.createContext({ S, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), hasAct: (t) => S.version.capabilities.acts.includes(t), render: () => {}, FP_SEE: '看指紋', REPO_WHY: {}, errText: (e) => 'E:' + (e && e.code),
+      personas: () => S.personaList, loadRegistry: () => { regLoads++; }, fingerAct: async (t, b) => { sent.push([t, JSON.parse(JSON.stringify(b))]); return fpR(); } });
+    vm.runInContext('  const RG_ACTS = {' + (ws.split('  const RG_ACTS = {')[1] || '').split('\n  };')[0] + '\n  };\n' + (ws.match(/  const RG_WORD = [^\n]*\n  const rgHas = [^\n]*\n/) || [''])[0] + (ws.match(/  const RG_WHY = [^\n]*\n/) || [''])[0] + (ws.match(/  const rgOk = [^\n]*\n  const rgCode = [^\n]*\n  const rgWhy = [^\n]*\n/) || [''])[0] + ARBLK + '\nthis.F = { rgArchOf, rgArchHtml, rgRestoreArch };', ca);
+    const arch = ca.F.rgArchOf({ personas: [], archived: [{ uid: 'p9xxxxxx', display_name: '舊 <寫手>' }, { name: 'no uid' }, { uid: 'p8', name: '乙' }] });
+    ok(JSON.stringify(arch) === JSON.stringify([['p9xxxxxx', '舊 <寫手>'], ['p8', '乙']]) && JSON.stringify(ca.F.rgArchOf({ personas: [] })) === '[]' && JSON.stringify(ca.F.rgArchOf(null)) === '[]', 'reason: rg_arch_of');
+    S.arch = { persona: arch, brain: [['b7', '舊腦']], role: [] };
+    ok(ca.F.rgArchHtml('persona') === '', 'reason: rg_arch_without_restore_not_drawn');
+    S.version.capabilities.acts = ['persona_restore', 'brain_restore', 'role_restore'];
+    const h0 = ca.F.rgArchHtml('persona'); ok(h0 === '<div class="rgarch"><button type="button" class="k" data-rgao="persona" aria-expanded="false">已封存的人格 2 個 ▾</button></div>' && ca.F.rgArchHtml('role') === '' && ca.F.rgArchHtml('brain').includes('已移除的第二大腦 1 個'), 'reason: rg_arch_collapsed ' + h0);
+    S.archOpen = { persona: true }; const h1 = ca.F.rgArchHtml('persona');
+    ok(h1.includes('<b>舊 &lt;寫手&gt;</b> <i>xxxxxx</i>') && h1.includes('data-rgrs="persona:p9xxxxxx"') && h1.includes('data-rgrs="persona:p8"') && h1.includes('已封存的人格 2 個 ▴'), 'reason: rg_arch_rows ' + h1.slice(0, 300));
+    await ca.F.rgRestoreArch('persona', 'p8');
+    ok(sent.length === 1 && sent[0][0] === 'persona_restore' && JSON.stringify(sent[0][1]) === '{"uid":"p8"}' && S.arch.persona.length === 1 && S.personaList.some(([u, n]) => u === 'p8' && n === '乙') && S.rgMsg.text === '已還原人格「乙」,清單裡又有了' && S.rgMsgKind === 'persona' && !S.rgArchBusy && regLoads === 0, 'reason: rg_arch_restore_persona ' + JSON.stringify(S.rgMsg));
+    await ca.F.rgRestoreArch('brain', 'b7'); ok(sent.length === 2 && sent[1][0] === 'brain_restore' && S.arch.brain.length === 0 && regLoads === 1, 'reason: rg_arch_restore_brain_reloads');
+    fpR = async () => { throw Object.assign(new Error('x'), { status: 404, code: 'not_archived', reason: '' }); }; S.arch.persona = [['p9xxxxxx', '舊']];
+    await ca.F.rgRestoreArch('persona', 'p9xxxxxx'); ok(S.rgMsg.bad && S.rgMsg.text === '沒有還原:它已經不在封存區了' && S.arch.persona.length === 0, 'reason: rg_arch_not_archived_dropped');
+    fpR = async () => { throw Object.assign(new Error('x'), { status: 403, code: 'forbidden', reason: 'owner_check_not_approved' }); }; S.arch.persona = [['p9xxxxxx', '舊']];
+    await ca.F.rgRestoreArch('persona', 'p9xxxxxx'); ok(S.rgMsg.bad && S.arch.persona.length === 1, 'reason: rg_arch_failed_kept');
+    fpR = async () => ({ __status: 202, ticket: 't' }); await ca.F.rgRestoreArch('persona', 'p9xxxxxx'); ok(S.rgMsg.bad && S.arch.persona.length === 1, 'reason: rg_arch_not_done_not_claimed');
+    sent.length = 0; S.rgArchBusy = 'zz'; await ca.F.rgRestoreArch('persona', 'p9xxxxxx'); ok(sent.length === 0 && /data-rgrs="persona:p9xxxxxx" disabled/.test(ca.F.rgArchHtml('persona')), 'reason: rg_arch_busy');
+    S.rgArchBusy = null; S.version.capabilities.acts = []; await ca.F.rgRestoreArch('persona', 'p9xxxxxx'); ok(sent.length === 0, 'reason: rg_arch_without_act_not_sent');
+  })());
+  ok(ws.includes("rgNote('persona')}${rgArchHtml('persona')}") && ws.includes("rgNote('brain')}${rgArchHtml('brain')}") && ws.includes("rgNote('role')}${rgArchHtml('role')}") && ws.includes("    S.arch = Object.assign(S.arch || {}, { role: rgArchOf(r), brain: rgArchOf(b) });") && ws.includes("      S.arch = Object.assign(S.arch || {}, { persona: rgArchOf(r) });") && ws.includes("[data-rgdelok],[data-rgundo],[data-rgao],[data-rgrs]') && await rgClick(x)) return;"), 'reason: rg_arch_wired');
   // c2f0b IFACE-passphrase r2:密語備援只讀 passphrase_state 顯示一行;swapped 紅字、available false 用系統驗證、鎖 / 剩幾次照 aibd 欄位;頁面沒有密語輸入框
   lateChecks.push((async () => {
     const PWBLK = '  // c2f0b IFACE-passphrase r2' + (ws.split('  // c2f0b IFACE-passphrase r2(接線片 6573c52350')[1] || '').split('  // c2f0b S2-2(頭 1000abaa95')[0];

@@ -64,7 +64,7 @@ k '    if (U.length) return `<div class="cfm rgc"><b>不能封存</b>' '    if (
 # PGRG11 (rg_edit_form)
 k 'data-rgf="name" value="${esc(R.name)}"' 'data-rgf="name" value="${R.name}"'
 # PGRG12 (rg_notes)
-k '${pers}${rgNote('\''persona'\'')}${regForm('\''persona'\'')}' '${pers}${regForm('\''persona'\'')}'
+k '${pers}${rgNote('\''persona'\'')}${rgArchHtml('\''persona'\'')}${regForm('\''persona'\'')}' '${pers}${rgArchHtml('\''persona'\'')}${regForm('\''persona'\'')}'
 # PGRG13 (rg_events)
 k '    if (e.target.dataset && e.target.dataset.rgf && S.rg) { S.rg[e.target.dataset.rgf] = e.target.value; if (S.rg.review) { S.rg.review = false; const d = document.querySelector('\''.rgdiff'\''); if (d) d.remove(); } return; }' '    // knife RG13'
 # PGHS1 (hs_mode_button)
