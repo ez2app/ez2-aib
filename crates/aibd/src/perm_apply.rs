@@ -367,20 +367,32 @@ pub fn restart_drop(written: bool, row: Result<Option<String>, ()>) -> Vec<&'sta
 pub async fn holds(st: &AppState, seat_id: &str, mode: &str, item: &str) -> bool {
     let (db, id) = (st.messages.clone(), seat_id.to_owned());
     let row = match tokio::task::spawn_blocking(move || db.seat_perm(&id)).await {
-        Ok(Ok(p)) => Ok(p.map(|p| p.now.items_json)),
+        Ok(Ok(p)) => Ok(p.map(|p| (p.now.items_json, p.pending.map(|w| w.items_json)))),
         _ => Err(()),
     };
     held_in(row, mode, item)
 }
 
-/// [`holds`] on what was read: the seat's row's items (none: its mode's own; unread: no).
+/// [`holds`] on what was read: the seat's row's items now and the change waiting for its
+/// restart (none: its mode's own; unread: no). Held only when both hold it: a lowering waiting
+/// takes the item now, a raise waiting gives nothing before the restart (f163c REVIEW-papply
+/// L6; and a restart that could not write the change keeps the lowering in force).
 /// f163c bnote L1 (bound to 7b): a template with 第二大腦 off keeps brain_note from writing.
-pub fn held_in(row: Result<Option<String>, ()>, mode: &str, item: &str) -> bool {
-    match row {
-        Ok(Some(items_json)) => serde_json::from_str::<Value>(&items_json)
+pub fn held_in(row: Result<Option<(String, Option<String>)>, ()>, mode: &str, item: &str) -> bool {
+    let on = |items_json: &str| {
+        serde_json::from_str::<Value>(items_json)
             .ok()
             .and_then(|v| Items::parse(&v))
-            .is_some_and(|i| i.on(item)),
+            .is_some_and(|i| i.on(item))
+    };
+    match row {
+        Ok(Some((now, waiting))) => {
+            let waiting_holds = match waiting {
+                None => true,
+                Some(w) => on(&w),
+            };
+            on(&now) && waiting_holds
+        }
         Ok(None) => gives_now(mode).contains(&item),
         Err(()) => false,
     }
@@ -943,10 +955,24 @@ mod tests {
         );
         let off: Vec<&str> = work_own.iter().copied().filter(|k| *k != "brain").collect();
         assert!(
-            !held_in(Ok(Some(items(&off))), "work", "brain"),
+            !held_in(Ok(Some((items(&off), None))), "work", "brain"),
             "reason: brain_off_template_held"
         );
-        assert!(held_in(Ok(Some(items(&work_own))), "work", "brain"));
+        assert!(held_in(Ok(Some((items(&work_own), None))), "work", "brain"));
+        // L6: a lowering waiting for the restart takes it now; a raise waiting gives nothing yet
+        assert!(
+            !held_in(
+                Ok(Some((items(&work_own), Some(items(&off))))),
+                "work",
+                "brain"
+            ),
+            "reason: waiting_lowering_still_held"
+        );
+        assert!(!held_in(
+            Ok(Some((items(&off), Some(items(&work_own))))),
+            "work",
+            "brain"
+        ));
         assert!(held_in(Ok(None), "work", "brain"), "reason: mode_own_lost");
         assert!(!held_in(Err(()), "work", "brain"), "reason: unread_held");
     }

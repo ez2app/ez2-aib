@@ -41,8 +41,8 @@ python3 -I scripts/knife.py crates/aibd/src/revive.rs \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::every_start_and_the_brain_act_read_the_template'
 # pa-brainoff (f163c bnote L1 bound to 7b: a template with the brain off keeps brain_note out)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '            .is_some_and(|i| i.on(item)),' \
-  '            .is_some_and(|_| true),' \
+  '            .is_some_and(|i| i.on(item))' \
+  '            .is_some_and(|_| true)' \
   --expect-fail perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain \
   -- cargo test -p aibd --locked --lib perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain
 # pa-unread (f163c bnote L1 bound to 7b: a template with the brain off keeps brain_note out)
@@ -111,3 +111,15 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '        _ => None,' \
   --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
   -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
+# rs-take (f163c REVIEW-papply M2)
+python3 -I scripts/knife.py crates/aibd/src/revive.rs \
+  '    let drop = crate::perm_apply::at_restart(st, &seat.seat_id).await;' \
+  '    let drop: Vec<&'"'"'static str> = Vec::new();' \
+  --expect-fail a_waiting_change_takes_effect_on_every_restart_of_every_brand \
+  -- cargo test -p aibd --locked --test perm_restart_paths a_waiting_change_takes_effect_on_every_restart_of_every_brand
+# pa-l6 (f163c REVIEW-papply L6)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '                Some(w) => on(&w),' \
+  '                Some(_) => true,' \
+  --expect-fail perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain \
+  -- cargo test -p aibd --locked --lib perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain
