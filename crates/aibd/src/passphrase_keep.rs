@@ -18,6 +18,10 @@
 //! - **Tries survive a restart**: written after every answer that changed them. A missing or
 //!   unreadable tries file next to a record counts as locked ([`read_tries`]): deleting it is
 //!   not a way to more tries.
+//!   While aibd runs, a tries file written back to a lower count does not count: the stricter
+//!   of the file and what aibd last wrote does (f163c REVIEW-passkeep L1). aibd's own copy is
+//!   in memory only, so a tries file written back while aibd is stopped is believed — the same
+//!   limit as the known record above (f163c REVIEW-passkeep 044c7f87 N2).
 //! - **No phrase over the web**: the page only gets [`STATE`] (what [`crate::passphrase::view`]
 //!   shows); the phrase comes from the system's secure input in the window slice.
 
