@@ -317,8 +317,6 @@ mod tests {
         }
     }
 
-    /// W2 (hostmode §5): the ssh program is the system's, by absolute path; missing ⇒ refused
-    /// and nothing on PATH is tried.
     /// DEEP2 T1: the ssh aibd runs is found from the OS, not the environment.
     #[test]
     fn this_computers_ssh_is_found_from_the_os_not_the_environment() {
@@ -338,6 +336,8 @@ mod tests {
         }
     }
 
+    /// W2 (hostmode §5): the ssh program is the system's, by absolute path; missing ⇒ refused
+    /// and nothing on PATH is tried.
     #[test]
     fn the_ssh_program_is_the_systems_and_never_one_on_path() {
         let root = tempfile::tempdir().unwrap();
