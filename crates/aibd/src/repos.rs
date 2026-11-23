@@ -397,13 +397,13 @@ pub async fn dgrs_restart_gate(
             return Some(
                 (
                     StatusCode::CONFLICT,
-                    Json(
-                        json!({"code": "conflict", "reason": reason, "message": message,
-                        "request_id": crate::guard::request_id()}),
-                    ),
+                    // f163c pre-0954a14a N1: the act's own shape (seat_input::refuse), so a
+                    // page reading `code` sees one thing whichever answered
+                    Json(json!({"code": reason, "message": message,
+                        "request_id": crate::guard::request_id()})),
                 )
                     .into_response(),
-            )
+            );
         }
         Step::Ask => {}
     }
