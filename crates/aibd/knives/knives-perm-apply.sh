@@ -51,3 +51,21 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '        Err(()) => true,' \
   --expect-fail perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain \
   -- cargo test -p aibd --locked --lib perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain
+# tpl-ask (ebab8 11-23 09:00: a full-permission seat from a template is always asked once)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '            if crate::perm_apply::open_needs_owner(&e.base, &e.items) {' \
+  '            if false && crate::perm_apply::open_needs_owner(&e.base, &e.items) {' \
+  --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
+  -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
+# tpl-base (ebab8 11-23 09:00: a full-permission seat from a template is always asked once)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '            if e.base != req.mode {' \
+  '            if e.base == "never" {' \
+  --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
+  -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
+# tpl-one (ebab8 11-23 09:00: a full-permission seat from a template is always asked once)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '        && req.tpl_uid.is_none()' \
+  '        && req.mode == "dgrs"' \
+  --expect-fail a_full_permission_seat_from_a_template_is_always_asked \
+  -- cargo test -p aibd --locked --test seats_page_tpl_dgrs_asks a_full_permission_seat_from_a_template_is_always_asked
