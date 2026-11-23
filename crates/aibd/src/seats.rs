@@ -384,7 +384,7 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
 /// sets its own status line through aibd, as itself (both routes already took the seat token).
 /// seat_tree (0eed7 RETRACT-T4 M1, 11-20): the reviewer reads the author's tree through aibd's
 /// tree read (aibd lets only the reviewer on a shared node in).
-pub const TALK_TOOLS: [&str; 13] = [
+pub const TALK_TOOLS: [&str; 14] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
@@ -399,6 +399,8 @@ pub const TALK_TOOLS: [&str; 13] = [
     "mcp__aibd__seat_tree",
     // 1a93b GAP §6: the seat says its handoff note is written (its own line only, like seat_now)
     "mcp__aibd__seat_handoff",
+    // §7-2 寫回人格: every mode only proposes, for its own persona (persona_propose.rs)
+    "mcp__aibd__persona_propose",
 ];
 /// PREREAD-seat-pending-read: a web seat reads the pending folder through aibd, read-only. A
 /// work / dgrs seat's, never a safe seat's (5d33a REVIEW-seatpendingread L1: a safe seat reads
@@ -2899,7 +2901,8 @@ mod tests {
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
              mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send,\
-             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,mcp__aibd__seat_handoff",
+             mcp__aibd__ask_person,mcp__aibd__plan_note,mcp__aibd__seat_now,mcp__aibd__seat_tree,mcp__aibd__seat_handoff,\
+             mcp__aibd__persona_propose",
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once

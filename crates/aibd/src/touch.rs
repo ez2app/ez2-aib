@@ -75,16 +75,36 @@ pub fn plain(who: &Who, user_page: bool) -> String {
     }
 }
 
-/// The whole pairing window: [`plain`], until when to press and the code the countdown beside
-/// it shows, then [`reason`] as it always said (Andy 11-21 01:42 every window counts down;
-/// 519d0 05:49). The words are only shown; the key signs [`binding`], not these.
+/// Who the pairing is for, the window's second line (ebab8 11-23 05:47: the pairing window is the
+/// same four lines as an approval's, [`crate::owner_ok::window_text`]). Only aibd's own values.
+pub fn object(who: &Who, user_page: bool) -> String {
+    let to = if user_page {
+        "你資料夾的頁(只能打給 safe 席)"
+    } else {
+        "內建頁"
+    };
+    match who {
+        Who::Terminal => format!("這個瀏覽器分頁 → {to}"),
+        Who::Reconfirm { .. } => format!("這一頁 → {to}"),
+    }
+}
+
+/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2):
+/// what a yes does ([`plain`], the same words the countdown and the page card show), for whom
+/// ([`object`]), the code the countdown beside it shows and until when, then [`reason`] as it
+/// always said (Andy 11-21 01:42 every window counts down; 519d0 05:49). The words are only
+/// shown; the key signs [`binding`], not these.
 pub fn window(who: &Who, short_code: &str, user_page: bool, until: &str, code: &str) -> String {
     format!(
-        "{}({until},過了這張就作廢)對照碼 {code}\n{}",
+        "{}\n對象:{}\n對照碼 {code} · {until},過了這張就作廢\n{}",
         plain(who, user_page),
+        object(who, user_page),
         reason(who, short_code, user_page)
     )
 }
+
+/// How many lines [`window`] has, as [`crate::owner_ok::WINDOW_LINES`].
+pub const WINDOW_LINES: usize = 4;
 
 /// When a pairing that has `left` to live ends, for the window: local `HH:MM` from `date(1)`
 /// (the workspace forbids `unsafe`, so no localtime_r; as aib-seatops nowline), or
@@ -522,19 +542,29 @@ pub mod tests {
         );
         assert_eq!(
             w,
-            "讓這個瀏覽器分頁配對成 AIB 的內建頁(請在 01:23:44 前按,過了這張就作廢)對照碼 123456\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            "讓這個瀏覽器分頁配對成 AIB 的內建頁\n對象:這個瀏覽器分頁 → 內建頁\n對照碼 123456 · 請在 01:23:44 前按,過了這張就作廢\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+        );
+        assert_eq!(w.lines().count(), WINDOW_LINES, "reason: four_lines");
+        assert_eq!(
+            WINDOW_LINES,
+            crate::owner_ok::WINDOW_LINES,
+            "reason: same_as_approval"
         );
         let who = Who::Reconfirm {
             act: "開席",
             until: "23:59".into(),
         };
         let w = window(&who, "", true, "請在 120 秒內按", "AB12");
-        let (top, rest) = w.split_once('\n').expect("reason: two_lines");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
-            top,
-            "讓這一頁繼續用完整權限到 23:59(起因:開席)(請在 120 秒內按,過了這張就作廢)對照碼 AB12"
+            l[0], "讓這一頁繼續用完整權限到 23:59(起因:開席)",
+            "reason: plain_first"
         );
-        assert_eq!(rest, reason(&who, "", true), "reason: original_kept");
+        assert_eq!(l[0], plain(&who, true), "reason: same_words_as_countdown");
+        assert_eq!(l[1], "對象:這一頁 → 你資料夾的頁(只能打給 safe 席)");
+        assert_eq!(l[2], "對照碼 AB12 · 請在 120 秒內按,過了這張就作廢");
+        assert_eq!(l[3], reason(&who, "", true), "reason: original_kept");
     }
 
     #[cfg(unix)]
