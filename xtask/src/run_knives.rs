@@ -51,6 +51,7 @@ fn run_env(root: &Path, job: &str, shard: Option<&str>, env: &[(&str, &str)]) ->
         .env_remove("AIB_KNIVES_NO_SE")
         .env_remove("AIB_KNIVES_PLAN")
         .env_remove("AIB_KNIVES_LIST")
+        .env_remove("AIB_KNIVES_LIMITS")
         .env_remove("AIB_KNIVES_SHARD");
     if let Some(s) = shard {
         c.env("AIB_KNIVES_SHARD", s);
@@ -584,27 +585,52 @@ fn the_plan_made_from_the_list_runs_every_script_once_over_the_cells() {
 }
 
 #[test]
-fn limits_file_overrides_default_timeout() {
-    let r = repo(&[(
-        "crates/a/knives/k1.sh",
-        "#!/usr/bin/env bash\n# aib-knives: os=any\nsleep 30\n",
-    )]);
-    std::fs::write(r.join("limits.tsv"), "1\tcrates/a/knives/k1.sh\n").unwrap();
-    let o = Command::new("bash")
-        .arg(runner())
-        .arg("rust")
-        .current_dir(&r)
-        .env("AIB_KNIVES_SECS_PER_MIN", "1")
-        .env("AIB_KNIVES_LIMITS", "limits.tsv")
-        .env_remove("AIB_KNIVES_SHARD")
-        .output()
-        .unwrap();
-    let out = String::from_utf8_lossy(&o.stdout).into_owned();
-    let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(o.status.code(), Some(1), "{out}");
+fn limits_file_overrides_default_timeout_handles_crlf_and_does_not_leak() {
+    let r = repo(&[
+        (
+            "crates/a/knives/k1.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nsleep 30\n",
+        ),
+        (
+            "crates/a/knives/k2.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\n[ -z \"${AIB_KNIVES_LIMITS:-}\" ] && exit 0 || exit 9\n",
+        ),
+    ]);
+    std::fs::write(r.join("limits.tsv"), "1\tcrates/a/knives/k1.sh\r\n").unwrap();
+    let (rc, out) = run_env(&r, "rust", None, &[("AIB_KNIVES_LIMITS", "limits.tsv")]);
+    assert_eq!(rc, 1, "{out}");
     assert!(
         out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: not_run why_not=timeout secs="),
         "{out}"
     );
     assert!(out.contains("limit=1m"), "{out}");
+    assert!(
+        out.contains("KNIVES-SCRIPT crates/a/knives/k2.sh: rc=0"),
+        "{out}"
+    );
+}
+
+#[test]
+fn bad_or_unreadable_limits_file_is_refused_with_rc_2() {
+    let r = repo(&[(
+        "crates/a/knives/k1.sh",
+        "#!/usr/bin/env bash\n# aib-knives: os=any\nexit 0\n",
+    )]);
+    let (rc, out) = run_env(&r, "rust", None, &[("AIB_KNIVES_LIMITS", "missing.tsv")]);
+    assert_eq!(rc, 2, "{out}");
+
+    for bad in [
+        "0\tcrates/a/knives/k1.sh\n",
+        "241\tcrates/a/knives/k1.sh\n",
+        "999999999999999999999999\tcrates/a/knives/k1.sh\n",
+        "not-a-limit\n",
+    ] {
+        let r = repo(&[(
+            "crates/a/knives/k1.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nexit 0\n",
+        )]);
+        std::fs::write(r.join("limits.tsv"), bad).unwrap();
+        let (rc, out) = run_env(&r, "rust", None, &[("AIB_KNIVES_LIMITS", "limits.tsv")]);
+        assert_eq!(rc, 2, "bad={bad:?}\n{out}");
+    }
 }

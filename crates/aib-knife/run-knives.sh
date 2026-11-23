@@ -83,9 +83,10 @@ fi
 limits_f=()
 limits_m=()
 if [ -n "$limits_file" ]; then
-  [ -r "$limits_file" ] || { echo "AIB_KNIVES_LIMITS=$limits_file cannot be read"; exit 2; }
-  lim_re=$'^([1-9][0-9]*)\t([^\t]+)$'
+  [ ! -d "$limits_file" ] && [ -r "$limits_file" ] || { echo "AIB_KNIVES_LIMITS=$limits_file cannot be read"; exit 2; }
+  lim_re=$'^([1-9][0-9]{0,2})\t([^\t]+)$'
   while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
     if [[ "$line" =~ $lim_re ]] && [ "${BASH_REMATCH[1]}" -le 240 ]; then
       limits_m+=("${BASH_REMATCH[1]}")
       limits_f+=("${BASH_REMATCH[2]}")

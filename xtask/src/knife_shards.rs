@@ -209,7 +209,7 @@ pub fn limit_mins(secs: u64) -> u64 {
         .clamp(LIMIT_MIN_MINS, LIMIT_MAX_MINS)
 }
 
-/// `<path>\t` timeout limits from `table`, in path order. Scripts absent from `table` are omitted
+/// `<mins>\t<path>` timeout limits from `table`, in path order. Scripts absent from `table` are omitted
 /// so the runner keeps their header/default timeout.
 pub fn limits(table: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
     table
