@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP13: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
+# PP1–PP14, PD1–PD2: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pp() { python3 -I scripts/knife.py crates/aibd/src/persona_propose.rs "$1" "$2" --expect-fail "persona_propose::tests::$3" \
@@ -37,8 +37,8 @@ pp '            .find(|p| p.id == id && seat.is_none_or(|own| own == p.seat_id))
    '            .find(|p| p.id == id && (seat.is_none() || true))' \
    a_seat_sees_and_withdraws_only_its_own
 # PP9 the same text from the same seat makes a second proposal
-pp '            .find(|p| p.seat_id == ask.seat_id && p.new_sha == new_sha)' \
-   '            .find(|p| p.seat_id == ask.seat_id && p.new_sha == new_sha && p.id.is_empty())' \
+pp '            .find(|p| p.seat_id == ask.seat_id && p.diff_sha == diff_sha)' \
+   '            .find(|p| p.seat_id == ask.seat_id && p.diff_sha == diff_sha && p.id.is_empty())' \
    a_proposal_is_frozen_with_its_diff_and_hash
 # PP10 (PW10) a carried pairing or a user folder page lists and says no
 pp '    if page.carried || crate::seat_input::held_as_user_page(page).await {' \
@@ -56,3 +56,18 @@ pp '        PROPOSE if v["dedup"] == false => "persona_propose.asked",' \
 pp '        WITHDRAW => "persona_propose.withdrawn",' \
    '        "never" => "persona_propose.withdrawn",' \
    asking_and_withdrawing_are_journaled_without_the_text
+# PP14 (90856 5b44ae992 receipt) the same text for another card comes back as the first card's proposal
+pp '            .find(|p| p.seat_id == ask.seat_id && p.diff_sha == diff_sha)' \
+   '            .find(|p| p.seat_id == ask.seat_id && p.new_sha == new_sha)' \
+   one_waiting_per_card_and_three_per_seat
+# ---- at the door (ebab8 11-23 09:11 常設規則: a built-in-page gate bites a test that sends the request)
+pd() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "proposals_are_listed_and_denied_by_the_built_in_page_only" \
+        -- cargo test -p aibd --locked --test persona_propose_door; }
+# PD1 a user folder page lists and says no
+pd crates/aibd/src/persona_propose.rs \
+   '    if page.carried || crate::seat_input::held_as_user_page(page).await {' \
+   '    if page.carried {'
+# PD2 the page's arm is gone (list and no never reach persona_propose)
+pd crates/aibd/src/seat_input.rs \
+   '        Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {' \
+   '        Some("persona_proposals_gone") => {'
