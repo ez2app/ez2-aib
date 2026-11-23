@@ -21,36 +21,117 @@ pub const PROGRAM: &str = "/usr/bin/osascript";
 /// The whole script. Arguments: the plain sentence, the unix second the ticket expires, the
 /// code. Nothing here evaluates an argument: they are only set as a label's text.
 pub const SCRIPT: &str = r#"ObjC.import('Cocoa');
+ObjC.import('CoreGraphics');
 function run(argv) {
   if (argv.length && argv[0] === '--') { argv = argv.slice(1); }
   var words = String(argv[0] || '');
   var until = parseInt(argv[1], 10);
   var code = String(argv[2] || '');
+  var total = Math.max(1, until - Math.floor(Date.now() / 1000));
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy(1);
-  var w = 460, h = 132;
+  function rgb(r, g, b) { return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r / 255, g / 255, b / 255, 1); }
+  var GOLD = rgb(227, 192, 106), FG = rgb(230, 232, 238), DIM = rgb(154, 163, 181);
+  var WARN = rgb(232, 147, 90), PANEL = rgb(22, 27, 36), LINE = rgb(42, 50, 66);
+  var h = 124;
+  // the system's fingerprint window: only its owner's name and its bounds are read, never what
+  // it shows; a hint where to stand, not a defence (Andy 11-23「移到 生物辨識框的正上方」「一樣寬」)
+  function fingerprintWindow() {
+    var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];
+    var box = null;
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i], b = o.kCGWindowBounds;
+      if (o.kCGWindowOwnerName === 'coreautha' && o.kCGWindowLayer >= 1000 && b && b.Width > 100 && b.Height > 100) {
+        if (!box || b.Width * b.Height > box.Width * box.Height) { box = b; }
+      }
+    }
+    return box;
+  }
+  // it comes up after the fingerprint window: look every 0.2 s for at most 3 s
+  var box = null, started = Date.now() / 1000;
+  while (!box && Date.now() / 1000 - started < 3) {
+    box = fingerprintWindow();
+    if (!box) { $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.2)); }
+  }
+  var w = box ? Math.max(220, Math.min(600, box.Width)) : 260;
   var scr = $.NSScreen.mainScreen.visibleFrame;
   var rect = $.NSMakeRect(scr.origin.x + scr.size.width - w - 24, scr.origin.y + scr.size.height - h - 24, w, h);
-  var win = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer(rect, 1 | 128, 2, false);
+  if (box) {
+    var screens = $.NSScreen.screens, top = screens.objectAtIndex(0).frame.size.height;
+    var byTop = top - box.Y, byLow = top - box.Y - box.Height, cx = box.X + box.Width / 2, area = scr;
+    for (var k = 0; k < screens.count; k++) {
+      var sf = screens.objectAtIndex(k).frame;
+      if (cx >= sf.origin.x && cx <= sf.origin.x + sf.size.width && byLow >= sf.origin.y && byLow <= sf.origin.y + sf.size.height) {
+        area = screens.objectAtIndex(k).visibleFrame;
+      }
+    }
+    var x = Math.max(area.origin.x, Math.min(cx - w / 2, area.origin.x + area.size.width - w));
+    var y = byTop + 8;
+    if (y + h > area.origin.y + area.size.height) { y = byLow - 8 - h; }
+    rect = $.NSMakeRect(x, y, w, h);
+  }
+  var win = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer(rect, 1 | 128 | 32768, 2, false);
+  win.titlebarAppearsTransparent = true;
+  win.titleVisibility = 1;
+  win.setAppearance($.NSAppearance.appearanceNamed('NSAppearanceNameDarkAqua'));
   win.setLevel(25);
   win.setCollectionBehavior(1 | 256);
-  win.title = 'AIB';
-  function label(y, size) {
+  win.setHasShadow(true);
+  win.setBackgroundColor(PANEL);
+  var view = win.contentView;
+  function label(x, y, ww, hh, size, color, bold, mono) {
     var t = $.NSTextField.labelWithString('');
-    t.setFrame($.NSMakeRect(16, y, w - 32, size + 8));
-    t.setFont($.NSFont.systemFontOfSize(size));
-    win.contentView.addSubview(t);
+    t.setFrame($.NSMakeRect(x, y, ww, hh));
+    t.setFont(mono ? $.NSFont.monospacedSystemFontOfSizeWeight(size, 0.4) : (bold ? $.NSFont.boldSystemFontOfSize(size) : $.NSFont.systemFontOfSize(size)));
+    t.setTextColor(color);
+    t.setLineBreakMode(4);
+    view.addSubview(t);
     return t;
   }
-  var l0 = label(94, 12), l1 = label(62, 15), l2 = label(14, 24);
-  l0.stringValue = '以系統指紋視窗上的字為準 · 對照碼 ' + code;
-  l1.stringValue = words;
+  function panel(x, y, ww, hh, radius, border, fill) {
+    var b = $.NSBox.alloc.initWithFrame($.NSMakeRect(x, y, ww, hh));
+    b.setBoxType(4);
+    b.setCornerRadius(radius);
+    b.setBorderWidth(border);
+    b.setBorderColor(GOLD);
+    b.setFillColor(fill);
+    view.addSubview(b);
+    return b;
+  }
+  // the gold frame is an NSBox over the whole panel: a layer border on the content view does
+  // not show under the window frame (ebab8 demo 11-23 02:15)
+  var frame = panel(0, 0, w, h, 10, 1.5, PANEL);
+  var num = label(14, h - 52, 62, 38, 30, GOLD, true, true);
+  num.setAlignment(1);
+  var sec = label(14, h - 66, 62, 14, 10.5, DIM, false, false);
+  sec.setAlignment(1);
+  sec.stringValue = '秒';
+  var act = label(84, h - 60, w - 96, 44, 14.5, FG, true, false);
+  act.setLineBreakMode(0);
+  act.setMaximumNumberOfLines(2);
+  act.stringValue = words;
+  panel(14, 48, w - 28, 4, 2, 0, LINE);
+  var fill = panel(14, 48, w - 28, 4, 2, 0, GOLD);
+  var pre = label(14, 22, 44, 16, 12, DIM, false, false);
+  pre.stringValue = '對照碼';
+  panel(58, 18, 58, 22, 6, 1, PANEL);
+  var chip = label(58, 20, 58, 16, 13, GOLD, true, true);
+  chip.setAlignment(1);
+  chip.stringValue = code;
+  var post = label(14, 3, w - 28, 14, 10.5, DIM, false, false);
+  post.stringValue = box ? '跟下面指紋視窗上的一樣才按' : '跟系統指紋視窗上的一樣才按';
   win.orderFrontRegardless;
   for (;;) {
-    var left = until - Math.floor(Date.now() / 1000);
-    l2.stringValue = left > 0 ? '還有 ' + left + ' 秒' : '這張過期了';
-    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5));
-    if (left <= -1) break;
+    var now = Date.now() / 1000, left = Math.ceil(until - now);
+    var late = left <= 5;
+    num.stringValue = left > 0 ? String(left) : '0';
+    num.setTextColor(late ? WARN : GOLD);
+    fill.setFillColor(late ? WARN : GOLD);
+    frame.setBorderColor(late ? WARN : GOLD);
+    if (left <= 0) { act.stringValue = '這張過期了'; }
+    fill.setFrame($.NSMakeRect(14, 48, Math.max(0, (w - 28) * (until - now) / total), 4));
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));
+    if (left <= -2) break;
   }
 }"#;
 
@@ -154,12 +235,47 @@ mod tests {
             "Function(",
             "runScript",
             "system(",
+            // r2 (3e53b 11-23, ORDER-touchhud 第 1 項): the other ways JXA turns text into code
+            "setTimeout",
+            "setInterval",
+            "NSAppleScript",
+            "NSTask",
+            "NSUserScriptTask",
+            "performSelector",
+            "bindFunction",
+            "ObjC.import('Foundation')",
+            "Application(",
+            "Library(",
         ] {
             assert!(!SCRIPT.contains(word), "reason: script_can_run_{word}");
         }
+        // the three arguments are read once each, as text or a number, never anything else
+        assert_eq!(
+            SCRIPT.matches("argv[").count(),
+            4,
+            "reason: argv_read_elsewhere"
+        );
+        for read in [
+            "String(argv[0] || '')",
+            "parseInt(argv[1], 10)",
+            "String(argv[2] || '')",
+            "argv[0] === '--'",
+        ] {
+            assert!(SCRIPT.contains(read), "reason: argv_read_{read}");
+        }
+        // the three places say the same: the system window is the one to read, the code is
+        // the ticket's (owner_ok::pair_code), the action the window's first line
         assert!(
-            SCRIPT.contains("以系統指紋視窗上的字為準"),
-            "reason: no_source_line"
+            SCRIPT.contains("跟系統指紋視窗上的一樣才按"),
+            "reason: no_compare_line"
+        );
+        assert!(SCRIPT.contains("這張過期了"), "reason: no_expired_line");
+        // where it stands: only the fingerprint window's owner and bounds are read
+        assert!(
+            SCRIPT.contains("o.kCGWindowOwnerName === 'coreautha'")
+                && !SCRIPT.contains("kCGWindowName")
+                && !SCRIPT.contains("CGWindowListCreateImage"),
+            "reason: hud_reads_other_windows"
         );
         // off unless the server turned it on: a test never raises a window
         assert!(
