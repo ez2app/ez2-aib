@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP13: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
+# PP1–PP13, PD1–PD2: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pp() { python3 -I scripts/knife.py crates/aibd/src/persona_propose.rs "$1" "$2" --expect-fail "persona_propose::tests::$3" \
@@ -56,3 +56,14 @@ pp '        PROPOSE if v["dedup"] == false => "persona_propose.asked",' \
 pp '        WITHDRAW => "persona_propose.withdrawn",' \
    '        "never" => "persona_propose.withdrawn",' \
    asking_and_withdrawing_are_journaled_without_the_text
+# ---- at the door (ebab8 11-23 09:11 常設規則: a built-in-page gate bites a test that sends the request)
+pd() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "proposals_are_listed_and_denied_by_the_built_in_page_only" \
+        -- cargo test -p aibd --locked --test persona_propose_door; }
+# PD1 a user folder page lists and says no
+pd crates/aibd/src/persona_propose.rs \
+   '    if page.carried || crate::seat_input::held_as_user_page(page).await {' \
+   '    if page.carried {'
+# PD2 the page's arm is gone (list and no never reach persona_propose)
+pd crates/aibd/src/seat_input.rs \
+   '        Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {' \
+   '        Some("persona_proposals_gone") => {'
