@@ -51,3 +51,9 @@ python3 -I scripts/knife.py crates/aibd/src/model_list.rs \
   '            _ => (vec![("x".to_owned(), "x".to_owned(), "codex_cache")], "codex_cache"),' \
   --expect-fail 'model_list::tests::no_codex_list_is_the_default_alone' \
   -- cargo test -p aibd --locked --lib 'model_list::tests::no_codex_list_is_the_default_alone'
+# a13-bidi (f163c REVIEW-a13code N1: a label keeps no bidirectional or zero-width character)
+python3 -I scripts/knife.py crates/aibd/src/model_list.rs \
+  '        .filter(|c| !c.is_control() && !format_char(*c))' \
+  '        .filter(|c| !c.is_control() && !(format_char(*c) && c.is_control()))' \
+  --expect-fail 'model_list::tests::a_label_has_no_invisible_turn' \
+  -- cargo test -p aibd --locked --lib 'model_list::tests::a_label_has_no_invisible_turn'

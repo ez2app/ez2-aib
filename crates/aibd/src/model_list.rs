@@ -75,12 +75,30 @@ fn plain(m: &std::fs::Metadata) -> bool {
     m.is_file() && !m.file_type().is_symlink()
 }
 
-/// A label as the page may show it: no control characters, at most [`MAX_LABEL`] characters.
+/// A label as the page may show it: no control characters, no invisible format characters
+/// (`format_char`), at most [`MAX_LABEL`] characters.
 pub fn label_of(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !format_char(*c))
         .take(MAX_LABEL)
         .collect()
+}
+
+/// f163c REVIEW-a13code N1: the invisible format characters a label could use to show as
+/// another model's name (U+202E turns the rest around): the bidirectional marks, embeddings,
+/// overrides and isolates, the zero-width ones, the word joiner, the byte order mark and the
+/// soft hyphen.
+fn format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 fn id_ok(id: &str) -> bool {
@@ -385,5 +403,13 @@ mod tests {
         assert_eq!(r[1]["models_fetched_at"], "2026-11-22T19:05:37.425139Z");
         assert_eq!(r[1]["reason"], "not_logged_in");
         assert_eq!(r[1]["default_model"], Value::Null);
+    }
+
+    /// f163c REVIEW-a13code N1: a label shows no character that turns or hides the text.
+    #[test]
+    fn a_label_has_no_invisible_turn() {
+        assert_eq!(label_of("gpt\u{202E}5\u{200B}-mini\u{2066}"), "gpt5-mini");
+        assert_eq!(label_of("a\u{0007}b"), "ab");
+        assert_eq!(label_of("GPT-5 Codex"), "GPT-5 Codex");
     }
 }
