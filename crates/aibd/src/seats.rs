@@ -1714,8 +1714,11 @@ pub async fn page_open(
     // A11 (SPEC-ai-partner-open r2 §3.1「完全權限:每次開都要驗證」): a dgrs seat with no repo
     // asks the owner before anything is opened; with a repo, repo_tree asks (once)
     // (a brand with no dgrs mode is refused below without asking: a window for nothing)
+    // with a template the template's own ask covers it (a dgrs base is always asked, and the
+    // mode is the template's base): one window, one ticket, never two asks sharing `ticket`
     if req.mode == "dgrs"
         && req.repo.is_none()
+        && req.tpl_uid.is_none()
         && aib_seatopen::pipe_modes(&req.provider).contains(&"dgrs")
     {
         let (personas, uid) = (st.personas.clone(), req.persona_uid.clone());

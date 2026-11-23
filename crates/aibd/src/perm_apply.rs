@@ -329,13 +329,23 @@ pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
 /// Whether a seat holds `item` now (a seat with no row: its mode's own; unread: no).
 pub async fn holds(st: &AppState, seat_id: &str, mode: &str, item: &str) -> bool {
     let (db, id) = (st.messages.clone(), seat_id.to_owned());
-    match tokio::task::spawn_blocking(move || db.seat_perm(&id)).await {
-        Ok(Ok(Some(p))) => serde_json::from_str::<Value>(&p.now.items_json)
+    let row = match tokio::task::spawn_blocking(move || db.seat_perm(&id)).await {
+        Ok(Ok(p)) => Ok(p.map(|p| p.now.items_json)),
+        _ => Err(()),
+    };
+    held_in(row, mode, item)
+}
+
+/// [`holds`] on what was read: the seat's row's items (none: its mode's own; unread: no).
+/// f163c bnote L1 (bound to 7b): a template with 第二大腦 off keeps brain_note from writing.
+pub fn held_in(row: Result<Option<String>, ()>, mode: &str, item: &str) -> bool {
+    match row {
+        Ok(Some(items_json)) => serde_json::from_str::<Value>(&items_json)
             .ok()
             .and_then(|v| Items::parse(&v))
             .is_some_and(|i| i.on(item)),
-        Ok(Ok(None)) => gives_now(mode).contains(&item),
-        _ => false,
+        Ok(None) => gives_now(mode).contains(&item),
+        Err(()) => false,
     }
 }
 
@@ -799,6 +809,32 @@ mod tests {
                 .contains("if !crate::perm_apply::holds(&st, seat_id, &mode, \"brain\").await {"),
             "reason: brain_act_ignores_template"
         );
+    }
+
+    /// f163c bnote L1 (bound to 7b): a seat whose template has 第二大腦 off does not hold it,
+    /// whatever its mode gives; with no template its mode decides; unread holds nothing.
+    #[test]
+    fn a_template_with_the_brain_off_keeps_the_seat_from_its_brain() {
+        let items = |on: &[&str]| {
+            let mut m = serde_json::Map::new();
+            for (k, _) in ITEMS {
+                m.insert(k.to_owned(), Value::Bool(on.contains(&k)));
+            }
+            Value::Object(m).to_string()
+        };
+        let work_own: Vec<&str> = gives_now("work").to_vec();
+        assert!(
+            work_own.contains(&"brain"),
+            "precondition: work gives brain"
+        );
+        let off: Vec<&str> = work_own.iter().copied().filter(|k| *k != "brain").collect();
+        assert!(
+            !held_in(Ok(Some(items(&off))), "work", "brain"),
+            "reason: brain_off_template_held"
+        );
+        assert!(held_in(Ok(Some(items(&work_own))), "work", "brain"));
+        assert!(held_in(Ok(None), "work", "brain"), "reason: mode_own_lost");
+        assert!(!held_in(Err(()), "work", "brain"), "reason: unread_held");
     }
 
     /// 7B-5: the window names every item held, what is not given, and what this turns on last.

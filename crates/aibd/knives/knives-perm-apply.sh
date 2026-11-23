@@ -39,3 +39,15 @@ python3 -I scripts/knife.py crates/aibd/src/revive.rs \
   'crate::perm_apply::drop_tools(&mut argv, &drop[..0]);' \
   --expect-fail 'perm_apply::tests::every_start_and_the_brain_act_read_the_template' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::every_start_and_the_brain_act_read_the_template'
+# pa-brainoff (f163c bnote L1 bound to 7b: a template with the brain off keeps brain_note out)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '            .is_some_and(|i| i.on(item)),' \
+  '            .is_some_and(|_| true),' \
+  --expect-fail perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain \
+  -- cargo test -p aibd --locked --lib perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain
+# pa-unread (f163c bnote L1 bound to 7b: a template with the brain off keeps brain_note out)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '        Err(()) => false,' \
+  '        Err(()) => true,' \
+  --expect-fail perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain \
+  -- cargo test -p aibd --locked --lib perm_apply::tests::a_template_with_the_brain_off_keeps_the_seat_from_its_brain
