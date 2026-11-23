@@ -14,18 +14,20 @@ px '    let Some(seat) = ports.seat(port) else {' '    let Some(seat) = ports.se
 # PX4 (N45) another address than the one judged is connected
 px '        Verdict::Pass(ip) => return Conn::Pass(SocketAddr::new(ip, dest_port)),' '        Verdict::Pass(ip) => return Conn::Pass(SocketAddr::new(*ips.last().unwrap_or(&ip), dest_port)), // knife' proxy::tests::a_connection_gets_the_address_judged_a_card_or_a_refusal
 # PX5 (N46) a grant for a while never ends
-px '                    Until::At(t) => now < *t,' '                    Until::At(t) => now < t.saturating_add(u64::MAX), // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+px '            .find(|h| h.secs() == Some(d.as_secs())),' '            .find(|h| h.secs() == Some(d.as_secs())).map(|_| Hold::UntilSeatEnds), // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX6 (N47) the ended grant's tunnel is kept, the once tunnel swept
-px '                    *by == By::Held && !grants.live(s, *at, now) && !allowed(s, at.ip(), at.port())' '                    *by == By::Once && !grants.live(s, *at, now) && !allowed(s, at.ip(), at.port()) // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+px '                    *by == By::Held' '                    *by == By::Once // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX7 (N48) taking always back closes what the list still holds
-px '                    *by == By::Held && !grants.live(s, *at, now) && !allowed(s, at.ip(), at.port())' '                    *by == By::Held && !grants.live(s, *at, now) && (!allowed(s, at.ip(), at.port()) || true) // knife' proxy::tests::taking_always_back_closes_what_rests_on_it_only
+px '                        && !allowed(s, at.ip(), at.port())' '                        && (!allowed(s, at.ip(), at.port()) || true) // knife' proxy::tests::taking_always_back_closes_what_rests_on_it_only
 # PX8 (N49) a second waiting card is raised
 px '        if waiting > 0 {' '        if waiting > 1 { // knife' proxy::tests::a_connection_gets_the_address_judged_a_card_or_a_refusal
-# PX9 (N50) a grant until the seat ends outlives the seat
-px '        self.rows.retain(|(s, _, _)| s != seat);' '        self.rows.retain(|(s, _, _)| s != seat || !seat.is_empty()); // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
+# PX9 (c2f0b G1) 只這一次 leaves a grant behind
+px '        Lasts::Once | Lasts::Always => None,' '        Lasts::Once => Some(Hold::Once), Lasts::Always => None, // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close
 # PX10 (16.7) a seventh card in ten minutes
 px '        if r.len() >= CARDS_PER_WINDOW {' '        if r.len() > CARDS_PER_WINDOW { // knife' proxy::tests::six_cards_in_ten_minutes_then_later
 # PX11 (A6d) a service on this computer gets the ordinary card
 px '            (at, true)' '            (at, false) // knife' proxy::tests::a_connection_gets_the_address_judged_a_card_or_a_refusal
 # PX12 (f163c REVIEW-sandboxnet19 L3) a port taken back goes to the next seat at once
 px '                .is_some_and(|t| now < t.saturating_add(PORT_COOLDOWN))' '                .is_some_and(|t| now < *t) // knife' proxy::tests::a_seat_gets_one_port_of_the_reserved_range_never_aibds_and_none_past_it
+# PX13 a high-risk yes is written as a LAN grant
+px '    if high {' '    if !high { // knife' proxy::tests::a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close

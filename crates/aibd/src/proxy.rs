@@ -10,8 +10,9 @@
 //!   connection then goes to the address judged, never resolved again), this computer itself
 //!   through [`crate::net_card::local_card`], the rest through [`crate::egress::verdict`] with the
 //!   seat's always list and its live grants; a card only within [`CardLimit`].
-//! - [`Grants`]: what a card's yes leaves for a while (15 minutes, an hour, until the seat ends),
-//!   written only from a [`Verified`].
+//! - [`give`] / [`holds`]: what a card's yes leaves for a while (15 minutes, an hour, until the
+//!   seat ends), written only from a [`Verified`] into aibd's one grants table and read without
+//!   using it up.
 //! - [`Tunnels`]: which open tunnel rests on what, so that an end, a taking back or a seat that
 //!   ends closes them.
 //!
@@ -22,6 +23,7 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::egress::{self, Verdict};
+use crate::grants::{canon, Grants, Hold, OP_NET_LOCAL_SELF, OP_NET_PRIVATE};
 use crate::host_addr::{classify, Class};
 use crate::net_card::{Card, Lasts, Verified, CARD_SECS};
 
@@ -83,49 +85,48 @@ impl Ports {
     }
 }
 
-/// Until when a grant holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Until {
-    At(u64),
-    SeatEnds,
+/// The grant a card's yes leaves (c2f0b PREREAD-sandboxnet19, f163c REVIEW-sandboxnet19 r0):
+/// in aibd's one grants table ([`crate::grants::GRANTS`]), the operation by the card's kind and
+/// the resource [`crate::grants::canon`] of `ip:port`. 只這一次 and 一直允許 leave none here (the
+/// held connection itself; the always list). The seat's end clears them (`grants::seat_ended`).
+pub fn give(
+    grants: &crate::grants::Grants,
+    seat: &str,
+    at: SocketAddr,
+    high: bool,
+    yes: &Verified,
+    now: u64,
+) -> bool {
+    let hold = match yes.lasts() {
+        Lasts::For(d) => [Hold::Min15, Hold::Hour1]
+            .into_iter()
+            .find(|h| h.secs() == Some(d.as_secs())),
+        Lasts::UntilClose => Some(Hold::UntilSeatEnds),
+        Lasts::Once | Lasts::Always => None,
+    };
+    let Some(hold) = hold else {
+        return false;
+    };
+    grants
+        .give(seat, op_of(high), &canon(at), hold, now)
+        .is_ok()
 }
 
-/// What cards' yeses leave for a while, per seat and exact `ip:port`.
-#[derive(Debug, Default)]
-pub struct Grants {
-    rows: Vec<(String, SocketAddr, Until)>,
+/// The grant's operation: this computer's services (the high-risk card) or the LAN.
+pub fn op_of(high: bool) -> &'static str {
+    if high {
+        OP_NET_LOCAL_SELF
+    } else {
+        OP_NET_PRIVATE
+    }
 }
 
-impl Grants {
-    /// A yes for a while; 只這一次 and 一直允許 are not written here (the one connection; the
-    /// always list).
-    pub fn give(&mut self, seat: &str, at: SocketAddr, yes: &Verified, now: u64) -> bool {
-        let until = match yes.lasts() {
-            Lasts::For(d) => Until::At(now.saturating_add(d.as_secs())),
-            Lasts::UntilClose => Until::SeatEnds,
-            Lasts::Once | Lasts::Always => return false,
-        };
-        self.rows.retain(|(s, a, _)| !(s == seat && *a == at));
-        self.rows.push((seat.to_owned(), at, until));
-        true
-    }
-
-    /// Whether the seat holds a grant for `at` now.
-    pub fn live(&self, seat: &str, at: SocketAddr, now: u64) -> bool {
-        self.rows.iter().any(|(s, a, u)| {
-            s == seat
-                && *a == at
-                && match u {
-                    Until::At(t) => now < *t,
-                    Until::SeatEnds => true,
-                }
-        })
-    }
-
-    /// The seat ended: its grants go.
-    pub fn end_seat(&mut self, seat: &str) {
-        self.rows.retain(|(s, _, _)| s != seat);
-    }
+/// Whether the seat holds a grant for `at` now, of either kind, without using one up.
+pub fn holds(grants: &crate::grants::Grants, seat: &str, at: SocketAddr, now: u64) -> bool {
+    let r = canon(at);
+    [OP_NET_PRIVATE, OP_NET_LOCAL_SELF]
+        .into_iter()
+        .any(|op| grants.holds(seat, op, &r, now).is_some())
 }
 
 /// At most one card waiting per seat, and six in ten minutes (§15, 16.7).
@@ -205,7 +206,7 @@ pub fn decide(
         return Conn::Refuse("unknown_port");
     };
     let held = |ip: IpAddr, p: u16| {
-        allowed(seat, ip, p) || grants.live(seat, SocketAddr::new(ip, p), here.now)
+        allowed(seat, ip, p) || holds(grants, seat, SocketAddr::new(ip, p), here.now)
     };
     let (at, high) = match egress::verdict(ips, dest_port, here.own, &held) {
         Verdict::Pass(ip) => return Conn::Pass(SocketAddr::new(ip, dest_port)),
@@ -233,7 +234,7 @@ pub fn decide(
                 return Conn::Refuse(why);
             }
             let at = SocketAddr::new(ip, dest_port);
-            if grants.live(seat, at, here.now) {
+            if holds(grants, seat, at, here.now) {
                 return Conn::Pass(at);
             }
             (at, true)
@@ -298,7 +299,9 @@ impl Tunnels {
             std::mem::take(&mut self.rows)
                 .into_iter()
                 .partition(|(_, s, at, by)| {
-                    *by == By::Held && !grants.live(s, *at, now) && !allowed(s, at.ip(), at.port())
+                    *by == By::Held
+                        && !holds(grants, s, *at, now)
+                        && !allowed(s, at.ip(), at.port())
                 });
         self.rows = kept;
         gone.into_iter().map(|(i, _, _, _)| i).collect()
@@ -514,24 +517,25 @@ mod tests {
     fn a_grant_holds_for_its_while_then_a_card_again_and_its_tunnels_close() {
         let mut ports = Ports::default();
         let port = ports.give("a1b2c", &[], 0).unwrap();
-        let mut g = Grants::default();
+        let g = Grants::default();
         let mut lim = CardLimit::default();
         let db = at("10.0.0.5:5432");
         let min15 = yes_of(Some("min15"), Owner::Yes).unwrap();
-        assert!(g.give("a1b2c", db, &min15, 1_000));
+        assert!(give(&g, "a1b2c", db, false, &min15, 1_000));
+        // the one table, under the LAN operation and the one spelling of the address
+        assert!(g
+            .holds("a1b2c", OP_NET_PRIVATE, "10.0.0.5:5432", 1_000)
+            .is_some());
         // once and always are not grants here
-        assert!(!g.give(
-            "a1b2c",
-            db,
-            &yes_of(Some("once"), Owner::NotAsked).unwrap(),
-            1_000
-        ));
-        assert!(!g.give(
-            "a1b2c",
-            db,
-            &yes_of(Some("always"), Owner::Yes).unwrap(),
-            1_000
-        ));
+        let other = at("10.0.0.7:5432");
+        for c in ["once", "always"] {
+            let yes = yes_of(Some(c), Owner::Yes).unwrap();
+            assert!(
+                !give(&g, "a1b2c", other, false, &yes, 1_000),
+                "reason: {c}_granted"
+            );
+        }
+        assert!(!holds(&g, "a1b2c", other, 1_000), "reason: once_held");
         let mut d = |now: u64, g: &Grants| {
             decide(
                 &ports,
@@ -567,10 +571,21 @@ mod tests {
         assert_eq!(t.end_seat("a1b2c"), vec![once]);
         // until the seat ends: no end of time, gone with the seat (N50)
         let until = yes_of(Some("until_seat_ends"), Owner::Yes).unwrap();
-        assert!(g.give("a1b2c", db, &until, 2_000));
-        assert!(g.live("a1b2c", db, u64::MAX));
-        g.end_seat("a1b2c");
-        assert!(!g.live("a1b2c", db, 2_001), "reason: grant_outlived_seat");
+        assert!(give(&g, "a1b2c", db, false, &until, 2_000));
+        assert!(holds(&g, "a1b2c", db, u64::MAX));
+        g.seat_ended("a1b2c");
+        assert!(
+            !holds(&g, "a1b2c", db, 2_001),
+            "reason: grant_outlived_seat"
+        );
+        // a high-risk yes is a grant for this computer's service, not the LAN's
+        let local = at("127.0.0.1:5432");
+        assert!(give(&g, "a1b2c", local, true, &min15, 3_000));
+        assert!(
+            g.holds("a1b2c", OP_NET_LOCAL_SELF, "127.0.0.1:5432", 3_000)
+                .is_some(),
+            "reason: local_under_private_op"
+        );
     }
 
     #[test]
