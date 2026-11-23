@@ -232,7 +232,13 @@ fn shown(s: &str) -> String {
             !c.is_control()
                 && !matches!(
                     *c,
-                    '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+                    '\u{00AD}'
+                        | '\u{061C}'
+                        | '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2060}'..='\u{2064}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
                 )
         })
         .collect()
@@ -423,6 +429,20 @@ mod tests {
         for k in CATALOG_KINDS {
             assert!(!catalog_fields(k).is_empty(), "{k}");
         }
+    }
+
+    #[test]
+    fn names_lose_every_format_character_of_the_a13_set() {
+        // f163c 11-23 10:50: the same set as A13 model_list and merge_plan::format_char
+        for c in [
+            '\u{00AD}', '\u{061C}', '\u{200B}', '\u{200F}', '\u{202A}', '\u{202E}', '\u{2060}',
+            '\u{2064}', '\u{2066}', '\u{2069}', '\u{FEFF}',
+        ] {
+            let e = catalog_entry("role", &json!({"uid":"r","name": format!("審{c}查")}));
+            assert_eq!(e["name"], "審查", "{c:?}");
+        }
+        let e = catalog_entry("role", &json!({"name":"a\u{2010}b"}));
+        assert_eq!(e["name"], "a\u{2010}b");
     }
 
     #[test]

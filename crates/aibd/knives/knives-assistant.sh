@@ -129,3 +129,9 @@ python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   'pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "persona_set"];' \
   --expect-fail 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet' \
   -- cargo test -p aibd --locked --lib 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet'
+# as-fmt
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '                        | '\''\u{2060}'\''..='\''\u{2064}'\''' \
+  '                        | '\''\u{2061}'\''..='\''\u{2064}'\''' \
+  --expect-fail 'assistant::tests::names_lose_every_format_character_of_the_a13_set' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::names_lose_every_format_character_of_the_a13_set'
