@@ -1382,7 +1382,8 @@ const rgChecks = (async () => {
   // act 名只從 RG_ACTS 出來;aibd 還沒有的一律要經 rgHas 才送(第 3 段抓不到變數名,這裡補)
   const names = [...(blk.split('const RG_ACTS = {')[1] || '').split('\n  };')[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
   ok(names.length === 9, 'reason: rg_acts_table ' + names.length);
-  for (const t of names) if (!rust.includes('"' + t + '"')) ok(/if \(!rgHas\(R\.kind, 'set'\)\)/.test(blk) && /if \(!rgHas\(R\.kind, 'archive'\)\)/.test(blk) && /undo: rgHas\(R\.kind, 'restore'\)/.test(blk), 'reason: rg_act_sent_ungated ' + t);
+  // 不看 aibd 有沒有這個 act:三道 rgHas 一直要在(第三批把 act 合進 aibd 後,原本的條件永遠不成立,刀 PGRG2 咬不到)
+  for (const t of names) ok(/if \(!rgHas\(R\.kind, 'set'\)\)/.test(blk) && /if \(!rgHas\(R\.kind, 'archive'\)\)/.test(blk) && /undo: rgHas\(R\.kind, 'restore'\)/.test(blk), 'reason: rg_act_sent_ungated ' + t);
   ok(!/(?:act|fingerAct)\('(persona|brain|role)_(set|archive|restore)'/.test(ws), 'reason: rg_act_name_outside_table');
   const store = { acts: [], has: {}, reply: {} };
   const S = { rg: null, rgMsg: null, rgMsgKind: '', add: { persona: 'p1', brain: 'b1', role: 'rol_x' }, seats: [{ seat_id: 'seat_aaaaa', persona_uid: 'p2' }], sessions: [{ seat_id: 'seat_aaaaa', state: 'running' }], personaList: [['p1', '寫手<甲>'], ['p2', '審查乙']], reg: { brains: [{ uid: 'b1', name: '大腦一', sug: ['p1', 'p3'] }], roles: [{ uid: 'author', name: '作者', builtin: true }, { uid: 'rol_x', name: '排版', what: '排', builtin: false }] } };

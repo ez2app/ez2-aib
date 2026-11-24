@@ -214,6 +214,8 @@
 50	crates/aibd/knives/knives-owner-wired.sh
 63	crates/aibd/knives/knives-p11.sh
 135	crates/aibd/knives/knives-page-acts.sh
+600	crates/aibd/knives/knives-page2-fc7f9.sh
+600	crates/aibd/knives/knives-page2b-fc7f9.sh
 168	crates/aibd/knives/knives-pr-api.sh
 62	crates/aibd/knives/knives-pr-open.sh
 76	crates/aibd/knives/knives-preview-swap.sh
