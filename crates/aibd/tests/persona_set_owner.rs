@@ -77,7 +77,13 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
                        "card_path_rel": "lib/pw0set/角色.md"}
         }
     });
-    std::fs::write(root.join("cards.json"), doc.to_string()).unwrap();
+    let doc_text = doc.to_string();
+    std::fs::write(root.join("cards.json"), &doc_text).unwrap();
+    let prov = json!({
+        "cards_json_sha256": aibd::persona_write::sha_hex(doc_text.as_bytes()),
+        "cards_fingerprint": aibd::persona_write::cards_fingerprint(&doc),
+    });
+    std::fs::write(root.join("cards.json.provenance.json"), prov.to_string()).unwrap();
 
     let cred = d.page(true).await;
     let post = |c: &str, b: Value| {
