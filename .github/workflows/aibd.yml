@@ -3918,7 +3918,9 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: |
+          umask 022
+          for f in crates/aib-cloud/knives/knives-cloud-decision-*.sh; do "./$f"; done
       # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
       # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
       - name: knife-affected (shadow)
@@ -3933,7 +3935,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source=crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source=crates/aib-cloud/knives/knives-cloud-decision-1.sh --source=crates/aib-cloud/knives/knives-cloud-decision-2.sh --source=crates/aib-cloud/knives/knives-cloud-decision-3.sh --source=crates/aib-cloud/knives/knives-cloud-decision-4.sh --source=crates/aib-cloud/knives/knives-cloud-decision-5.sh
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -4299,4 +4301,6 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
+        run: |
+          umask 022
+          for f in crates/aib-cloud-host/knives/knives-cloud-host-*.sh; do "./$f"; done
