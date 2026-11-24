@@ -366,6 +366,8 @@ pub const WIRED: &[&str] = &[
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
     crate::provider_login::OP, // provider.login (重新登入)
+    crate::merge_acts::OP_PERSONA,
+    crate::merge_acts::OP_BRAIN,
     crate::drive_switch::OP,
     // one receipt going to one test machine: asked by aibd's own runner, which checks the
     // ticket itself before anything is sent (receipt_runner::TouchOwner)

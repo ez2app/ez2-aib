@@ -43,6 +43,7 @@ pub mod ledger_cards;
 pub mod legacy_send;
 pub mod lineage;
 pub mod mail_nudge;
+pub mod merge_acts;
 pub mod merge_find;
 pub mod merge_plan;
 pub mod messages;
