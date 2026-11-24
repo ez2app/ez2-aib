@@ -1031,25 +1031,30 @@
   function chatSavedHtml() {
     if (hasAct('time_saved') !== true) return '';
     const T = S.ts;
-    if (!T || !T.r || T.r.state !== 'ok' || !T.r.saved) return '';
-    const rec = Array.isArray(T.r.saved.recent) ? T.r.saved.recent : [];
+    if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tsLoad, 0); return ''; }
+    if (!T.r || T.r.state !== 'ok' || !T.r.saved) return '';
+    const rec = Array.isArray(T.r.saved.recent) ? T.r.saved.recent.filter((x) => x && typeof x === 'object') : [];
     const B = T.r.saved.boxes || {};
     const todayMs = B.today && typeof B.today.clock_ms === 'number' ? B.today.clock_ms : 0;
     if (!rec.length && !todayMs) return '';
     const open = !!S.tsChatOpen;
-    const f = S.tsChatFilter || 'all';
     const preN = rec.filter((x) => x.system === 'precheck').length;
     const shN = rec.filter((x) => x.system === 'shadow').length;
+    const rawF = S.tsChatFilter || 'all';
+    const f = (rawF === 'precheck' && preN) || (rawF === 'shadow' && shN) ? rawF : 'all';
     const shown = rec.filter((x) => f === 'all' || x.system === f).slice(0, 8);
     const pill = todayMs ? `<span class="cpill csave">今天省 ${esc(tsDur(todayMs))}</span>` : '';
-    const chips = rec.length ? `<div class="tschchips"><button type="button" class="k${f === 'all' ? ' g' : ''}" data-tschatf="all">⏱ 節省時間 ${rec.length}</button>${preN ? `<button type="button" class="k${f === 'precheck' ? ' g' : ''}" data-tschatf="precheck">預檢省時 ${preN}</button>` : ''}${shN ? `<button type="button" class="k${f === 'shadow' ? ' g' : ''}" data-tschatf="shadow">影子續跑 ${shN}</button>` : ''}<a class="k" href="saved.html">看板</a></div>` : '';
+    const chips = rec.length
+      ? `<div class="tschchips"><button type="button" class="k${f === 'all' ? ' g' : ''}" data-tschatf="all">⏱ 節省時間 ${rec.length}</button>${preN ? `<button type="button" class="k${f === 'precheck' ? ' g' : ''}" data-tschatf="precheck">預檢省時 ${preN}</button>` : ''}${shN ? `<button type="button" class="k${f === 'shadow' ? ' g' : ''}" data-tschatf="shadow">影子續跑 ${shN}</button>` : ''}<a class="k" href="saved.html">看板</a></div>`
+      : '<div class="tschchips"><a class="k" href="saved.html">看板</a></div>';
     const rows = shown.map((x) => {
       const pre = x.system === 'precheck';
-      const title = `${pre ? '預檢省時' : '影子續跑'} · 省下約 ${tsDur(x.saved_ms || 0)}`;
+      const title = `${pre ? '預檢省時' : '影子續跑'} · ${x.confirmed ? '省下 ' : '省下約 '}${tsDur(x.saved_ms || 0)}`;
       const tag = x.confirmed ? '<span class="tschtag c">已確認</span>' : '<span class="tschtag p">預估</span>';
       return `<div class="tschrow ${pre ? 'pre' : 'sh'}"><span class="ic">⏱</span><div class="tb"><b>${esc(title)}</b>${tag}<div class="ta">${esc(x.avoided || '')}</div><small>${esc(x.basis || '')}</small></div></div>`;
     }).join('');
-    return `<div class="tschat${open ? ' open' : ''}"><button type="button" class="cbar" data-tschattog="1"><b>⏱ 節省時間</b>${pill}${rec.length ? `<span class="cpill">${rec.length} 筆</span>` : ''}<span class="cr">${open ? '收起 ▴' : '點開 ▾'}</span></button>${open ? `<div class="tschlist">${chips}${rows || '<div class="empty">這類還沒有紀錄</div>'}</div>` : ''}</div>`;
+    const emptyMsg = rec.length ? '這類還沒有紀錄' : `今天已省下 ${esc(tsDur(todayMs))}，暫無逐筆明細`;
+    return `<div class="tschat${open ? ' open' : ''}"><button type="button" class="cbar" data-tschattog="1"><b>⏱ 節省時間</b>${pill}${rec.length ? `<span class="cpill">${rec.length} 筆</span>` : ''}<span class="cr">${open ? '收起 ▴' : '點開 ▾'}</span></button>${open ? `<div class="tschlist">${chips}${rows || `<div class="empty">${emptyMsg}</div>`}</div>` : ''}</div>`;
   }
   // c5d88 PLAN-skipstop H1b:外掛區(~/.ez2-aib/plugins)。列出裝了哪些、開著還是關著、現在能不能跑;開關是使用者的,蓋過外掛自己的預設。
   // 這裡不安裝、不移除、不執行外掛

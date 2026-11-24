@@ -20,3 +20,7 @@ ts '    c.args(["saved", "--json", "--utc-offset", &offset.to_string()])' '    c
 ts '        aib_plugin::No::Off => ("off", ""),' '        aib_plugin::No::Off => ("not_runnable", "off"),' with_a_plugin::the_plugin_s_numbers_reach_the_page_only_from_the_installed_executable
 # TSK8 an old answer, or one to another question, is given again
 ts '        Some((at, o, v)) if *o == offset && now.saturating_duration_since(*at) < KEEP => {' '        Some((at, o, v)) if *o == offset || now.saturating_duration_since(*at) < KEEP => {' an_answer_is_given_again_only_to_the_same_question_and_only_while_it_is_new
+# TSK9 unknown recent system is accepted instead of rejected
+ts '                Some("shadow") => "shadow",' '                Some("shadow") | Some("unknown") => "shadow",' the_boxes_are_built_from_the_answer_s_numbers_and_only_from_a_whole_answer
+# TSK10 recent events are dropped in shape()
+ts '    Ok(json!({ "v": FORMAT_V, "boxes": boxes, "since": since, "recent": recent }))' '    Ok(json!({ "v": FORMAT_V, "boxes": boxes, "since": since, "recent": [] }))' the_boxes_are_built_from_the_answer_s_numbers_and_only_from_a_whole_answer
