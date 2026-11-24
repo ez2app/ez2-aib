@@ -1,0 +1,16 @@
+[package]
+name = "aib-fp"
+description = "Footprint install, pure logic (DESIGN-fp-install-rust-3e53b-1124 r1, F1): the steps, the plan and the hash over what it decides, and the judging of every read-back. No I/O: aib-fp-host (on the server) and `aib fp install` (Mac / Windows) do the reading and writing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Both already in Cargo.lock (aib-consent, aibd): no new crate.
+[dependencies]
+serde_json = "1.0.154"
+sha2 = "0.10.9"
