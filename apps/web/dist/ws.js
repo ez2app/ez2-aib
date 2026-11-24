@@ -982,7 +982,7 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
-    return h + testHostHtml() + timeSavedHtml() + pluginsHtml() + marketplaceHtml();
+    return h + testHostHtml() + timeSavedHtml() + pluginsHtml() + tierHtml() + marketplaceHtml();
   }
   // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
   const TH_WHY = {
@@ -1156,6 +1156,64 @@
       h += `<div class="thr"><span class="hd ${cur === ver ? 'hg' : ''}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(ver)}${p.paid ? ' · 付費' : ''}</i></span><span class="hv">${esc(st)}</span>${btn}<div class="thm">${esc(String(p.summary || ''))}</div></div>`;
     }
     if (M.msg) h += `<div class="thm bad" role="alert">${esc(M.msg)}</div>`;
+    return h;
+  }
+  async function tierLoad() {
+    if (hasAct('skipstop_tier_get') !== true || (S.tier && S.tier.loading)) return;
+    S.tier = Object.assign(S.tier || {}, { loading: true });
+    try { const r = await act('skipstop_tier_get', {}); S.tier = { r, at: Date.now() }; }
+    catch (e) { S.tier = { err: errText(e), at: Date.now() }; }
+    render();
+  }
+  async function tierPick(tier) {
+    const T = S.tier || {};
+    S.tier = Object.assign({}, T, { busy: tier, msg: '' });
+    render();
+    try { const r = await act('skipstop_tier_set', { tier }); S.tier = { r, at: Date.now() }; }
+    catch (e) { S.tier = Object.assign({}, T, { busy: '', msg: errText(e) }); }
+    render();
+  }
+  function tierHtml() {
+    if (hasAct('skipstop_tier_get') !== true) return '';
+    const T = S.tier;
+    if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tierLoad, 0); return '<div class="thh"><b>省時續跑檔次</b><span class="hv">讀取中…</span></div>'; }
+    const head = '<div class="thh"><b>省時續跑檔次</b><button type="button" class="k" data-tierreload="1" title="重讀檔次設定">重讀</button></div>';
+    if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
+    const d = T.r || {}, p = d.policy || {}, rs = d.repo_settings || {};
+    const eff = String(d.effective_tier || 'normal');
+    const canSet = hasAct('skipstop_tier_set') === true;
+    const savedWeek = S.ts && S.ts.r && S.ts.r.boxes && S.ts.r.boxes.week ? fmtMs(S.ts.r.boxes.week.confirmed_ms || 0) : '0 秒';
+    const tiers = [
+      ['strict', '🔒 嚴格', 'main_exact · 1/5 抽查 · 全刀雙平台', '不省'],
+      ['normal', '⚖️ 一般（預設）', `main_exact · 1/10 抽查 · 受影響刀 · 本週已省 ${savedWeek}`, '省'],
+      ['fast', '⚡ 快速（二期解鎖）', 'scope · 1/20 抽查 · 改動刀（一期退回嚴格）', '省'],
+    ];
+    let h = head + '<div class="thr">';
+    for (const [id, lbl, desc, tag] of tiers) {
+      const on = eff === id;
+      h += `<button type="button" class="k ${on ? 'g' : ''}" data-tierpick="${id}" ${!canSet || T.busy ? 'disabled' : ''} title="${esc(desc)}">${lbl}（${tag}）${on ? ' ✓' : ''}</button>`;
+    }
+    h += '</div>';
+    if (d.fell_back_to_strict) {
+      h += '<div class="thm" role="status">一期未簽章放寬已自動退回嚴格 (main_exact)</div>';
+    }
+    const fields = [
+      ['沿用 reuse', p.reuse, p.reuse !== 'off' && p.reuse !== 'observe' ? '省' : '不省'],
+      ['抽查 spot_every', p.spot_every ? `1/${p.spot_every}` : '0', '省'],
+      ['刀範圍 knives', p.knives, p.knives === 'all' ? '不省' : '省'],
+      ['平台 platforms', p.platforms, p.platforms === 'both' ? '不省' : '省'],
+      ['預檢 stop', p.stop, p.stop === 'reject' ? '不省' : '省'],
+      ['每格分鐘 cell_max_min', `${p.cell_max_min || 90} 分`, '不省'],
+      ['單支刀數 script_max_knives', `${p.script_max_knives || 140} 把`, '不省'],
+      ['單支分鐘 script_max_min', `${p.script_max_min || 25} 分`, '不省'],
+    ];
+    h += '<details class="thr"><summary class="hv">八欄明細與全倉設定（我的組合：' + (Array.isArray(d.presets) ? d.presets.length : 0) + ' 組）</summary>';
+    for (const [k, v, s] of fields) {
+      h += `<div class="thm">${esc(k)}：<b>${esc(String(v || ''))}</b> · <span class="hv">${s}</span></div>`;
+    }
+    const hrs = Array.isArray(rs.merge_batch_hours) ? rs.merge_batch_hours.join('/') : '10/16/22';
+    h += `<div class="thm">全倉三件：平台無關刀搬 Linux=${rs.linux_knives ? '開' : '關'} · 刀長度檢查=${esc(String(rs.knife_length_check || 'reject'))} · 合併批次=${esc(hrs)} (${esc(String(rs.merge_batch_tz || 'Asia/Taipei'))})</div></details>`;
+    if (T.msg) h += `<div class="thm bad" role="alert">${esc(T.msg)}</div>`;
     return h;
   }
   async function thLoad() {
@@ -6113,6 +6171,8 @@
     const plgB = x.closest('[data-plgset]'); if (plgB) return plgSet(plgB.dataset.plgset, plgB.dataset.plgon === '1');
     if (x.closest('[data-mktreload]')) { S.mkt = null; return mktLoad(); }
     const mktB = x.closest('[data-mktinst]'); if (mktB) return mktInstall(mktB.dataset.mktinst);
+    if (x.closest('[data-tierreload]')) { S.tier = null; return tierLoad(); }
+    const tierB = x.closest('[data-tierpick]'); if (tierB) return tierPick(tierB.dataset.tierpick);
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);

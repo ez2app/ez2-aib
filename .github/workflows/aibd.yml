@@ -4134,6 +4134,31 @@ jobs:
           fi
           echo "crate knives: $ok/$SHARDS cells success" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  knife-summary:
+    name: knife summary
+    needs: [changes, rust, crate-knives-gate, cloud-knives, cloud-host-knives]
+    if: ${{ always() && needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: summarize knife cells
+        env:
+          R_RUST: ${{ needs.rust.result }}
+          R_CRATE: ${{ needs.crate-knives-gate.result }}
+          R_CLOUD: ${{ needs.cloud-knives.result }}
+          R_HOST: ${{ needs.cloud-host-knives.result }}
+        run: |
+          passed=0; failed=0; cancelled=0
+          for r in "$R_RUST" "$R_CRATE" "$R_CLOUD" "$R_HOST"; do
+            case "$r" in
+              success) passed=$((passed + 1)) ;;
+              cancelled) cancelled=$((cancelled + 1)) ;;
+              *) failed=$((failed + 1)) ;;
+            esac
+          done
+          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier normal --passed "$passed" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
+
   cloud-host-knives:
     name: cloud-host command knives (macOS)
     needs: changes

@@ -40,7 +40,7 @@ rk '  if [ $(((turn - 1) % shard_n + 1)) != "$shard_k" ]; then' '  if false; the
 rk '  here_ok=$((here_ok + 1))' '  here_ok=$mine # knife: other OS takes a turn' \
   shards_take_turns_over_the_scripts_that_run_here_and_together_run_each_once
 # RK11 a shard that ran nothing reads as clean (more cells than scripts would hide a lost script)
-rk 'if [ "$shard_n" != 1 ] && [ "$ran" = 0 ]; then' 'if false; then # knife' \
+rk 'if [ "$shard_n" != 1 ] && [ "$((ran + skipped_unaffected))" = 0 ]; then' 'if false; then # knife' \
   a_shard_that_gets_no_script_is_red_and_a_shard_not_k_of_n_is_refused
 # RK12 a shard that is not k/N is read as "all"
 rk '  exit 2' '  shard_k=1 shard_n=1 # knife: anything is all' \

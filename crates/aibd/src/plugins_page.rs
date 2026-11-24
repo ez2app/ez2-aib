@@ -23,6 +23,8 @@ pub const LIST: &str = "plugin_list";
 pub const SET: &str = "plugin_set";
 pub const MARKETPLACE_LIST: &str = "marketplace_list";
 pub const MARKETPLACE_INSTALL: &str = "marketplace_install";
+pub const TIER_GET: &str = "skipstop_tier_get";
+pub const TIER_SET: &str = "skipstop_tier_set";
 
 /// The list the page is shown, from the plugin area under `home`.
 pub fn list(home: &Path, windows: bool) -> Value {
@@ -304,6 +306,220 @@ pub async fn marketplace_install_act(body: Value) -> Response {
             crate::time_saved::clear_cache();
             Json(v).into_response()
         }
+        Ok(Some(Err((status, code)))) => refuse(status, code),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
+    }
+}
+
+fn tiers_file(home: &Path) -> PathBuf {
+    home.join("skipstop-tiers.json")
+}
+
+fn tier_defaults(tier: &str) -> Value {
+    match tier {
+        "strict" => json!({
+            "reuse": "main_exact", "spot_every": 5, "knives": "all", "platforms": "both",
+            "stop": "reject", "cell_max_min": 60, "script_max_knives": 100,
+            "script_max_min": 20, "overflow": "add_cell"
+        }),
+        "fast" => json!({
+            "reuse": "scope", "spot_every": 20, "knives": "changed", "platforms": "linux_only",
+            "stop": "warn", "cell_max_min": 60, "script_max_knives": 200,
+            "script_max_min": 30, "overflow": "trim"
+        }),
+        _ => json!({
+            "reuse": "main_exact", "spot_every": 10, "knives": "affected", "platforms": "native",
+            "stop": "reject", "cell_max_min": 90, "script_max_knives": 140,
+            "script_max_min": 25, "overflow": "add_cell"
+        }),
+    }
+}
+
+fn is_looser_than_normal(policy: &Value, repo: &Value) -> bool {
+    let reuse = policy["reuse"].as_str().unwrap_or("main_exact");
+    let spot = policy["spot_every"].as_u64().unwrap_or(10);
+    let knives = policy["knives"].as_str().unwrap_or("affected");
+    let platforms = policy["platforms"].as_str().unwrap_or("native");
+    let stop = policy["stop"].as_str().unwrap_or("reject");
+    let overflow = policy["overflow"].as_str().unwrap_or("add_cell");
+    let cell = policy["cell_max_min"].as_u64().unwrap_or(90);
+    let sk = policy["script_max_knives"].as_u64().unwrap_or(140);
+    let sm = policy["script_max_min"].as_u64().unwrap_or(25);
+    let reuse_looser = matches!(reuse, "exact" | "scope");
+    let spot_looser = !matches!(reuse, "off" | "observe") && (spot == 0 || spot > 10);
+    let knives_looser = knives == "changed";
+    let plat_looser = platforms == "linux_only";
+    let stop_looser = stop == "warn";
+    let ov_looser = overflow == "trim";
+    let cell_looser = ov_looser && cell < 90;
+    let repo_looser = repo["linux_knives"].as_bool() == Some(true)
+        || repo["knife_length_check"].as_str() == Some("warn");
+    reuse_looser
+        || spot_looser
+        || knives_looser
+        || plat_looser
+        || stop_looser
+        || ov_looser
+        || cell_looser
+        || sk > 140
+        || sm > 25
+        || repo_looser
+}
+
+fn expand_tier_state(raw: &Value) -> Value {
+    let requested = raw
+        .get("tier")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "strict" | "normal" | "fast"))
+        .unwrap_or("normal");
+    let mut policy = tier_defaults(requested);
+    if let Some(ov) = raw.get("overrides").and_then(Value::as_object) {
+        if let Some(p) = policy.as_object_mut() {
+            for (k, v) in ov {
+                if p.contains_key(k) {
+                    p.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    let mut repo = json!({
+        "linux_knives": false,
+        "knife_length_check": "reject",
+        "merge_batch_tz": "Asia/Taipei",
+        "merge_batch_hours": [10, 16, 22]
+    });
+    if let Some(rs) = raw.get("repo_settings").and_then(Value::as_object) {
+        if let Some(r) = repo.as_object_mut() {
+            for (k, v) in rs {
+                if r.contains_key(k) {
+                    r.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    // Phase 1: unsigned relaxations fall back to strict (main_exact)
+    let fell_back = requested == "fast" || is_looser_than_normal(&policy, &repo);
+    let effective_tier = if fell_back { "strict" } else { requested };
+    if fell_back {
+        policy = tier_defaults("strict");
+        repo["linux_knives"] = json!(false);
+        repo["knife_length_check"] = json!("reject");
+    }
+    let presets = raw
+        .get("presets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "state": "ok",
+        "requested_tier": requested,
+        "effective_tier": effective_tier,
+        "fell_back_to_strict": fell_back,
+        "policy": policy,
+        "repo_settings": repo,
+        "presets": presets
+    })
+}
+
+pub fn tier_get(home: &Path) -> Value {
+    let raw = std::fs::read_to_string(tiers_file(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| json!({ "tier": "normal" }));
+    expand_tier_state(&raw)
+}
+
+pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'static str)> {
+    let o = body
+        .as_object()
+        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_request"))?;
+    if o.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "type" | "tier" | "overrides" | "repo_settings" | "save_preset"
+        )
+    }) {
+        return Err((StatusCode::BAD_REQUEST, "bad_tier_request"));
+    }
+    let tier = o
+        .get("tier")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "strict" | "normal" | "fast"))
+        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_name"))?;
+    if let Some(ov) = o.get("overrides") {
+        let ov_obj = ov
+            .as_object()
+            .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
+        if let Some(c) = ov_obj.get("cell_max_min").and_then(Value::as_u64) {
+            if !(10..=140).contains(&c) {
+                return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+            }
+        }
+        if let Some(k) = ov_obj.get("script_max_knives").and_then(Value::as_u64) {
+            if !(20..=300).contains(&k) {
+                return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+            }
+        }
+        if let Some(m) = ov_obj.get("script_max_min").and_then(Value::as_u64) {
+            if !(5..=60).contains(&m) {
+                return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+            }
+        }
+    }
+    let _turn = turn();
+    let mut cur = std::fs::read_to_string(tiers_file(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| json!({ "tier": "normal", "presets": [] }));
+    cur["tier"] = json!(tier);
+    if let Some(ov) = o.get("overrides") {
+        cur["overrides"] = ov.clone();
+    }
+    if let Some(rs) = o.get("repo_settings") {
+        cur["repo_settings"] = rs.clone();
+    }
+    if let Some(name) = o
+        .get("save_preset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 40)
+    {
+        let mut presets = cur
+            .get("presets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        presets.retain(|p| p.get("name").and_then(Value::as_str) != Some(name));
+        presets.push(json!({
+            "name": name,
+            "tier": tier,
+            "overrides": cur.get("overrides").cloned().unwrap_or_else(|| json!({}))
+        }));
+        if presets.len() > 20 {
+            presets.drain(0..presets.len() - 20);
+        }
+        cur["presets"] = json!(presets);
+    }
+    let path = tiers_file(home);
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(&cur)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "tier_save_failed"))?;
+    std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "tier_save_failed"))?;
+    Ok(expand_tier_state(&cur))
+}
+
+pub async fn tier_get_act() -> Response {
+    match tokio::task::spawn_blocking(|| home_now().map(|h| tier_get(&h))).await {
+        Ok(Some(v)) => Json(v).into_response(),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
+    }
+}
+
+pub async fn tier_set_act(body: Value) -> Response {
+    match tokio::task::spawn_blocking(move || home_now().map(|h| tier_set(&h, &body))).await {
+        Ok(Some(Ok(v))) => Json(v).into_response(),
         Ok(Some(Err((status, code)))) => refuse(status, code),
         _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
     }
@@ -643,5 +859,46 @@ mod tests {
         .expect("install");
         assert_eq!(installed["plugins"][0]["name"], "gamma");
         assert_eq!(installed["plugins"][0]["runs"], "ok");
+    }
+
+    #[test]
+    fn tier_get_and_set_enforce_phase1_and_save_presets() {
+        let h = home("tiers");
+        let init = tier_get(&h.0);
+        assert_eq!(init["effective_tier"], "normal");
+        assert_eq!(init["fell_back_to_strict"], false);
+
+        // Phase 1: fast falls back to strict
+        let fast = tier_set(&h.0, &json!({"type": TIER_SET, "tier": "fast"})).expect("fast");
+        assert_eq!(fast["requested_tier"], "fast");
+        assert_eq!(fast["effective_tier"], "strict");
+        assert_eq!(fast["fell_back_to_strict"], true);
+
+        // Out-of-range value rejected
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"cell_max_min": 5}})
+            )
+            .unwrap_err()
+            .1,
+            "out_of_range"
+        );
+
+        // Valid normal + custom preset saved
+        let saved = tier_set(
+            &h.0,
+            &json!({
+                "type": TIER_SET,
+                "tier": "normal",
+                "overrides": {"cell_max_min": 60},
+                "save_preset": "我的一般"
+            }),
+        )
+        .expect("saved");
+        assert_eq!(saved["effective_tier"], "normal");
+        assert_eq!(saved["fell_back_to_strict"], false);
+        assert_eq!(saved["policy"]["cell_max_min"], 60);
+        assert_eq!(saved["presets"][0]["name"], "我的一般");
     }
 }

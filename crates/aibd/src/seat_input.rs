@@ -60,6 +60,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::plugins_page::SET,
     crate::plugins_page::MARKETPLACE_LIST,
     crate::plugins_page::MARKETPLACE_INSTALL,
+    crate::plugins_page::TIER_GET,
+    crate::plugins_page::TIER_SET,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
@@ -486,6 +488,20 @@ pub async fn act(
                 );
             }
             return crate::plugins_page::marketplace_install_act(body).await;
+        }
+        Some(crate::plugins_page::TIER_GET) => {
+            return crate::plugins_page::tier_get_act().await;
+        }
+        Some(crate::plugins_page::TIER_SET) => {
+            let cannot_set_tier_here = held_as_user_page(&page).await || page.carried;
+            if cannot_set_tier_here {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "tier settings are changed from the built-in page in this pairing only",
+                );
+            }
+            return crate::plugins_page::tier_set_act(body).await;
         }
         // F2: the plugin's time-saved numbers; read only, nothing of the caller's is run
         Some(crate::time_saved::KIND) => {

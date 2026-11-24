@@ -294,7 +294,7 @@ pub fn check_size(
     Ok(summary)
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]";
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]\n       aib-xtask knife-shards summary --tier <strict|normal|fast> [--passed N] [--deferred N] [--failed N] [--timed-out N] [--cancelled N]";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -497,10 +497,60 @@ fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
     }
 }
 
+fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let mut tier = "normal".to_string();
+    let (mut passed, mut deferred, mut failed, mut timed_out, mut cancelled) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let val = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<String, String> {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))
+        };
+        let num = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<u64, String> {
+            let v = val(flag, it)?;
+            v.parse()
+                .map_err(|_| format!("{flag} {v}: not a whole number"))
+        };
+        match a.as_str() {
+            "--tier" => tier = val(a, &mut it)?,
+            "--passed" => passed = num(a, &mut it)?,
+            "--deferred" => deferred = num(a, &mut it)?,
+            "--failed" => failed = num(a, &mut it)?,
+            "--timed-out" => timed_out = num(a, &mut it)?,
+            "--cancelled" => cancelled = num(a, &mut it)?,
+            other => return Err(format!("{other}: not an option\n{USAGE}")),
+        }
+    }
+    if !matches!(tier.as_str(), "strict" | "normal" | "fast") {
+        return Err(format!("--tier {tier}: must be strict, normal, or fast"));
+    }
+    let bad = failed.saturating_add(timed_out).saturating_add(cancelled);
+    let label = if bad > 0 {
+        "失敗"
+    } else if deferred > 0 {
+        "條件通過"
+    } else if tier == "strict" {
+        "嚴格通過"
+    } else {
+        "一般通過"
+    };
+    let line = format!(
+        "KNIVES-SUMMARY tier={tier} label={label} passed={passed} deferred={deferred} failed={bad}\n"
+    );
+    Ok((u8::from(bad > 0), line))
+}
+
 pub fn run(args: &[String]) -> u8 {
     if let [cmd, rest @ ..] = args {
-        if cmd == "check" {
-            return match check_cmd(rest) {
+        if cmd == "check" || cmd == "summary" {
+            let res = if cmd == "check" {
+                check_cmd(rest)
+            } else {
+                summary_cmd(rest)
+            };
+            return match res {
                 Ok((rc, text)) => {
                     print!("{text}");
                     rc

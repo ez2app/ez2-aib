@@ -236,7 +236,7 @@ pub fn aibd_changed_jobs(base: &str, head: &str) -> Option<BTreeSet<String>> {
     let (Some(b), Some(h)) = (cut(base), cut(head)) else {
         return None;
     };
-    if b.top != h.top {
+    if !b.top.eq(&h.top) {
         return None;
     }
     let names = |c: &Cut| c.jobs.iter().map(|j| j.0.clone()).collect::<Vec<_>>();
@@ -245,7 +245,7 @@ pub fn aibd_changed_jobs(base: &str, head: &str) -> Option<BTreeSet<String>> {
     }
     let mut changed = BTreeSet::new();
     for (bj, hj) in b.jobs.iter().zip(&h.jobs) {
-        if bj.1 != hj.1 {
+        if !bj.1.eq(&hj.1) {
             return None;
         }
         if bj.2 != hj.2 {
