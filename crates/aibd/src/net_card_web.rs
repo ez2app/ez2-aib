@@ -39,13 +39,21 @@ pub const ALLOW_REVOKE: &str = "net_allow_revoke";
 
 static CARDS: Mutex<Option<Cards>> = Mutex::new(None);
 static ALLOW: Mutex<BTreeMap<String, AllowList>> = Mutex::new(BTreeMap::new());
+static INVALID_ROW_LOG: Mutex<BTreeMap<(String, &'static str), u64>> = Mutex::new(BTreeMap::new());
 
-/// Test-only helper to clear the in-memory allow map (simulating an `aibd` restart).
-#[doc(hidden)]
-pub fn clear_allow_for_test() {
-    if let Ok(mut a) = ALLOW.lock() {
-        a.clear();
+fn should_log_invalid(ticket: &str, state: &'static str, now_unix: u64) -> bool {
+    let Ok(mut g) = INVALID_ROW_LOG.lock() else {
+        return false;
+    };
+    let key = (ticket.to_owned(), state);
+    if g.get(&key).is_some_and(|&prev| now_unix < prev + 60) {
+        return false;
     }
+    if g.len() > 256 {
+        g.clear();
+    }
+    g.insert(key, now_unix);
+    true
 }
 
 fn now() -> u64 {
@@ -246,73 +254,121 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
             .and_then(|m| m.persona_uid),
         None => None,
     };
+    let persona_active = match want_uid.as_deref() {
+        Some(uid) => !crate::persona_edit::archived_uids(&st.messages, "persona")
+            .unwrap_or_default()
+            .contains(uid),
+        None => true,
+    };
+    let own_ips = crate::host_addr::own_addresses();
+    let now_unix = now();
+    let mut bad_events = Vec::new();
     if let Ok(db_rows) = st.messages.net_allow_list() {
+        let is_revoked = |t: &str| st.messages.net_allow_is_revoked(t).unwrap_or(true);
         append_db_allow_rows(
             &mut items,
             &db_rows,
             q.seat_id.as_deref(),
             want_uid.as_deref(),
-            now() as i64,
+            persona_active,
+            &own_ips,
+            now_unix,
+            &is_revoked,
             &crate::owner_ok::verify,
+            &mut bad_events,
         );
+    }
+    for (ticket, state) in bad_events {
+        if should_log_invalid(&ticket, state, now_unix) {
+            crate::seats::side_event(
+                &st,
+                "net",
+                "net.allow_row_invalid",
+                json!({"ticket": ticket, "state": state}),
+            )
+            .await;
+        }
     }
     Json(json!({ "items": items })).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_db_allow_rows(
     items: &mut Vec<Value>,
     db_rows: &[aib_store::NetAllowRow],
     seat_id: Option<&str>,
     want_uid: Option<&str>,
-    now_unix: i64,
+    persona_active: bool,
+    own_ips: &[IpAddr],
+    now_unix: u64,
+    is_revoked: &dyn Fn(&str) -> bool,
     verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
+    bad_events: &mut Vec<(String, &'static str)>,
 ) {
     for r in db_rows {
-        if !crate::net_allow::row_sig_ok(r, verify_fn) {
+        let Some((uid, canon, issued_at, until)) = crate::net_allow::parse_always_params(&r.params)
+        else {
+            continue;
+        };
+        if seat_id.is_some() && want_uid != Some(uid.as_str()) {
             continue;
         }
-        if let Some((uid, canon, _issued_at, until)) =
-            crate::net_allow::parse_always_params(&r.params)
+        let parsed_addr = canon.parse::<SocketAddr>().ok();
+        let state = if is_revoked(&r.ticket) {
+            "revoked_reappeared"
+        } else if !crate::net_allow::row_sig_ok(r, verify_fn) {
+            "bad_sig"
+        } else if now_unix < issued_at
+            || now_unix >= until
+            || until <= issued_at
+            || until - issued_at > crate::net_allow::MAX_DAYS_SECS
         {
-            if until <= now_unix {
-                continue;
-            }
-            if seat_id.is_some() && want_uid != Some(uid.as_str()) {
-                continue;
-            }
-            let parsed_addr = canon.parse::<SocketAddr>().ok();
-            let dup = parsed_addr.and_then(|sa| {
-                let ip_str = sa.ip().to_string();
-                let port_u64 = u64::from(sa.port());
-                items.iter_mut().find(|existing| {
-                    existing.get("ip").and_then(Value::as_str) == Some(ip_str.as_str())
-                        && existing.get("port").and_then(Value::as_u64) == Some(port_u64)
-                        && (seat_id.is_none()
-                            || existing.get("seat_id").and_then(Value::as_str) == seat_id)
-                })
-            });
-            if let Some(existing) = dup {
-                existing["ticket"] = json!(r.ticket);
-                existing["persona_uid"] = json!(uid);
-                existing["addr"] = json!(canon);
-                existing["until"] = json!(until);
-                continue;
-            }
-            let mut obj = json!({
-                "ticket": r.ticket,
-                "persona_uid": uid,
-                "addr": canon,
-                "until": until,
-            });
-            if let Some(sa) = parsed_addr {
-                obj["ip"] = json!(sa.ip().to_string());
-                obj["port"] = json!(sa.port());
-            }
-            if let Some(sid) = seat_id {
-                obj["seat_id"] = json!(sid);
-            }
-            items.push(obj);
+            "expired"
+        } else if parsed_addr.is_none_or(|sa| {
+            crate::egress::classify(sa.ip(), own_ips) != crate::egress::Verdict::AllowPrivate
+        }) {
+            "class_changed"
+        } else if !persona_active {
+            "persona_inactive"
+        } else {
+            "ok"
+        };
+        if state != "ok" {
+            bad_events.push((r.ticket.clone(), state));
         }
+        let dup = parsed_addr.and_then(|sa| {
+            let ip_str = sa.ip().to_string();
+            let port_u64 = u64::from(sa.port());
+            items.iter_mut().find(|existing| {
+                existing.get("ip").and_then(Value::as_str) == Some(ip_str.as_str())
+                    && existing.get("port").and_then(Value::as_u64) == Some(port_u64)
+                    && (seat_id.is_none()
+                        || existing.get("seat_id").and_then(Value::as_str) == seat_id)
+            })
+        });
+        if let Some(existing) = dup {
+            existing["ticket"] = json!(r.ticket);
+            existing["persona_uid"] = json!(uid);
+            existing["addr"] = json!(canon);
+            existing["until"] = json!(until);
+            existing["state"] = json!(state);
+            continue;
+        }
+        let mut obj = json!({
+            "ticket": r.ticket,
+            "persona_uid": uid,
+            "addr": canon,
+            "until": until,
+            "state": state,
+        });
+        if let Some(sa) = parsed_addr {
+            obj["ip"] = json!(sa.ip().to_string());
+            obj["port"] = json!(sa.port());
+        }
+        if let Some(sid) = seat_id {
+            obj["seat_id"] = json!(sid);
+        }
+        items.push(obj);
     }
 }
 
@@ -444,48 +500,80 @@ mod tests {
     }
 
     #[test]
-    fn db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port() {
-        let mk = |ticket: &str, uid: &str, canon: &str, until: i64| aib_store::NetAllowRow {
-            ticket: ticket.into(),
-            by_key: "owner".into(),
-            resource: canon.into(),
-            params: format!("persona={uid}\taddr={canon}\tissued_at=1000\tuntil={until}"),
-            sig: vec![1],
-            approved_at: 1000,
+    fn db_allow_rows_emit_all_states_and_never_hide_invalid_rows() {
+        let mk = |ticket: &str, uid: &str, canon: &str, until: u64, sig: Vec<u8>| {
+            aib_store::NetAllowRow {
+                ticket: ticket.into(),
+                by_key: "owner".into(),
+                resource: canon.into(),
+                params: format!("aibd/net-allow/v1\n{uid}\n{canon}\n1000\n{until}\nrq_1\n")
+                    .into_bytes(),
+                sig,
+                approved_at: 1000,
+            }
         };
         let rows = vec![
-            mk("tk_ok", "p_1", "10.0.0.5:5432", 5000),
-            mk("tk_exp", "p_1", "10.0.0.6:5432", 1500),
-            mk("tk_other", "p_2", "10.0.0.7:5432", 5000),
+            mk("tk_ok", "p_1", "10.0.0.5:5432", 5000, vec![1]),
+            mk("tk_exp", "p_1", "10.0.0.6:5432", 1500, vec![1]),
+            mk("tk_bad", "p_1", "10.0.0.7:5432", 5000, vec![9]),
+            mk("tk_pub", "p_1", "8.8.8.8:443", 5000, vec![1]),
+            mk("tk_rev", "p_1", "10.0.0.8:5432", 5000, vec![1]),
+            mk("tk_other", "p_2", "10.0.0.9:5432", 5000, vec![1]),
         ];
         let mut out = Vec::new();
+        let mut bad_events = Vec::new();
         append_db_allow_rows(
             &mut out,
             &rows,
             Some("a1b2c"),
             Some("p_1"),
+            true,
+            &[],
             2000,
+            &|t| t == "tk_rev",
             &|_, sig| sig == [1],
+            &mut bad_events,
         );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["ticket"], "tk_ok");
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0]["state"], "ok");
         assert_eq!(out[0]["ip"], "10.0.0.5");
         assert_eq!(out[0]["port"], 5432);
-        assert_eq!(out[0]["seat_id"], "a1b2c");
+        assert_eq!(out[1]["state"], "expired");
+        assert_eq!(out[2]["state"], "bad_sig");
+        assert_eq!(out[3]["state"], "class_changed");
+        assert_eq!(out[4]["state"], "revoked_reappeared");
+        assert_eq!(bad_events.len(), 4);
 
-        let mut bad_sig = Vec::new();
+        let mut inactive = Vec::new();
+        let mut ev2 = Vec::new();
         append_db_allow_rows(
-            &mut bad_sig,
-            &rows,
+            &mut inactive,
+            &rows[..1],
             Some("a1b2c"),
             Some("p_1"),
+            false,
+            &[],
             2000,
-            &|_, _| false,
+            &|_| false,
+            &|_, sig| sig == [1],
+            &mut ev2,
         );
-        assert!(bad_sig.is_empty());
+        assert_eq!(inactive[0]["state"], "persona_inactive");
 
         let mut none = Vec::new();
-        append_db_allow_rows(&mut none, &rows, Some("a1b2c"), None, 2000, &|_, _| true);
+        let mut ev3 = Vec::new();
+        append_db_allow_rows(
+            &mut none,
+            &rows,
+            Some("a1b2c"),
+            None,
+            true,
+            &[],
+            2000,
+            &|_| false,
+            &|_, _| true,
+            &mut ev3,
+        );
         assert!(none.is_empty());
     }
 }

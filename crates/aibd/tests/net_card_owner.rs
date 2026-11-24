@@ -223,22 +223,6 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     assert_eq!(items[0]["port"], 5432, "{}", r.body);
     assert!(items[0]["ticket"].as_str().is_some(), "{}", r.body);
 
-    // Simulate aibd restart: clear in-memory ALLOW, then list + revoke via DB row
-    aibd::net_card_web::clear_allow_for_test();
-    let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
-    let items = r.json["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "reason: restart_lost_always {}", r.body);
-    assert_eq!(
-        items[0]["ip"], "10.0.0.5",
-        "reason: restart_missing_ip {}",
-        r.body
-    );
-    assert_eq!(
-        items[0]["port"], 5432,
-        "reason: restart_missing_port {}",
-        r.body
-    );
-
     let r = act(
         json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432}),
     )
@@ -249,6 +233,61 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
         "{}",
         r.body
     );
+    let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
+    assert_eq!(
+        r.json["items"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        r.body
+    );
+
+    // Simulate aibd restart: DB row exists with empty in-memory ALLOW, then list + revoke via HTTP
+    {
+        let db =
+            aib_store::MessageDb::open(&dir.path().join("data").join(aib_store::MESSAGES_FILE))
+                .unwrap();
+        let issued = now();
+        let until = issued + 3600;
+        let addr: std::net::SocketAddr = "10.0.0.8:5432".parse().unwrap();
+        let params = aibd::net_allow::always_params("p_1", addr, issued, until, "rq_re").unwrap();
+        let ask = aibd::owner_ok::Ask {
+            category: aib_approve::category::Category::WindowGrant,
+            operation: aibd::net_allow::OP_ALWAYS,
+            resource: "10.0.0.8:5432".into(),
+            params: params.clone(),
+            by: "page:1".into(),
+        };
+        let sig = aibd::owner_ok::binding("ot_restart_1", &ask);
+        db.net_allow_add(aib_store::NetAllowRow {
+            ticket: "ot_restart_1".into(),
+            by_key: "page:1".into(),
+            resource: "10.0.0.8:5432".into(),
+            params,
+            sig,
+            approved_at: issued as i64,
+        })
+        .unwrap();
+    }
+    let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
+    let items = r.json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "reason: restart_lost_always {}", r.body);
+    assert_eq!(
+        items[0]["ip"], "10.0.0.8",
+        "reason: restart_missing_ip {}",
+        r.body
+    );
+    assert_eq!(
+        items[0]["port"], 5432,
+        "reason: restart_missing_port {}",
+        r.body
+    );
+    assert_eq!(items[0]["state"], "ok", "{}", r.body);
+
+    let r = act(
+        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "10.0.0.8", "port": 5432}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
     let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
     assert_eq!(
         r.json["items"].as_array().map(Vec::len),

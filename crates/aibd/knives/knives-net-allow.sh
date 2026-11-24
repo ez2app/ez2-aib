@@ -48,10 +48,10 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   -- cargo test -p aibd --locked --lib net_allow::tests::proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive
 # na-list-expired
 python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
-  '            if until <= now_unix {' \
-  '            if false {' \
-  --expect-fail net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port \
-  -- cargo test -p aibd --locked --lib net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port
+  '            "expired"' \
+  '            "ok"' \
+  --expect-fail net_card_web::tests::db_allow_rows_emit_all_states_and_never_hide_invalid_rows \
+  -- cargo test -p aibd --locked --lib net_card_web::tests::db_allow_rows_emit_all_states_and_never_hide_invalid_rows
 # na-is-revoked
 python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   '        if db.net_allow_is_revoked(&row.ticket).unwrap_or(true) {' \
@@ -66,10 +66,10 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   -- cargo test -p aibd --locked --lib net_allow::tests::valid_signed_row_holds_and_forged_or_tampered_row_is_refused
 # na-list-sig
 python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
-  '        if !crate::net_allow::row_sig_ok(r, verify_fn) {' \
-  '        if false && !crate::net_allow::row_sig_ok(r, verify_fn) {' \
-  --expect-fail net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port \
-  -- cargo test -p aibd --locked --lib net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port
+  '        } else if !crate::net_allow::row_sig_ok(r, verify_fn) {' \
+  '        } else if false && !crate::net_allow::row_sig_ok(r, verify_fn) {' \
+  --expect-fail net_card_web::tests::db_allow_rows_emit_all_states_and_never_hide_invalid_rows \
+  -- cargo test -p aibd --locked --lib net_card_web::tests::db_allow_rows_emit_all_states_and_never_hide_invalid_rows
 # na-choices-no-always
 python3 -I scripts/knife.py crates/aibd/src/net_card.rs \
   '            .filter(|c| owner_avail || *c != Choice::Always)' \
