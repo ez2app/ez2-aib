@@ -600,7 +600,7 @@ fn protected_paths(st: &AppState) -> Result<Vec<PathBuf>, &'static str> {
 }
 
 /// The second-brain library this aibd reads (the same place the brain list comes from).
-fn library() -> Result<PathBuf, &'static str> {
+pub(crate) fn library() -> Result<PathBuf, &'static str> {
     match crate::registry::brain_root(|k| std::env::var(k).ok()) {
         crate::registry::BrainRoot::At(_, p) => Ok(p),
         _ => Err("brain_root_missing"),

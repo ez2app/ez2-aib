@@ -34,6 +34,63 @@ pub const OP_BRAIN: &str = "merge.brain";
 const PLAN_TTL_SECS: u64 = 600;
 const PLAN_CACHE_MAX: usize = 64;
 const NAME_MAX_CHARS: usize = 20;
+const NOTES_MAX_FILES: usize = 2000;
+const NOTES_MAX_BYTES: u64 = 200 * 1024 * 1024;
+const NOTE_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotesCheck {
+    pub files: usize,
+    pub bytes: u64,
+    pub cloud_placeholders: usize,
+    pub over_limit: bool,
+}
+
+fn is_cloud_placeholder(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".icloud")
+}
+
+/// 8c (DESIGN-merge §4b-2): scan a brain folder without following symlinks, counting regular
+/// files, total bytes, and iCloud placeholders.
+pub fn scan_brain_notes(root: &Path) -> NotesCheck {
+    let mut check = NotesCheck::default();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if is_cloud_placeholder(&name) {
+                check.cloud_placeholders += 1;
+                continue;
+            }
+            if meta.is_dir() {
+                dirs.push(p);
+            } else if meta.is_file() {
+                let len = meta.len();
+                check.files += 1;
+                check.bytes = check.bytes.saturating_add(len);
+                if len > NOTE_MAX_FILE_BYTES
+                    || check.files > NOTES_MAX_FILES
+                    || check.bytes > NOTES_MAX_BYTES
+                {
+                    check.over_limit = true;
+                }
+            }
+        }
+    }
+    check
+}
+
+use std::path::Path;
 
 #[derive(Clone)]
 struct CachedPlan {
@@ -558,7 +615,7 @@ pub async fn preview(st: AppState, body: Value) -> Response {
             );
         }
 
-        Ok(json!({
+        let mut resp = json!({
             "plan_sha": sha,
             "plan": plan,
             "needs_owner": needs_owner,
@@ -566,7 +623,52 @@ pub async fn preview(st: AppState, body: Value) -> Response {
             "groups": out_groups,
             "steps": steps,
             "other_hosts": "別台 Mac / Windows 上的副本不會改,那邊的夥伴照舊用舊名",
-        }))
+        });
+        if kind == "brain" {
+            let wants_copy = plan["groups"]
+                .as_array()
+                .is_some_and(|gs| gs.iter().any(|g| g["notes"] == "copy"));
+            if wants_copy {
+                let mut total = NotesCheck::default();
+                if let Ok(root) = crate::brain_note::library() {
+                    let data = crate::registry::data_of(&st2);
+                    if let Ok(reg) = crate::registry::load(&data) {
+                        for g in plan["groups"].as_array().into_iter().flatten() {
+                            if g["notes"] != "copy" {
+                                continue;
+                            }
+                            for m in g["merge"].as_array().into_iter().flatten() {
+                                if let Some(uid) = m.as_str() {
+                                    if let Some(rk) = reg
+                                        .brains
+                                        .iter()
+                                        .find(|b| b.uid == uid)
+                                        .and_then(|b| b.route_key.as_deref())
+                                    {
+                                        if let Ok(rel) = crate::registry::brain_folder(&root, rk) {
+                                            let c = scan_brain_notes(&root.join(rel));
+                                            total.files += c.files;
+                                            total.bytes = total.bytes.saturating_add(c.bytes);
+                                            total.cloud_placeholders += c.cloud_placeholders;
+                                            total.over_limit |= c.over_limit
+                                                || total.files > NOTES_MAX_FILES
+                                                || total.bytes > NOTES_MAX_BYTES;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                resp["notes_check"] = json!({
+                    "files": total.files,
+                    "bytes": total.bytes,
+                    "cloud_placeholders": total.cloud_placeholders,
+                    "over_limit": total.over_limit,
+                });
+            }
+        }
+        Ok(resp)
     })
     .await;
     match res {
@@ -1128,5 +1230,17 @@ mod tests {
         assert_eq!(clean_name(twenty).unwrap(), twenty);
         let twenty_one = "一二三四五六七八九十一二三四五六七八九十一";
         assert_eq!(clean_name(twenty_one), Err("name"));
+    }
+
+    #[test]
+    fn notes_check_counts_files_and_flags_icloud_placeholders() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.md"), "hello").unwrap();
+        std::fs::write(d.path().join(".b.md.icloud"), "placeholder").unwrap();
+        let c = scan_brain_notes(d.path());
+        assert_eq!(c.files, 1);
+        assert_eq!(c.bytes, 5);
+        assert_eq!(c.cloud_placeholders, 1);
+        assert!(!c.over_limit);
     }
 }
