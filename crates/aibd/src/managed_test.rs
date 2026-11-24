@@ -148,6 +148,13 @@ pub fn partner_key_perms_ok(path: &Path) -> bool {
     }
 }
 
+fn valid_b64_key(b64: &str) -> bool {
+    !b64.is_empty()
+        && b64
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+}
+
 /// Format a partner `authorized_keys` line:
 /// `no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,from="<from_ip>" <pubkey> aib-partner`
 pub fn format_partner_line(from_ip: &str, pubkey: &str) -> Result<String, &'static str> {
@@ -160,7 +167,7 @@ pub fn format_partner_line(from_ip: &str, pubkey: &str) -> Result<String, &'stat
     else {
         return Err("bad_partner_line_pubkey");
     };
-    if b64.is_empty() {
+    if !valid_b64_key(b64) {
         return Err("bad_partner_line_pubkey");
     }
     Ok(format!(
@@ -208,7 +215,7 @@ pub fn valid_partner_line(line: &str) -> bool {
     let Some(tag) = fields.next() else {
         return false;
     };
-    alg == "ssh-ed25519" && !b64.is_empty() && tag == PARTNER_TAG && fields.next().is_none()
+    alg == "ssh-ed25519" && valid_b64_key(b64) && tag == PARTNER_TAG && fields.next().is_none()
 }
 
 fn line_sha(line: &str) -> String {
@@ -315,7 +322,7 @@ pub fn save_snapshot(
 }
 
 /// Load the stored snapshot, revoke partner lines, return [`RevokeOutcome`],
-/// and delete the snapshot row.
+/// and delete the snapshot row only when [`RevokeStatus::Completed`].
 pub fn revoke_and_diff_from_db(
     db: &aib_store::MessageDb,
     host_name: &str,
@@ -323,7 +330,9 @@ pub fn revoke_and_diff_from_db(
 ) -> Result<RevokeOutcome, aib_store::StoreError> {
     let before = db.test_host_snapshot_get(host_name)?.unwrap_or_default();
     let res = revoke_and_diff(authorized_keys, &before);
-    let _ = db.test_host_snapshot_del(host_name)?;
+    if res.status == RevokeStatus::Completed {
+        let _ = db.test_host_snapshot_del(host_name)?;
+    }
     Ok(res)
 }
 
@@ -439,8 +448,12 @@ mod tests {
         assert!(!valid_partner_line(
             "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,from=\"100.64.0.2\",no-pty ssh-ed25519 AAAA aib-partner"
         ));
-        // Pubkey with comment or extra fields is refused at build time
+        // Pubkey with comment, extra fields, or non-base64 chars is refused at build/validate time
         assert!(format_partner_line("100.64.0.2", "ssh-ed25519 AAAA extra@host").is_err());
+        assert!(format_partner_line("100.64.0.2", "ssh-ed25519 AAAA$bad").is_err());
+        assert!(!valid_partner_line(
+            "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,from=\"100.64.0.2\" ssh-ed25519 AAAA$bad aib-partner"
+        ));
     }
 
     #[test]
@@ -507,6 +520,11 @@ mod tests {
             "ssh-ed25519 AAAABase owner@mac\nssh-ed25519 AAAAExtra rogue@seat\n"
         );
         assert_eq!(out.added, vec!["ssh-ed25519 AAAAExtra rogue@seat"]);
+        assert!(db.test_host_snapshot_get("mini-partner").unwrap().is_some());
+
+        let clean_after = format!("{before}{partner}\n");
+        let clean = revoke_and_diff_from_db(&db, "mini-partner", &clean_after).unwrap();
+        assert_eq!(clean.status, RevokeStatus::Completed);
         assert!(db.test_host_snapshot_get("mini-partner").unwrap().is_none());
     }
 }

@@ -229,17 +229,38 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
         Ok(a) => rows(&a, q.seat_id.as_deref()),
         Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "allow"),
     };
+    let want_uid = match q.seat_id.as_deref() {
+        Some(sid) => st
+            .store
+            .seat_meta(sid)
+            .ok()
+            .flatten()
+            .and_then(|m| m.persona_uid),
+        None => None,
+    };
     if let Ok(db_rows) = st.messages.net_allow_list() {
         for r in db_rows {
             if let Some((uid, canon, _issued_at, until)) =
                 crate::net_allow::parse_always_params(&r.params)
             {
-                items.push(json!({
+                if q.seat_id.is_some() && want_uid.as_deref() != Some(uid.as_str()) {
+                    continue;
+                }
+                let parsed_addr = canon.parse::<SocketAddr>().ok();
+                let mut obj = json!({
                     "ticket": r.ticket,
                     "persona_uid": uid,
                     "addr": canon,
                     "until": until,
-                }));
+                });
+                if let Some(sa) = parsed_addr {
+                    obj["ip"] = json!(sa.ip().to_string());
+                    obj["port"] = json!(sa.port());
+                }
+                if let Some(ref sid) = q.seat_id {
+                    obj["seat_id"] = json!(sid);
+                }
+                items.push(obj);
             }
         }
     }
@@ -276,11 +297,17 @@ pub async fn allow_revoke(st: AppState, body: Value, by: String) -> Response {
     let at = SocketAddr::new(r.ip, r.port);
     let want_canon = crate::grants::canon(at);
     let ts = now() as i64;
+    let want_uid = st
+        .store
+        .seat_meta(&r.seat_id)
+        .ok()
+        .flatten()
+        .and_then(|m| m.persona_uid);
     let mut db_revoked = false;
     if let Ok(rows) = st.messages.net_allow_list() {
         for row in rows {
-            if let Some((_uid, canon, _, _)) = crate::net_allow::parse_always_params(&row.params) {
-                if canon == want_canon {
+            if let Some((uid, canon, _, _)) = crate::net_allow::parse_always_params(&row.params) {
+                if want_uid.as_deref() == Some(uid.as_str()) && canon == want_canon {
                     match st.messages.net_allow_revoke(&row.ticket, ts) {
                         Ok(true) => db_revoked = true,
                         Ok(false) => {}

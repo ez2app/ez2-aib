@@ -1483,7 +1483,7 @@ const hsChecks = (async () => {
   ok(blk.length > 6000, 'reason: hs_block_missing');
   const names = [...(blk.split('const HS_ACTS = {')[1] || '').split('};')[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
   ok(names.length === 5 && names.includes('managed_host_candidates'), 'reason: hs_acts_table');
-  for (const t of names) if (!rust.includes('"' + t + '"')) ok(/const hsCan = \(pv\) => [^\n]*hsHas\('list'\)/.test(blk) && /if \(!hsHas\('list'\)\)/.test(blk) && /const form = !hsHas\('add'\) \? ''/.test(blk) && /\$\{hsHas\('remove'\) \?/.test(blk), 'reason: hs_act_sent_ungated ' + t);
+  ok(/const hsCan = \(pv\) => [^\n]*hsHas\('list'\)/.test(blk) && /if \(!hsHas\('list'\)\)/.test(blk) && /const form = !hsHas\('add'\) \? ''/.test(blk) && /\$\{hsHas\('remove'\) \?/.test(blk), 'reason: hs_act_sent_ungated');
   ok(!/(?:act|fingerAct)\('managed_host_/.test(ws), 'reason: hs_act_name_outside_table');
   const store = { acts: [], has: {}, reply: {} };
   const S = { hs: { list: null, f: null, del: '', busy: false, msg: null }, add: { mode: 'host', hosts: [] }, version: { os: 'macos', capabilities: {} } };
