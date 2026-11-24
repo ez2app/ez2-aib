@@ -350,7 +350,10 @@ mod tests {
             slug: "wuxuan".into(),
             domains: hosts.to_vec(),
         };
-        assert_eq!(tenant_state("wuxuan", &hosts, &[mine.clone()]), State::Done);
+        assert_eq!(
+            tenant_state("wuxuan", &hosts, std::slice::from_ref(&mine)),
+            State::Done
+        );
         let half = Tenant {
             domains: vec!["wuxuanbags.com".into()],
             ..mine.clone()
