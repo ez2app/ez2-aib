@@ -1464,7 +1464,7 @@ mod tests {
             uid: "br_1".into(),
             archived_at: 1,
             keep_until: None,
-            reason: "test".into(),
+            reason: "archive".into(),
             batch_id: None,
             copy_dir: None,
             sha256: None,
