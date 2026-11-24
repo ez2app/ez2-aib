@@ -65,13 +65,25 @@ for (const t of acts) {
   if (t === 'persona_read' && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 §1 persona_read(04:49 定形狀') && ws.includes("const rgCardOn = () => hasAct('persona_read') === true"), 'branch-only act is marked: ' + t); continue; }
   // 08de5 7b(0742adfab8)才有 seat_perm_log / seat_perm_revoke;頁面看 version.acts 才呼叫。合進來後拿掉這行
   if (/^seat_perm_(log|revoke)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7b perm_apply.rs(0742adfab8)') && ws.includes("if (hasAct('seat_perm_log') !== true) return") && ws.includes("const canRv = hasAct('seat_perm_revoke') === true;"), 'branch-only act is marked: ' + t); continue; }
+  // 6770f A8 merge_find / preview / run / log / undo(IFACE-merge r1,預定、還沒寫);頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (/^merge_(find|preview|run|log|undo)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('6770f IFACE-merge r0 §1') && ws.includes("if (hasAct('merge_find') !== true) return mgFind(kind);"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
 // 4. 登記倉 / 開在倉:aibd 會回的每個拒絕原因,頁面都有白話
 const body = (ws.split('const REPO_WHY = {')[1] || '').split('\n  };')[0];
 const why = new Set([...body.matchAll(/^\s+([a-z_]+):/gm)].map((m) => m[1]));
-const codes = new Set([...(read('crates/aibd/src/repos.rs') + read('crates/aibd/src/seat_worktree.rs')).matchAll(/(?:Err\(|\|_\| )"([a-z_]+)"\)/g)].map((m) => m[1]));
+// 08de5 建議:只掃正式碼,測試模組裡的夾具(例如 Err("db"))不算拒絕代碼。f163c r5km N1:只去掉 #[cfg(test)] mod tests { … } 那一塊(數括號找結尾),
+// 正式碼中間別的 #[cfg(test)] 不影響後面照掃;找不到 mod tests 就整檔照掃並寫出來
+const prodRs = (p) => {
+  const s = read(p), i = s.indexOf('#[cfg(test)]\nmod tests {');
+  ok(i > 0, 'reason: rs_test_module_found ' + p);
+  if (i < 0) return s;
+  let d = 0, j = s.indexOf('{', i);
+  for (; j < s.length; j++) { if (s[j] === '{') d++; else if (s[j] === '}' && --d === 0) break; }
+  return s.slice(0, i) + s.slice(j + 1);
+};
+const codes = new Set([...(prodRs('crates/aibd/src/repos.rs') + prodRs('crates/aibd/src/seat_worktree.rs')).matchAll(/(?:Err\(|\|_\| )"([a-z_]+)"\)/g)].map((m) => m[1]));
 ok(codes.size >= 10, 'repo refusal codes read');
 for (const c of codes) ok(why.has(c), 'reason: repo_refusal_without_words ' + c);
 for (const c of ['owner_check_unavailable', 'owner_check_not_approved', 'preview_no_dgrs']) ok(why.has(c) && rust.includes('"' + c + '"'), 'fingerprint / preview refusal in words: ' + c);
@@ -670,7 +682,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const addH = (ws.split('  function addHtml() {')[1] || '').split('\n  }\n')[0];
   // 用字:標題、入口、存哪裡(不是存那裡)、三種模式與危險程度、沒有刻度、沒有管理主機
   ok(/aria-label="新增 AI 夥伴">\n      <div class="ah"><h3>新增 AI 夥伴(<small>|<\/h3>)/.test(addH) && !/<h3>加一席<\/h3>/.test(ws), 'reason: s1_title');
-  ok(/data-add="1" title="新增 AI 夥伴">\+ AI 夥伴<\/button>/.test(ws), 'reason: s1_entry');
+  ok(/data-add="1" title="新增 AI 夥伴">\+ AI 夥伴\$\{netDot\(\)\}<\/button>/.test(ws), 'reason: s1_entry');
   ok(/'存哪裡'/.test(addH) && !/存那裡/.test(ws), 'reason: s1_where_word');
   ok(/<b>討論研究<\/b><\/span><i>[^<]*<\/i><em class="adang d1">危險程度:低<\/em>/.test(addH) && /<em class="adang d2">危險程度:中<\/em>/.test(addH) && /<em class="adang d4">危險程度:最高<\/em>/.test(addH), 'reason: s1_mode_danger');
   // ebab8 11-23 03:20(蓋過 S1 的「不出管理主機」):四顆都畫;S2 區塊外只有那顆灰的(這一版還沒有),能開時由 S2 的 hsModeBtn 換上
@@ -774,7 +786,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     S.usage.providers.codex = { quota: { source: 'codex_app_server', plan: 'plus', windows: [{ name: 'primary', used_pct: 12, window_mins: 300 }, { name: 'zz', used_pct: 3, window_mins: 10080 }] } };
     const h = cq.apQuota(CL), x = cq.apQuota(CX);
     ok(h.includes('<span>七天</span><progress class="usep" max="100" value="42.5"></progress><b>用了 42.5%</b>') && /重算 · 可用<\/i>/.test(h) && h.includes('qw red"><span>五小時</span>') && h.includes('<span>weird_&lt;x&gt;</span><progress class="usep" max="100" value="100">') && !/餘額 \d|剩 \d|\$/.test(h) && h.includes('沒有餘額'), 'reason: a15_windows ' + h.slice(0, 400));
-    ok(x.includes('<span>主要額度</span>') && x.includes('<span>7 天</span>') && x.includes('方案 plus'), 'reason: a15_codex_windows ' + x.slice(0, 300)); }
+    ok(x.includes('<span>5 小時</span>') && !x.includes('主要額度') && x.includes('<span>7 天</span>') && x.includes('方案 plus'), 'reason: a15_codex_windows ' + x.slice(0, 300)); }
   // 4. 存哪裡不再預設跟別的夥伴共用;同名人格先挑有常用第二大腦的
   ok(!/if \(WSO\.length\) A\.withSeat = WSO\[0\]\.seat_id;/.test(ws) && /if \(!A\.dflt && pv\) \{ A\.dflt = true; if \(canW\) A\.mode = 'work'; \}/.test(ws), 'reason: s1b_shared_folder_default');
   const B = { node: '', mode: 'safe' }; F.apPick(B, 'research:0'); ok(B.persona === 'u3', 'reason: s1b_persona_with_brain ' + B.persona);
@@ -808,9 +820,148 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     sent.length = 0; await cm.F.apOpenMates({ mates: ['u2'] }, { id: 'claude' }, { mode: 'dgrs', repo: 'r1', base: 'b'.repeat(40) }, { nm: '主' });
     ok(sent.length === 1 && sent[0][0] === 'fp' && sent[0][2].repo === 'r1' && sent[0][2].base === 'b'.repeat(40), 'reason: s1b_mates_repo_fp'); })());
   ok(/apRow\(A, 'node', [\s\S]*?\n      \$\{apRow\(A, 'mates', '一次多 AI'/.test(ws) && ws.includes("if (e.target.dataset && e.target.dataset.apmq && S.add) { S.add.mq = e.target.value;"), 'reason: s1b_mates_row');
+  const NETBLK = '  // 3e53b' + (ws.split('  // 3e53b IFACE-netcard r0(A6c)')[1] || '').split('  function apMine(A) {')[0];
+  // 3e53b IFACE-netcard:網路例外卡(需要你決定)+ 一直允許清單;選項照 aibd 給的畫;要驗證的走 fingerAct;act 沒有 ⇒ 照舊這一版還沒有
+  lateChecks.push((async () => {
+    const acts = [], S = { version: { capabilities: { acts: ['net_card_list', 'net_card_answer', 'net_allow_list', 'net_allow_revoke'], net: { claude: { dgrs: 'hint', work: 'enforced' } } } }, add: { mine: true } };
+    const CH = [{ id: 'deny', words: '拒絕', needs_owner: false }, { id: 'once', words: '只這一次', needs_owner: false }, { id: 'hour1', words: '1 小時', needs_owner: true }, { id: 'always', words: '一直允許這個位址', needs_owner: true }];
+    const reply = { net_card_list: { items: [{ request_id: 'r1', seat_id: 'seat_a1', persona_name: '寫手', dest_name: 'nas.lan', dest_ip: '192.168.1.20', dest_port: 445, source: 'net_ask', why: '要讀 <備份>', expires_at: new Date(Date.now() + 90000).toISOString(), choices: CH }, { request_id: 'r2', seat_id: 'seat_b2', dest_ip: '10.0.0.9', dest_port: 22, source: 'proxy', choices: CH }] }, net_allow_list: { items: [{ seat_id: 'seat_a1', ip: '192.168.1.20', port: 445, at: 1 }] }, net_allow_revoke: { done: true, closed: 2 } };
+    const cn = vm.createContext({ S, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), hasAct: (t) => S.version.capabilities.acts.includes(t), seatById: (id) => ({ seat_a1: { seat_id: 'seat_a1', provider: 'claude', mode: 'work' }, seat_b2: { seat_id: 'seat_b2', provider: 'claude', mode: 'dgrs' } }[id]), seatShort: (x) => x.seat_id.slice(5), render: () => {}, setTimeout: () => 0, FP_SEE: 'FP', AP_ASK_NO: 'NO', errText: (e) => 'E:' + (e && e.code),
+      rgOk: (r) => !!r && r.done === true,
+      act: async (t, b) => { acts.push(['act', t, Object.assign({}, b)]); if (t === 'net_card_answer' && b.request_id === 'r2') { const e = new Error('x'); e.code = 'net_card_expired'; throw e; } return reply[t] || { done: true }; },
+      fingerAct: async (t, b) => { acts.push(['fp', t, Object.assign({}, b)]); if (t === 'net_card_answer' && b.request_id === 'r2') { const e = new Error('x'); e.code = 'net_card_expired'; throw e; } return { done: true }; } });
+    vm.runInContext((ws.match(/  const rgCode = [^\n]*\n/) || [''])[0] + NETBLK + '\nthis.F = { netLoad, netAskHtml, netAnswer, netAllowHtml, netAllowLoad, netRevoke, netCard };', cn);
+    await cn.F.netLoad(); const h = cn.F.netAskHtml();
+    ok(acts[0][1] === 'net_card_list' && h.includes('<b>@a1</b> 寫手 想連內網') && h.includes('nas.lan <code>192.168.1.20:445</code>') && h.includes('夥伴寫的理由:</i>要讀 &lt;備份&gt;') && h.includes('data-netans="r1|hour1"') && h.includes('1 小時 · 要驗證') && h.includes('只這一次</button>') && !h.includes('只這一次 · 要驗證') && !/class="k g" data-netans/.test(h) && /還有約 (8\d|9\d) 秒/.test(h), 'reason: net_card_drawn ' + h.slice(0, 300));
+    ok(h.split('class="netc"')[1].includes('允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡,選「一直允許」也只記這一個位址'), 'reason: net_card_bind_note');
+    ok(h.split('class="netc"')[1].indexOf('這只是提示') < 0 && h.split('class="netc"')[2].includes('這只是提示,夥伴也可能不經過這裡直接連') && !h.split('class="netc"')[2].includes('夥伴寫的'), 'reason: net_card_hint_only_for_hint_cell');
+    acts.length = 0; await cn.F.netAnswer('r1', 'min15'); ok(acts.length === 0 && !!cn.F.netCard('r1'), 'reason: net_answer_choice_not_given_not_sent');
+    acts.length = 0; await cn.F.netAnswer('r1', 'hour1');
+    ok(acts.length === 1 && acts[0][0] === 'fp' && JSON.stringify(acts[0][2]) === JSON.stringify({ request_id: 'r1', choice: 'hour1' }) && !cn.F.netCard('r1') && /允許了:1 小時/.test(S.net.msg.text), 'reason: net_answer_owner_via_finger');
+    acts.length = 0; await cn.F.netAnswer('r2', 'once');
+    ok(acts.length === 1 && acts[0][0] === 'fp' && acts[0][1] === 'net_card_answer' && S.net.msg.bad && /120 秒/.test(S.net.msg.text) && !cn.F.netCard('r2'), 'reason: net_answer_expired_drops_card');
+    ok(!acts.some((x) => x[0] === 'act'), 'reason: net_answer_every_choice_via_finger');
+    acts.length = 0; await cn.F.netAnswer('zz', 'deny'); ok(acts.length === 0, 'reason: net_answer_unknown_not_sent');
+    await cn.F.netAllowLoad('seat_a1'); const al = cn.F.netAllowHtml('seat_a1');
+    ok(al.includes('<code>192.168.1.20:445</code>') && al.includes('data-netrv="seat_a1|192.168.1.20|445"') && al.includes('到這一位關掉'), 'reason: net_allow_list ' + al.slice(0, 200));
+    acts.length = 0; await cn.F.netRevoke('seat_a1', '192.168.1.20', '445');
+    ok(JSON.stringify(acts[0][2]) === JSON.stringify({ seat_id: 'seat_a1', ip: '192.168.1.20', port: 445 }) && S.net.amsg.text === '已收回 192.168.1.20:445,正在連的已斷(2 條)', 'reason: net_revoke_closed');
+    { const fpR = cn.fingerAct; S.net.items = [{ request_id: 'r7', seat_id: 'seat_a1', dest_ip: '10.0.0.7', dest_port: 80, choices: CH }]; cn.fingerAct = async (t, b) => { acts.push(['fp', t, Object.assign({}, b)]); const e = new Error('x'); e.status = 403; e.body = { code: 'forbidden', reason: 'owner_check_not_approved', message: 'm' }; throw e; }; await cn.F.netAnswer('r7', 'hour1');
+      ok(S.net.msg.bad && S.net.msg.text === '沒有送出:指紋沒過,這張卡只剩拒絕;夥伴再連會出新的一張' && !!cn.F.netCard('r7'), 'reason: net_owner_not_approved_keeps_card ' + JSON.stringify(S.net.msg));
+      const h7 = cn.F.netAskHtml(); ok(h7.includes('data-netans="r7|deny"') && !h7.includes('data-netans="r7|hour1"') && !h7.includes('data-netans="r7|once"') && !h7.split('data-netans="r7|deny"')[1].includes('位址 + 埠'), 'reason: net_asked_card_only_deny');
+      acts.length = 0; await cn.F.netAnswer('r7', 'once'); ok(acts.length === 0, 'reason: net_asked_card_other_choice_not_sent');
+      cn.fingerAct = fpR; await cn.F.netAnswer('r7', 'deny'); ok(acts.length === 1 && acts[0][1] === 'net_card_answer' && acts[0][2].choice === 'deny', 'reason: net_asked_card_deny_sent'); }
+    reply.net_allow_revoke = null; const actRv = cn.act; cn.act = async (ty, bd) => { if (ty === 'net_allow_revoke') { const e = new Error('x'); e.code = 'not_on_list'; throw e; } return actRv(ty, bd); }; vm.runInContext('0', cn); await cn.F.netRevoke('seat_a1', '192.168.1.20', '445'); ok(S.net.amsg.bad && S.net.amsg.text === '沒有收回:這個位址已經不在清單上(可能已收回或這一位重開過)', 'reason: net_revoke_not_on_list ' + JSON.stringify(S.net.amsg));
+    S.version.capabilities.acts = []; ok(cn.F.netAskHtml() === '<div class="apn">NO</div>' && cn.F.netAllowHtml('x') === '<div class="apn">這一版 AIB 還沒有</div>', 'reason: net_without_acts_says_not_yet');
+  })());
+  // 6770f IFACE-merge r3 §2 每組可改(name / seat_to / rebind):名單照 aibd 補好預設的 plan 畫;改了才送那一欄、送整張表;名稱去控制字、最多 20 字、跟原名一樣不送
+  lateChecks.push((async () => {
+    const tick = () => new Promise((r) => setImmediate(r)), st = { add: null, acts: ['merge_preview'], sent: [] };
+    const cg = vm.createContext({ S: st, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), render: () => {}, hasAct: (t) => (st.acts.includes(t) ? true : null), act: async (t, b) => { st.sent.push([t, JSON.parse(JSON.stringify(b))]); return st.reply; }, rgCode: (e) => String((e && e.code) || ''), rgWhy: (e) => 'W:' + e.code, setTimeout: () => 0, fpAt: (id) => '@' + String(id).replace(/^seat_/, ''),
+      personas: () => [['q1', '甲'], ['q2', '甲-2'], ['p5', '研究員']] });
+    vm.runInContext('  // 6770f' + (ws.split('  // 6770f IFACE-merge r1 §2–§5')[1] || '').split('  function mgOf(A, kind) {')[0] + '\nthis.F = { mgGrpBody, mgGrpHtml, mgGrpChange, mgPreview, mgOptHtml };', cg);
+    const g = { keep: 'q1', off: {}, items: [{ uid: 'q1', name: '甲' }, { uid: 'q2', name: '甲-2' }] };
+    const PLAN = { kind: 'persona', groups: [{ keep: 'q1', merge: ['q2'], name: '甲', seat_to: { seat_a1: 'q1', seat_b2: 'q1', seat_c3: 'zz9' }, rebind: { p5: 'q1' }, days: 30 }] };
+    const M = { kind: 'persona', G: [g], prev: 'all', pv: { plan_sha: 'a'.repeat(64), plan: PLAN } }; st.add = { mx: M };
+    ok(JSON.stringify(cg.F.mgGrpBody(M, g)) === '{}', 'reason: mg_grp_default_not_sent');
+    const h = cg.F.mgGrpHtml(st.add);
+    ok(h.includes('留下「甲」這組') && h.includes('data-apmgnm="q1" maxlength="20" value="甲"') && h.includes('@a1 下次開改用 <select class="mgin" data-apmgst="q1|seat_a1"') && h.includes('data-apmgst="q1|seat_b2"') && h.includes('<option value="q1" selected>甲</option>') && h.includes('<option value="p5" >研究員</option>') && !h.includes('value="q2"') && !h.includes('data-apmgrb') && h.includes('<option value="zz9" selected>zz9</option>'), 'reason: mg_grp_drawn_from_plan ' + h.slice(0, 400));
+    ok(cg.F.mgOptHtml(st.add).includes('data-apmgnm="q1"'), 'reason: mg_grp_under_options');
+    cg.F.mgGrpChange(st.add, { dataset: { apmgst: 'q1|seat_a1' }, value: 'p5' }); await tick();
+    ok(st.sent.length === 1 && st.sent[0][0] === 'merge_preview' && JSON.stringify(st.sent[0][1].groups[0].seat_to) === JSON.stringify({ seat_a1: 'p5', seat_b2: 'q1', seat_c3: 'zz9' }) && !('name' in st.sent[0][1].groups[0]), 'reason: mg_grp_seat_to_whole_table ' + JSON.stringify(st.sent));
+    M.pv = { plan: PLAN }; M.pvBusy = false; st.sent = [];
+    cg.F.mgGrpChange(st.add, { dataset: { apmgnm: 'q1' }, value: '  甲乙\u0007丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥  ' }); await tick();
+    ok(st.sent.length === 1 && st.sent[0][1].groups[0].name === '甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉' && st.sent[0][1].groups[0].seat_to.seat_a1 === 'p5', 'reason: mg_grp_name_clean_20 ' + JSON.stringify(st.sent));
+    M.gopt.q1.name = '甲'; ok(!('name' in cg.F.mgGrpBody(M, g)), 'reason: mg_grp_same_name_not_sent');
+    const B = { kind: 'brain', G: [g], prev: 'all', pv: { plan: { groups: [{ keep: 'q1', merge: ['q2'], rebind: { p5: 'q1', p6: 'q1' }, seat_to: { seat_a1: 'q1' } }] } }, gopt: { q1: { seat_to: { seat_a1: 'p5' }, rebind: { p6: 'b9' } } } };
+    ok(JSON.stringify(cg.F.mgGrpBody(B, g)) === JSON.stringify({ rebind: { p5: 'q1', p6: 'b9' } }), 'reason: mg_grp_rebind_brain_only');
+    st.reg = { brains: [{ uid: 'q1', name: '甲腦' }, { uid: 'b9', name: '乙腦' }] };
+    const hb = cg.F.mgGrpHtml({ mx: B }); ok(hb.includes('人格「研究員」改綁 <select class="mgin" data-apmgrb="q1|p5"') && hb.includes('人格「p6」改綁') && hb.includes('<option value="b9" selected>乙腦</option>') && !hb.includes('data-apmgst'), 'reason: mg_grp_rebind_drawn ' + hb.slice(0, 300));
+    M.pvBusy = true; st.sent = []; ok(cg.F.mgGrpChange(st.add, { dataset: { apmgst: 'q1|seat_b2' }, value: 'p5' }) === false && st.sent.length === 0, 'reason: mg_grp_busy_ignored');
+    M.pvBusy = false; M.pv = { plan: PLAN }; ok(cg.F.mgGrpHtml(st.add) !== '', 'reason: mg_grp_with_act'); st.acts = []; ok(cg.F.mgGrpHtml(st.add) === '' && cg.F.mgGrpChange(st.add, { dataset: { apmgnm: 'q1' }, value: 'x' }) === false, 'reason: mg_grp_without_act');
+  })());
+  ok(ws.includes("A.mx.ncBad = null; A.mx.gopt = null; render(); mgPreview(A); return true; }") && ws.includes("A.mx.ncBad = null; A.mx.gopt = null; A.mx.pvSeq") && ws.includes("if (e.target.dataset && (e.target.dataset.apmgnm !== undefined || e.target.dataset.apmgst || e.target.dataset.apmgrb) && S.add && mgGrpChange(S.add, e.target)) return;"), 'reason: mg_grp_wired_and_cleared');
+  // c2f0b IFACE-passphrase r2:密語備援只讀 passphrase_state 顯示一行;swapped 紅字、available false 用系統驗證、鎖 / 剩幾次照 aibd 欄位;頁面沒有密語輸入框
+  lateChecks.push((async () => {
+    const PWBLK = '  // c2f0b IFACE-passphrase r2' + (ws.split('  // c2f0b IFACE-passphrase r2(接線片 6573c52350')[1] || '').split('  // c2f0b S2-2(頭 1000abaa95')[0];
+    const sent = [], S = { version: { capabilities: { acts: [] } } }; let reply = {}, fail = null;
+    const cw = vm.createContext({ S, Date, Number, String, Math, Object, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), hasAct: (t) => S.version.capabilities.acts.includes(t), render: () => {}, setTimeout: () => 0, errText: (e) => 'E:' + (e && e.code),
+      act: async (t, b) => { sent.push([t, b]); if (fail) throw fail; return reply; } });
+    vm.runInContext((ws.match(/  const rgCode = [^\n]*\n/) || [''])[0] + PWBLK + '\nthis.F = { pwHtml, pwLoad, pwText };', cw);
+    ok(cw.F.pwHtml() === '<div class="apn">密語備援:這一版 AIB 還沒有</div>' && sent.length === 0, 'reason: pw_without_act_not_yet');
+    S.version.capabilities.acts = ['passphrase_state']; ok(cw.F.pwHtml() === '<div class="apn">讀取中…</div>', 'reason: pw_loading');
+    reply = { v: 1, available: true, set: true, set_at: 1763870000, swapped: false, wrong: 0, tries_left: 5, locked: false, locked_until: null }; await cw.F.pwLoad();
+    ok(sent.length === 1 && sent[0][0] === 'passphrase_state' && JSON.stringify(sent[0][1]) === '{}' && /^<div class="apn">密語已於 .+ 設定<\/div>$/.test(cw.F.pwHtml()), 'reason: pw_set_line ' + cw.F.pwHtml());
+    const T = (o) => cw.F.pwText(Object.assign({}, reply, o));
+    ok(T({ wrong: 2, tries_left: 1 }).text.endsWith(' · 連錯 2 次,還能錯 1 次') && !T({ wrong: 2, tries_left: 1 }).bad, 'reason: pw_wrong_from_aibd');
+    const lk = T({ locked: true, wrong: 5, tries_left: 0, locked_until: Math.floor(Date.now() / 1000) + 600 }); ok(lk.bad && /鎖住了,到 .+\(約 1[01] 分\),鎖住時不收密語$/.test(lk.text), 'reason: pw_locked_until ' + lk.text);
+    ok(T({ swapped: true }).bad && T({ swapped: true }).text === '密語紀錄被換過,請到設定窗重設;重設前不收密語' && T({ swapped: true, available: false }).bad, 'reason: pw_swapped_red_first');
+    ok(T({ available: false }).text === '這台用系統本人驗證(指紋 / 登入密碼 / Hello),不用密語' && !T({ available: false }).bad, 'reason: pw_system_check_used');
+    ok(T({ set: false, set_at: null }).text === '密語備援還沒設定;要設定請到系統的設定窗(網頁不收密語)', 'reason: pw_not_set');
+    reply = Object.assign({}, reply, { swapped: true }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語紀錄被換過,請到設定窗重設;重設前不收密語</div>', 'reason: pw_swapped_drawn_red');
+    fail = Object.assign(new Error('x'), { status: 403, code: 'passphrase_built_in_page_only', reason: '' }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語狀態讀不到:只有這台電腦內建的頁面看得到</div>', 'reason: pw_err_words');
+  })());
+  ok(!/act\(['"]passphrase_/.test(ws) && !/data-[a-z]*(pass|phrase)[a-z]*=/.test(ws) && !/<input|<textarea|contenteditable/.test((ws.split('  // c2f0b IFACE-passphrase r2(接線片 6573c52350')[1] || '<input').split('  // c2f0b S2-2(頭 1000abaa95')[0]) && ws.includes("<div class=\"aplab\">🔑 密語備援</div>${pwHtml()}</div>"), 'reason: pw_no_input_on_page_and_wired');
+  // c2f0b S2-2(1000abaa95):夥伴提案改人格卡 —— 清單照純文字畫差異、核准走 fingerAct 帶 diff_sha、不要送 ids;錯誤照 aibd 真形狀(ApiError: code / reason / body)
+  lateChecks.push((async () => {
+    const PPBLK = '  // c2f0b S2-2' + (ws.split('  // c2f0b S2-2(頭 1000abaa95')[1] || '').split('  // 3e53b IFACE-netcard r0(A6c)')[0];
+    const sent = [], S = { version: { capabilities: { acts: [] } } }, ZW = String.fromCharCode(0x200b);
+    const P1 = { request_id: 'pq1', seat_id: 'seat_a1', persona_uid: 'u1', persona_name: '寫手', diff12: 'abcdef012345', diff_sha: 'abcdef012345' + '0'.repeat(52), added: 2, removed: 1, why: '學到 <b>新規則</b>', why_unverified: true, expires_at: Math.floor(Date.now() / 1000) + 1500, state: 'waiting', diff: [{ op: 'keep', old_no: 1, new_no: 1, text: '# 人格' }, { op: 'del', old_no: 2, new_no: null, text: '規則二' }, { op: 'add', old_no: null, new_no: 2, text: '新規則 <b>' }, { op: 'add', old_no: null, new_no: 3, text: 'a' + ZW + 'b' }] };
+    const P2 = Object.assign({}, P1, { request_id: 'pq2', persona_name: '審查', seat_id: 'seat_b2' });
+    const apiErr = (status, j) => { const e = new Error(j.message || j.code); e.status = status; e.code = j.code || ''; e.reason = j.reason || ''; e.body = j; return e; };
+    let listReply = () => ({ proposals: [P1, P2, { request_id: 'bad' }] }), fpReply = async () => ({ request_id: 'pq1', state: 'written', new_sha: '9'.repeat(64) }), denyReply = (b) => ({ results: [{ request_id: b.ids[0], state: 'denied' }] });
+    const cp = vm.createContext({ S, Date, Number, String, Array, Math, Set, JSON, Object, Error, esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])), hasAct: (t) => S.version.capabilities.acts.includes(t), render: () => {}, setTimeout: () => 0, errText: (e) => 'E:' + (e && e.code), FP_SEE: '看指紋', fpAt: (id) => '@' + String(id).replace(/^seat_/, ''),
+      act: async (t, b) => { sent.push(['act', t, JSON.parse(JSON.stringify(b))]); if (t === 'persona_proposals') return listReply(); if (t === 'persona_propose_deny') return denyReply(b); return {}; },
+      fingerAct: async (t, b) => { sent.push(['fp', t, JSON.parse(JSON.stringify(b))]); return fpReply(); } });
+    vm.runInContext((ws.match(/  const rgCode = [^\n]*\n/) || [''])[0] + (ws.match(/  const rgShow = [^\n]*\n/) || [''])[0] + PPBLK + '\nthis.F = { ppHtml, ppLoad, ppApprove, ppDeny, ppCard, PP_WHY };', cp);
+    ok(cp.F.ppHtml() === '<div class="apn">這一版 AIB 還沒有</div>' && sent.length === 0, 'reason: pp_without_act_not_yet');
+    S.version.capabilities.acts = ['persona_proposals', 'persona_propose_deny', 'persona_propose_approve'];
+    ok(cp.F.ppHtml() === '<div class="apn">讀取中…</div>', 'reason: pp_loading');
+    await cp.F.ppLoad(); const h = cp.F.ppHtml();
+    ok(sent.length === 1 && sent[0][1] === 'persona_proposals' && JSON.stringify(sent[0][2]) === '{}' && S.pp.items.length === 2, 'reason: pp_list_read');
+    ok(h.includes('<b>@a1</b> 想改人格卡「寫手」') && h.includes('+2 −1 行 · 對照碼 <code>abcdef012345</code>') && h.includes('<i>夥伴寫的理由(沒驗證):</i>學到 &lt;b&gt;新規則&lt;/b&gt;') && h.includes('<div class="rgdl del">− 規則二</div>') && h.includes('<div class="rgdl add">+ 新規則 &lt;b&gt;</div>') && h.includes('<div class="rgdl ">  # 人格</div>') && h.includes('a⟦U+200B⟧b') && !h.includes('<b>新規則'), 'reason: pp_card_plain_text ' + h.slice(0, 300));
+    ok(h.includes('data-ppok="pq1"') && h.includes('核准寫回,去驗證') && h.includes('data-ppno="pq2"') && /約 2[45] 分後逾時/.test(h) && h.includes('窗上的對照碼要跟這裡一樣'), 'reason: pp_card_buttons');
+    sent.length = 0; await cp.F.ppApprove('pq1');
+    ok(sent.length === 1 && sent[0][0] === 'fp' && sent[0][1] === 'persona_propose_approve' && JSON.stringify(sent[0][2]) === JSON.stringify({ request_id: 'pq1', diff_sha: P1.diff_sha }), 'reason: pp_approve_via_finger_with_diff_sha ' + JSON.stringify(sent));
+    ok(!cp.F.ppCard('pq1') && S.pp.msg.text === '已寫回「寫手」的人格卡(新版 999999999999)' && !S.pp.ans, 'reason: pp_approve_written');
+    S.pp.items = [P1, P2]; fpReply = async () => { throw apiErr(403, { code: 'forbidden', reason: 'owner_check_not_approved', message: 'm' }); };
+    await cp.F.ppApprove('pq1'); ok(!!cp.F.ppCard('pq1') && S.pp.msg.bad && S.pp.msg.text === '沒有寫回:指紋沒過,沒有寫回;提案還在,可以再按一次', 'reason: pp_not_approved_keeps_card ' + JSON.stringify(S.pp.msg));
+    fpReply = async () => { throw apiErr(409, { code: 'persona_changed', request_id: 'x' }); };
+    await cp.F.ppApprove('pq1'); ok(!cp.F.ppCard('pq1') && S.pp.msg.text === '沒有寫回:人格卡在提案之後被改過,這份提案作廢;請夥伴照新版再提' && S.pp.at === 0, 'reason: pp_gone_drops_card');
+    S.pp.items = [P1, P2]; fpReply = async () => ({ request_id: 'pq1', state: 'writing' });
+    await cp.F.ppApprove('pq1'); ok(!!cp.F.ppCard('pq1') && S.pp.msg.bad && S.pp.msg.text === '沒有寫回:AIB 沒有回「寫好了」', 'reason: pp_not_written_not_claimed');
+    sent.length = 0; await cp.F.ppDeny('pq2');
+    ok(sent.length === 1 && sent[0][0] === 'act' && sent[0][1] === 'persona_propose_deny' && JSON.stringify(sent[0][2]) === JSON.stringify({ ids: ['pq2'] }) && !cp.F.ppCard('pq2') && S.pp.msg.text === '已拒絕 @b2 的人格卡提案', 'reason: pp_deny_sent');
+    S.pp.items = [P1, P2]; denyReply = (b) => ({ results: [{ request_id: b.ids[0], code: 'request_not_waiting' }] });
+    await cp.F.ppDeny('pq2'); ok(!cp.F.ppCard('pq2') && S.pp.msg.bad && S.pp.msg.text === '沒有拒絕:這份提案已經不在等了(撤回、拒絕、逾時或正在寫)', 'reason: pp_deny_result_code');
+    S.pp.items = [P1, P2]; denyReply = () => ({ results: [] });
+    await cp.F.ppDeny('pq2'); ok(!!cp.F.ppCard('pq2') && S.pp.msg.bad, 'reason: pp_deny_no_result_not_claimed');
+    S.pp.items = [P1]; S.pp.msg = null; S.version.capabilities.acts = ['persona_proposals', 'persona_propose_deny']; sent.length = 0;
+    const h2 = cp.F.ppHtml(); await cp.F.ppApprove('pq1');
+    ok(sent.length === 0 && /data-ppok="pq1" +disabled>核准寫回:這一版 AIB 還沒有/.test(h2) && !h2.includes('窗上的對照碼'), 'reason: pp_approve_without_act_not_yet');
+    S.pp.items = []; S.pp.at = Date.now(); ok(cp.F.ppHtml() === '<div class="apn">現在沒有夥伴提案改人格卡</div>', 'reason: pp_empty');
+    S.version.capabilities.acts = ['persona_proposals', 'persona_propose_approve']; S.pp.items = [P1]; S.pp.msg = null; sent.length = 0; await cp.F.ppDeny('pq1'); ok(sent.length === 0 && !!cp.F.ppCard('pq1') && /data-ppno="pq1" +disabled/.test(cp.F.ppHtml()), 'reason: pp_deny_without_act_not_sent');
+    S.version.capabilities.acts = ['persona_proposals', 'persona_propose_deny', 'persona_propose_approve']; S.pp.items = [P1]; S.pp.ans = 'pq1'; ok((cp.F.ppHtml().match(/disabled/g) || []).length === 2, 'reason: pp_busy_disables');
+  })());
+  ok(!/act\(['"]persona_propos/.test(ws) && ws.includes("const ppHas = (k) => hasAct(PP_ACTS[k]) === true;") && ws.includes("<div class=\"aplab\">✍️ 夥伴想改自己的人格卡</div>${ppHtml()}</div>") && ws.includes("const ppo = x.closest('[data-ppok]'); if (ppo) return ppApprove(ppo.dataset.ppok); const ppn = x.closest('[data-ppno]'); if (ppn) return ppDeny(ppn.dataset.ppno);"), 'reason: pp_wired_behind_has');
+  ok(ws.includes("const na = x.closest('[data-netans]'); if (na) {") && ws.includes("const nrv = x.closest('[data-netrv]'); if (nrv) {") && ws.includes('<div class="aplab">一直允許的位址</div>${netAllowHtml(id)}') && ws.includes('<div class="aplab">⚠️ 需要你決定</div>${netAskHtml()}'), 'reason: net_wired');
+  // 3e53b IFACE-netcard r1(f163c N3 / N2):seats.net_cards 張數 ⇒ 紅點 + 面板沒開時提示一次(變多才再提示);面板開著就重讀卡;倒數每秒一格、最後 10 秒寫快逾時
+  { const said = [], loads = [], S = { add: null }, cx = vm.createContext({ S, esc: (x) => String(x), say: (m, k) => said.push([m, k]), hasAct: () => true, act: async (t) => { loads.push(t); return { items: [] }; }, render: () => {}, setTimeout: () => 0, Date: { now: () => 1000000 } });
+    vm.runInContext(NETBLK + '\nthis.F = { netSeen, netDot, netLeft };', cx);
+    cx.F.netSeen(undefined); ok(S.netCards === null && cx.F.netDot() === '' && said.length === 0, 'reason: net_seen_absent');
+    cx.F.netSeen(2); ok(S.netCards === 2 && said.length === 1 && said[0][0] === '有夥伴要連網,需要你決定(2 張,點「+ AI 夥伴」看)' && said[0][1] === 'warn' && cx.F.netDot().includes('>2</i>') && cx.F.netDot().includes('aria-label="2 張連線要你決定"'), 'reason: net_seen_nag');
+    cx.F.netSeen(2); cx.F.netSeen(1); ok(said.length === 1, 'reason: net_seen_nag_only_when_more');
+    cx.F.netSeen(12); ok(said.length === 2 && cx.F.netDot().includes('>9+</i>'), 'reason: net_seen_more_again');
+    S.add = { mine: true }; cx.F.netSeen(13); ok(said.length === 2 && loads[0] === 'net_card_list', 'reason: net_seen_open_reloads');
+    cx.F.netSeen(-1); ok(S.netCards === null && cx.F.netDot() === '', 'reason: net_seen_bad_number');
+    ok(cx.F.netLeft(1000000 + 40000) === '還有約 40 秒,沒選就拒絕' && cx.F.netLeft(1000000 + 7000) === '快逾時了(約 7 秒),沒選就拒絕' && cx.F.netLeft(999000) === '已逾時,拒絕了', 'reason: net_left_words'); }
+  ok(ws.includes('    netSeen(seats && seats.net_cards);') && ws.includes('<b>我的 AI 夥伴 · 隨時改權限</b>${netDot()}') && ws.includes("      if (S.netCards > 0) S.add.mine = true;") && ws.includes("for (const b of document.querySelectorAll('[data-netexp]')) b.textContent = netLeft(Number(b.dataset.netexp)); }, 1000);") && ws.includes("Notification.permission === 'granted'") && !ws.includes('Notification.requestPermission'), 'reason: net_cards_wired');
+  // 3e53b net_card_* / net_allow_*(IFACE-netcard r0,aibd act 還沒寫):頁面只經 NET_ACTS + netHas 叫,沒有就寫這一版還沒有。合進來後改走上面的 act 守門
+  ok(!/act\(['"]net_(card|allow)_/.test(ws) && ws.includes("const netHas = (k) => hasAct(NET_ACTS[k]) === true;"), 'reason: net_acts_only_behind_has');
+  { const fw = (ws.match(/    net_card_answer: \(b\) => [^\n]*\n/) || [''])[0]; ok(fw.includes("['開放', String(o.words || b.choice), true]") && fw.includes("['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true]"), 'reason: net_fp_card'); }
   // 我的 AI 夥伴(示意 #seatsBox):整塊預設收合;逐位展開 = 它的模式那欄亮、表頭全不能點;改權限 / 請求卡 / 一直允許寫這一版還沒有
-  { const cm = vm.createContext({ esc: (x) => String(x), ptSeatBox: () => '', AP_HOST_NAME: '管理主機', AP_MODE: { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] }, isArch: () => false, seatShort: (x) => x.seat_id, present: () => [{ seat_id: 'a1', mode: 'work', persona_name: '寫手' }, { seat_id: 'b2', mode: 'dgrs' }] });
-    vm.runInContext((ws.match(/  const AP_PERMS = [^\n]*\n  const AP_LEVEL = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_NOTE = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_MINE_NO = [^\n]*\n  const AP_ASK_NO = [^\n]*\n/) || [''])[0] + fnSrc('apCmp') + fnSrc('apMine') + '\nthis.apMine = apMine;', cm);
+  { const cm = vm.createContext({ esc: (x) => String(x), ptSeatBox: () => '', ppHtml: () => '<i>PP</i>', pwHtml: () => '<i>PW</i>', AP_HOST_NAME: '管理主機', AP_MODE: { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] }, isArch: () => false, seatShort: (x) => x.seat_id, present: () => [{ seat_id: 'a1', mode: 'work', persona_name: '寫手' }, { seat_id: 'b2', mode: 'dgrs' }], hasAct: () => null, S: {}, setTimeout: () => 0 });
+    vm.runInContext(NETBLK + (ws.match(/  const AP_PERMS = [^\n]*\n  const AP_LEVEL = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_NOTE = [^\n]*\n/) || [''])[0] + (ws.match(/  const AP_MINE_NO = [^\n]*\n  const AP_ASK_NO = [^\n]*\n/) || [''])[0] + fnSrc('apCmp') + fnSrc('apMine') + '\nthis.apMine = apMine;', cm);
     const h0 = cm.apMine({}), h1 = cm.apMine({ mine: true }), h2 = cm.apMine({ mine: true, mineSeat: 'a1' });
     ok(h0.includes('aria-expanded="false"><b>我的 AI 夥伴 · 隨時改權限</b><span class="apex">2 位在工作</span>') && !h0.includes('data-apms'), 'reason: s1b_mine_closed');
     ok(h1.includes('data-apms="a1"') && h1.includes('data-apms="b2"') && h1.includes('這一版 AIB 還沒有(現在一律擋)') && !h1.includes('class="apcmp'), 'reason: s1b_mine_rows');
@@ -820,17 +971,85 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(ws.includes('const where = `<div class="apl"><button type="button" class="apr ${!node ? \'on\' : \'\'}" data-addnu="" aria-pressed="${!node}"><b>不指定</b>') && ws.includes("esc(nodeT || node || '不指定'), where)") && !ws.includes('先選角色才要掛到項目'), 'reason: s1b_node_search_always');
   ok(ws.includes("if (S.add.node && !S.add.role && roleList().some((r) => r.uid === 'author')) { S.add.role = 'author'; S.add.roleAuto = true; }") && ws.includes("S.add.role = ro.dataset.addrole; S.add.roleAuto = false;") && ws.includes("node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改'") && ws.includes("node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個"), 'reason: s1b_node_role_auto');
   // 合併類似(示意 merge*):找名字很像的分組(幾乎一樣預設併、可能類似預設不併),◉ 選留下、點名字取消、預覽;確認合併 = 這一版還沒有、不送
-  { const st = { add: null }, cm = vm.createContext({ S: st, esc: (x) => String(x), render: () => {}, present: () => [{ persona_uid: 'p2' }], personas: () => [['p1', 'AIB2測試流程工程師-2'], ['p2', 'AIB2測試流程工程師'], ['p3', '二樓辦公室前端工程師'], ['p4', '二樓辦公室後端工程師'], ['p5', '研究員']], roleList: () => [{ uid: 'author', name: '作者', builtin: true }] });
-    vm.runInContext((ws.match(/  const MG_KN = [^\n]*\n  const MG_NO = [^\n]*\n  const mgNorm = [^\n]*\n/) || [''])[0] + fnSrc('mgScore') + fnSrc('mgItems') + fnSrc('mgFind') + fnSrc('mgOf') + fnSrc('mgBtn') + fnSrc('mgPanel') + fnSrc('mgClick') + '\nthis.F = { mgFind, mgBtn, mgPanel, mgClick, MG_NO };', cm);
+  { const st = { add: null }, cm = vm.createContext({ S: st, esc: (x) => String(x), render: () => {}, hasAct: (t) => ((st.acts || []).includes(t) ? true : null), act: async (t, b) => { (st.sent = st.sent || []).push([t, b]); if (st.mfErr) throw Object.assign(new Error('x'), { code: 'boom' }); if (t === 'merge_log') return st.logs.shift() || {}; return st.mfReply; }, rgWhy: (e) => 'W:' + e.code, rgCode: (e) => String((e && e.code) || ''), fingerAct: async (t, b) => { (st.fp = st.fp || []).push([t, b]); if (st.fpErr) throw Object.assign(new Error('x'), { code: st.fpErr }); return st.fpReply; }, loadRegistry: () => { st.regLoads = (st.regLoads || 0) + 1; }, setTimeout: (f) => { (st.timers = st.timers || []).push(f); return 0; }, present: () => [{ persona_uid: 'p2' }], personas: () => [['p1', 'AIB2測試流程工程師-2'], ['p2', 'AIB2測試流程工程師'], ['p3', '二樓辦公室前端工程師'], ['p4', '二樓辦公室後端工程師'], ['p5', '研究員']], roleList: () => [{ uid: 'author', name: '作者', builtin: true }] });
+    vm.runInContext((ws.match(/  const MG_KN = [^\n]*\n  const MG_NO = [^\n]*\n  const mgNorm = [^\n]*\n/) || [''])[0] + fnSrc('mgScore') + fnSrc('mgItems') + fnSrc('mgFind') + fnSrc('mgFromAib') + fnSrc('mgGroups') + (ws.match(/  const mgWait = [^\n]*\n/) || [''])[0] + '  // 6770f' + (ws.split('  // 6770f IFACE-merge r1 §2–§5')[1] || '').split('  function mgOf(A, kind) {')[0] + fnSrc('mgOf') + fnSrc('mgBtn') + fnSrc('mgPanel') + fnSrc('mgClick') + '\nthis.F = { mgFind, mgFromAib, mgGroups, mgBtn, mgPanel, mgClick, MG_NO, mgOptBody, mgOptHtml };', cm);
     const G = cm.F.mgFind('persona'), g0 = G.find((g) => g.items.some((x) => x.uid === 'p1')), g1 = G.find((g) => g.items.some((x) => x.uid === 'p3'));
     ok(G.length === 2 && g0.sure && g0.keep === 'p2' && !g0.off.p1 && g1 && !g1.sure && Object.keys(g1.off).length === 1, 'reason: s1b_merge_find');
-    st.add = { merge: '' }; const ck = (d) => ({ closest: (q) => { const k = q.slice(6, -1); return Object.prototype.hasOwnProperty.call(d, k) ? { dataset: { [k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())]: d[k] } } : null; } });
+    st.add = { merge: '' }; const ck = (d) => ({ closest: (q) => { const k = q.slice(6, -1); return Object.prototype.hasOwnProperty.call(d, k) ? { dataset: { [k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())]: d[k] }, checked: !!d.__checked } : null; } });
     cm.F.mgClick(ck({ 'apmg': 'persona' })); ok(st.add.merge === 'persona' && cm.F.mgBtn(st.add, 'persona').includes('⇄ 合併類似 · 2 組') && cm.F.mgPanel(st.add, 'persona').includes('找到 2 組類似的人格'), 'reason: s1b_merge_panel');
     const gi = st.add.mx.G.indexOf(st.add.mx.G.find((g) => g.items.some((x) => x.uid === 'p1')));
     cm.F.mgClick(ck({ 'apmgk': gi + '|p1' })); ok(st.add.mx.G[gi].keep === 'p1', 'reason: s1b_merge_keep');
     { const hj = st.add.mx.G.findIndex((g) => !g.sure), H = st.add.mx.G[hj], o = Object.keys(H.off)[0]; cm.F.mgClick(ck({ 'apmgk': hj + '|' + o })); ok(H.keep === o && !H.off[o], 'reason: s1b_merge_keep_unoff'); }
     cm.F.mgClick(ck({ 'apmgp': 'all' })); const pv = cm.F.mgPanel(st.add, 'persona'); ok(pv.includes('合併預覽 · 人格') && pv.includes('<span class="apmgc out">AIB2測試流程工程師</span>') && pv.includes('<b>1</b> 位工作中的夥伴受影響'), 'reason: s1b_merge_preview');
-    cm.F.mgClick(ck({ 'apmgok': '1' })); ok(st.add.mx.msg === cm.F.MG_NO && cm.F.mgPanel(st.add, 'persona').includes('合併:這一版 AIB 還沒有'), 'reason: s1b_merge_not_faked'); }
+    cm.F.mgClick(ck({ 'apmgok': '1' })); ok(st.add.mx.msg === cm.F.MG_NO && cm.F.mgPanel(st.add, 'persona').includes('合併:這一版 AIB 還沒有'), 'reason: s1b_merge_not_faked');
+    // 6770f IFACE-merge r0 §1:有 merge_find ⇒ 用 aibd 的分組(keep / ticked / sure / low / builtin / used),打開時讀一次;讀不到寫出原因;沒有 ⇒ 照舊頁面自己找
+    const mgP1 = (async () => {
+      const tick = () => new Promise((r) => setImmediate(r));
+      st.runTimers = () => { const t = st.timers || []; st.timers = []; t.forEach((f) => f()); };
+      st.acts = ['merge_find']; st.sent = []; st.mfReply = { kind: 'persona', groups: [{ items: [{ uid: 'q2', name: '甲-2', used: 0, builtin: false }, { uid: 'q1', name: '甲', used: 3, builtin: false }, { uid: 'q3', name: '甲 3', used: 1, builtin: false }], keep: 'q1', sure: false, low: 0.78, ticked: ['q2'] }, { items: [{ uid: 'solo', name: '單' }], keep: 'solo' }, { items: [{ uid: 'z1', name: '乙' }, { uid: 'z2', name: '乙-2' }], keep: 'z1', sure: true, low: null, ticked: ['z2'] }] };
+      st.add = {}; cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgBtn(st.add, 'persona'); cm.F.mgBtn(st.add, 'persona'); ok(cm.F.mgPanel(st.add, 'persona').includes('讀取中…') && st.sent.length === 1 && st.sent[0][0] === 'merge_find' && st.sent[0][1].kind === 'persona', 'reason: mg_aib_loading');
+      await tick(); st.add.mx = null; const p = cm.F.mgPanel(st.add, 'persona'), G = st.add.mx.G;
+      ok(G.length === 2 && G[1].low === null && !p.includes('相似度 0%') && G[0].keep === 'q1' && !G[0].off.q2 && G[0].off.q3 === true && G[0].items[1].use === 3 && p.includes('相似度 78%') && p.includes('可能類似'), 'reason: mg_aib_groups ' + JSON.stringify(G));
+      ok(cm.F.mgBtn(st.add, 'persona').includes('· 2 組') && st.sent.length === 1, 'reason: mg_aib_read_once');
+      cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgBtn(st.add, 'persona'); ok(st.sent.length === 2, 'reason: mg_aib_reread_on_open');
+      await tick(); st.mfErr = true; cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgBtn(st.add, 'persona'); await tick(); st.add.mx = null; ok(cm.F.mgPanel(st.add, 'persona').includes('讀不到:W:boom'), 'reason: mg_aib_err_shown');
+      st.mfErr = false; st.acts = []; st.add.mx = null; ok(cm.F.mgGroups('persona').length === 2, 'reason: mg_without_act_local');
+    })(); lateChecks.push(mgP1);
+    // 6770f IFACE-merge r1 §2–§5:預覽只送 keep + merge(其他欄不送 = aibd 預設);確認 = fingerAct merge_run 原樣送回 plan + plan_sha;進度讀 merge_log;plan_changed ⇒ 重新預覽;還原 + 沒動的項
+    lateChecks.push((async () => {
+      const tick = () => new Promise((r) => setImmediate(r));
+      await mgP1;
+      st.acts = ['merge_find', 'merge_preview', 'merge_run', 'merge_log', 'merge_undo']; st.sent = []; st.mfErr = false;
+      st.mfReply = { kind: 'persona', groups: [{ items: [{ uid: 'q1', name: '甲', used: 2 }, { uid: 'q2', name: '甲-2', used: 0 }], keep: 'q1', sure: true, low: 1, ticked: ['q2'] }] };
+      st.add = {}; cm.F.mgClick(ck({ 'apmg': 'persona' })); cm.F.mgBtn(st.add, 'persona'); await tick(); st.add.mx = null; cm.F.mgPanel(st.add, 'persona');
+      const PLAN = { kind: 'persona', groups: [{ keep: 'q1', merge: ['q2'], name: '甲', days: 30, notes: 'skip', card: 'keep', seat_to: {} }] };
+      st.mfReply = { plan_sha: 'f'.repeat(64), needs_owner: true, window_sha12: '0123456789ab', plan: PLAN, groups: [{ keep: 'q1', merge: ['q2'], effects: [{ tag: '換人格', text: '@a1 下次開改用「甲」' }] }], steps: ['@a1 下次開改用「甲」', '封存「甲-2」(30 天內可還原)'], other_hosts: '別台上的副本不會改' };
+      st.sent = []; cm.F.mgClick(ck({ 'apmgp': 'all' })); ok(cm.F.mgPanel(st.add, 'persona').includes('正在算預覽') && st.sent.length === 1 && st.sent[0][0] === 'merge_preview' && JSON.stringify(st.sent[0][1]) === JSON.stringify({ kind: 'persona', groups: [{ keep: 'q1', merge: ['q2'] }] }), 'reason: mg_preview_sends_only_keep_merge ' + JSON.stringify(st.sent));
+      ok(/data-apmgok="1" disabled/.test(cm.F.mgPanel(st.add, 'persona')), 'reason: mg_run_waits_preview');
+      await tick(); const pv = cm.F.mgPanel(st.add, 'persona');
+      ok(pv.includes('<li>封存「甲-2」(30 天內可還原)</li>') && pv.includes('<b>換人格</b>@a1 下次開改用「甲」') && pv.includes('別台上的副本不會改') && pv.includes('<code>0123456789ab</code>') && !/data-apmgok="1" disabled/.test(pv), 'reason: mg_preview_drawn');
+      // 可改欄位:改了才送那一欄,改回預設就不送;人格才有合卡、大腦才有搬筆記(notes_check 不行就灰掉)
+      const g0 = () => st.sent[0][1].groups[0];
+      st.sent = []; cm.F.mgClick(ck({ 'apmgd': '7' })); await tick(); ok(st.sent.length === 1 && g0().days === 7 && !('card' in g0()) && cm.F.mgPanel(st.add, 'persona').includes('data-apmgd="7" aria-pressed="true"'), 'reason: mg_opt_days_sent');
+      st.sent = []; cm.F.mgClick(ck({ 'apmgcard': '1', __checked: true })); await tick(); ok(g0().card === 'propose' && g0().days === 7, 'reason: mg_opt_card_sent');
+      st.sent = []; cm.F.mgClick(ck({ 'apmgd': 'forever' })); await tick(); ok(st.sent.length === 1 && g0().days === 'forever' && cm.F.mgPanel(st.add, 'persona').includes('data-apmgd="forever" aria-pressed="true"') && cm.F.mgPanel(st.add, 'persona').includes('>永久</button>'), 'reason: mg_opt_forever_sent');
+      st.sent = []; cm.F.mgClick(ck({ 'apmgd': '30' })); await tick(); ok(!('days' in g0()) && g0().card === 'propose', 'reason: mg_opt_default_not_sent');
+      st.sent = []; cm.F.mgClick(ck({ 'apmgcard': '1', __checked: false })); await tick(); ok(JSON.stringify(Object.keys(g0())) === '["keep","merge"]', 'reason: mg_opt_back_to_defaults');
+      st.sent = []; cm.F.mgClick(ck({ 'apmgnotes': '1', __checked: true })); await tick(); ok(st.sent.length === 0 && !cm.F.mgPanel(st.add, 'persona').includes('data-apmgnotes'), 'reason: mg_opt_notes_not_for_persona');
+      ok(JSON.stringify(cm.F.mgOptBody({ kind: 'brain', opt: { notes: 'copy', days: 90, card: 'propose' } })) === '{"days":90,"notes":"copy"}' && JSON.stringify(cm.F.mgOptBody({ kind: 'role', opt: { days: 5, notes: 'copy' } })) === '{}' && JSON.stringify(cm.F.mgOptBody({ kind: 'role', opt: { days: null } })) === '{}' && JSON.stringify(cm.F.mgOptBody({ kind: 'role', opt: { days: 'forever' } })) === '{"days":"forever"}', 'reason: mg_opt_body_by_kind');
+      { const keep = st.add.mx, keepReply = st.mfReply; st.add.mx = { kind: 'brain', G: [{ items: [{ uid: 'b1', name: 'B' }, { uid: 'b2', name: 'B-2' }], keep: 'b1', off: {}, sure: true }], prev: 'all', opt: {}, pv: null };
+        st.mfReply = { plan_sha: '1'.repeat(64), plan: { kind: 'brain', groups: [{ keep: 'b1', merge: ['b2'] }] }, notes_check: { files: 3, cloud_placeholders: 2, over_limit: false } };
+        st.sent = []; cm.F.mgClick(ck({ 'apmgnotes': '1', __checked: true })); await tick(); await tick(); await tick();
+        ok(st.sent.length === 2 && st.sent[0][1].groups[0].notes === 'copy' && !('notes' in st.sent[1][1].groups[0]) && st.add.mx.opt.notes === undefined && !!st.add.mx.ncBad, 'reason: mg_notes_blocked_repreview_without_copy ' + JSON.stringify(st.sent.map((x) => x[1].groups)));
+        const h = cm.F.mgOptHtml(st.add); ok(h.includes('data-apmgnotes="1"  disabled') && h.includes('這組筆記不能複製:有 2 個雲端還沒下載的檔') && !h.includes('checked'), 'reason: mg_opt_notes_blocked ' + h.slice(0, 200));
+        st.sent = []; cm.F.mgClick(ck({ 'apmgnotes': '1', __checked: true })); await tick(); await tick(); ok(st.sent.length >= 1 && st.sent.every((x) => !('notes' in x[1].groups[0])) && !cm.F.mgOptHtml(st.add).includes('checked'), 'reason: mg_notes_blocked_never_sent');
+        cm.F.mgClick(ck({ 'apmgback': '1' })); ok(st.add.mx.ncBad === null, 'reason: mg_ncbad_cleared_on_back'); st.add.mx.ncBad = { over_limit: true }; st.mfReply = { plan_sha: '2'.repeat(64), plan: {} }; cm.F.mgClick(ck({ 'apmgp': 'all' })); ok(st.add.mx.ncBad === null, 'reason: mg_ncbad_cleared_on_pick'); await tick();
+        st.add.mx = keep; st.mfReply = keepReply; }
+      st.fp = []; st.fpReply = { batch_id: 'mb_1', state: 'run' }; st.logs = [{ batches: [{ batch_id: 'mb_1', state: 'run', steps: [{ seq: 1, op: '換人格', target: '@a1', state: 'done' }, { seq: 2, op: '封存', target: '甲-2', state: 'pending' }] }] }, { batches: [{ batch_id: 'mb_0', state: 'done' }, { batch_id: 'mb_1', state: 'done', can_undo: true, keep_until: 1800000000, steps: [{ seq: 1, op: '換人格', target: '@a1', state: 'done' }] }] }];
+      st.sent = []; cm.F.mgClick(ck({ 'apmgok': '1' })); await tick(); await tick();
+      ok(st.fp.length === 1 && st.fp[0][0] === 'merge_run' && st.fp[0][1].plan === PLAN && st.fp[0][1].plan_sha === 'f'.repeat(64) && Object.keys(st.fp[0][1]).length === 2, 'reason: mg_run_sends_aibd_plan');
+      ok(st.sent.some((x) => x[0] === 'merge_log' && x[1].batch_id === 'mb_1') && cm.F.mgPanel(st.add, 'persona').includes('… 封存 甲-2') && cm.F.mgPanel(st.add, 'persona').includes('✓ 換人格 @a1') && st.regLoads > 0, 'reason: mg_run_progress');
+      await tick(); st.runTimers(); await tick(); await tick(); const dn = cm.F.mgPanel(st.add, 'persona');
+      ok(dn.includes('合併好了;工作中的夥伴下次開才換') && !dn.includes('系統視窗會寫對照碼') && dn.includes('已送出,看下面進度') && dn.includes('data-apmgundo="mb_1"') && dn.includes('前可整筆還原') && !dn.includes('data-apmgok'), 'reason: mg_run_done_undo_offered');
+      st.fpReply = { state: 'partial_undo', kept_changed: [{ target: '甲', why: '改過名' }] }; cm.F.mgClick(ck({ 'apmgundo': 'mb_1' })); await tick(); await tick();
+      const ud = cm.F.mgPanel(st.add, 'persona'); ok(st.fp[1][0] === 'merge_undo' && st.fp[1][1].batch_id === 'mb_1' && ud.includes('留下的「甲」合併後改過,沒有動它(改過名)') && !ud.includes('data-apmgundo'), 'reason: mg_undo_partial');
+      st.add.mx.done.log = { state: 'done', can_undo: true, keep_until: null }; st.add.mx.done.busy = false; ok(cm.F.mgPanel(st.add, 'persona').includes('永久封存,隨時可整筆還原'), 'reason: mg_done_forever_words'); st.add.mx.done.log = { state: 'done', can_undo: true }; ok(!cm.F.mgPanel(st.add, 'persona').includes('永久封存'), 'reason: mg_done_no_keep_until_not_forever');
+      st.add.mx.done.log = { state: 'done', can_undo: false }; ok(!cm.F.mgPanel(st.add, 'persona').includes('data-apmgundo'), 'reason: mg_undo_only_when_can');
+      // plan_changed ⇒ 自動重新預覽;run 回 failed ⇒ 寫已倒回
+      cm.F.mgClick(ck({ 'apmgback': '1' })); st.sent = []; cm.F.mgClick(ck({ 'apmgp': 'all' })); await tick();
+      st.fpErr = 'plan_changed'; st.sent = []; cm.F.mgClick(ck({ 'apmgok': '1' })); await tick(); await tick();
+      ok(st.add.mx.msg === '清單在預覽後變了,請重新預覽' && st.sent.length === 1 && st.sent[0][0] === 'merge_preview' && !st.add.mx.done, 'reason: mg_plan_changed_repreviews');
+      st.fpErr = ''; st.fpReply = { state: 'failed', stopped_at: 2, code: 'registry_busy' }; await tick(); cm.F.mgClick(ck({ 'apmgok': '1' })); await tick(); await tick();
+      ok(cm.F.mgPanel(st.add, 'persona').includes('合併失敗(停在第 2 步),已做的步驟都倒回了(registry_busy)'), 'reason: mg_run_failed_rolled_back');
+      cm.F.mgClick(ck({ 'apmgback': '1' })); cm.F.mgClick(ck({ 'apmgp': 'all' })); cm.F.mgClick(ck({ 'apmgback': '1' })); await tick(); await tick(); ok(st.add.mx.pv === null && !st.add.mx.pvBusy, 'reason: mg_stale_preview_dropped');
+      st.acts = ['merge_find', 'merge_preview']; cm.F.mgClick(ck({ 'apmgback': '1' })); cm.F.mgClick(ck({ 'apmgp': 'all' })); await tick(); ok(!/data-apmgok="1" disabled/.test(cm.F.mgPanel(st.add, 'persona')), 'reason: mg_preview_without_run_button_live'); cm.F.mgClick(ck({ 'apmgok': '1' })); ok(st.add.mx.msg === cm.F.MG_NO && cm.F.mgPanel(st.add, 'persona').includes('合併:這一版 AIB 還沒有'), 'reason: mg_preview_without_run_says_why');
+      st.acts = ['merge_find']; cm.F.mgClick(ck({ 'apmgback': '1' })); cm.F.mgClick(ck({ 'apmgp': 'all' })); cm.F.mgClick(ck({ 'apmgok': '1' })); ok(st.add.mx.msg === cm.F.MG_NO, 'reason: mg_no_run_act_not_faked');
+    })());
+  }
+  { const cn = vm.createContext({ esc: (x) => String(x), personas: () => [['p1', '研究員']] }); vm.runInContext(fnSrc('mgNextHtml') + '\nthis.f = mgNextHtml;', cn);
+    ok(cn.f({ next: { persona_next: 'p1', brain_next: '家具店', batch_id: 'mb_1' } }) === '<div class="apn apnext">下次開換成 人格「研究員」、第二大腦「家具店」</div>' && cn.f({ next: null }) === '' && cn.f({ next: { persona_next: null, brain_next: null, batch_id: 'mb_2' } }) === '' && cn.f({}) === '' && cn.f({ next: { persona_next: 'zz' } }).includes('人格「zz」'), 'reason: mg_seat_next');
+    ok(ws.includes('<i class="apchev" aria-hidden="true">⌄</i></button>${mgNextHtml(x)}${on ?') && ws.includes('位工作中的夥伴受影響(下次開才換,正在跑的不會中途換)'), 'reason: mg_next_wired'); }
+  ok(ws.includes("const MG_WHY = { batch_unknown: '找不到這批合併紀錄',") && ws.includes('L = r && Array.isArray(r.batches) ? r.batches : [];'), 'reason: mg_log_r2_batches');
   ok(["'persona'", "'brain'", "'role'"].every((k) => ws.includes('`${mgBtn(A, ' + k + ')}${mgPanel(A, ' + k + ')}')) && ws.includes('      if (mgClick(x)) return;\n'), 'reason: s1b_merge_rows');
   // ⚙️ 自訂對話框(示意 chatBox / propose / chatDo):說要做什麼 ⇒ 用現有人格 / 第二大腦 / 角色 / 專案清單比對出建議卡;帶到下面真的帶;照這樣開 = 這一版還沒有、不送
   { const st = { reg: { brains: [{ uid: 'b1', name: '家具店客製化SEO' }, { uid: 'b2', name: 'AIB 核心開發工單' }], brainsLive: true } }, picked = [];
@@ -905,12 +1124,17 @@ const fpcChecks = (async () => {
     TH_EVID: '收據不算', S: {}, RG_CARD: [['duty', '職責'], ['redlines', '紅線'], ['knowledge', '知識域']], seatById: (id) => ({ seat_id: id }), seatShort: (x) => String(x.seat_id).replace(/^seat_/, ''), personas: () => [['p1', '頁面工程師']],
     act: async (type, b) => { calls.push([type, b]); return b.ticket ? { ok: true } : { __status: 202, ticket: 'ot_1', expires_at: new Date(Date.now() + 120000).toISOString() }; },
     get: async () => ({ state }), soft: (p) => p, REPO_WHY: {},
+    ppCard: (rid) => (rid === 'pq9' ? { seat_id: 'seat_w', persona_name: '寫手', added: 3, removed: 1, diff12: 'abcdef012345' } : null),
+    netCard: (rid) => (rid === 'r9' ? { seat_id: 'seat_n', dest_name: 'nas.lan', dest_ip: '192.168.1.20', dest_port: 445, choices: [{ id: 'hour1', words: '1 小時' }] } : null),
     PT_ITEMS: [['chat', '對話'], ['push', '推送']], ptWords: (it) => Object.keys(it || {}).filter((k) => it[k]).join('、'), ptItems: (o) => o || {}, ptOf: () => ({ name: '模板甲', base: 'work', items: { chat: true } }),
   });
   vm.runInContext(blk + '\nthis.FPC = FPC; this.FP_WHAT = FP_WHAT; this.fpcOpen = fpcOpen; this.fpcDone = fpcDone; this.fpcHtml = fpcHtml; this.fingerAct = fingerAct; this.fpPairCode = fpPairCode;', ctx);
   // 字:表裡每一種都有動作句;權杖不上卡;aibd 給了 words / shown 就照它
   for (const [t, f] of Object.entries(ctx.FP_WHAT)) { const w = f({ name: 'n', path: '/p', mode: 'dgrs', seat_id: 'seat_a', repo: 'r', branch: 'web/x', title: 't', token: 'ghp_SECRET', provider: 'claude', old_code: 'abcde', why: 'y', every_min: 5, text: 'hi', persona_uid: 'p1' }, { plan: { head: '0123456789ab', branch: 'web/a' } }); ok(typeof w[0] === 'string' && w[0].length > 1 && Array.isArray(w[1]), 'reason: fpc_words ' + t); ok(!JSON.stringify(w).includes('ghp_SECRET'), 'reason: fpc_secret_on_card ' + t); }
   ok(ctx.FP_WHAT.seat_open({ mode: 'dgrs', persona_uid: 'p1', repo: 'ez2-aib' })[1].some(([k, v, up]) => k === '權限' && up === true && /跟你本人一樣/.test(v)), 'reason: fpc_dgrs_not_marked_up');
+  { const w = ctx.FP_WHAT.persona_propose_approve({ request_id: 'pq9', diff_sha: 'f'.repeat(64) }); ok(w[0] === '把提案寫回人格卡「寫手」' && w[1].some(([k, v, up]) => k === '改動' && v === '+3 −1 行' && up) && w[1].some(([k, v, up]) => k === '對照碼' && v === 'abcdef012345' && up), 'reason: pp_fp_card ' + JSON.stringify(w)); }
+  { const w = ctx.FP_WHAT.net_card_answer({ request_id: 'r9', choice: 'hour1' }); ok(w[0] === '讓 ' + w[1][0][1] + ' 連 nas.lan' && w[1].some(([k, v, up]) => k === '目的地' && v === '192.168.1.20:445' && up) && w[1].some(([k, v, up]) => k === '開放' && v === '1 小時' && up), 'reason: net_fp_card_words ' + JSON.stringify(w)); }
+  { const w = ctx.FP_WHAT.merge_run({ plan_sha: 'x', plan: {} }, { window_sha12: 'abcdef012345' }); ok(w[1].some(([k, v, up]) => k === '對照碼' && v === 'abcdef012345' && up), 'reason: mg_fp_card_code ' + JSON.stringify(w)); ok(ctx.FP_WHAT.merge_undo({ batch_id: 'mb_9' })[1].some(([k, v]) => k === '批次' && v === 'mb_9'), 'reason: mg_fp_undo_card'); }
   { const r1 = ctx.FP_WHAT.seat_restart({ seat_id: 'seat_abcde' }), r2 = ctx.FP_WHAT.seat_model_set({ seat_id: 'seat_abcde', model: 'sonnet' }), r3 = ctx.FP_WHAT.seat_clear({ seat_id: 'seat_abcde', handoff_at: 'zz' }), r4 = ctx.FP_WHAT.seat_clear({ seat_id: 'seat_abcde' });
     ok(/^重開 @/.test(r1[0]) && r1[1].some(([k, , up]) => k === '夥伴' && up) && / 換成 sonnet$/.test(r2[0]) && r2[1].some(([k, v, up]) => k === '模型' && v === 'sonnet' && up) && /^清空 @/.test(r3[0]) && r3[1].some(([k, v]) => k === '交接單' && v === 'zz') && r4[1].some(([k, v]) => k === '交接單' && v === '(沒帶)'), 'reason: a11_cards ' + JSON.stringify([r1, r2, r3])); }
   // 08de5 A11:dgrs 席這四支都會 202 要指紋 ⇒ 頁面不准再用 act 直送
@@ -920,7 +1144,7 @@ const fpcChecks = (async () => {
   ok(/等你驗證:aibd 的字/.test(h) && /\/Users\/a\/&lt;b&gt;/.test(h) && /class="up"/.test(h), 'reason: fpc_not_aibd_words_or_unescaped');
   ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼\(Windows 用 Hello PIN\)/.test(h) && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
   ok(!/late|urg/.test(h.split('"')[1]), 'reason: fpc_late_too_early');
-  { const w = ctx.FP_WHAT.managed_host_add({ from: 'trusted', name: 'lin-macmini' }); ok(w[0] === '把測試機「lin-macmini」交給夥伴管' && w[1].some(([k, v, up]) => k === '收據' && v === '收據不算' && up) && w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_test_host_card'); }
+  { const w = ctx.FP_WHAT.managed_host_add({ from: 'trusted', name: 'test-a' }); ok(w[0] === '把測試機「test-a」交給夥伴管' && w[1].some(([k, v, up]) => k === '收據' && v === '收據不算' && up) && w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_test_host_card'); }
   { const w = ctx.FP_WHAT.managed_host_add({ name: 'h1', addr: '192.0.2.1', port: 22, user: 'u', key_path: '~/.ssh/k' }); ok(w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_manual_host_fp_line'); }
   { // f163c REVIEW-page2r8 L1:改人格卡看得到改誰、改了哪幾欄
     ctx.S.rg = { uid: 'p1', orig: { name: '頁面工程師', duty: 'a', redlines: 'b', knowledge: 'c' } };
@@ -1258,13 +1482,13 @@ const hsChecks = (async () => {
   { // 3e53b DESIGN-hostmode 13.3 / 13.6:測試機交給夥伴管
     const keep = { has: { ...store.has }, reply: { ...store.reply }, hs: { ...S.hs }, hosts: S.add.hosts };
     store.has.managed_host_candidates = true; store.has.managed_host_list = true; store.has.managed_host_add = true; store.acts.length = 0;
-    store.reply.managed_host_candidates = { hosts: [{ name: 'lin-macmini', os: 'macos' }, { name: 'andymini', already: true }, { name: 'pro13', refused: 'test_host_busy' }, { name: '' }] };
+    store.reply.managed_host_candidates = { hosts: [{ name: 'test-a', os: 'macos' }, { name: 'test-b', already: true }, { name: 'test-c', refused: 'test_host_busy' }, { name: '' }] };
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
     const h = F.hsTestChips();
-    ok(store.acts.some(([t, b]) => t === 'managed_host_candidates' && JSON.stringify(b) === '{\"kind\":\"test\"}') && S.hs.cand.length === 3 && h.includes(F.TH_EVID) && h.includes('data-hstadd=\"lin-macmini\"') && h.includes('<b>andymini</b><i>已交給夥伴管</i>') && h.includes('<b>pro13</b><i>這台測試機正在跑收據,跑完才能交給夥伴</i>') && !h.includes('data-hstadd=\"andymini\"'), 'reason: th_candidates_drawn ' + h);
+    ok(store.acts.some(([t, b]) => t === 'managed_host_candidates' && JSON.stringify(b) === '{\"kind\":\"test\"}') && S.hs.cand.length === 3 && h.includes(F.TH_EVID) && h.includes('data-hstadd=\"test-a\"') && h.includes('<b>test-b</b><i>已交給夥伴管</i>') && h.includes('<b>test-c</b><i>這台測試機正在跑收據,跑完才能交給夥伴</i>') && !h.includes('data-hstadd=\"test-b\"'), 'reason: th_candidates_drawn ' + h);
     store.acts.length = 0; store.reply.managed_host_add = { done: true, id: 'mh_9' }; S.add.hosts = [];
-    await F.hsTestAdd('lin-macmini');
-    ok(store.acts[0] && store.acts[0][0] === 'managed_host_add' && JSON.stringify(store.acts[0][1]) === '{\"from\":\"trusted\",\"name\":\"lin-macmini\"}' && S.add.hosts.includes('mh_9') && S.hs.msg.text.includes(F.TH_EVID), 'reason: th_add_body ' + JSON.stringify(store.acts));
+    await F.hsTestAdd('test-a');
+    ok(store.acts[0] && store.acts[0][0] === 'managed_host_add' && JSON.stringify(store.acts[0][1]) === '{\"from\":\"trusted\",\"name\":\"test-a\"}' && S.add.hosts.includes('mh_9') && S.hs.msg.text.includes(F.TH_EVID), 'reason: th_add_body ' + JSON.stringify(store.acts));
     store.has = keep.has; store.reply = keep.reply; S.hs = keep.hs; S.add.hosts = keep.hosts; store.acts.length = 0;
   }
   // 清單:讀 hosts、壞的丟掉;勾 / 取消勾;固定寫「代連 = 交出 shell」;沒有 add / remove 就不出那兩個

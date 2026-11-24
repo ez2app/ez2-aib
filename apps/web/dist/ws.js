@@ -150,6 +150,7 @@
     S.slotCKey = cKey;
     S.usage = usage && Array.isArray(usage.usage) ? usage : null;
     S.seats = (seats && seats.seats) || [];
+    netSeen(seats && seats.net_cards); // 3e53b net_cards 張數
     S.sessions = (sessions && sessions.sessions) || [];
     // 519d0 自測 r3 M3:排隊中的場次(state pending)清單不帶位置;逐個讀 GET sessions/<id> 的 queue {position, slots},記下上限
     S.qv = S.qv || {};
@@ -2142,6 +2143,7 @@
   function titleNow() { const n = Object.keys(S.wait).length; const t = (n ? SPIN[spinI] + ' ' : S.doneDot ? '● ' : '') + (S.inbPfx || '') + (S.askPfx || '') + TITLE0; if (document.title !== t) document.title = t; }
   setInterval(() => { spinI = (spinI + 1) % 4; titleNow(); }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) S.doneDot = false; });
+  setInterval(() => { for (const b of document.querySelectorAll('[data-netexp]')) b.textContent = netLeft(Number(b.dataset.netexp)); }, 1000); // 網路例外卡倒數每秒一格
   setInterval(() => { for (const b of document.querySelectorAll('[data-since]')) { const t = Date.parse(b.dataset.since); if (t) b.textContent = durS(Date.now() - t); } }, 1000);
   function outItems(seatId) {
     const se = lastSession(seatId);
@@ -4464,6 +4466,13 @@
   // 字串表(2e2cd 02:07:交稿時附給 7ebca 對系統視窗的字):[動作, [[欄, 值, 是不是「這次多開」]…]]
   const fpWhen = (v) => { const t = typeof v === 'number' ? v * (v < 1e12 ? 1000 : 1) : Date.parse(String(v || '')); return Number.isFinite(t) ? new Date(t).toLocaleString('zh-TW', { hour12: false }) : v ? String(v) : '(沒帶)'; };
   const FP_WHAT = {
+    // 6770f IFACE-merge r1 §3 / §5:合併 / 還原要本人驗證;卡上印跟系統窗一樣的對照碼(window_sha12)
+    merge_run: (b, first) => { const M = typeof S !== 'undefined' && S.add ? S.add.mx : null, P = (M && M.pv) || {}, code = String((first && first.window_sha12) || P.window_sha12 || ''); return ['合併' + (typeof MG_KN !== 'undefined' && M ? MG_KN[M.kind] || '' : ''), [['步驟', String((Array.isArray(P.steps) ? P.steps.length : 0)) + ' 步'], ['對照碼', code, true]]]; },
+    merge_undo: (b) => ['整筆還原合併', [['批次', String(b.batch_id || ''), true]]],
+    // 3e53b IFACE-netcard:網路例外卡要驗證的選項(15 分鐘 / 1 小時 / 到這一位關掉 / 一直允許)
+    // c2f0b S2-2:窗上(aibd 寫)是人格名 · +N −M 行 · 對照碼 diff12;卡上照同一份提案印
+    persona_propose_approve: (b) => { const p = ppCard(b.request_id) || {}; return ['把提案寫回人格卡「' + String(p.persona_name || p.persona_uid || '') + '」', [['夥伴', p.seat_id ? fpAt(p.seat_id) : ''], ['改動', '+' + (Number(p.added) || 0) + ' −' + (Number(p.removed) || 0) + ' 行', true], ['對照碼', String(p.diff12 || String(b.diff_sha || '').slice(0, 12)), true]]]; },
+    net_card_answer: (b) => { const c = netCard(b.request_id) || {}, o = (c.choices || []).find((x) => x && x.id === b.choice) || {}; return ['讓 ' + (c.seat_id ? fpAt(c.seat_id) : '夥伴') + ' 連 ' + String(c.dest_name || c.dest_ip || '內網'), [['夥伴', c.seat_id ? fpAt(c.seat_id) : ''], ['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true], ['開放', String(o.words || b.choice), true]]]; },
     // 08de5 A11(734e430144):完全權限的席重開 / 換模型 / 清空也要本人驗證
     seat_restart: (b) => ['重開 ' + fpAt(b.seat_id), [['夥伴', fpAt(b.seat_id), true], ['之後', '接原本的對話,照原本的權限繼續跑']]],
     seat_model_set: (b) => ['把 ' + fpAt(b.seat_id) + ' 換成 ' + b.model, [['夥伴', fpAt(b.seat_id)], ['模型', b.model, true], ['之後', '下一個回合起用新模型']]],
@@ -4724,7 +4733,8 @@
     if (!q || !Array.isArray(q.windows)) return `<div class="apn">帳號額度:這台還沒看過 ${esc(p.name)} 的額度(要先開過一位 ${esc(p.name)} 夥伴${String(p.id).toLowerCase() === 'claude' ? '、等它跑完第一個回合' : ''})</div>`;
     const W = q.windows.slice(0, 8).map((w) => {
       const pct = Math.max(0, Math.min(100, Number(w && w.used_pct) || 0)), nm = String((w && w.name) || ''), wm = Number(w && w.window_mins);
-      const label = QW_NAME[nm] || (Number.isFinite(wm) && wm > 0 ? (wm % 1440 === 0 ? wm / 1440 + ' 天' : wm % 60 === 0 ? wm / 60 + ' 小時' : wm + ' 分') : nm || '額度');
+      // f163c A15 N1:有 window_mins 就以長度為準(codex primary 300 = 5 小時),沒有才翻名字
+      const label = Number.isFinite(wm) && wm > 0 ? (wm % 1440 === 0 ? wm / 1440 + ' 天' : wm % 60 === 0 ? wm / 60 + ' 小時' : wm + ' 分') : QW_NAME[nm] || nm || '額度';
       const at = qwWhen(w && w.resets_at), st = w && w.status ? QW_ST[w.status] || String(w.status) : '';
       return `<div class="qw${pct >= 90 ? ' red' : pct >= 70 ? ' warn' : ''}"><span>${esc(label)}</span><progress class="usep" max="100" value="${pct}"></progress><b>用了 ${esc(String(Math.round(pct * 10) / 10))}%</b><i>${at ? esc(at) + ' 重算' : ''}${st ? (at ? ' · ' : '') + esc(st) : ''}</i></div>`;
     }).join('');
@@ -4781,11 +4791,188 @@
   // 這一版 AIB 還不能在這裡改已開那位的權限、也還沒有「AI 要連本機 / 內網」的請求卡與一直允許清單 ⇒ 畫出位置、寫這一版還沒有,不假裝能改
   const AP_MINE_NO = '在這裡改已開那位的權限:這一版 AIB 還沒有;要換模式先收掉這一位、再照新的模式開';
   const AP_ASK_NO = 'AI 要連本機或內網時,會在這裡彈卡給你選「允許這一次 / 一直允許 / 拒絕」:這一版 AIB 還沒有(現在一律擋)';
+  // c2f0b IFACE-passphrase r2(接線片 6573c52350,主線還沒有):系統本人驗證不能用時的密語備援。頁面只讀 passphrase_state 顯示一行;
+  // 設定與輸入都在系統安全輸入窗(網頁不收、不存、不顯示密語);鎖住、剩幾次照 aibd 給的欄位,頁面不自己算
+  const PW_ACT = 'passphrase_state';
+  const PW_WHY = { passphrase_built_in_page_only: '只有這台電腦內建的頁面看得到', passphrase_unavailable: 'AIB 還沒準備好,稍後再看' };
+  async function pwLoad() {
+    const W = (S.pw = S.pw || {}); if (W.busy || hasAct(PW_ACT) !== true) return;
+    W.busy = true;
+    try { const r = await act(PW_ACT, {}); W.st = r && typeof r === 'object' ? r : null; W.err = null; }
+    catch (e) { W.err = PW_WHY[rgCode(e)] || errText(e); }
+    W.at = Date.now(); W.busy = false; render();
+  }
+  const pwAt = (s) => new Date(Number(s) * 1000).toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  function pwText(p) {
+    if (p.swapped === true) return { bad: true, text: '密語紀錄被換過,請到設定窗重設;重設前不收密語' };
+    if (p.available !== true) return { text: '這台用系統本人驗證(指紋 / 登入密碼 / Hello),不用密語' };
+    if (p.set !== true) return { text: '密語備援還沒設定;要設定請到系統的設定窗(網頁不收密語)' };
+    const at = Number(p.set_at) > 0 ? '密語已於 ' + pwAt(p.set_at) + ' 設定' : '密語已設定';
+    if (p.locked === true) { const u = Number(p.locked_until), m = Math.ceil((u * 1000 - Date.now()) / 60000); return { bad: true, text: at + ' · 鎖住了' + (u > 0 ? ',到 ' + pwAt(u) + (m > 0 ? '(約 ' + m + ' 分)' : '') : '') + ',鎖住時不收密語' }; }
+    const w = Number(p.wrong) || 0; return { text: at + (w > 0 ? ' · 連錯 ' + w + ' 次,還能錯 ' + Math.max(0, Number(p.tries_left) || 0) + ' 次' : '') };
+  }
+  function pwHtml() {
+    if (hasAct(PW_ACT) !== true) return '<div class="apn">密語備援:這一版 AIB 還沒有</div>';
+    const W = (S.pw = S.pw || {});
+    if (!W.busy && Date.now() - (W.at || 0) > 60000) setTimeout(pwLoad, 0); // 打開時讀、之後一分鐘內不重讀
+    if (W.err) return `<div class="trm bad">密語狀態讀不到:${esc(W.err)}</div>`;
+    if (!W.st) return '<div class="apn">讀取中…</div>';
+    const t = pwText(W.st); return `<div class="${t.bad ? 'trm bad' : 'apn'}">${esc(t.text)}</div>`;
+  }
+  // c2f0b S2-2(頭 1000abaa95,等 A12 進整合線;主線還沒有):夥伴提案改自己的人格卡,內建頁列出(persona_proposals)、整段差異照純文字畫(不當 HTML / markdown)。
+  // 核准 = persona_propose_approve {request_id, diff_sha} 走 fingerAct(202 + 驗證窗,窗上對照碼 = diff12)⇒ 200 {state:"written", new_sha};不要 = persona_propose_deny {ids}。act 沒有 ⇒ 這一版還沒有
+  const PP_ACTS = { list: 'persona_proposals', deny: 'persona_propose_deny', approve: 'persona_propose_approve' };
+  const PP_WHY = { request_not_found: '找不到這份提案(可能已逾時或被撤回)', request_not_waiting: '這份提案已經不在等了(撤回、拒絕、逾時或正在寫)', request_changed: '提案跟你看到的不一樣了,請重新看一次', persona_changed: '人格卡在提案之後被改過,這份提案作廢;請夥伴照新版再提', persona_archived: '這個人格已封存,寫不回去', persona_aliased: '這個人格已併到別的人格,寫不回去', persona_none: '找不到這個人格', persona_unreadable: '讀不到人格卡,沒有寫', persona_registry_edited: '人格清單檔被手動改過,沒有寫;先看一下清單', persona_registry_changed: '人格清單剛被改過,沒有寫;再按一次', persona_built_in_page_only: '只有這台電腦內建的頁面能核准或拒絕', persona_write_mismatch: '寫入核對不一致,沒有寫成', persona_write_io: '寫入失敗,沒有寫成', persona_path_outside: '人格卡不在人格資料夾裡,沒有寫', persona_path_symlink: '人格卡是捷徑檔,沒有寫', request_not_writing: '寫入被打斷,沒有寫成', owner_check_not_approved: '指紋沒過,沒有寫回;提案還在,可以再按一次', item_off: '這一項被關掉了', not_done: 'AIB 沒有回「寫好了」' };
+  const PP_GONE = new Set(['request_not_found', 'request_not_waiting', 'request_changed', 'persona_changed', 'persona_archived', 'persona_aliased', 'persona_none']);
+  const ppHas = (k) => hasAct(PP_ACTS[k]) === true;
+  const ppWhy = (e) => PP_WHY[rgCode(e)] || errText(e);
+  const ppCard = (rid) => ((S.pp && S.pp.items) || []).find((x) => x && x.request_id === rid) || null;
+  async function ppLoad() {
+    const P = (S.pp = S.pp || {}); if (P.busy || !ppHas('list')) return;
+    P.busy = true;
+    try { const r = await act(PP_ACTS.list, {}); P.items = (Array.isArray(r && r.proposals) ? r.proposals : []).filter((x) => x && x.request_id && x.diff_sha).slice(0, 20); P.err = null; }
+    catch (e) { P.items = P.items || []; P.err = ppWhy(e); }
+    P.at = Date.now(); P.busy = false; render();
+  }
+  function ppLeft(exp) { const ms = Number(exp) * 1000 - Date.now(); return !Number.isFinite(ms) ? '' : ms <= 0 ? '已逾時' : '約 ' + Math.max(1, Math.round(ms / 60000)) + ' 分後逾時'; }
+  function ppCardHtml(p) {
+    const P = S.pp || {}, rid = esc(p.request_id), add = Number(p.added) || 0, del = Number(p.removed) || 0, canOk = ppHas('approve');
+    const lines = (Array.isArray(p.diff) ? p.diff : []).map((l) => { const op = l && l.op; return `<div class="rgdl ${op === 'add' ? 'add' : op === 'del' ? 'del' : ''}">${op === 'add' ? '+ ' : op === 'del' ? '− ' : '  '}${esc(rgShow(String((l && l.text) || '')))}</div>`; }).join('');
+    const why = p.why ? `<div class="netwhy"><i>夥伴寫的理由(沒驗證):</i>${esc(String(p.why))}</div>` : '';
+    return `<div class="netc ppc"><div class="neth"><b>${esc(p.seat_id ? fpAt(p.seat_id) : '夥伴')}</b> 想改人格卡「${esc(String(p.persona_name || p.persona_uid || ''))}」</div><div class="netd">+${add} −${del} 行 · 對照碼 <code>${esc(String(p.diff12 || String(p.diff_sha).slice(0, 12)))}</code></div>${why}<div class="rgdiff ppdiff">${lines || '<div class="apn">沒有差異內容</div>'}</div><div class="apn">${esc(ppLeft(p.expires_at))}${canOk ? ';核准會跳驗證窗,窗上的對照碼要跟這裡一樣' : ''}</div><div class="ptact"><button type="button" class="go" data-ppok="${rid}" ${P.ans || !canOk ? 'disabled' : ''}>${canOk ? '核准寫回,去驗證' : '核准寫回:這一版 AIB 還沒有'}</button><button type="button" class="k" data-ppno="${rid}" ${P.ans || !ppHas('deny') ? 'disabled' : ''}>不要</button></div></div>`;
+  }
+  function ppHtml() {
+    if (!ppHas('list')) return '<div class="apn">這一版 AIB 還沒有</div>';
+    const P = (S.pp = S.pp || {});
+    if (!P.busy && (!P.items || Date.now() - (P.at || 0) > 60000)) setTimeout(ppLoad, 0); // 打開時讀、之後一分鐘內不重讀(提案 30 分逾時)
+    if (!P.items) return '<div class="apn">讀取中…</div>';
+    const msg = P.msg ? `<div class="trm${P.msg.bad ? ' bad' : ''}">${esc(P.msg.text)}</div>` : '';
+    return (P.items.length ? P.items.map(ppCardHtml).join('') : '<div class="apn">現在沒有夥伴提案改人格卡</div>') + (P.err ? `<div class="trm bad">讀不到:${esc(P.err)}</div>` : '') + msg;
+  }
+  function ppFail(P, rid, e, pre) {
+    P.msg = { bad: true, text: pre + ppWhy(e) };
+    if (PP_GONE.has(rgCode(e))) { P.items = (P.items || []).filter((x) => x.request_id !== rid); P.at = 0; }
+  }
+  async function ppApprove(rid) {
+    const P = (S.pp = S.pp || {}), p = ppCard(rid); if (!p || P.ans || !ppHas('approve')) return;
+    P.ans = rid; P.msg = { text: FP_SEE }; render();
+    try {
+      const r = await fingerAct(PP_ACTS.approve, { request_id: rid, diff_sha: String(p.diff_sha) });
+      if (!(r && r.state === 'written')) throw Object.assign(new Error('not_done'), { code: 'not_done' });
+      P.items = (P.items || []).filter((x) => x.request_id !== rid);
+      P.msg = { text: '已寫回「' + String(p.persona_name || p.persona_uid || '') + '」的人格卡' + (r.new_sha ? '(新版 ' + String(r.new_sha).slice(0, 12) + ')' : '') };
+    } catch (e) { ppFail(P, rid, e, '沒有寫回:'); }
+    P.ans = null; render();
+  }
+  async function ppDeny(rid) {
+    const P = (S.pp = S.pp || {}), p = ppCard(rid); if (!p || P.ans || !ppHas('deny')) return;
+    P.ans = rid; P.msg = null; render();
+    try {
+      const r = await act(PP_ACTS.deny, { ids: [rid] }), o = (Array.isArray(r && r.results) ? r.results : []).find((x) => x && x.request_id === rid);
+      if (!o || o.code || !o.state) { const cd = (o && o.code) || 'not_done'; throw Object.assign(new Error(cd), { code: cd }); }
+      P.items = (P.items || []).filter((x) => x.request_id !== rid); P.msg = { text: '已拒絕 ' + (p.seat_id ? fpAt(p.seat_id) : '夥伴') + ' 的人格卡提案' };
+    } catch (e) { ppFail(P, rid, e, '沒有拒絕:'); }
+    P.ans = null; render();
+  }
+  // 3e53b IFACE-netcard r0(A6c):夥伴連內網、又不在它的一直允許清單 ⇒ aibd 把連線掛著出一張卡(120 秒沒選 = 拒絕)。
+  // 選項(id + words + needs_owner)照 aibd 給的順序畫,頁面不自己寫字、不送時段;要驗證的走 202 + 等你驗證卡。act 沒有 ⇒ 照舊寫這一版還沒有
+  const NET_ACTS = { list: 'net_card_list', answer: 'net_card_answer', allow: 'net_allow_list', revoke: 'net_allow_revoke' };
+  const NET_WHY = { not_on_list: '這個位址已經不在清單上(可能已收回或這一位重開過)', page_only: '只有這台電腦內建的頁面能回答', net_card_expired: '這張卡已經過了 120 秒,連線被拒了', net_card_used: '這張卡已經回答過了', net_card_unknown: '找不到這張卡(可能已經逾時)', not_a_choice: '沒有這個選項', owner_check_not_approved: '指紋沒過,這張卡只剩拒絕;夥伴再連會出新的一張' };
+  const NET_HINT = '這只是提示,夥伴也可能不經過這裡直接連';
+  // 3e53b(f163c REVIEW-sandboxnet19 N2):允許綁「位址 + 埠」;換位址的網站(CDN)會一直出卡,一直允許也只記這一個位址
+  const NET_BIND = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡,選「一直允許」也只記這一個位址';
+  const netHas = (k) => hasAct(NET_ACTS[k]) === true;
+  const netWhy = (e) => NET_WHY[rgCode(e)] || errText(e);
+  const netCard = (rid) => ((S.net && S.net.items) || []).find((x) => x && x.request_id === rid) || null;
+  async function netLoad() {
+    const N = (S.net = S.net || {}); if (N.busy || !netHas('list')) return;
+    N.busy = true;
+    try { const r = await act(NET_ACTS.list, {}); N.items = Array.isArray(r && r.items) ? r.items.slice(0, 20) : []; N.err = null; }
+    catch (e) { N.items = N.items || []; N.err = netWhy(e); }
+    N.busy = false; render();
+  }
+  function netTick() { // 「需要你決定」打開時每 5 秒讀一次(卡 120 秒就逾時)
+    if (S.netTimer) return;
+    S.netTimer = setTimeout(async () => { S.netTimer = null; if (S.add && S.add.mine && netHas('list')) { await netLoad(); netTick(); } }, 5000);
+  }
+  // 3e53b IFACE-netcard r1 第 27 行(f163c N3):GET /api/v1/seats 頂層帶 net_cards:<未決張數>(只給數字)。>0 ⇒「+ AI 夥伴」與「我的 AI 夥伴」亮紅點;
+  // 張數變多而面板沒開 ⇒ 提示列寫一句;分頁在背景且瀏覽器已允許通知才發系統通知(不主動問權限)。沒人看到 ⇒ 120 秒後拒,這只是方便、不是防線
+  const NET_NAG = '有夥伴要連網,需要你決定';
+  const netDot = () => (S.netCards > 0 ? `<i class="netdot" title="${esc(NET_NAG)}" aria-label="${S.netCards} 張連線要你決定">${S.netCards > 9 ? '9+' : S.netCards}</i>` : '');
+  function netSeen(n) {
+    const prev = S.netCards || 0; S.netCards = typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+    if (!(S.netCards > prev)) return;
+    if (S.add && S.add.mine) { if (netHas('list')) netLoad(); return; }
+    say(NET_NAG + '(' + S.netCards + ' 張,點「+ AI 夥伴」看)', 'warn');
+    try { if (typeof document !== 'undefined' && document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification('AIB', { body: NET_NAG, tag: 'aib-net-card' }); } catch (e) { /* 通知不能用就只靠紅點 */ }
+  }
+  const netLeft = (exp) => { const s = Math.ceil((exp - Date.now()) / 1000); return s <= 0 ? '已逾時,拒絕了' : s <= 10 ? '快逾時了(約 ' + s + ' 秒),沒選就拒絕' : '還有約 ' + s + ' 秒,沒選就拒絕'; };
+  function netCardHtml(c) {
+    const N = S.net || {}, se = seatById(c.seat_id), exp = Date.parse(String(c.expires_at || '')), left = Number.isFinite(exp) ? Math.max(0, Math.ceil((exp - Date.now()) / 1000)) : null;
+    const net = S.version && S.version.capabilities && S.version.capabilities.net, pv = net && se ? net[String(se.provider || 'claude').toLowerCase()] : null, cell = pv && se ? pv[se.mode] : '';
+    const why = c.source === 'net_ask' && c.why ? `<div class="netwhy"><i>夥伴寫的理由:</i>${esc(String(c.why))}</div>` : '';
+    // f163c r5km L1:驗證窗開過(沒過)⇒ aibd 那張卡只剩拒絕(別的選項回 net_card_used),只畫拒絕
+    const asked = !!(N.asked && N.asked[c.request_id]);
+    const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(o.words)}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
+    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
+  }
+  function netAskHtml() {
+    if (!netHas('list')) return `<div class="apn">${esc(AP_ASK_NO)}</div>`;
+    const N = (S.net = S.net || {});
+    if (!N.items) { if (!N.busy) setTimeout(netLoad, 0); netTick(); return '<div class="apn">讀取中…</div>'; }
+    netTick();
+    const msg = N.msg ? `<div class="trm${N.msg.bad ? ' bad' : ''}">${esc(N.msg.text)}</div>` : '';
+    return (N.items.length ? N.items.map(netCardHtml).join('') : '<div class="apn">現在沒有要你決定的連線</div>') + (N.err ? `<div class="trm bad">讀不到:${esc(N.err)}</div>` : '') + msg;
+  }
+  async function netAnswer(rid, choice) {
+    const N = (S.net = S.net || {}), c = netCard(rid); if (!c || N.ans) return;
+    const o = (c.choices || []).find((x) => x && x.id === choice); if (!o || (N.asked && N.asked[rid] && choice !== 'deny')) return;
+    N.ans = rid; N.msg = o.needs_owner ? { text: FP_SEE } : null; render();
+    try {
+      // f163c r12 N1:每個選項都走 fingerAct(aibd 回 202 就開驗證窗、不是 202 原樣回來),needs_owner 只決定先不先說「看指紋」
+      const r = await fingerAct(NET_ACTS.answer, { request_id: rid, choice });
+      if (!rgOk(r)) throw Object.assign(new Error('not_done'), { code: 'not_done' });
+      N.items = (N.items || []).filter((x) => x.request_id !== rid);
+      N.msg = { text: (choice === 'deny' ? '拒絕了' : '允許了:' + o.words) + '(' + String(c.dest_name || c.dest_ip || '') + ')' };
+      if (choice === 'always' && N.allow) delete N.allow[c.seat_id];
+    } catch (e) { const cd = rgCode(e); N.msg = { bad: true, text: '沒有送出:' + netWhy(e) }; if (cd === 'owner_check_not_approved') (N.asked = N.asked || {})[rid] = true; if (cd === 'net_card_expired' || cd === 'net_card_used' || cd === 'net_card_unknown') N.items = (N.items || []).filter((x) => x.request_id !== rid); }
+    N.ans = null; render();
+  }
+  async function netAllowLoad(sid) {
+    const N = (S.net = S.net || {}), A = (N.allow = N.allow || {});
+    try { const r = await act(NET_ACTS.allow, { seat_id: sid }); A[sid] = (Array.isArray(r && r.items) ? r.items : []).filter((x) => x && (x.seat_id === undefined || x.seat_id === sid)).slice(0, 50); }
+    catch (e) { A[sid] = { err: netWhy(e) }; }
+    render();
+  }
+  function netAllowHtml(sid) {
+    if (!netHas('allow')) return '<div class="apn">這一版 AIB 還沒有</div>';
+    const N = (S.net = S.net || {}), A = (N.allow = N.allow || {}), L = A[sid];
+    if (L === undefined) { A[sid] = 'loading'; setTimeout(() => netAllowLoad(sid), 0); return '<div class="apn">讀取中…</div>'; }
+    if (L === 'loading') return '<div class="apn">讀取中…</div>';
+    const msg = N.amsg && N.amsg.seat === sid ? `<div class="trm${N.amsg.bad ? ' bad' : ''}">${esc(N.amsg.text)}</div>` : '';
+    if (!Array.isArray(L)) return `<div class="trm bad">讀不到:${esc(L.err || '')}</div>` + msg;
+    const rv = netHas('revoke');
+    return (L.length ? `<div class="netal">${L.map((x) => `<div class="netar"><code>${esc(String(x.ip))}:${esc(String(x.port))}</code>${rv ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
+  }
+  async function netRevoke(sid, ip, port) {
+    const N = (S.net = S.net || {}); if (!netHas('revoke') || N.rv) return;
+    N.rv = true; render();
+    try { const r = await act(NET_ACTS.revoke, { seat_id: sid, ip, port: Number(port) }); N.amsg = { seat: sid, text: '已收回 ' + ip + ':' + port + ',正在連的已斷(' + (Number(r && r.closed) || 0) + ' 條)' }; }
+    catch (e) { N.amsg = { seat: sid, bad: true, text: '沒有收回:' + netWhy(e) }; }
+    N.rv = false; if (N.allow) delete N.allow[sid]; render();
+  }
+  // 6770f IFACE-merge r0 §6:夥伴可帶 next {persona_next, brain_next, batch_id} ⇒「下次開換成 X」;開 / 接回時 aibd 自己套用,頁面不送
+  function mgNextHtml(x) {
+    const n = x && x.next; if (!n || typeof n !== 'object') return '';
+    const pu = n.persona_next ? String(n.persona_next) : '', p = pu ? ((typeof personas === 'function' ? personas() : []).find(([u]) => u === pu) || [pu, pu])[1] : '', b = n.brain_next ? String(n.brain_next) : '';
+    if (!p && !b) return '';
+    return `<div class="apn apnext">下次開換成 ${[p ? '人格「' + esc(p) + '」' : '', b ? '第二大腦「' + esc(b) + '」' : ''].filter(Boolean).join('、')}</div>`;
+  }
   function apMine(A) {
     const L = present().filter((x) => !isArch(x)), open = !!A.mine;
     const rows = L.map((x) => { const id = x.seat_id, on = A.mineSeat === id, m = AP_MODE[x.mode] ? x.mode : 'safe';
-      return `<div class="apmst ${on ? 'open' : ''}"><button type="button" class="apmrh" data-apms="${esc(id)}" aria-expanded="${on}"><span class="apmav" aria-hidden="true">✳</span><span class="apmnm"><b>@${esc(seatShort(x))}</b><i>${esc(x.persona_name || '')}</i></span><em class="adang d${m === 'dgrs' ? 4 : m === 'work' ? 2 : 1}">${esc(AP_MODE[m][0])}</em><i class="apchev" aria-hidden="true">⌄</i></button>${on ? `<div class="apmrb">${apCmp({ mode: m }, { ro: true })}${m === 'host' ? hsLogHtml(id) : ''}<div class="aplab">套用我的權限模板</div>${ptSeatBox(x) || `<div class="apn apwarn">${esc(AP_MINE_NO)}</div>`}<div class="aplab">一直允許的位址</div><div class="apn">這一版 AIB 還沒有</div></div>` : ''}</div>`; }).join('');
-    return `<div class="apmine ${open ? 'open' : ''}"><button type="button" class="apmh" data-apmine="1" aria-expanded="${open}"><b>我的 AI 夥伴 · 隨時改權限</b><span class="apex">${L.length} 位在工作</span><i class="apchev" aria-hidden="true">⌄</i></button>${open ? `<div class="apmb"><div class="apask"><div class="aplab">⚠️ 需要你決定</div><div class="apn">${esc(AP_ASK_NO)}</div></div>${rows || '<div class="apn">現在沒有在工作的夥伴</div>'}</div>` : ''}</div>`;
+      return `<div class="apmst ${on ? 'open' : ''}"><button type="button" class="apmrh" data-apms="${esc(id)}" aria-expanded="${on}"><span class="apmav" aria-hidden="true">✳</span><span class="apmnm"><b>@${esc(seatShort(x))}</b><i>${esc(x.persona_name || '')}</i></span><em class="adang d${m === 'dgrs' ? 4 : m === 'work' ? 2 : 1}">${esc(AP_MODE[m][0])}</em><i class="apchev" aria-hidden="true">⌄</i></button>${mgNextHtml(x)}${on ? `<div class="apmrb">${apCmp({ mode: m }, { ro: true })}${m === 'host' ? hsLogHtml(id) : ''}<div class="aplab">套用我的權限模板</div>${ptSeatBox(x) || `<div class="apn apwarn">${esc(AP_MINE_NO)}</div>`}<div class="aplab">一直允許的位址</div>${netAllowHtml(id)}</div>` : ''}</div>`; }).join('');
+    return `<div class="apmine ${open ? 'open' : ''}"><button type="button" class="apmh" data-apmine="1" aria-expanded="${open}"><b>我的 AI 夥伴 · 隨時改權限</b>${netDot()}<span class="apex">${L.length} 位在工作</span><i class="apchev" aria-hidden="true">⌄</i></button>${open ? `<div class="apmb"><div class="apask"><div class="aplab">⚠️ 需要你決定</div>${netAskHtml()}</div><div class="apask"><div class="aplab">✍️ 夥伴想改自己的人格卡</div>${ppHtml()}</div><div class="apask"><div class="aplab">🔑 密語備援</div>${pwHtml()}</div>${rows || '<div class="apn">現在沒有在工作的夥伴</div>'}</div>` : ''}</div>`;
   }
   // 合併類似(示意 mergeBtn / mergePanel / mergePreview):人格 / 第二大腦 / 角色,自動找出名字很像的,一組一組選要留哪個、哪些不併,再看預覽。
   // 這一版 AIB 還沒有合併的動作 ⇒ 找、選、預覽都照做(只讀),最後「確認合併」寫這一版還沒有、不送
@@ -4816,29 +5003,174 @@
       return { items: g, keep, off, sure };
     });
   }
-  function mgOf(A, kind) { if (!A.mx || A.mx.kind !== kind) A.mx = { kind, G: mgFind(kind), prev: null }; return A.mx.G; }
-  function mgBtn(A, kind) { const n = mgFind(kind).length; return `<button type="button" class="apmg ${n ? '' : 'none'} ${A.merge === kind ? 'on' : ''}" data-apmg="${kind}" aria-expanded="${A.merge === kind}">⇄ 合併類似${n ? ' · ' + n + ' 組' : ''}</button>`; }
+  // 6770f IFACE-merge r0 §1:有 merge_find 就用 aibd 的分組(keep / sure / low / ticked / builtin / used),沒有就照舊頁面自己找;打開面板就重讀一次
+  function mgFromAib(r) {
+    return (r && Array.isArray(r.groups) ? r.groups : []).slice(0, 100).map((g) => {
+      const items = (Array.isArray(g && g.items) ? g.items : []).map((x) => ({ uid: String(x.uid), name: String(x.name || x.uid), use: Number(x.used) || 0, lock: !!x.builtin, hi: !!g.sure }));
+      const tk = new Set(Array.isArray(g.ticked) ? g.ticked.map(String) : []), keep = items.some((x) => x.uid === String(g.keep)) ? String(g.keep) : (items[0] && items[0].uid), off = {};
+      items.forEach((x) => { if (x.uid !== keep && !tk.has(x.uid)) off[x.uid] = true; });
+      return { items, keep, off, sure: !!g.sure, low: typeof g.low === 'number' && Number.isFinite(g.low) ? g.low : null };
+    }).filter((g) => g.items.length > 1);
+  }
+  function mgGroups(kind) {
+    if (hasAct('merge_find') !== true) return mgFind(kind);
+    const C = (S.mgAib = S.mgAib || {}), v = C[kind];
+    if (v === undefined) { C[kind] = null; act('merge_find', { kind }).then((r) => { C[kind] = mgFromAib(r); render(); }).catch((e) => { C[kind] = { err: rgWhy(e) }; render(); }); return []; }
+    return Array.isArray(v) ? v : [];
+  }
+  const mgWait = (kind) => hasAct('merge_find') === true && S.mgAib && !Array.isArray(S.mgAib[kind]) ? (S.mgAib[kind] && S.mgAib[kind].err ? '讀不到:' + S.mgAib[kind].err : '讀取中…') : '';
+  // 6770f IFACE-merge r1 §2–§5:有 merge_preview ⇒ 預覽由 aibd 算(steps / effects / other_hosts / 對照碼),只送 keep + merge,其他欄不送 = aibd 預設
+  // (名稱照舊、夥伴改用留下的、筆記不搬、封存 30 天、人格卡只留留下那張);merge_run 原樣送回預覽給的 plan + plan_sha,一律走 fingerAct(要驗證才跳窗);
+  // 進度讀 merge_log {batch_id}(r2:外層固定 {batches});做完可整筆還原(merge_undo)。沒有這些 act ⇒ 照舊頁面自己的預覽、確認合併寫這一版還沒有
+  const MG_WHY = { batch_unknown: '找不到這批合併紀錄', plan_changed: '清單在預覽後變了,請重新預覽', undo_expired: '已經過了還原期限', owner_check_not_approved: '沒有完成驗證,沒有合併' };
+  const MG_ST = { pending: '…', run: '…', done: '✓', failed: '✗', undone: '↩' };
+  const mgWhy = (e) => MG_WHY[rgCode(e)] || (e && e.body && typeof e.body.message === 'string' && e.body.message) || rgWhy(e);
+  const mgGone = (g) => g.items.filter((x) => x.uid !== g.keep && !g.off[x.uid] && !x.lock);
+  const mgCanRun = (A) => hasAct('merge_run') === true && !!(A.mx && A.mx.pv && A.mx.pv.plan_sha && A.mx.pv.plan);
+  // 6770f IFACE-merge r1 §2「每條可改」:改了才送那一欄,沒改 = aibd 預設(封存 30 天、筆記不搬、人格卡只留留下那張);改完再叫一次預覽
+  // 6770f r3:days 只收 7 / 30 / 90 / "forever"(永久);null 跟不送一樣 = 30 天。紀錄的 keep_until 是 null 才表示永久
+  const MG_DAYS = [7, 30, 90, 'forever'];
+  function mgOptBody(M) {
+    const o = M.opt || {}, b = {};
+    if (MG_DAYS.includes(o.days)) b.days = o.days;
+    if (M.kind === 'persona' && o.card === 'propose') b.card = 'propose';
+    if (M.kind === 'brain' && o.notes === 'copy' && !M.ncBad) b.notes = 'copy';
+    return b;
+  }
+  function mgOptHtml(A) {
+    const M = A.mx; if (hasAct('merge_preview') !== true || M.done) return '';
+    const o = M.opt || {}, d = MG_DAYS.includes(o.days) ? o.days : 30, nc = M.ncBad || null, ncBad = !!nc;
+    const days = MG_DAYS.map((n) => `<button type="button" class="k ${d === n ? 'on' : ''}" data-apmgd="${n}" aria-pressed="${d === n}" ${M.pvBusy ? 'disabled' : ''}>${n === 'forever' ? '永久' : n + ' 天'}</button>`).join('');
+    const card = M.kind === 'persona' ? `<label class="mgopt"><input type="checkbox" class="ck" data-apmgcard="1" ${o.card === 'propose' ? 'checked' : ''} ${M.pvBusy ? 'disabled' : ''}>合併後開一張「寫回人格」提案,把被併的人格卡內容併進來給你審(不勾 = 只留留下那張)</label>` : '';
+    const notes = M.kind === 'brain' ? `<label class="mgopt"><input type="checkbox" class="ck" data-apmgnotes="1" ${o.notes === 'copy' && !ncBad ? 'checked' : ''} ${M.pvBusy || ncBad ? 'disabled' : ''}>把被併大腦的筆記複製進留下的大腦(不勾 = 不搬,原資料夾不動)</label>${ncBad ? `<div class="apn apwarn">這組筆記不能複製:${nc.over_limit ? '超過上限' : '有 ' + Number(nc.cloud_placeholders) + ' 個雲端還沒下載的檔'};不搬,原資料夾不動</div>` : ''}` : '';
+    return `<div class="mgopts"><div class="aplab">可以改</div><div class="ptact"><span class="apn">封存多久(期間可整筆還原)</span>${days}</div>${card}${notes}</div>${mgGrpHtml(A)}`;
+  }
+  // 6770f IFACE-merge r3 §2「每條可改」的 name / seat_to / rebind:受影響的名單照預覽回來、aibd 補好預設的 plan 畫(頁面不自己猜誰受影響);
+  // 改了那組才送那一欄,送整張表(plan 那份 + 改的);沒改 = aibd 預設(名稱照舊、夥伴改用留下的、人格改綁留下的大腦)
+  const mgPlanG = (M, keep) => { const P = M.pv && M.pv.plan; return (P && Array.isArray(P.groups) ? P.groups : []).find((x) => x && x.keep === keep) || null; };
+  const mgClean = (t) => Array.from(String(t || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()).slice(0, 20).join('');
+  const mgOrig = (g) => String((g.items.find((x) => x.uid === g.keep) || {}).name || '');
+  function mgGrpBody(M, g) {
+    const q = (M.gopt || {})[g.keep] || {}, b = {}, pg = mgPlanG(M, g.keep) || {}, nm = mgClean(q.name);
+    if (nm && nm !== mgOrig(g)) b.name = nm;
+    for (const [k, f] of [['seat_to', 'persona'], ['rebind', 'brain']]) { const ch = q[k] || {}; if (M.kind === f && Object.keys(ch).length) b[k] = Object.assign({}, pg[k] || {}, ch); }
+    return b;
+  }
+  function mgGrpHtml(A) {
+    const M = A.mx; if (hasAct('merge_preview') !== true || M.done || !M.pv || !M.pv.plan) return '';
+    const dis = M.pvBusy ? 'disabled' : '', pn = new Map(personas());
+    const own = M.kind === 'persona' ? personas().map(([uid, name]) => ({ uid, name })) : M.kind === 'brain' ? ((S.reg && S.reg.brains) || []).map((b) => ({ uid: b.uid, name: b.name || b.uid })) : [];
+    return (Array.isArray(M.pv.plan.groups) ? M.pv.plan.groups : []).map((pg) => {
+      const g = pg && M.G.find((x) => x.keep === pg.keep); if (!g) return '';
+      const q = (M.gopt || {})[g.keep] || {}, gone = new Set((Array.isArray(pg.merge) ? pg.merge : []).map(String)), opts = own.filter((x) => !gone.has(x.uid));
+      const sel = (at, key, cur) => { const L = opts.some((x) => x.uid === cur) ? opts : [{ uid: cur, name: cur }].concat(opts); return `<select class="mgin" ${at}="${esc(g.keep)}|${esc(key)}" ${dis}>${L.map((x) => `<option value="${esc(x.uid)}" ${x.uid === cur ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`; };
+      const nm = `<label class="mgopt">合併後名稱(最多 20 字)<input class="mgin" data-apmgnm="${esc(g.keep)}" maxlength="20" value="${esc(q.name !== undefined ? q.name : String(pg.name || mgOrig(g)))}" ${dis}></label>`;
+      const st = M.kind === 'persona' ? Object.keys(pg.seat_to || {}).map((sid) => `<label class="mgopt">${esc(fpAt(sid))} 下次開改用 ${sel('data-apmgst', sid, String((q.seat_to || {})[sid] || pg.seat_to[sid]))}</label>`).join('') : '';
+      const rb = M.kind === 'brain' ? Object.keys(pg.rebind || {}).map((pu) => `<label class="mgopt">人格「${esc(pn.get(pu) || pu)}」改綁 ${sel('data-apmgrb', pu, String((q.rebind || {})[pu] || pg.rebind[pu]))}</label>`).join('') : '';
+      return `<div class="mgopts mggrp"><div class="aplab">留下「${esc(mgOrig(g))}」這組</div>${nm}${st}${rb}</div>`;
+    }).join('');
+  }
+  function mgGrpChange(A, t) {
+    const M = A && A.mx; if (!M || M.done || M.pvBusy || hasAct('merge_preview') !== true) return false; // 算預覽時、送出後不收
+    const d = t.dataset, go = (M.gopt = M.gopt || {});
+    if (d.apmgnm !== undefined) { const q = (go[d.apmgnm] = go[d.apmgnm] || {}); q.name = mgClean(t.value); mgPreview(A); return true; }
+    for (const [k, v] of [['seat_to', d.apmgst], ['rebind', d.apmgrb]]) { if (!v) continue; const i = v.indexOf('|'), keep = v.slice(0, i), q = (go[keep] = go[keep] || {}); (q[k] = q[k] || {})[v.slice(i + 1)] = String(t.value); mgPreview(A); return true; }
+    return false;
+  }
+  function mgOptClick(A, x) {
+    const M = A && A.mx; if (!M || M.done || M.pvBusy || hasAct('merge_preview') !== true) return false;
+    const o = (M.opt = M.opt || {});
+    const d = x.closest('[data-apmgd]'); if (d) { const n = d.dataset.apmgd === 'forever' ? 'forever' : Number(d.dataset.apmgd); if (!MG_DAYS.includes(n) || o.days === n) return true; o.days = n === 30 ? undefined : n; mgPreview(A); return true; }
+    const c = x.closest('[data-apmgcard]'); if (c && M.kind === 'persona') { o.card = c.checked ? 'propose' : undefined; mgPreview(A); return true; }
+    const nt = x.closest('[data-apmgnotes]'); if (nt && M.kind === 'brain') { o.notes = nt.checked ? 'copy' : undefined; mgPreview(A); return true; }
+    return false;
+  }
+  async function mgPreview(A) {
+    const M = A.mx; if (!M || hasAct('merge_preview') !== true) return;
+    const R = (M.prev === 'all' ? M.G : [M.G[M.prev]]).filter((g) => g && mgGone(g).length);
+    const groups = R.map((g) => Object.assign({ keep: g.keep, merge: mgGone(g).map((x) => x.uid) }, mgOptBody(M), mgGrpBody(M, g))); // 先用上一次預覽的 plan 補整張表,再清掉
+    M.pv = null; M.pvErr = ''; M.done = null; if (!R.length) return render();
+    const seq = (M.pvSeq = (M.pvSeq || 0) + 1); M.pvBusy = true; render();
+    try { const r = await act('merge_preview', { kind: M.kind, groups }); if (seq === M.pvSeq) M.pv = r && typeof r === 'object' ? r : null; }
+    catch (e) { if (seq === M.pvSeq) M.pvErr = mgWhy(e); }
+    // f163c r5e L1:aibd 說這組筆記不能搬 ⇒ 清掉 copy、記下原因、不帶 copy 再預覽一次(畫面跟送出的 plan 一致)
+    if (seq === M.pvSeq && !M.ncBad && M.pv && M.kind === 'brain' && (M.opt || {}).notes === 'copy' && M.pv.notes_check && (M.pv.notes_check.cloud_placeholders > 0 || M.pv.notes_check.over_limit)) { M.ncBad = M.pv.notes_check; M.opt.notes = undefined; M.pvBusy = false; return mgPreview(A); }
+    if (seq === M.pvSeq) M.pvBusy = false; render();
+  }
+  function mgPvHtml(A) {
+    const M = A.mx; if (hasAct('merge_preview') !== true) return '';
+    if (M.pvBusy) return '<div class="apn">AIB 正在算預覽…</div>';
+    if (M.pvErr) return `<div class="trm bad">預覽失敗:${esc(M.pvErr)}</div>`;
+    const P = M.pv; if (!P) return '';
+    const eff = (Array.isArray(P.groups) ? P.groups : []).map((g) => (Array.isArray(g && g.effects) ? g.effects : []).map((x) => `<div class="mgef"><b>${esc(String(x.tag || ''))}</b>${esc(String(x.text || ''))}</div>`).join('')).join('');
+    const st = Array.isArray(P.steps) && P.steps.length ? `<ol class="mgst">${P.steps.map((x) => `<li>${esc(String(x))}</li>`).join('')}</ol>` : '';
+    const nc = P.notes_check && (P.notes_check.cloud_placeholders > 0 || P.notes_check.over_limit) ? `<div class="apn apwarn">筆記不能搬:${P.notes_check.over_limit ? '超過上限' : '有 ' + Number(P.notes_check.cloud_placeholders) + ' 個雲端還沒下載的檔'}</div>` : '';
+    return `<div class="mgpv"><div class="aplab">AIB 會做這幾步</div>${st}${eff}${nc}${P.other_hosts ? `<div class="apn">${esc(String(P.other_hosts))}</div>` : ''}${P.needs_owner && !M.done ? `<div class="apn">要你本人驗證;系統視窗會寫對照碼 <code>${esc(String(P.window_sha12 || ''))}</code>,跟這裡一樣才按</div>` : ''}</div>`;
+  }
+  function mgDoneHtml(A) {
+    const D = A.mx && A.mx.done; if (!D) return '';
+    const b = D.log || {}, steps = Array.isArray(b.steps) ? b.steps : [];
+    const head = D.err ? `<div class="trm bad">${esc(D.err)}</div>` : b.state === 'done' ? '<div class="trm">合併好了;工作中的夥伴下次開才換</div>' : b.state === 'failed' ? '<div class="trm bad">合併失敗,已做的步驟都倒回了</div>' : b.state === 'undone' ? '<div class="trm">整筆還原了</div>' : b.state === 'partial_undo' ? '<div class="trm">還原了,但有幾項沒動(見下面)</div>' : '<div class="apn">合併中…</div>';
+    const kc = (Array.isArray(D.kept) ? D.kept : []).map((k) => `<div class="apn apwarn">留下的「${esc(String(k.target || ''))}」合併後改過,沒有動它${k.why ? '(' + esc(String(k.why)) + ')' : ''}</div>`).join('');
+    const exp = Number(b.keep_until), until = b.keep_until === null ? '永久封存,隨時可整筆還原' : Number.isFinite(exp) && exp > 0 ? '到 ' + new Date(exp * 1000).toLocaleDateString('zh-TW') + ' 前可整筆還原' : '';
+    const ub = b.state === 'done' && b.can_undo && hasAct('merge_undo') === true ? `<button type="button" class="k" data-apmgundo="${esc(String(D.batch || ''))}" ${D.busy ? 'disabled' : ''}>整筆還原</button>` : '';
+    return `<div class="mgdone">${head}${steps.length ? `<ol class="mgst">${steps.map((s) => `<li>${MG_ST[s.state] || '…'} ${esc(String(s.op || ''))} ${esc(String(s.target || ''))}</li>`).join('')}</ol>` : ''}${kc}${until && b.state === 'done' ? `<div class="apn">${esc(until)}</div>` : ''}${ub ? `<div class="ptact">${ub}</div>` : ''}</div>`;
+  }
+  async function mgLogPoll(A, batch, n) {
+    const M = A.mx; if (!M || !M.done || M.done.batch !== batch) return;
+    try { const r = await act('merge_log', { batch_id: batch }), L = r && Array.isArray(r.batches) ? r.batches : []; M.done.log = L.find((x) => x && x.batch_id === batch) || M.done.log; }
+    catch (e) { M.done.err = '讀不到進度:' + mgWhy(e); }
+    render();
+    if (!M.done.err && (!M.done.log || M.done.log.state === 'run') && n < 150) setTimeout(() => mgLogPoll(A, batch, n + 1), 2000);
+  }
+  async function mgRun(A) {
+    const M = A.mx; if (!mgCanRun(A) || (M.done && M.done.busy)) return;
+    const P = M.pv; M.done = { busy: true, log: { state: 'run' } }; M.msg = ''; render();
+    try {
+      const r = await fingerAct('merge_run', { plan_sha: P.plan_sha, plan: P.plan });
+      if (r && r.state === 'failed') { M.done = { log: { state: 'failed' }, err: '合併失敗' + (Number.isFinite(Number(r.stopped_at)) && r.stopped_at != null ? '(停在第 ' + Number(r.stopped_at) + ' 步)' : '') + ',已做的步驟都倒回了' + (r.code ? '(' + String(r.code) + ')' : '') }; return render(); }
+      if (!r || !r.batch_id) throw Object.assign(new Error('no_batch'), { code: 'no_batch' });
+      M.done = { batch: String(r.batch_id), log: { state: String(r.state || 'run') } };
+      if (S.mgAib) delete S.mgAib[M.kind];
+      if (typeof loadRegistry === 'function') loadRegistry();
+      render(); mgLogPoll(A, M.done.batch, 0);
+    } catch (e) {
+      if (rgCode(e) === 'plan_changed') { M.done = null; M.msg = MG_WHY.plan_changed; mgPreview(A); return; }
+      M.done = { log: {}, err: '沒有合併:' + mgWhy(e) }; render();
+    }
+  }
+  async function mgUndo(A, batch) {
+    const M = A.mx; if (!M || !M.done || M.done.batch !== batch || M.done.busy || hasAct('merge_undo') !== true) return;
+    M.done.busy = true; render();
+    try { const r = await fingerAct('merge_undo', { batch_id: batch }); M.done.log = Object.assign({}, M.done.log, { state: String((r && r.state) || 'undone'), can_undo: false }); M.done.kept = Array.isArray(r && r.kept_changed) ? r.kept_changed.slice(0, 50) : []; if (S.mgAib) delete S.mgAib[M.kind]; if (typeof loadRegistry === 'function') loadRegistry(); }
+    catch (e) { M.done.err = '沒有還原:' + mgWhy(e); }
+    M.done.busy = false; render();
+  }
+  function mgOf(A, kind) { if (!A.mx || A.mx.kind !== kind || (!A.mx.G.length && !mgWait(kind) && hasAct('merge_find') === true)) A.mx = { kind, G: mgGroups(kind), prev: null }; return A.mx.G; }
+  function mgBtn(A, kind) { const n = mgGroups(kind).length; return `<button type="button" class="apmg ${n ? '' : 'none'} ${A.merge === kind ? 'on' : ''}" data-apmg="${kind}" aria-expanded="${A.merge === kind}">⇄ 合併類似${n ? ' · ' + n + ' 組' : ''}</button>`; }
   function mgPanel(A, kind) {
     if (A.merge !== kind) return '';
     const G = mgOf(A, kind), nm = MG_KN[kind], gone = (g) => g.items.filter((x) => x.uid !== g.keep && !g.off[x.uid] && !x.lock);
-    if (!G.length) return `<div class="apmgp"><div class="apmgh"><b>合併類似${nm}</b><button type="button" class="k" data-apmgx="1">收起</button></div><div class="apn">沒有找到名字很像的${nm}</div></div>`;
+    if (!G.length) return `<div class="apmgp"><div class="apmgh"><b>合併類似${nm}</b><button type="button" class="k" data-apmgx="1">收起</button></div><div class="apn">${esc(mgWait(kind) || '沒有找到名字很像的' + nm)}</div></div>`;
     if (A.mx.prev != null) {
       const R = (A.mx.prev === 'all' ? G : [G[A.mx.prev]]).filter((g) => gone(g).length), n = R.reduce((a, g) => a + gone(g).length, 0), live = R.reduce((a, g) => a + gone(g).reduce((b, x) => b + x.use, 0), 0);
-      return `<div class="apmgp prev"><div class="apmgh"><b>合併預覽 · ${nm}</b><span class="apex">還沒動任何東西</span></div><div class="apn"><b>${R.length}</b> 組 · <b>${n}</b> 個${nm}會併掉 · <b>${live}</b> 位工作中的夥伴受影響</div>${R.map((g) => `<div class="apmgg"><div class="apmgf">${gone(g).map((x) => `<span class="apmgc out">${esc(x.name)}</span>`).join('')}<span aria-hidden="true">→</span><span class="apmgc in">${esc(g.items.find((x) => x.uid === g.keep).name)}</span></div></div>`).join('')}${A.mx.msg ? `<div class="apn apwarn" role="alert">${esc(A.mx.msg)}</div>` : ''}<div class="ptact"><button type="button" class="k" data-apmgok="1">確認,開始合併</button><button type="button" class="k" data-apmgback="1">回上一步</button></div></div>`;
+      return `<div class="apmgp prev"><div class="apmgh"><b>合併預覽 · ${nm}</b><span class="apex">${A.mx.done ? '已送出,看下面進度' : '還沒動任何東西'}</span></div><div class="apn"><b>${R.length}</b> 組 · <b>${n}</b> 個${nm}會併掉 · <b>${live}</b> 位工作中的夥伴受影響(下次開才換,正在跑的不會中途換)</div>${R.map((g) => `<div class="apmgg"><div class="apmgf">${gone(g).map((x) => `<span class="apmgc out">${esc(x.name)}</span>`).join('')}<span aria-hidden="true">→</span><span class="apmgc in">${esc(g.items.find((x) => x.uid === g.keep).name)}</span></div></div>`).join('')}${mgPvHtml(A)}${mgOptHtml(A)}${A.mx.msg ? `<div class="apn apwarn" role="alert">${esc(A.mx.msg)}</div>` : ''}${mgDoneHtml(A)}${A.mx.done ? '' : `<div class="ptact"><button type="button" class="k" data-apmgok="1" ${hasAct('merge_preview') === true && hasAct('merge_run') === true && !mgCanRun(A) ? 'disabled' : ''}>確認,開始合併</button><button type="button" class="k" data-apmgback="1">回上一步</button></div>`}</div>`;
     }
-    return `<div class="apmgp"><div class="apmgh"><b>找到 ${G.length} 組類似的${nm}</b><span class="apex">點 ◉ 選要留下的,點名字取消就不併</span><button type="button" class="k" data-apmgx="1">收起</button></div>${G.map((g, gi) => `<div class="apmgg"><span class="apex">${g.sure ? '幾乎一樣 · 預設會併' : '可能類似 · 預設不併,要的自己點'}</span>${g.items.map((x) => { const keep = g.keep === x.uid, off = g.off[x.uid] && !keep; return `<div class="apmgi ${keep ? 'keep' : ''} ${off ? 'off' : ''}"><button type="button" class="apmgr" data-apmgk="${gi}|${esc(x.uid)}" aria-label="留下 ${esc(x.name)}" aria-pressed="${keep}" ${g.items.some((y) => y.lock) && !x.lock ? 'disabled' : ''}>${keep ? '◉' : '○'}</button><button type="button" class="apmgn" data-apmgo="${gi}|${esc(x.uid)}" ${keep || x.lock ? 'disabled' : ''} aria-pressed="${!off}">${esc(x.name)}${x.lock ? ' 🔒' : ''}</button><span class="apex">${x.use ? x.use + ' 位在用' : ''}</span></div>`; }).join('')}<div class="ptact"><button type="button" class="k" data-apmgp="${gi}">預覽合併這組</button></div></div>`).join('')}<div class="ptact"><button type="button" class="k" data-apmgp="all">預覽全部合併(${G.length} 組)</button></div></div>`;
+    return `<div class="apmgp"><div class="apmgh"><b>找到 ${G.length} 組類似的${nm}</b><span class="apex">點 ◉ 選要留下的,點名字取消就不併</span><button type="button" class="k" data-apmgx="1">收起</button></div>${G.map((g, gi) => `<div class="apmgg"><span class="apex">${g.sure ? '幾乎一樣 · 預設會併' : '可能類似 · 預設不併,要的自己點'}${g.low != null && g.low < 1 ? ' · 相似度 ' + Math.round(g.low * 100) + '%' : ''}</span>${g.items.map((x) => { const keep = g.keep === x.uid, off = g.off[x.uid] && !keep; return `<div class="apmgi ${keep ? 'keep' : ''} ${off ? 'off' : ''}"><button type="button" class="apmgr" data-apmgk="${gi}|${esc(x.uid)}" aria-label="留下 ${esc(x.name)}" aria-pressed="${keep}" ${g.items.some((y) => y.lock) && !x.lock ? 'disabled' : ''}>${keep ? '◉' : '○'}</button><button type="button" class="apmgn" data-apmgo="${gi}|${esc(x.uid)}" ${keep || x.lock ? 'disabled' : ''} aria-pressed="${!off}">${esc(x.name)}${x.lock ? ' 🔒' : ''}</button><span class="apex">${x.use ? x.use + ' 位在用' : ''}</span></div>`; }).join('')}<div class="ptact"><button type="button" class="k" data-apmgp="${gi}">預覽合併這組</button></div></div>`).join('')}<div class="ptact"><button type="button" class="k" data-apmgp="all">預覽全部合併(${G.length} 組)</button></div></div>`;
   }
   function mgClick(x) {
     const A = S.add; if (!A) return false;
-    const b = x.closest('[data-apmg]'); if (b) { const k = b.dataset.apmg; A.merge = A.merge === k ? '' : k; A.mx = null; render(); return true; }
+    const b = x.closest('[data-apmg]'); if (b) { const k = b.dataset.apmg; A.merge = A.merge === k ? '' : k; A.mx = null; if (S.mgAib && A.merge) delete S.mgAib[k]; render(); return true; } // 打開就重讀 aibd 分組(+ 新增後)
     if (!A.mx) return false;
     const g = (v) => A.mx.G[Number(String(v).split('|')[0])], u = (v) => String(v).split('|').slice(1).join('|');
     if (x.closest('[data-apmgx]')) { A.merge = ''; A.mx = null; render(); return true; }
     const k = x.closest('[data-apmgk]'); if (k) { const G = g(k.dataset.apmgk); if (G) { G.keep = u(k.dataset.apmgk); delete G.off[G.keep]; } render(); return true; }
     const o = x.closest('[data-apmgo]'); if (o) { const G = g(o.dataset.apmgo), id = u(o.dataset.apmgo); if (G) { if (G.off[id]) delete G.off[id]; else G.off[id] = true; } render(); return true; }
-    const p = x.closest('[data-apmgp]'); if (p) { A.mx.prev = p.dataset.apmgp === 'all' ? 'all' : Number(p.dataset.apmgp); A.mx.msg = ''; render(); return true; }
-    if (x.closest('[data-apmgback]')) { A.mx.prev = null; A.mx.msg = ''; render(); return true; }
-    if (x.closest('[data-apmgok]')) { A.mx.msg = MG_NO; render(); return true; } // 不假裝合併了
+    const p = x.closest('[data-apmgp]'); if (p) { A.mx.prev = p.dataset.apmgp === 'all' ? 'all' : Number(p.dataset.apmgp); A.mx.msg = ''; A.mx.done = null; A.mx.ncBad = null; A.mx.gopt = null; render(); mgPreview(A); return true; }
+    if (x.closest('[data-apmgback]')) { A.mx.prev = null; A.mx.msg = ''; A.mx.pv = null; A.mx.pvErr = ''; A.mx.pvBusy = false; A.mx.ncBad = null; A.mx.gopt = null; A.mx.pvSeq = (A.mx.pvSeq || 0) + 1; A.mx.done = null; render(); return true; }
+    if (mgOptClick(A, x)) return true;
+    const un = x.closest('[data-apmgundo]'); if (un) { mgUndo(A, un.dataset.apmgundo); return true; }
+    if (x.closest('[data-apmgok]')) { if (mgCanRun(A)) { mgRun(A); return true; } A.mx.msg = MG_NO; render(); return true; } // 沒有 merge_run 不假裝合併了
     return false;
   }
   // 3e53b 05:5x(sandboxnet r7 §16,頭 1d90ef689):version.capabilities.net = {品牌: {safe|work|dgrs: enforced|hint|off}};
@@ -5655,7 +5987,7 @@
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
     const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,AIB 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
-    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴</button></div>`;
+    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴${netDot()}</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
@@ -6118,6 +6450,7 @@
     if (lt) { const card = lt.dataset.later; const ex = slots().find((y) => y.card === card); if (ex) (S.dmc || (S.dmc = new Map())).set(card, ex); S.dismissed.add(card); render(); try { await act('slot_dismiss', { card_id: card }); } catch (er) { S.dismissed.delete(card); say(errText(er), 'err'); } return tick(true); }
     if (x.closest('[data-add]')) {
       S.add = { provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem() };
+      if (S.netCards > 0) S.add.mine = true; // 有連線卡等你決定 ⇒ 直接展開「我的 AI 夥伴」
       S.rg = null; S.rgMsg = null;
       render();
       loadRegistry();
@@ -6142,6 +6475,9 @@
       if (x.closest('[data-chsend]')) { const ta = document.querySelector('[data-chin]'); chSend(S.add, ta ? ta.value : S.add.chDraft); render(); return chEnd(); }
       const cd = x.closest('[data-chdo]'); if (cd) { const [i, how] = cd.dataset.chdo.split('|'); chDo(S.add, Number(i), how); render(); if (S.add && S.add.chEnd) { S.add.chEnd = false; chEnd(); } if (S.add && S.add.chReveal) { S.add.chReveal = false; const r = document.querySelector('[data-aprow=mode]'); if (r && r.scrollIntoView) r.scrollIntoView({ block: 'start', behavior: 'smooth' }); } return; }
       if (x.closest('[data-apmine]')) { S.add.mine = !S.add.mine; return render(); }
+      const ppo = x.closest('[data-ppok]'); if (ppo) return ppApprove(ppo.dataset.ppok); const ppn = x.closest('[data-ppno]'); if (ppn) return ppDeny(ppn.dataset.ppno); // c2f0b 寫回人格
+      const na = x.closest('[data-netans]'); if (na) { const i = na.dataset.netans.lastIndexOf('|'); return netAnswer(na.dataset.netans.slice(0, i), na.dataset.netans.slice(i + 1)); } // 3e53b 網路例外卡
+      const nrv = x.closest('[data-netrv]'); if (nrv) { const p = nrv.dataset.netrv.split('|'); return netRevoke(p[0], p.slice(1, -1).join('|'), p[p.length - 1]); }
       const hso = x.closest('[data-hsoff]'); if (hso) { S.add.hsOffMsg = HS_OTHER_NO; return render(); }
       if (x.closest('[data-hstest]')) { S.add.hsOffMsg = HS_TEST_NO; return render(); }
       const hta = x.closest('[data-hstadd]'); if (hta) return hsTestAdd(hta.dataset.hstadd);
@@ -6214,6 +6550,7 @@
     el.addEventListener('click', (e) => { if (ate && e.target.closest('[data-full]')) { ate = false; e.stopImmediatePropagation(); e.preventDefault(); } }, true);
   }
   el.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.addpsel && S.add) { const [k, mo] = String(e.target.value).split('|'); const p = providers().find((x) => x.key === k && x.open); if (p) { const nw = S.add.provider !== p.key; S.add.provider = p.key; S.add.model = mo && (p.models || []).some((m) => m.id === mo) ? mo : ''; S.add.noRepoAsk = false; S.add.key = idem(); if (!p.modes.includes(S.add.mode)) S.add.mode = 'safe'; render(); if (nw) apPvRefresh(); } return; }
+    if (e.target.dataset && (e.target.dataset.apmgnm !== undefined || e.target.dataset.apmgst || e.target.dataset.apmgrb) && S.add && mgGrpChange(S.add, e.target)) return; // 合併每組可改(名稱 / 夥伴改用 / 改綁)
     const f = e.target.dataset && e.target.dataset.addf; if (f && S.add) { S.add[f] = e.target.value; if (f === 'role' || f === 'node') render(); } });
   el.addEventListener('paste', (e) => {
     if (e.target.id !== 'inp' || !e.clipboardData) return;
