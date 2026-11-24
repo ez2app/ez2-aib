@@ -1455,7 +1455,7 @@ mod tests {
         let db = aib_store::MessageDb::open(&d.path().join("msg.db")).unwrap();
         std::fs::write(
             d.path().join("registry.json"),
-            r#"{"brains":[{"uid":"br_1","route_key":"k.1"}]}"#,
+            r#"{"brains":[{"uid":"br_1","name":"b1","route_key":"k.1"}]}"#,
         )
         .unwrap();
         assert_eq!(brain_archived(d.path(), &db, "k.1"), Ok(()));
