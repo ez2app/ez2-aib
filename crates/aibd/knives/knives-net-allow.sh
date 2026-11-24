@@ -42,7 +42,7 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   -- cargo test -p aibd --locked --lib net_allow::tests::over_30_days_own_ip_and_revoked_tickets_are_refused
 # na-tunnel-revoke
 python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
-  '    let _ = db.net_allow_revoke(ticket, now as i64);' \
+  '    db.net_allow_revoke(ticket, now as i64)?;' \
   '    let _ = (db, ticket, now);' \
   --expect-fail net_allow::tests::proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive \
   -- cargo test -p aibd --locked --lib net_allow::tests::proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive

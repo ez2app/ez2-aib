@@ -152,20 +152,22 @@ pub fn proxy_allowed(
     .is_some()
 }
 
-/// Sweep open tunnels against [`proxy_allowed`] (used on expire, merge, or archive where
-/// `persona_active` becomes `false`).
+/// Sweep open tunnels against [`proxy_allowed`] per-seat `(persona_uid, persona_active)`
+/// (used on expire, merge, or archive where `persona_active` becomes `false`).
 #[allow(clippy::too_many_arguments)]
 pub fn sweep_tunnels(
     db: &MessageDb,
     now: u64,
     tunnels: &mut crate::proxy::Tunnels,
     grants: &crate::grants::Grants,
-    persona_uid: &str,
+    seat_persona: &dyn Fn(&str) -> Option<(&str, bool)>,
     own: &[IpAddr],
-    persona_active: bool,
     verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
 ) -> Vec<u64> {
-    tunnels.sweep(now, grants, &|_seat, ip, port| {
+    tunnels.sweep(now, grants, &|seat, ip, port| {
+        let Some((persona_uid, persona_active)) = seat_persona(seat) else {
+            return false;
+        };
         proxy_allowed(
             db,
             persona_uid,
@@ -187,22 +189,20 @@ pub fn revoke_and_sweep(
     now: u64,
     tunnels: &mut crate::proxy::Tunnels,
     grants: &crate::grants::Grants,
-    persona_uid: &str,
+    seat_persona: &dyn Fn(&str) -> Option<(&str, bool)>,
     own: &[IpAddr],
-    persona_active: bool,
     verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
-) -> Vec<u64> {
-    let _ = db.net_allow_revoke(ticket, now as i64);
-    sweep_tunnels(
+) -> aib_store::Result<Vec<u64>> {
+    db.net_allow_revoke(ticket, now as i64)?;
+    Ok(sweep_tunnels(
         db,
         now,
         tunnels,
         grants,
-        persona_uid,
+        seat_persona,
         own,
-        persona_active,
         verify_fn,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -391,6 +391,11 @@ mod tests {
         // Open tunnel held by always-allow; revoke closes it immediately
         let mut tunnels = Tunnels::default();
         let tid = tunnels.open("seat1", addr, By::Held);
+        let seat_map = |s: &str| match s {
+            "seat1" => Some(("un0eba", true)),
+            "seat_b" => Some(("other_p", true)),
+            _ => None,
+        };
         assert_eq!(
             revoke_and_sweep(
                 &db,
@@ -398,39 +403,44 @@ mod tests {
                 now,
                 &mut tunnels,
                 &grants,
-                "un0eba",
+                &seat_map,
                 &own,
-                true,
                 &test_verify,
-            ),
+            )
+            .unwrap(),
             vec![tid]
         );
 
-        // Second valid ticket: closes immediately on expiry or persona inactive (merge/archive)
+        // Second valid ticket for un0eba: seat_b (other_p) to same addr MUST be closed while seat1 stays
         let row2 = sign_row("tk_proxy_2", "un0eba", addr, now, now + 100, b":ok");
         assert!(db.net_allow_add(row2).unwrap());
         let tid2 = tunnels.open("seat1", addr, By::Held);
-        assert!(sweep_tunnels(
-            &db,
-            now + 50,
-            &mut tunnels,
-            &grants,
-            "un0eba",
-            &own,
-            true,
-            &test_verify,
-        )
-        .is_empty());
-        // Inactive persona (archived/merged) closes immediately
+        let tid_b = tunnels.open("seat_b", addr, By::Held);
         assert_eq!(
             sweep_tunnels(
                 &db,
                 now + 50,
                 &mut tunnels,
                 &grants,
-                "un0eba",
+                &seat_map,
                 &own,
-                false,
+                &test_verify,
+            ),
+            vec![tid_b]
+        );
+        // Inactive persona (archived/merged) closes immediately
+        let seat_inactive = |s: &str| match s {
+            "seat1" => Some(("un0eba", false)),
+            _ => None,
+        };
+        assert_eq!(
+            sweep_tunnels(
+                &db,
+                now + 50,
+                &mut tunnels,
+                &grants,
+                &seat_inactive,
+                &own,
                 &test_verify,
             ),
             vec![tid2]
@@ -443,9 +453,8 @@ mod tests {
                 now + 100,
                 &mut tunnels,
                 &grants,
-                "un0eba",
+                &seat_map,
                 &own,
-                true,
                 &test_verify,
             ),
             vec![tid3]
