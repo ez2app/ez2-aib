@@ -514,10 +514,10 @@ mod tests {
             }
         };
         let rows = vec![
-            mk("tk_ok", "p_1", "10.0.0.5:5432", 5000, vec![1]),
+            mk("tk_ok", "p_1", "8.8.8.8:443", 5000, vec![1]),
             mk("tk_exp", "p_1", "10.0.0.6:5432", 1500, vec![1]),
             mk("tk_bad", "p_1", "10.0.0.7:5432", 5000, vec![9]),
-            mk("tk_pub", "p_1", "8.8.8.8:443", 5000, vec![1]),
+            mk("tk_pub", "p_1", "10.0.0.5:5432", 5000, vec![1]),
             mk("tk_rev", "p_1", "10.0.0.8:5432", 5000, vec![1]),
             mk("tk_other", "p_2", "10.0.0.9:5432", 5000, vec![1]),
         ];
@@ -537,8 +537,8 @@ mod tests {
         );
         assert_eq!(out.len(), 5);
         assert_eq!(out[0]["state"], "ok");
-        assert_eq!(out[0]["ip"], "10.0.0.5");
-        assert_eq!(out[0]["port"], 5432);
+        assert_eq!(out[0]["ip"], "8.8.8.8");
+        assert_eq!(out[0]["port"], 443);
         assert_eq!(out[1]["state"], "expired");
         assert_eq!(out[2]["state"], "bad_sig");
         assert_eq!(out[3]["state"], "class_changed");

@@ -802,7 +802,10 @@ mod tests {
         assert_eq!(cs.waiting(10), 2);
         let l = cs.list(10);
         assert_eq!(l[0]["dest_port"], 5432);
-        assert_eq!(l[0]["choices"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            l[0]["choices"].as_array().unwrap().len(),
+            if crate::owner_ok::available() { 6 } else { 5 }
+        );
         let high: Vec<(String, bool)> = l[1]["choices"]
             .as_array()
             .unwrap()

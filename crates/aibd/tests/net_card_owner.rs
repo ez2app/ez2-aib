@@ -76,8 +76,8 @@ fn card(id: &str) -> aibd::net_card::Card {
         seat_id: "a1b2c".into(),
         persona_uid: "p_1".into(),
         persona_name: "頁面工程師".into(),
-        dest_name: "db.lan".into(),
-        dest: "10.0.0.5:5432".parse().unwrap(),
+        dest_name: "api.example".into(),
+        dest: "8.8.8.8:443".parse().unwrap(),
         source: "proxy",
         why: None,
         expires_at: now() + 100,
@@ -101,7 +101,7 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let mut d = Daemon::start(dir.path()).await;
     {
-        let store = aib_store::Store::open(&dir.path().join("data").join("db.sqlite")).unwrap();
+        let store = aib_store::Store::open(&dir.path().join("data").join("aibd.sqlite")).unwrap();
         let ts = "2026-11-25T00:00:00Z".to_string();
         let seat = aib_store::Seat {
             seat_id: "a1b2c".into(),
@@ -219,12 +219,12 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
     let items = r.json["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "reason: dup_in_mem_and_db {}", r.body);
-    assert_eq!(items[0]["ip"], "10.0.0.5", "{}", r.body);
-    assert_eq!(items[0]["port"], 5432, "{}", r.body);
+    assert_eq!(items[0]["ip"], "8.8.8.8", "{}", r.body);
+    assert_eq!(items[0]["port"], 443, "{}", r.body);
     assert!(items[0]["ticket"].as_str().is_some(), "{}", r.body);
 
     let r = act(
-        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432}),
+        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.8.8", "port": 443}),
     )
     .await;
     assert_eq!(
@@ -248,12 +248,12 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
                 .unwrap();
         let issued = now();
         let until = issued + 3600;
-        let addr: std::net::SocketAddr = "10.0.0.8:5432".parse().unwrap();
+        let addr: std::net::SocketAddr = "8.8.4.4:443".parse().unwrap();
         let params = aibd::net_allow::always_params("p_1", addr, issued, until, "rq_re").unwrap();
         let ask = aibd::owner_ok::Ask {
             category: aib_approve::category::Category::WindowGrant,
             operation: aibd::net_allow::OP_ALWAYS,
-            resource: "10.0.0.8:5432".into(),
+            resource: "8.8.4.4:443".into(),
             params: params.clone(),
             by: "page:1".into(),
         };
@@ -261,7 +261,7 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
         db.net_allow_add(aib_store::net_allow::NetAllowRow {
             ticket: "ot_restart_1".into(),
             by_key: "page:1".into(),
-            resource: "10.0.0.8:5432".into(),
+            resource: "8.8.4.4:443".into(),
             params,
             sig,
             approved_at: issued as i64,
@@ -272,19 +272,19 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     let items = r.json["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "reason: restart_lost_always {}", r.body);
     assert_eq!(
-        items[0]["ip"], "10.0.0.8",
+        items[0]["ip"], "8.8.4.4",
         "reason: restart_missing_ip {}",
         r.body
     );
     assert_eq!(
-        items[0]["port"], 5432,
+        items[0]["port"], 443,
         "reason: restart_missing_port {}",
         r.body
     );
     assert_eq!(items[0]["state"], "ok", "{}", r.body);
 
     let r = act(
-        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "10.0.0.8", "port": 5432}),
+        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.4.4", "port": 443}),
     )
     .await;
     assert_eq!(r.code, 200, "{}", r.body);
