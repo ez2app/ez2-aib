@@ -359,31 +359,67 @@ fn valid_tier_overflow(s: &str) -> bool {
 }
 
 fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
-    let Some(reuse) = policy.get("reuse").and_then(Value::as_str).filter(|s| valid_tier_reuse(s)) else {
+    let Some(reuse) = policy
+        .get("reuse")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_reuse(s))
+    else {
         return true;
     };
-    let Some(spot) = policy.get("spot_every").and_then(Value::as_u64).filter(|n| (2..=100).contains(n)) else {
+    let Some(spot) = policy
+        .get("spot_every")
+        .and_then(Value::as_u64)
+        .filter(|n| (2..=100).contains(n))
+    else {
         return true;
     };
-    let Some(knives) = policy.get("knives").and_then(Value::as_str).filter(|s| valid_tier_knives(s)) else {
+    let Some(knives) = policy
+        .get("knives")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_knives(s))
+    else {
         return true;
     };
-    let Some(platforms) = policy.get("platforms").and_then(Value::as_str).filter(|s| valid_tier_platforms(s)) else {
+    let Some(platforms) = policy
+        .get("platforms")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_platforms(s))
+    else {
         return true;
     };
-    let Some(stop) = policy.get("stop").and_then(Value::as_str).filter(|s| valid_tier_stop(s)) else {
+    let Some(stop) = policy
+        .get("stop")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_stop(s))
+    else {
         return true;
     };
-    let Some(overflow) = policy.get("overflow").and_then(Value::as_str).filter(|s| valid_tier_overflow(s)) else {
+    let Some(overflow) = policy
+        .get("overflow")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_overflow(s))
+    else {
         return true;
     };
-    let Some(cell) = policy.get("cell_max_min").and_then(Value::as_u64).filter(|n| (15..=90).contains(n)) else {
+    let Some(cell) = policy
+        .get("cell_max_min")
+        .and_then(Value::as_u64)
+        .filter(|n| (15..=90).contains(n))
+    else {
         return true;
     };
-    let Some(sk) = policy.get("script_max_knives").and_then(Value::as_u64).filter(|n| (20..=200).contains(n)) else {
+    let Some(sk) = policy
+        .get("script_max_knives")
+        .and_then(Value::as_u64)
+        .filter(|n| (20..=200).contains(n))
+    else {
         return true;
     };
-    let Some(sm) = policy.get("script_max_min").and_then(Value::as_u64).filter(|n| (5..=60).contains(n)) else {
+    let Some(sm) = policy
+        .get("script_max_min")
+        .and_then(Value::as_u64)
+        .filter(|n| (5..=60).contains(n))
+    else {
         return true;
     };
 
@@ -1031,27 +1067,39 @@ mod tests {
 
         // M2: unknown string, string number, float, spot_every out-of-range all rejected
         assert_eq!(
-            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "overrides": {"knives": "none"}}))
-                .unwrap_err()
-                .1,
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"knives": "none"}})
+            )
+            .unwrap_err()
+            .1,
             "bad_tier_overrides"
         );
         assert_eq!(
-            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": "50"}}))
-                .unwrap_err()
-                .1,
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": "50"}})
+            )
+            .unwrap_err()
+            .1,
             "bad_tier_overrides"
         );
         assert_eq!(
-            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "overrides": {"cell_max_min": 5.5}}))
-                .unwrap_err()
-                .1,
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"cell_max_min": 5.5}})
+            )
+            .unwrap_err()
+            .1,
             "bad_tier_overrides"
         );
         assert_eq!(
-            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": 0}}))
-                .unwrap_err()
-                .1,
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": 0}})
+            )
+            .unwrap_err()
+            .1,
             "out_of_range"
         );
         // M2 on disk: corrupt/unknown override falls back to strict
