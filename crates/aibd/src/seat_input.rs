@@ -72,6 +72,10 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::plugins_page::MARKETPLACE_INSTALL,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
+    crate::net_card_web::LIST,
+    crate::net_card_web::ANSWER,
+    crate::net_card_web::ALLOW_LIST,
+    crate::net_card_web::ALLOW_REVOKE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
     crate::brain_note::LIST,
@@ -105,6 +109,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::preview::RETIRE,
     crate::preview::FIX,
     crate::preview::ACTIVE,
+    crate::persona_propose::LIST,
+    crate::persona_propose::DENY,
     crate::receipt_run::REQUEST,
     crate::receipt_run::READ,
     crate::receipt_run::WITHDRAW,
@@ -388,6 +394,18 @@ pub async fn act(
                     );
                 };
                 return crate::receipt_run::seat_act(st, &seat, body).await;
+            }
+            // §7-2 寫回人格 (DESIGN-persona-propose-osverify-c2f0b-1123 r2): a seat proposes a new
+            // text for its own persona card, never another's; the seat is the token's
+            if crate::persona_propose::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::persona_propose::seat_act(st, &seat, body).await;
             }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
@@ -695,6 +713,30 @@ pub async fn act(
                 _ => crate::test_host_web::remove(st, body, by).await,
             };
         }
+        // the network exception card (IFACE-netcard r1): the built-in page in this pairing only;
+        // a yes that needs the owner then needs the owner's fingerprint
+        Some(
+            k @ (crate::net_card_web::LIST
+            | crate::net_card_web::ANSWER
+            | crate::net_card_web::ALLOW_LIST
+            | crate::net_card_web::ALLOW_REVOKE),
+        ) => {
+            let net_outside = held_as_user_page(&page).await || page.carried;
+            if net_outside {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "network cards are answered from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::net_card_web::LIST => crate::net_card_web::list().await,
+                crate::net_card_web::ANSWER => crate::net_card_web::answer(st, body, by).await,
+                crate::net_card_web::ALLOW_LIST => crate::net_card_web::allow_list(st, body).await,
+                _ => crate::net_card_web::allow_revoke(st, body, by).await,
+            };
+        }
         // 重新登入 (DESIGN-relogin-card r2): the built-in page in this pairing only; starting a
         // round then needs the owner's fingerprint, the code and the state are that pairing's
         Some(
@@ -891,6 +933,10 @@ pub async fn act(
             | crate::preview::ACTIVE,
         ) => {
             return crate::preview::edit(st, page, body).await
+        }
+        // §7-2 寫回人格: the built-in page lists the waiting proposals and says no
+        Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {
+            return crate::persona_propose::page_act(&st, &page, body).await
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(

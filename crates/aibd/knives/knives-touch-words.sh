@@ -13,8 +13,8 @@ tw '            kept[i] = '"'"'·'"'"';' \
    '            kept[i] = '"'"':'"'"';' \
    the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead
 # TW3 an object says the window's own 請在
-tw '    let text = kept.iter().collect::<String>().replace("請在", "請·在");' \
-   '    let text = kept.iter().collect::<String>().replace("請在", "請在");' \
+tw '    ("請在", "請·在"),' \
+   '    ("請在", "請在"), // knife' \
    the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead
 # TW4 an operation with no sentence and no name shows nothing on top
 tw '        .map_or(operation, |(_, words)| *words)' \

@@ -44,7 +44,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 subtle = "2.6.1"
-sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk"] }
+# network: this computer's interface addresses for host_addr::own_addresses (hostmode r4 §2,
+# sandboxnet r6 §15.1; 3e53b 11-23). No new crate: Windows' `windows` gains IpHelper / WinSock.
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk", "network"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = "0.5.3"

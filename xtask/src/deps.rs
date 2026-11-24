@@ -48,6 +48,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         &[
             "Win32_Foundation",
             "Win32_Security",
+            // S10-3 / W1b hello_ncrypt (DESIGN-persona-propose-osverify-c2f0b-1123 §3)
+            "Win32_Security_Cryptography",
             // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
             "Win32_Storage_FileSystem",
             "Win32_System_Console",
@@ -55,6 +57,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_IO",
             "Win32_System_JobObjects",
             "Win32_System_RemoteDesktop",
+            // sysdir: GetSystemDirectoryW for aibd host_ssh (3e53b DEEP2 T1, DESIGN-hostmode §3-4)
+            "Win32_System_SystemInformation",
             "Win32_System_Threading",
         ],
     ),
@@ -76,7 +80,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "objc2-local-authentication",
         Some("cfg(target_os = \"macos\")"),
         "=0.3.2",
-        &["LAContext", "std"],
+        // LABiometryType: S10-2 owner_check_state (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
+        &["LABiometryType", "LAContext", "std"],
     ),
 ];
 
@@ -416,11 +421,11 @@ mod tests {
             .expect("on the list");
         let (n, t, r, _) = SYS_OWN_DEPS[i];
         let mut d = allowed();
-        d[i] = dep(n, t, r, &["LAContext", "LAError", "std"]);
+        d[i] = dep(n, t, r, &["LABiometryType", "LAContext", "LAError", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, t, "^0.3.2", &["LAContext", "std"]);
+        d[i] = dep(n, t, "^0.3.2", &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, None, r, &["LAContext", "std"]);
+        d[i] = dep(n, None, r, &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
     }
 
