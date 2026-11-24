@@ -46,6 +46,16 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::registry::PERSONA_ADD,
     crate::registry::BRAIN_ADD,
     crate::registry::RENAME,
+    crate::persona_edit::PERSONA_READ,
+    crate::persona_edit::PERSONA_SET,
+    crate::persona_edit::BRAIN_SET,
+    crate::persona_edit::ROLE_SET,
+    crate::persona_edit::PERSONA_ARCHIVE,
+    crate::persona_edit::BRAIN_ARCHIVE,
+    crate::persona_edit::ROLE_ARCHIVE,
+    crate::persona_edit::PERSONA_RESTORE,
+    crate::persona_edit::BRAIN_RESTORE,
+    crate::persona_edit::ROLE_RESTORE,
     crate::repos::REGISTER,
     crate::gh_view::KIND,
     crate::seat_trust::TRUST,
@@ -62,6 +72,16 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
+    crate::brain_note::LIST,
+    crate::brain_note::DELETE,
+    crate::perm_tpl::LIST,
+    crate::perm_tpl::LOG,
+    crate::perm_tpl::ADD,
+    crate::perm_tpl::SET,
+    crate::perm_tpl::REMOVE,
+    crate::perm_apply::APPLY,
+    crate::perm_apply::SEAT_LOG,
+    crate::perm_apply::REVOKE,
     crate::seat_fetch::FETCH,
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
@@ -298,6 +318,18 @@ pub async fn act(
                 };
                 return crate::seat_dm::seat_act(st, &seat, body).await;
             }
+            // aibd §3 brain_note (DESIGN-brainnote-08de5-1123): a work seat adds a note to the
+            // second brain it was opened bound to; the seat is the token's, never the body's
+            if crate::brain_note::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::brain_note::seat_act(st, &seat, body).await;
+            }
             // PREREAD-seat-pending-read: a seat reads the pending folder, read-only
             if crate::seat_pending::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -387,6 +419,72 @@ pub async fn act(
     let kind = body.get("type").and_then(Value::as_str).map(str::to_owned);
     match kind.as_deref() {
         Some(KIND) => {}
+        // aibd §3 brain_note: the notes work seats wrote are listed and taken back from the
+        // built-in page in this pairing (no fingerprint: a take-back only lowers)
+        Some(k @ (crate::brain_note::LIST | crate::brain_note::DELETE)) => {
+            let note_from_user_page = held_as_user_page(&page).await;
+            if note_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "brain notes are listed and taken back from the built-in page in this pairing only",
+                );
+            }
+            return if k == crate::brain_note::LIST {
+                crate::brain_note::list(st, body).await
+            } else {
+                let by = format!("page:{}", hex(&page.digest[..8]));
+                crate::brain_note::delete(st, body, by).await
+            };
+        }
+        // aibd §7 permission templates: the built-in page in this pairing only; a change that
+        // raises asks the owner's fingerprint (perm_tpl decides which)
+        // (no `k @ (…)` binding: every_page_act_arm_is_listed reads the pattern lines that
+        // start `Some(` or `crate::`; chain7b a1d34d0b6 lost REVOKE that way)
+        Some(
+            crate::perm_tpl::LIST
+            | crate::perm_tpl::LOG
+            | crate::perm_tpl::ADD
+            | crate::perm_tpl::SET
+            | crate::perm_tpl::REMOVE,
+        ) => {
+            let tpl_from_user_page = held_as_user_page(&page).await;
+            if tpl_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "permission templates are kept from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match kind.as_deref().unwrap_or_default() {
+                crate::perm_tpl::LIST => crate::perm_tpl::list(st).await,
+                crate::perm_tpl::LOG => crate::perm_tpl::log(st, body).await,
+                crate::perm_tpl::ADD => crate::perm_tpl::add(st, body, by).await,
+                crate::perm_tpl::SET => crate::perm_tpl::set(st, body, by).await,
+                _ => crate::perm_tpl::remove(st, body, by).await,
+            };
+        }
+        // aibd §7 7b: a template applied to an open seat, its log, and taking a change back
+        // (收回): the built-in page in this pairing only; turning an item on asks the owner
+        Some(
+            crate::perm_apply::APPLY | crate::perm_apply::SEAT_LOG | crate::perm_apply::REVOKE,
+        ) => {
+            let apply_from_user_page = held_as_user_page(&page).await;
+            if apply_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat's permissions are changed from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match kind.as_deref().unwrap_or_default() {
+                crate::perm_apply::APPLY => crate::perm_apply::apply(st, body, by).await,
+                crate::perm_apply::SEAT_LOG => crate::perm_apply::seat_log(st, body).await,
+                _ => crate::perm_apply::revoke(st, body, by).await,
+            };
+        }
         Some(crate::contacts_api::CONTACT_SET) => {
             // 5d33a L1: a user folder page does not write the person's notes either
             if body.get("note").is_some() && held_as_user_page(&page).await {
@@ -414,6 +512,40 @@ pub async fn act(
         // N-ws-open-bind: the page's 「+ 新增」 on the role / persona / brain lists (5d33a
         // CHECK-ws-open-bind: the built-in page in this pairing only; persona and brain need the
         // owner's fingerprint)
+        // A1 (DESIGN-a1-edit-archive-08de5-1123 r0): read / change a persona's three sections
+        // (the owner's fingerprint), rename a brain or a role the person added, archive and
+        // restore; the built-in page in this pairing only, as the adds above
+        Some(
+            crate::persona_edit::PERSONA_READ
+            | crate::persona_edit::PERSONA_SET
+            | crate::persona_edit::BRAIN_SET
+            | crate::persona_edit::ROLE_SET
+            | crate::persona_edit::PERSONA_ARCHIVE
+            | crate::persona_edit::BRAIN_ARCHIVE
+            | crate::persona_edit::ROLE_ARCHIVE
+            | crate::persona_edit::PERSONA_RESTORE
+            | crate::persona_edit::BRAIN_RESTORE
+            | crate::persona_edit::ROLE_RESTORE,
+        ) => {
+            let registry_from_user_page = held_as_user_page(&page).await;
+            if registry_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "registry_built_in_page_only",
+                    "personas, brains and roles are changed from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            let act = kind.as_deref().unwrap_or_default();
+            return match act {
+                crate::persona_edit::PERSONA_READ => crate::persona_edit::read(st, body).await,
+                crate::persona_edit::PERSONA_SET => crate::persona_edit::set(st, body, by).await,
+                crate::persona_edit::BRAIN_SET | crate::persona_edit::ROLE_SET => {
+                    crate::persona_edit::rename(st, act, body).await
+                }
+                _ => crate::persona_edit::archive(st, act, body).await,
+            };
+        }
         Some(
             crate::registry::ROLE_ADD
             | crate::registry::PERSONA_ADD

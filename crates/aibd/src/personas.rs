@@ -58,6 +58,11 @@ pub enum PersonaSourceError {
 pub trait PersonaSource: Send + Sync {
     /// Every card, sorted by uid.
     fn cards(&self) -> Result<Vec<PersonaCard>, PersonaSourceError>;
+    /// The `cards.json` the cards come from, for the one write of a card (`persona_write`);
+    /// `None`: cards that are not a file are never written.
+    fn cards_json(&self) -> Option<&std::path::Path> {
+        None
+    }
 }
 
 /// `true` for a persona uid: 6 of `a-z 0-9`.
@@ -128,6 +133,10 @@ pub struct CardsFile {
 }
 
 impl PersonaSource for CardsFile {
+    fn cards_json(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
     fn cards(&self) -> Result<Vec<PersonaCard>, PersonaSourceError> {
         let path = self
             .path
