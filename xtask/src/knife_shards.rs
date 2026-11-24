@@ -218,8 +218,8 @@ pub fn limits(table: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// A single knife script must stay under 25 minutes (1500s, well below the 30m cap) and 140 knives.
-pub const MAX_SCRIPT_SECS: u64 = 1500;
+/// A single knife script must stay under 15 minutes (900s, leaving 2x headroom for slow runners under 30m) and 140 knives.
+pub const MAX_SCRIPT_SECS: u64 = 900;
 pub const MAX_SCRIPT_KNIVES: usize = 140;
 /// No shard should exceed 140 minutes (8400s) of projected work.
 pub const MAX_SHARD_SECS: u64 = 8400;
@@ -862,7 +862,7 @@ mod tests {
         let secs = table(&[
             ("crates/a/knives/ok.sh", 600),
             ("crates/b/knives/many.sh", 100),
-            ("crates/c/knives/slow.sh", 1501),
+            ("crates/c/knives/slow.sh", 901),
         ]);
         let s = check_size(
             &knives,
@@ -870,21 +870,21 @@ mod tests {
             1,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
-            2000,
+            1600,
             None,
         )
         .unwrap();
         assert_eq!(s.scripts, 3);
         assert_eq!(s.max_knives, 141);
-        assert_eq!(s.max_secs, 1501);
-        assert_eq!(s.max_shard_secs, 2201);
+        assert_eq!(s.max_secs, 901);
+        assert_eq!(s.max_shard_secs, 1601);
         assert_eq!(s.violations.len(), 3, "{:?}", s.violations);
         assert!(s
             .violations
             .iter()
             .any(|v| v.contains("many.sh: 141 knives")));
-        assert!(s.violations.iter().any(|v| v.contains("slow.sh: 1501s")));
-        assert!(s.violations.iter().any(|v| v.contains("shard 1/1: 2201s")));
+        assert!(s.violations.iter().any(|v| v.contains("slow.sh: 901s")));
+        assert!(s.violations.iter().any(|v| v.contains("shard 1/1: 1601s")));
 
         let only: BTreeSet<String> = ["crates/a/knives/ok.sh".to_string()].into();
         let filtered = check_size(
@@ -901,7 +901,7 @@ mod tests {
 
         let ok = check_size(
             &make("crates/a/knives/ok.sh", 140),
-            &table(&[("crates/a/knives/ok.sh", 1500)]),
+            &table(&[("crates/a/knives/ok.sh", 900)]),
             4,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
