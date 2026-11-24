@@ -172,5 +172,43 @@ async fn a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket() {
     assert_eq!(r.code, 200, "reason: approved_apply_refused {}", r.body);
     assert_eq!(r.json["pending_restart"], true, "{}", r.body);
     assert_eq!(pending().await.as_deref(), Some(a.as_str()));
+
+    // (f) U8-3: replaying a used, expired, or revoked ticket is refused and leaves pending untouched.
+    // Apply b first so pending moves off a and replaying ta reaches approved_for instead of Same.
+    let was = n.load(Ordering::SeqCst);
+    let r = post(apply(&b, b_rev, None)).await;
+    assert_eq!(r.code, 202, "{}", r.body);
+    let tb = r.json["ticket"].as_str().unwrap().to_owned();
+    answered(&n, was + 1).await;
+    let r = post(apply(&b, b_rev, Some(&tb))).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(pending().await.as_deref(), Some(b.as_str()));
+
+    let r = post(apply(&a, a_rev, Some(&ta))).await;
+    assert_eq!(r.code, 403, "reason: used_ticket_replayed {}", r.body);
+    assert!(r.body.contains("owner_check_not_approved"), "{}", r.body);
+    assert_eq!(pending().await.as_deref(), Some(b.as_str()));
+
+    let was = n.load(Ordering::SeqCst);
+    let r = post(apply(&a, a_rev, None)).await;
+    assert_eq!(r.code, 202, "{}", r.body);
+    let texp = r.json["ticket"].as_str().unwrap().to_owned();
+    answered(&n, was + 1).await;
+    aibd::owner_ok::test_expire_ticket(&texp);
+    let r = post(apply(&a, a_rev, Some(&texp))).await;
+    assert_eq!(r.code, 403, "reason: expired_ticket_accepted {}", r.body);
+    assert!(r.body.contains("owner_check_not_approved"), "{}", r.body);
+    assert_eq!(pending().await.as_deref(), Some(b.as_str()));
+
+    let was = n.load(Ordering::SeqCst);
+    let r = post(apply(&a, a_rev, None)).await;
+    assert_eq!(r.code, 202, "{}", r.body);
+    let trev = r.json["ticket"].as_str().unwrap().to_owned();
+    answered(&n, was + 1).await;
+    aibd::owner_ok::test_revoke_ticket(&trev);
+    let r = post(apply(&a, a_rev, Some(&trev))).await;
+    assert_eq!(r.code, 403, "reason: revoked_ticket_accepted {}", r.body);
+    assert!(r.body.contains("owner_check_not_approved"), "{}", r.body);
+    assert_eq!(pending().await.as_deref(), Some(b.as_str()));
     d.shutdown().await;
 }

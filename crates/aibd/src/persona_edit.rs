@@ -486,7 +486,7 @@ mod tests {
         let (t, ch) = new_text(CARD, &json!({"redlines": "不 push。\n不合 main。"})).unwrap();
         assert_eq!(card::section(&t, "紅線"), "不 push。\n不合 main。");
         assert_eq!(card::section(&t, "職責"), "寫 aibd。");
-        assert_eq!(ch, vec![("紅線", 7, 15)]);
+        assert_eq!(ch, vec![("紅線", 7, 16)]);
         let (same, none) = new_text(CARD, &json!({"duty": "寫 aibd。"})).unwrap();
         assert_eq!(
             (same.as_str(), none.len()),
@@ -495,7 +495,7 @@ mod tests {
         );
         let a = ask_of("un0eba", &"a".repeat(64), &t, &ch, "page:x".into());
         let w = plain(&serde_json::from_slice(&a.params).unwrap()).unwrap();
-        assert_eq!(w, "改人格 un0eba 的 紅線(原 7 字 → 15 字)");
+        assert_eq!(w, "改人格 un0eba 的 紅線(原 7 字 → 16 字)");
         assert!(crate::owner_ok::WIRED.contains(&OP_SET));
     }
 

@@ -408,10 +408,6 @@ pub fn settle(
 }
 
 pub fn run(root: &Path, tsv: &Path) -> u8 {
-    let back = recover(root);
-    if back > 0 {
-        println!("KNIFE-COMPILE-RECOVERED {back} file(s) a killed run left with knives in");
-    }
     let knives = match std::fs::read_to_string(tsv)
         .map_err(|e| e.to_string())
         .and_then(|t| parse_tsv(&t))
@@ -422,8 +418,91 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
             return 2;
         }
     };
+    run_knives(root, &knives, None)
+}
+
+/// Does `knife`, written in alone, still build under its own command (`cargo test …` with
+/// `--no-run` added)? The wide check ([`check`]: `cargo check --tests` of the crate) also builds
+/// the crate without its tests, where a knife that takes away a value only tests still make is a
+/// dead-code error; the knife's own command (`--lib`, one `--test`) never builds that.
+/// Err: the command is not `cargo test`, the anchor is not there once, or nothing could be run.
+pub fn builds_alone(root: &Path, knife: &Knife, cmd: &[String]) -> Result<bool, String> {
+    if cmd.len() < 2 || cmd[0] != "cargo" || cmd[1] != "test" {
+        return Err("its command is not `cargo test`".into());
+    }
+    let text = std::fs::read_to_string(root.join(&knife.file))
+        .map_err(|e| format!("{}: {e}", knife.file))?;
+    if text.matches(knife.old.as_str()).count() != 1 {
+        return Err(format!(
+            "{}: the anchor is not there exactly once",
+            knife.file
+        ));
+    }
+    let mut files = BTreeMap::new();
+    files.insert(
+        knife.file.clone(),
+        text.replacen(knife.old.as_str(), &knife.new, 1),
+    );
+    let _put =
+        Applied::put(root, &files).map_err(|e| format!("could not write the knife in: {e}"))?;
+    let o = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .current_dir(root)
+        .args(&cmd[1..])
+        .arg("--no-run")
+        .output()
+        .map_err(|e| format!("cargo: {e}"))?;
+    Ok(o.status.success())
+}
+
+/// What the caller knows beyond the wide check: for knife `i`, `Some(Ok(true))` = it builds under
+/// its own command, `Some(Ok(false))` = it does not, `Some(Err)` / `None` = not known.
+pub type Confirm<'a> = &'a dyn Fn(usize) -> Option<Result<bool, String>>;
+
+/// [`run`] for knives already read (`aib-xtask knife-precheck` takes them from the knife scripts,
+/// where an anchor may span lines and so has no place in the receipt's one-line fields).
+/// Every `Error` of the wide check asked again ([`Confirm`]): builds under its own command ⇒
+/// `Ok` (returned with what the wide check said, to be printed); does not ⇒ stays `Error`; not
+/// known ⇒ `Unsure`, never `Ok`. Other verdicts are not asked about.
+pub fn ask_again(
+    verdict: &mut BTreeMap<usize, Verdict>,
+    confirm: Confirm<'_>,
+) -> Vec<(usize, String)> {
+    let errors: Vec<(usize, String)> = verdict
+        .iter()
+        .filter_map(|(i, v)| match v {
+            Verdict::Error(m) => Some((*i, m.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut cleared = Vec::new();
+    for (i, wide) in errors {
+        match confirm(i) {
+            Some(Ok(true)) => {
+                verdict.insert(i, Verdict::Ok);
+                cleared.push((i, wide));
+            }
+            Some(Ok(false)) => {}
+            Some(Err(e)) => {
+                verdict.insert(i, Verdict::Unsure(format!("{wide}; own command: {e}")));
+            }
+            None => {
+                verdict.insert(i, Verdict::Unsure(format!("{wide}; own command not known")));
+            }
+        }
+    }
+    cleared
+}
+
+/// With `confirm`, a knife the wide check calls an error is asked again under its own command
+/// before it is called one: only an error both ways is an error (a wrong block costs more than
+/// a late red). Not known either way ⇒ `unsure`, never `ok`.
+pub fn run_knives(root: &Path, knives: &[Knife], confirm: Option<Confirm<'_>>) -> u8 {
+    let back = recover(root);
+    if back > 0 {
+        println!("KNIFE-COMPILE-RECOVERED {back} file(s) a killed run left with knives in");
+    }
     let all: Vec<usize> = (0..knives.len()).collect();
-    let crates = crates_of(&knives, &all);
+    let crates = crates_of(knives, &all);
     let mut checks = 1;
     match check(root, &crates) {
         Ok(out) if errors(&out).is_empty() => {}
@@ -439,7 +518,7 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
         }
     }
     let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
-    let (batches, anchor) = plan(&knives, &read);
+    let (batches, anchor) = plan(knives, &read);
     let mut verdict: BTreeMap<usize, Verdict> = BTreeMap::new();
     for i in anchor {
         verdict.insert(i, Verdict::Anchor);
@@ -458,7 +537,7 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
                 }
             };
             checks += 1;
-            check(root, &crates_of(&knives, &ids))
+            check(root, &crates_of(knives, &ids))
         };
         let out = match out {
             Ok(o) => o,
@@ -507,7 +586,7 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
             let out = {
                 let _put = Applied::put(root, &one.files)
                     .map_err(|e| format!("could not write the knives in: {e}"))?;
-                check(root, &crates_of(&knives, ids))?
+                check(root, &crates_of(knives, ids))?
             };
             let (mine, rest) = attribute(&placed, &errors(&out));
             Ok(Seen {
@@ -531,6 +610,14 @@ pub fn run(root: &Path, tsv: &Path) -> u8 {
         );
         checks += used - split_checks;
         split_checks = used;
+    }
+    if let Some(confirm) = confirm {
+        for (i, wide) in ask_again(&mut verdict, confirm) {
+            println!(
+                "KNIFE-COMPILE-OWN ok {} (its own command builds; the wide check said: {wide})",
+                knives[i].name
+            );
+        }
     }
     let (mut ok, mut err, mut anc, mut uns) = (0, 0, 0, 0);
     for (i, k) in knives.iter().enumerate() {
@@ -766,6 +853,44 @@ mod tests {
             src.contains(concat!("    u8::from(err + anc + ", "uns > 0)\n")),
             "reason: unsure_does_not_keep_the_run_red"
         );
+    }
+
+    #[test]
+    fn only_an_error_both_ways_is_an_error_and_not_known_is_never_ok() {
+        let mut v: BTreeMap<usize, Verdict> = BTreeMap::new();
+        v.insert(0, Verdict::Error("dead code".into()));
+        v.insert(1, Verdict::Error("no such field".into()));
+        v.insert(2, Verdict::Error("x".into()));
+        v.insert(3, Verdict::Error("y".into()));
+        v.insert(4, Verdict::Ok);
+        v.insert(5, Verdict::Anchor);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let confirm = |i: usize| {
+            asked.borrow_mut().push(i);
+            match i {
+                0 => Some(Ok(true)),
+                1 => Some(Ok(false)),
+                2 => Some(Err("its command is not `cargo test`".to_string())),
+                _ => None,
+            }
+        };
+        let cleared = ask_again(&mut v, &confirm);
+        // only the wide check's errors are asked about
+        assert_eq!(*asked.borrow(), vec![0, 1, 2, 3]);
+        assert_eq!(cleared, vec![(0, "dead code".to_string())]);
+        assert_eq!(v[&0], Verdict::Ok);
+        assert_eq!(v[&1], Verdict::Error("no such field".into()));
+        assert!(
+            matches!(&v[&2], Verdict::Unsure(m) if m.contains("not `cargo test`")),
+            "{:?}",
+            v[&2]
+        );
+        assert!(
+            matches!(&v[&3], Verdict::Unsure(m) if m.contains("not known")),
+            "{:?}",
+            v[&3]
+        );
+        assert_eq!((&v[&4], &v[&5]), (&Verdict::Ok, &Verdict::Anchor));
     }
 
     #[test]

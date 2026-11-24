@@ -992,34 +992,22 @@ else:
         assert_eq!(l.refresh().as_deref(), Some("current"));
     }
 
-    /// f163c pwrite L1: the card written but the list unable to follow (here: its old sha named
-    /// by two cards, so it cannot be swapped once) is a write with the list behind, not a
-    /// failed one; the pending record stays for aibd's next start.
+    /// f163c pwrite L1: the card written but the list unable to follow (here: the list's
+    /// folder is read-only so its temp file cannot be written) is a write with the list
+    /// behind, not a failed one; the pending record stays for aibd's next start.
     #[cfg(unix)]
     #[test]
     fn a_card_written_with_the_list_behind_is_not_a_failed_write() {
+        use std::os::unix::fs::PermissionsExt;
         let Some(l) = Lib::new() else { return };
         let old = std::fs::read(l.card("abc001")).unwrap();
-        let (a, b) = (reg_sha(&l.out, "abc001"), reg_sha(&l.out, "abc002"));
-        let t = std::fs::read_to_string(&l.out).unwrap().replace(&b, &a);
-        std::fs::write(&l.out, &t).unwrap();
-        let doc: serde_json::Value = serde_json::from_str(&t).unwrap();
-        let prov = provenance_of(&l.out);
-        let (_, p0) = read_json(&prov).unwrap();
-        let pt = std::fs::read_to_string(&prov)
-            .unwrap()
-            .replace(
-                p0["cards_json_sha256"].as_str().unwrap(),
-                &sha_hex(t.as_bytes()),
-            )
-            .replace(
-                p0["cards_fingerprint"].as_str().unwrap(),
-                &cards_fingerprint(&doc),
-            );
-        std::fs::write(&prov, pt).unwrap();
         assert_eq!(registry_clean(&l.out), Ok(()), "reason: fixture_not_clean");
+        let reg_dir = l.out.parent().unwrap();
+        let prev_mode = std::fs::metadata(reg_dir).unwrap().permissions();
+        std::fs::set_permissions(reg_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
         let new = [old.as_slice(), "多一條。\n".as_bytes()].concat();
         let w = write_at(&l.out, &l.dir, "abc001", &sha_hex(&old), &new, "page:t");
+        let _ = std::fs::set_permissions(reg_dir, prev_mode);
         assert!(
             w.as_ref().is_ok_and(|w| w.list_behind),
             "reason: written_card_told_as_failed {w:?}"

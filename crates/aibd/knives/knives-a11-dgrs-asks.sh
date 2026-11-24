@@ -45,3 +45,9 @@ python3 -I scripts/knife.py crates/aibd/src/repos.rs \
   '"kind": "restart",' \
   --expect-fail 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other' \
   -- cargo test -p aibd --locked --lib 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other'
+# a11-unread (f163c REVIEW-a11 L1: a seat record not read stops the gate)
+python3 -I scripts/knife.py crates/aibd/src/repos.rs \
+  '        Ok(Err(_)) | Err(_) => Err(()),' \
+  '        Ok(Err(_)) | Err(_) => Ok(None),' \
+  --expect-fail 'repos::tests::a_seat_record_not_read_stops_the_dgrs_gate' \
+  -- cargo test -p aibd --locked --lib 'repos::tests::a_seat_record_not_read_stops_the_dgrs_gate'

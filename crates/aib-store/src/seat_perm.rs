@@ -129,6 +129,29 @@ fn state_json(s: &PermState) -> String {
         .to_string()
 }
 
+/// `to_json` for `pend`: records `replaced_pending` when a waiting change was replaced (7b L7).
+fn state_json_to(s: &PermState, replaced_pending: Option<&PermState>) -> String {
+    let items =
+        serde_json::from_str::<serde_json::Value>(&s.items_json).unwrap_or(serde_json::Value::Null);
+    let mut obj = serde_json::json!({
+        "tpl_uid": s.tpl_uid,
+        "rev": s.tpl_rev,
+        "base": s.base,
+        "items": items
+    });
+    if let Some(prev) = replaced_pending {
+        let prev_items = serde_json::from_str::<serde_json::Value>(&prev.items_json)
+            .unwrap_or(serde_json::Value::Null);
+        obj["replaced_pending"] = serde_json::json!({
+            "tpl_uid": prev.tpl_uid,
+            "rev": prev.tpl_rev,
+            "base": prev.base,
+            "items": prev_items
+        });
+    }
+    obj.to_string()
+}
+
 const COLS: &str = "seat_id, tpl_uid, tpl_rev, base, items_json, set_at, set_by, pending_tpl_uid, \
                     pending_rev, pending_base, pending_items, pending_at, pending_by";
 
@@ -197,6 +220,8 @@ pub enum PermWrite {
     Unknown,
     /// The seat already has a row (an open is written once).
     Taken,
+    /// The seat's state changed concurrently or the revoked log row was already taken back.
+    Conflict,
 }
 
 impl MessageDb {
@@ -238,6 +263,44 @@ impl MessageDb {
         by: &str,
         at: &str,
     ) -> Result<PermWrite> {
+        self.seat_perm_pend_inner(seat, s, None, action, by, at, None)
+    }
+
+    /// Compare-and-swap pend (7b L1) and optional atomic log revoke (7b L4) in one transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seat_perm_pend_if(
+        &self,
+        seat: &str,
+        s: &PermState,
+        expected_now: &PermState,
+        expected_pending: Option<&PermState>,
+        action: &str,
+        by: &str,
+        at: &str,
+        revoking: Option<i64>,
+    ) -> Result<PermWrite> {
+        self.seat_perm_pend_inner(
+            seat,
+            s,
+            Some((expected_now.clone(), expected_pending.cloned())),
+            action,
+            by,
+            at,
+            revoking,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seat_perm_pend_inner(
+        &self,
+        seat: &str,
+        s: &PermState,
+        expected: Option<(PermState, Option<PermState>)>,
+        action: &str,
+        by: &str,
+        at: &str,
+        revoking: Option<i64>,
+    ) -> Result<PermWrite> {
         who_checked(seat, by, at)?;
         state_checked(s)?;
         need(
@@ -256,6 +319,16 @@ impl MessageDb {
             let Some(old) = row_of(&tx, &seat)? else {
                 return Ok(PermWrite::Unknown);
             };
+            if let Some((exp_now, exp_pend)) = expected {
+                if old.now != exp_now || old.pending != exp_pend {
+                    return Ok(PermWrite::Conflict);
+                }
+            }
+            if let Some(log_id) = revoking {
+                if !mark_log_revoked(&tx, &seat, log_id, &by, &at)? {
+                    return Ok(PermWrite::Conflict);
+                }
+            }
             tx.execute(
                 "UPDATE seat_perm SET pending_tpl_uid = ?2, pending_rev = ?3, pending_base = ?4,
                  pending_items = ?5, pending_at = ?6, pending_by = ?7 WHERE seat_id = ?1",
@@ -266,7 +339,7 @@ impl MessageDb {
                 &seat,
                 &action,
                 Some(state_json(&old.now)),
-                Some(state_json(&s)),
+                Some(state_json_to(&s, old.pending.as_ref())),
                 &at,
                 &by,
             )?;
@@ -364,15 +437,23 @@ impl MessageDb {
     ) -> Result<bool> {
         who_checked(seat, by, at)?;
         let (seat, by, at) = (seat.to_owned(), by.to_owned(), at.to_owned());
-        self.write(move |c| {
-            let n = c.execute(
-                "UPDATE seat_perm_log SET revoked_at = ?3, revoked_by = ?4
-                 WHERE seat_id = ?1 AND log_id = ?2 AND revoked_at IS NULL",
-                params![seat, log_id, at, by],
-            )?;
-            Ok(n == 1)
-        })
+        self.write(move |c| Ok(mark_log_revoked(c, &seat, log_id, &by, &at)?))
     }
+}
+
+fn mark_log_revoked(
+    c: &Connection,
+    seat: &str,
+    log_id: i64,
+    by: &str,
+    at: &str,
+) -> rusqlite::Result<bool> {
+    let n = c.execute(
+        "UPDATE seat_perm_log SET revoked_at = ?3, revoked_by = ?4
+         WHERE seat_id = ?1 AND log_id = ?2 AND revoked_at IS NULL",
+        params![seat, log_id, at, by],
+    )?;
+    Ok(n == 1)
 }
 
 #[cfg(test)]
@@ -464,6 +545,87 @@ mod tests {
             m.seat_perm_log("s1").unwrap()[0].revoked_at.as_deref(),
             Some("t2")
         );
+    }
+
+    /// 7b L1/L4/L7: compare-and-swap pend, atomic revoke rollback, and replaced_pending log.
+    #[test]
+    fn pend_if_checks_expected_state_revokes_atomically_and_logs_replaced_pending() {
+        let (_d, m) = db();
+        let a = st(1, r#"{"brain":true}"#);
+        let b = st(2, r#"{"brain":false}"#);
+        let c = st(3, r#"{"brain":true}"#);
+        let PermWrite::Done(open_id) = m.seat_perm_open("s1", &a, "page:x", "t1").unwrap() else {
+            panic!("reason: not_opened");
+        };
+        // L1: stale expected_now (different items OR same items with different tpl_uid/rev/base) -> Conflict
+        assert_eq!(
+            m.seat_perm_pend_if("s1", &b, &b, None, "lower", "page:x", "t2", None)
+                .unwrap(),
+            PermWrite::Conflict
+        );
+        let mut same_items_diff_tpl = a.clone();
+        same_items_diff_tpl.tpl_uid = "tpl_other".to_owned();
+        assert_eq!(
+            m.seat_perm_pend_if(
+                "s1",
+                &b,
+                &same_items_diff_tpl,
+                None,
+                "lower",
+                "page:x",
+                "t2",
+                None
+            )
+            .unwrap(),
+            PermWrite::Conflict
+        );
+        // L1: matching expected state -> Done
+        assert!(matches!(
+            m.seat_perm_pend_if("s1", &b, &a, None, "lower", "page:x", "t2", None)
+                .unwrap(),
+            PermWrite::Done(_)
+        ));
+        // L7: replacing an existing pending logs replaced_pending in to_json
+        assert!(matches!(
+            m.seat_perm_pend_if(
+                "s1",
+                &c,
+                &a,
+                Some(&b),
+                "raise_pending",
+                "page:x",
+                "t3",
+                None
+            )
+            .unwrap(),
+            PermWrite::Done(_)
+        ));
+        let log = m.seat_perm_log("s1").unwrap();
+        assert!(log[0]
+            .to_json
+            .as_deref()
+            .unwrap()
+            .contains("replaced_pending"));
+        // L4: revoking an already-revoked log row rolls back the pend atomically
+        assert!(m
+            .seat_perm_log_revoked("s1", open_id, "page:x", "t4")
+            .unwrap());
+        assert_eq!(
+            m.seat_perm_pend_if(
+                "s1",
+                &b,
+                &a,
+                Some(&c),
+                "revoke",
+                "page:x",
+                "t5",
+                Some(open_id),
+            )
+            .unwrap(),
+            PermWrite::Conflict
+        );
+        // pending stayed &c, was not overwritten by &b
+        assert_eq!(m.seat_perm("s1").unwrap().unwrap().pending, Some(c));
     }
 
     /// SP-S3: a bad shape is refused before anything is written.

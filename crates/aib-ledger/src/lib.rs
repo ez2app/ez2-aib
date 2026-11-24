@@ -11,7 +11,6 @@
 
 pub mod envelope;
 pub mod events;
-pub mod timesave;
 
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions, TryLockError};
