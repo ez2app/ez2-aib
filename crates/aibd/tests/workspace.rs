@@ -120,7 +120,10 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
         .map(|p| {
             assert!(p["models"].is_array(), "missing models: {p}");
             assert!(p["models_source"].is_string(), "missing models_source: {p}");
-            assert!(p.get("default_model").is_some(), "missing default_model: {p}");
+            assert!(
+                p.get("default_model").is_some(),
+                "missing default_model: {p}"
+            );
             serde_json::json!({"id": p["id"], "open": p["open"], "modes": p["modes"]})
         })
         .collect();
