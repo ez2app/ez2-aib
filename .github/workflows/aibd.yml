@@ -3828,6 +3828,13 @@ jobs:
           rc=0
           cargo run -q --locked -p aib-xtask -- knife-precheck --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/precheck.out" 2>&1 || rc=$?
           { echo '### knife precheck (observe)'; echo '```'; grep -vE '^KNIFE-COMPILE ok ' "$RUNNER_TEMP/precheck.out" | tail -60; echo "rc $rc"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          # observe: nothing is stopped. What real mode would have stopped is said where a person
+          # sees it (the run's annotations), and a precheck that did not work is not read as a pass
+          case "$rc" in
+            0) ;;
+            1) echo "::warning title=knife precheck (observe)::a knife this change touches does not compile: the knife cells run to their end over it. Real mode would have stopped here." ;;
+            *) echo "::warning title=knife precheck (observe)::the precheck itself did not work (rc $rc): it says nothing about the knives" ;;
+          esac
           git status --porcelain | head -5
           git checkout -q -- . || true
 
@@ -4031,6 +4038,10 @@ jobs:
           mkdir -p knife-secs
           grep -E '^KNIVES-(SCRIPT|PLAN|OK|RED|NONE) ' "$RUNNER_TEMP/knives-run.out" > "knife-secs/cell-${{ strategy.job-index }}.txt" 2>/dev/null || true
           wc -l knife-secs/*.txt || true
+          # which scripts the plan was wrong about (far over their seconds in the table, or heavy
+          # and not in it): said as a warning, never a failure. The table is then due a refresh
+          cargo run -q -p aib-xtask --locked -- knife-shards grew --secs crates/aib-knife/knife-secs.tsv knife-secs/*.txt \
+            | sed -E 's/^(KNIVES-(GREW|NEW-HEAVY) )/::warning::\1/' || true
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && always()
         timeout-minutes: 3

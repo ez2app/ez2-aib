@@ -199,6 +199,36 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/await fingerAct\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
 }
 
+// 15b. c5d88 PLAN-skipstop F2:省時五格只在 aibd 有 time_saved 時畫;讀不到要說讀不到,不可以畫成 0;畫的是牆鐘(clock_ms)
+{
+  ok(/if \(hasAct\('time_saved'\) !== true\) return '';/.test(ws), 'reason: time_saved_without_act');
+  ok(/if \(st !== 'ok'\) return head \+/.test(ws), 'reason: time_saved_not_ok_draws_boxes');
+  ok(/typeof b\.clock_ms !== 'number'\) return head \+/.test(ws), 'reason: time_saved_missing_number_draws_zero');
+  ok(ws.includes('tsDur(b.clock_ms)') && !/tsDur\(b\.total/.test(ws), 'reason: time_saved_shows_unit_time_sum');
+  for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: time_saved_state_without_words ' + w);
+}
+// 15d. c5d88 H1b 外掛區:沒有 plugin_list 不畫;開關只在有 plugin_set 且開關檔讀得懂(on 不是 null)時才有鈕;每個 runs 字與錯誤碼都有人話
+{
+  ok(/if \(hasAct\('plugin_list'\) !== true\) return '';/.test(ws), 'reason: plugins_without_act');
+  ok(/const btn = canSet && p\.on !== null \?/.test(ws), 'reason: plugin_switch_shown_when_it_cannot_be_moved');
+  ok(/act\('plugin_set', \{ name, on \}\)/.test(ws), 'reason: plugin_set_sends_more_than_name_and_on');
+  for (const w of ['ok', 'off', 'paid_not_checked', 'no_such_command', 'no_sum', 'missing', 'outside', 'not_a_file', 'sum_differs', 'switches_unread']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: plugin_runs_without_words ' + w);
+  for (const w of ['page_only', 'no_such_plugin', 'bad_plugin_set', 'switch_not_written']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: plugin_error_without_words ' + w);
+}
+// 15c. c5d88 F2 省時看板(saved.html):CSP 是 style-src 'self' ⇒ 不可以有 style="";只畫 aibd 給的數字;
+//      缺一個數字整份不畫;只有數字變了才翻(沒有用時鐘加秒);每個 state 都有人話
+{
+  const html = read('apps/web/dist/saved.html'), js = read('apps/web/dist/saved.js'), css = read('apps/web/dist/saved.css');
+  ok(!/\sstyle=/.test(html) && !/innerHTML|insertAdjacentHTML|document\.write/.test(js), 'reason: saved_inline_style_or_html_injection');
+  ok(/<script src="saved\.js" defer><\/script>/.test(html) && !/<script>[^<]/.test(html), 'reason: saved_inline_script');
+  ok(js.includes("type: 'time_saved'") && !/\bDate\.now\(\)/.test(js), 'reason: saved_counts_by_the_clock');
+  ok(/if \(n\.some\(\(x\) => typeof x !== 'number' \|\| !\(x >= 0\)\)\) return null;/.test(js), 'reason: saved_missing_number_is_drawn');
+  ok(/\$\('board'\)\.hidden = \$\('tiles'\)\.hidden = \$\('pill'\)\.hidden = !whole;/.test(js), 'reason: saved_board_shown_without_a_whole_answer');
+  ok(/else if \(c\.target !== d\[i\]\) roll\(/.test(js), 'reason: saved_flips_without_a_change');
+  for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer', 'no_credential', 'offline']) ok(new RegExp('\\b' + w + ': \\[').test(js), 'reason: saved_state_without_words ' + w);
+  ok(/\.flap\{--wood:url\("data:image\/svg\+xml/.test(css) && !/url\(["']?(https?:|\/)/i.test(css) && !/@import|@font-face/.test(css), 'reason: saved_css_fetches_something');
+  ok(ws.includes('href="saved.html"'), 'reason: saved_page_not_linked');
+}
 // 15. b4297 CARD-add-test-host r0:測試機區塊只在 aibd 有 test_host_list 時畫;加 / 收回走指紋兩段;why 代碼都有人話
 {
   ok(/if \(hasAct\('test_host_list'\) !== true\) return '';/.test(ws), 'reason: test_host_without_act');

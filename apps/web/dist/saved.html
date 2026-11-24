@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>省時看板</title>
+<link rel="stylesheet" href="saved.css">
+<script src="saved.js" defer></script>
+</head>
+<body>
+<!-- c5d88 PLAN-skipstop F2:省時看板(定版頁上三段);數字只來自 aibd 的 time_saved(外掛 aib-skipstop 的帳),讀不到就說讀不到 -->
+<div class="wrap">
+<header class="bar in">
+  <h1>AIB 2.0 · 省時雙系統 <small id="sub">影子續跑 + 預檢</small></h1>
+  <span><a href="./">回工作台</a>　<span class="pill" id="pill" hidden>⏱ 今天替你省 <span class="n" id="pilln"></span></span></span>
+</header>
+
+<div class="board in d1" role="img" aria-label="今天替你省" id="board" hidden>
+  <div class="b-head"><span class="b-k">今天替你省</span><span class="b-s" id="bsub"></span></div>
+  <div class="b-row" id="flaps"></div>
+</div>
+
+<div class="tiles" id="tiles" hidden></div>
+
+<div class="note card" id="note" role="status" aria-live="polite">讀取中…</div>
+<div class="foot" id="foot"></div>
+</div>
+</body>
+</html>
