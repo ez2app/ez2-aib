@@ -122,9 +122,10 @@ struct Answer {
 
 /// The card's answer through aibd's own owner check: `OP_NET_ALLOW_ALWAYS` requires a
 /// hardware-signed ticket (`owner_ok::approved_signed_for`); others use `approved_for`.
-fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step)> {
+fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step, Option<(String, Vec<u8>)>)> {
     with_cards(|c| {
         let held = c.find(&req.request_id);
+        let mut signed: Option<(String, Vec<u8>)> = None;
         let step = c.answer(
             &req.request_id,
             &req.choice,
@@ -133,13 +134,17 @@ fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step)> {
             by,
             |t, ask| {
                 if ask.operation == crate::net_card::OP_NET_ALLOW_ALWAYS {
-                    crate::owner_ok::approved_signed_for(t, ask).is_some()
+                    let Some(sig) = crate::owner_ok::approved_signed_for(t, ask) else {
+                        return false;
+                    };
+                    signed = Some((t.to_owned(), sig));
+                    true
                 } else {
                     crate::owner_ok::approved_for(t, ask)
                 }
             },
         );
-        (held, step)
+        (held, step, signed)
     })
 }
 
@@ -148,7 +153,7 @@ pub async fn answer(st: AppState, body: Value, by: String) -> Response {
     let Ok(req) = serde_json::from_value::<Answer>(body) else {
         return refuse(StatusCode::BAD_REQUEST, "body");
     };
-    let Some((held, step)) = step(&req, &by) else {
+    let Some((held, step, signed)) = step(&req, &by) else {
         return refuse(StatusCode::INTERNAL_SERVER_ERROR, "cards");
     };
     match step {
@@ -170,8 +175,33 @@ pub async fn answer(st: AppState, body: Value, by: String) -> Response {
             let mut listed = false;
             if let (Some(card), Some(yes)) = (&held, &yes) {
                 if yes.lasts() == Lasts::Always {
+                    if let Some((ticket, sig)) = signed {
+                        let ts = now();
+                        if let Ok(params) = crate::net_allow::always_params(
+                            &card.persona_uid,
+                            card.dest,
+                            ts,
+                            ts + crate::net_allow::MAX_DAYS_SECS,
+                            &card.request_id,
+                        ) {
+                            let row = aib_store::net_allow::NetAllowRow {
+                                ticket,
+                                by_key: by.clone(),
+                                resource: format!(
+                                    "{} → {} {}",
+                                    card.persona_name, card.dest_name, card.dest
+                                ),
+                                params,
+                                sig,
+                                approved_at: ts as i64,
+                            };
+                            if st.messages.net_allow_add(row).unwrap_or(false) {
+                                listed = true;
+                            }
+                        }
+                    }
                     if let Ok(mut a) = ALLOW.lock() {
-                        listed = a
+                        let _ = a
                             .entry(card.seat_id.clone())
                             .or_insert_with(|| AllowList::new(&card.seat_id))
                             .add(card.dest, yes);
@@ -200,14 +230,29 @@ struct AllowQuery {
 }
 
 /// `net_allow_list`.
-pub async fn allow_list(body: Value) -> Response {
+pub async fn allow_list(st: AppState, body: Value) -> Response {
     let Ok(q) = serde_json::from_value::<AllowQuery>(body) else {
         return refuse(StatusCode::BAD_REQUEST, "body");
     };
-    let Ok(a) = ALLOW.lock() else {
-        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "allow");
+    let mut items = match ALLOW.lock() {
+        Ok(a) => rows(&a, q.seat_id.as_deref()),
+        Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "allow"),
     };
-    Json(json!({ "items": rows(&a, q.seat_id.as_deref()) })).into_response()
+    if let Ok(db_rows) = st.messages.net_allow_list() {
+        for r in db_rows {
+            if let Some((uid, canon, _issued_at, until)) =
+                crate::net_allow::parse_always_params(&r.params)
+            {
+                items.push(json!({
+                    "ticket": r.ticket,
+                    "persona_uid": uid,
+                    "addr": canon,
+                    "until": until,
+                }));
+            }
+        }
+    }
+    Json(json!({ "items": items })).into_response()
 }
 
 /// The list's rows for the page, of one seat or of all.
@@ -238,14 +283,30 @@ pub async fn allow_revoke(st: AppState, body: Value, by: String) -> Response {
         return refuse(StatusCode::BAD_REQUEST, "body");
     };
     let at = SocketAddr::new(r.ip, r.port);
-    // no proxy yet, so no open tunnel to close
+    let want_canon = crate::grants::canon(at);
+    let ts = now() as i64;
+    let mut db_revoked = false;
+    if let Ok(rows) = st.messages.net_allow_list() {
+        for row in rows {
+            if let Some((_uid, canon, _, _)) = crate::net_allow::parse_always_params(&row.params) {
+                if canon == want_canon {
+                    match st.messages.net_allow_revoke(&row.ticket, ts) {
+                        Ok(true) => db_revoked = true,
+                        Ok(false) => {}
+                        Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "allow"),
+                    }
+                }
+            }
+        }
+    }
     let closed = ALLOW
         .lock()
         .ok()
         .and_then(|mut a| a.get_mut(&r.seat_id).and_then(|l| l.revoke(at, &[])));
-    let Some(closed) = closed else {
+    if closed.is_none() && !db_revoked {
         return refuse(StatusCode::NOT_FOUND, "not_on_list");
-    };
+    }
+    let closed_count = closed.map_or(0, |v| v.len());
     crate::seats::side_event(
         &st,
         "net",
@@ -253,7 +314,7 @@ pub async fn allow_revoke(st: AppState, body: Value, by: String) -> Response {
         json!({"seat_id": r.seat_id, "ip": r.ip.to_string(), "port": r.port, "by": by}),
     )
     .await;
-    Json(json!({"done": true, "closed": closed.len()})).into_response()
+    Json(json!({"done": true, "closed": closed_count})).into_response()
 }
 
 #[cfg(test)]

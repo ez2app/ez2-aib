@@ -562,7 +562,7 @@ pub async fn act(
             return match k {
                 crate::net_card_web::LIST => crate::net_card_web::list().await,
                 crate::net_card_web::ANSWER => crate::net_card_web::answer(st, body, by).await,
-                crate::net_card_web::ALLOW_LIST => crate::net_card_web::allow_list(body).await,
+                crate::net_card_web::ALLOW_LIST => crate::net_card_web::allow_list(st, body).await,
                 _ => crate::net_card_web::allow_revoke(st, body, by).await,
             };
         }

@@ -460,4 +460,65 @@ mod tests {
             vec![tid3]
         );
     }
+
+    #[tokio::test]
+    async fn live_tcp_tunnel_closes_within_one_second_on_revoke() {
+        use crate::grants::Grants;
+        use crate::proxy::{By, Tunnels};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.db")).unwrap();
+        let now = 2_000_000;
+        let addr = p_addr();
+        let own = own_ips();
+
+        let row = sign_row("tk_live_1", "un0eba", addr, now, now + 86_400, b":ok");
+        assert!(db.net_allow_add(row).unwrap());
+
+        let srv = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let srv_addr = srv.local_addr().unwrap();
+        let mut client = TcpStream::connect(srv_addr).await.unwrap();
+        let (mut peer, _) = srv.accept().await.unwrap();
+
+        let mut tunnels = Tunnels::default();
+        let tid = tunnels.open("seat1", addr, By::Held);
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 16];
+            tokio::select! {
+                _ = rx => {}
+                _ = peer.read(&mut buf) => {}
+            }
+            let _ = peer.shutdown().await;
+        });
+
+        let grants = Grants::default();
+        let seat_map = |s: &str| (s == "seat1").then_some(("un0eba", true));
+        let closed = revoke_and_sweep(
+            &db,
+            "tk_live_1",
+            now,
+            &mut tunnels,
+            &grants,
+            &seat_map,
+            &own,
+            &test_verify,
+        )
+        .unwrap();
+        assert_eq!(closed, vec![tid]);
+        let _ = tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 8];
+        let read_res =
+            tokio::time::timeout(std::time::Duration::from_secs(1), client.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(read_res, 0);
+    }
 }
