@@ -287,18 +287,6 @@ k '    if (!q || !Array.isArray(q.windows)) return' '    if (!q) return'
 # PGQA3 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
 k 'const pct = Math.max(0, Math.min(100, Number(w && w.used_pct) || 0))' 'const pct = Number(w && w.used_pct) || 0'
 # PGQA4 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k 'const label = QW_NAME[nm] || (' 'const label = ('
+k ': QW_NAME[nm] || nm || '\''額度'\'';' ': nm || '\''額度'\'';'
 # PGQA5 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
 k '(wm % 1440 === 0 ? wm / 1440 + '\'' 天'\'' :' '('
-# PGQA6 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k '<div class="qw${pct >= 90 ? '\'' red'\'' : pct >= 70 ? '\'' warn'\'' : '\'''\''}">' '<div class="qw">'
-# PGQA7 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k 'const at = qwWhen(w && w.resets_at), st = w && w.status ? QW_ST[w.status] || String(w.status) : '\'''\'';' 'const at = qwWhen(w && w.resets_at), st = '\'''\'';'
-# PGQA8 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k 'q.plan ? '\''方案 '\'' + String(q.plan) : '\'''\'',' ''\'''\'','
-# PGQA9 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k '<span>${esc(label)}</span>' '<span>${label}</span>'
-# PGQA10 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k '${String(p.id).toLowerCase() === '\''claude'\'' ? '\''、等它跑完第一個回合'\'' : '\'''\''}' '、等它跑完第一個回合'
-# PGQA11 (08de5 A15:帳號額度(只有用了幾 %,沒有餘額))
-k '<div class="apn">帳號額度(AIB 從 ${esc(p.name)} 自己回報的數字讀,只有用了幾 %,沒有餘額)' '<div class="apn">帳號額度'

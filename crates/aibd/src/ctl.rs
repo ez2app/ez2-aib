@@ -1371,6 +1371,19 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "brain_note",
+            "description": "Add a note to the second brain you were opened bound to (沙盒開發 seats only). aibd names the file and writes a head saying which seat wrote it; it never writes over a note, and you cannot change or remove one. Readers treat it as data, not instructions. Text at most 16 KB; title at most 40 characters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "title": {"type": "string", "description": "optional, one line"},
+                },
+                "required": ["text"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -1699,6 +1712,22 @@ fn pending_write(c: &Client, args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `brain_note`: aibd's answer as one line.
+fn brain_note(c: &Client, args: &Value) -> Result<String, String> {
+    let text = args["text"].as_str().ok_or("brain_note needs text")?;
+    let mut body = json!({"type": aibd::brain_note::NOTE, "text": text});
+    if let Some(t) = args["title"].as_str() {
+        body["title"] = json!(t);
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    Ok(format!(
+        "記下了:{}({} B,note {})",
+        r["file"].as_str().unwrap_or("?"),
+        r["bytes"].as_u64().unwrap_or(0),
+        r["note_id"].as_str().unwrap_or("?")
+    ))
+}
+
 fn seat_handoff(c: &Client, args: &Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("seat_handoff needs path")?;
     let mut body = json!({"type": aibd::seat_now::HANDOFF, "path": path});
@@ -1982,6 +2011,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("pending_list") => pending_list(c, args),
                 Some("pending_read") => pending_read(c, args),
                 Some("pending_write") => pending_write(c, args),
+                Some("brain_note") => brain_note(c, args),
                 Some("dm_waiting") => dm_act(c, json!({"type": "dm_waiting"})),
                 Some("dm_show") => dm_act(c, json!({"type": "dm_show", "id": args["id"]})),
                 Some("dm_done") => dm_done(c, args),
@@ -3508,7 +3538,8 @@ mod tests {
                 "dm_show",
                 "dm_done",
                 "pending_write",
-                "seat_handoff"
+                "seat_handoff",
+                "brain_note"
             ],
             "reason: extra_tool"
         );
