@@ -5,6 +5,40 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- `skipstop.stop.json`: this repo's checks for `aib-skipstop stop` (the plugin's stop system),
+  to run before a push or a long knife run: the branch merges into main (`git merge-tree`),
+  every knife's text is in its file once (`knife-anchors`), the knives this change touches
+  compile (`knife-precheck`). `aib-skipstop stop check` runs them (about 90 s here);
+  `aib-skipstop stop --mode real -- <command>` does not start the command when one has a
+  finding. What each says it saves is a typed estimate and is recorded as one.
+
+- Page: **外掛** — the plugin area on the built-in page. New acts `plugin_list` (every folder
+  under `<AIB home>/plugins`: name, version, on or off, and whether its command can be run now,
+  with the reason when not; a folder whose file is not understood is listed, never left out)
+  and `plugin_set` (`{name, on}`: the user's switch for an installed plugin, from the built-in
+  page in this pairing only). A plugin is on by default when its file says so; the user's
+  switch wins. Nothing here installs, removes or runs a plugin.
+
+- Removed `aib-test-core`, `aib-test-cargo`, `aib-test-audit` and `aib_ledger::timesave`: the
+  skip / stop engine and its savings book live in the plugin now
+  (github.com/lfu0327/aib-skipstop, where they are developed, tested and versioned). Nothing in
+  this workspace used them; aibd reads the savings through the plugin (`time_saved`).
+
+- Page: **省時看板** (`saved.html`, linked from ⏱ 節省時間) — the board Andy settled on 11-22
+  (PREVIEW-timesave-board-7b81e): gold bar, the wooden flip board for today (hours : minutes :
+  seconds, the tens of minutes and seconds turn 0–5 only), four tiles (本週 / 本月 / 本年 / 至今總省)
+  with 預檢 · 影子 apart, estimates and what was taken back beside and never in the large number.
+  It draws only what `time_saved` gives, flips only when a number it read has changed (no
+  counting by the clock), and with no whole answer it says why and shows no board. The other
+  sections of that page (the gates' pipeline, the 15 gates) wait for the gates' own books.
+- Page: **⏱ 節省時間** — five boxes (本日 / 本週 / 本月 / 本年 / 至今) on the built-in page. New
+  read-only act `time_saved`: aibd finds the `aib-skipstop` plugin in the plugin area, runs it
+  only when it is switched on and its executable is the one its file names (sha256), asks
+  `saved --json` on the page's clock (ended at 10 s), and builds the boxes from the answer's own
+  numbers. The time shown is time on the clock. Not installed, off, not runnable, no answer and
+  an answer not understood are each said; none is drawn as zeros. One read runs at a time and
+  an answer is kept 5 s for the same question.
+
 ## 0.2.0-preview.8 — 2026-11-22
 
 - Release: version bump stacked on integration head #872 (which contains #871: web inbox page,

@@ -401,6 +401,14 @@ pub static MAIL_NUDGE_RECHECK: Timer = Timer::operation(
     "only while a seat has an open message not yet due: wait until the earliest comes due, then look at the seat once more (an idle seat has no turn end to do it; DESIGN-drive-d3-wake, 7ebca 11-21)",
 );
 
+/// F2: the plugin's `saved --json` for the page's time-saved boxes; at the limit it is ended.
+pub static TIME_SAVED_WAIT: Timer = Timer::operation(
+    "time_saved.wait",
+    ms(50),
+    secs(10),
+    "only during a page's time_saved act: re-check the one aib-skipstop read until it exits, end it at 10 s so a hung plugin cannot hold the answer (PLAN-skipstop-master F2, c5d88 11-23)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -433,6 +441,7 @@ pub static ALL: &[&Timer] = &[
     &RECEIPT_LINK_WAIT,
     &TEST_HOST_WAIT,
     &MAIL_NUDGE_RECHECK,
+    &TIME_SAVED_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
