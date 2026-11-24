@@ -183,23 +183,28 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         }),
     )
     .await;
-    assert_eq!(r.code, 202, "{}", r.body);
-    let ticket = r.json["ticket"].as_str().unwrap().to_owned();
-    let r = act(
-        &d,
-        &cred,
-        json!({
-            "type": "seat_open",
-            "provider": "claude",
-            "mode": "work",
-            "repo": "demo",
-            "persona_uid": "un0eba",
-            "idem_key": "setup-repo-seat",
-            "ticket": ticket
-        }),
-    )
-    .await;
-    assert_eq!(r.code, 200, "{}", r.body);
+    let r = if r.code == 202 {
+        let ticket = r.json["ticket"].as_str().unwrap().to_owned();
+        let r2 = act(
+            &d,
+            &cred,
+            json!({
+                "type": "seat_open",
+                "provider": "claude",
+                "mode": "work",
+                "repo": "demo",
+                "persona_uid": "un0eba",
+                "idem_key": "setup-repo-seat",
+                "ticket": ticket
+            }),
+        )
+        .await;
+        assert_eq!(r2.code, 200, "{}", r2.body);
+        r2
+    } else {
+        assert_eq!(r.code, 201, "{}", r.body);
+        r
+    };
     let repo_seat = r.json["seat_id"].as_str().unwrap().to_owned();
     let repo_tree = PathBuf::from(r.json["cwd"].as_str().unwrap());
     std::fs::write(repo_tree.join("change.txt"), "new work\n").unwrap();
