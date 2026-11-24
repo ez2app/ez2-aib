@@ -923,7 +923,7 @@ mod tests {
         assert!(m.archive_restore("persona", "p1", 100).unwrap());
         assert!(
             matches!(
-                m.archive_put(item("persona", "p1", 100)),
+                m.archive_add(item("persona", "p1", 100)),
                 Err(StoreError::Invalid(_))
             ),
             "N5: same-second primary key must be Invalid"

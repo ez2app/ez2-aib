@@ -5,8 +5,8 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 cd "$(git rev-parse --show-toplevel)"
 # bn-storepath
 python3 -I scripts/knife.py crates/aib-store/src/brain_notes.rs \
-  '        && p.split('\''/'\'').all(|s| !s.is_empty() && s != "." && s != "..")' \
-  '        && true' \
+  '            if s.is_empty() || s == "." || s == ".." || s.ends_with('\''.'\'') || s.ends_with('\'' '\'') {' \
+  '            if false {' \
   --expect-fail 'brain_notes::tests::a_bad_row_is_refused' \
   -- cargo test -p aib-store --locked --lib 'brain_notes::tests::a_bad_row_is_refused'
 # bn-storetake

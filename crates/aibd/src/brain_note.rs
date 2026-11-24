@@ -1459,8 +1459,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(brain_archived(d.path(), &db, "k.1"), Ok(()));
-        db.archive("brain", "br_1", "test", "2026-11-24T00:00:00Z")
-            .unwrap();
+        db.archive_add(aib_store::ArchivedItem {
+            kind: "brain".into(),
+            uid: "br_1".into(),
+            archived_at: 1,
+            keep_until: None,
+            reason: "test".into(),
+            batch_id: None,
+            copy_dir: None,
+            sha256: None,
+            restored_at: None,
+        })
+        .unwrap();
         assert_eq!(brain_archived(d.path(), &db, "k.1"), Err("brain_archived"));
         assert_eq!(status_of("brain_archived"), StatusCode::CONFLICT);
     }
