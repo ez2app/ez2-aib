@@ -638,6 +638,7 @@ pub fn message_of(code: &str) -> &'static str {
         "brain_root_missing" => "找不到第二大腦的資料庫",
         "brain_folder_missing" | "brain_unknown" => "找不到這位夥伴綁的第二大腦資料夾",
         "brain_path_unsafe" | "brain_index_unreadable" => "第二大腦的位置不安全,沒有寫入",
+        "brain_archived" => "這個第二大腦已封存,請先復原",
         _ => "筆記沒有寫入",
     }
 }
@@ -646,15 +647,30 @@ fn status_of(code: &str) -> StatusCode {
     match code {
         "note_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "note_text_empty" | "note_text_bad" | "note_title_too_long" => StatusCode::BAD_REQUEST,
-        "brain_root_missing" | "brain_folder_missing" | "brain_unknown" | "brain_not_bound" => {
-            StatusCode::CONFLICT
-        }
+        "brain_root_missing"
+        | "brain_folder_missing"
+        | "brain_unknown"
+        | "brain_not_bound"
+        | "brain_archived" => StatusCode::CONFLICT,
         "brain_path_unsafe" | "brain_index_unreadable" | "brain_overlaps_protected" => {
             StatusCode::FORBIDDEN
         }
-        "brain_protected_unknown" => StatusCode::SERVICE_UNAVAILABLE,
+        "brain_protected_unknown" | "archive_unreadable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+
+/// L8 (f163c): an already-open seat cannot keep writing to a brain once it is archived.
+fn brain_archived(data: &Path, db: &aib_store::MessageDb, route: &str) -> Result<(), &'static str> {
+    let uids = crate::registry::brain_uids_for_route(data, route)?;
+    for uid in uids {
+        match db.archived("brain", &uid) {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err("brain_archived"),
+            Err(_) => return Err("archive_unreadable"),
+        }
+    }
+    Ok(())
 }
 
 fn event(kind: &str, payload: Value) -> Option<aib_store::NewEvent> {
@@ -742,6 +758,22 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "this seat was opened with no second brain",
         );
     };
+    let (data, db, r_check) = (
+        crate::registry::data_of(&st),
+        st.messages.clone(),
+        route.clone(),
+    );
+    match tokio::task::spawn_blocking(move || brain_archived(&data, &db, &r_check)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(c)) => return refuse(status_of(c), c, message_of(c)),
+        Err(_) => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "archive check",
+            )
+        }
+    }
 
     let _one = LOCK.lock().await;
     let now_unix = std::time::SystemTime::now()
@@ -1415,5 +1447,21 @@ mod tests {
         let r = take_back(d.path(), "pipe.md", &"0".repeat(64), &keep);
         assert_eq!(r, Err("brain_path_unsafe"));
         assert!(!keep.exists());
+    }
+
+    #[test]
+    fn an_archived_brain_refuses_new_notes() {
+        let d = tempfile::tempdir().unwrap();
+        let db = aib_store::MessageDb::open(&d.path().join("msg.db")).unwrap();
+        std::fs::write(
+            d.path().join("registry.json"),
+            r#"{"brains":[{"uid":"br_1","route_key":"k.1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(brain_archived(d.path(), &db, "k.1"), Ok(()));
+        db.archive("brain", "br_1", "test", "2026-11-24T00:00:00Z")
+            .unwrap();
+        assert_eq!(brain_archived(d.path(), &db, "k.1"), Err("brain_archived"));
+        assert_eq!(status_of("brain_archived"), StatusCode::CONFLICT);
     }
 }

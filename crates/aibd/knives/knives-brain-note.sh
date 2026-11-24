@@ -69,3 +69,9 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))' \
   --expect-fail brain_note::tests::the_archive_folder_is_the_owners_alone \
   -- cargo test -p aibd --locked --lib brain_note::tests::the_archive_folder_is_the_owners_alone
+# bn-archived (f163c L8)
+python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
+  '            Ok(Some(_)) => return Err("brain_archived"),' \
+  '            Ok(Some(_)) => {}' \
+  --expect-fail brain_note::tests::an_archived_brain_refuses_new_notes \
+  -- cargo test -p aibd --locked --lib brain_note::tests::an_archived_brain_refuses_new_notes
