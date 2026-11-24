@@ -982,7 +982,7 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
-    return h + testHostHtml() + timeSavedHtml() + pluginsHtml();
+    return h + testHostHtml() + timeSavedHtml() + pluginsHtml() + marketplaceHtml();
   }
   // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
   const TH_WHY = {
@@ -1100,6 +1100,62 @@
     if (T.r.switches_readable === false) h += '<div class="thr bad">開關檔讀不懂:所有外掛都當成關,而且這裡改不了;請修好或刪掉那個檔</div>';
     if (Array.isArray(T.r.stray) && T.r.stray.length) h += `<div class="thr hv">開關檔裡有沒裝的名字:${esc(T.r.stray.join('、'))}</div>`;
     if (T.msg) h += `<div class="thm bad" role="alert">${esc(T.msg)}</div>`;
+    return h;
+  }
+  const MKT_ERR = {
+    page_only: '只有這台 AIB 的內建頁能安裝外掛',
+    marketplace_unreachable: '連不上官方外掛目錄',
+    marketplace_bad_catalog: '外掛目錄格式不對',
+    bad_marketplace_install: '送出的安裝內容不對',
+    no_such_plugin: '目錄裡沒有這個外掛',
+    unsupported_target: '這個系統目前沒有提供對應執行檔',
+    download_failed: '下載外掛檔案失敗',
+    install_failed: 'SHA256 校驗失敗或寫入失敗，未安裝',
+  };
+  async function mktLoad() {
+    if (hasAct('marketplace_list') !== true || (S.mkt && S.mkt.loading)) return;
+    S.mkt = Object.assign(S.mkt || {}, { loading: true });
+    try { S.mkt = { r: (await act('marketplace_list', {})) || {}, at: Date.now() }; }
+    catch (e) { S.mkt = { err: MKT_ERR[e && e.code] || errText(e), at: Date.now() }; }
+    render();
+  }
+  async function mktInstall(name) {
+    if (!S.mkt || S.mkt.busy) return;
+    S.mkt = Object.assign(S.mkt, { busy: name, msg: '' }); render();
+    try {
+      const r = await act('marketplace_install', { name });
+      S.plg = { r: r || {}, at: Date.now() };
+      S.ts = null;
+      S.mkt = Object.assign(S.mkt, { busy: '', msg: '' });
+    } catch (e) {
+      S.mkt = Object.assign(S.mkt, { busy: '', msg: MKT_ERR[e && e.code] || errText(e) });
+    }
+    render();
+  }
+  function marketplaceHtml() {
+    if (hasAct('marketplace_list') !== true) return '';
+    const M = S.mkt;
+    if (!M || (!M.r && !M.err)) { if (!M || !M.loading) setTimeout(mktLoad, 0); return '<div class="thh"><b>可安裝外掛</b><span class="hv">讀取中…</span></div>'; }
+    const head = '<div class="thh"><b>可安裝外掛</b><button type="button" class="k" data-mktreload="1" title="重讀官方外掛目錄">重讀</button></div>';
+    if (M.err) return head + `<div class="thr bad">${esc(M.err)}</div>`;
+    if (M.r.state !== 'ok' || !Array.isArray(M.r.plugins)) return head + '<div class="thr hv">外掛目錄讀不到</div>';
+    if (!M.r.plugins.length) return head + '<div class="thr hv">目前沒有可安裝的外掛</div>';
+    const installed = new Map();
+    if (S.plg && S.plg.r && Array.isArray(S.plg.r.plugins)) {
+      for (const p of S.plg.r.plugins) if (p && p.name) installed.set(String(p.name), String(p.version || ''));
+    }
+    const canInst = hasAct('marketplace_install') === true;
+    let h = head;
+    for (const p of M.r.plugins) {
+      const nm = String(p.name || ''), ver = String(p.version || '');
+      const cur = installed.get(nm);
+      const st = cur === ver ? `✅ 已裝 ${ver}` : cur ? `有新版 ${ver}（現 ${cur}）` : p.supported ? `可安裝 ${ver}` : '此系統未支援';
+      const btn = canInst && p.supported && cur !== ver
+        ? `<button type="button" class="k g" data-mktinst="${esc(nm)}" ${M.busy ? 'disabled' : ''}>${M.busy === nm ? '安裝中…' : cur ? '更新' : '一鍵安裝'}</button>`
+        : '';
+      h += `<div class="thr"><span class="hd ${cur === ver ? 'hg' : ''}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(ver)}${p.paid ? ' · 付費' : ''}</i></span><span class="hv">${esc(st)}</span>${btn}<div class="thm">${esc(String(p.summary || ''))}</div></div>`;
+    }
+    if (M.msg) h += `<div class="thm bad" role="alert">${esc(M.msg)}</div>`;
     return h;
   }
   async function thLoad() {
@@ -6055,6 +6111,8 @@
     const tsf = x.closest('[data-tschatf]'); if (tsf) { S.tsChatFilter = tsf.dataset.tschatf; return render(); }
     if (x.closest('[data-plgreload]')) { S.plg = null; return plgLoad(); }
     const plgB = x.closest('[data-plgset]'); if (plgB) return plgSet(plgB.dataset.plgset, plgB.dataset.plgon === '1');
+    if (x.closest('[data-mktreload]')) { S.mkt = null; return mktLoad(); }
+    const mktB = x.closest('[data-mktinst]'); if (mktB) return mktInstall(mktB.dataset.mktinst);
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);

@@ -29,7 +29,7 @@ function world(acts, answers) {
     Date, Math, Number, String, Array, Object,
   };
   vm.createContext(ctx);
-  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, chatSavedHtml, plgLoad, plgSet, pluginsHtml, tsDur };', ctx);
+  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, chatSavedHtml, plgLoad, plgSet, pluginsHtml, mktLoad, mktInstall, marketplaceHtml, tsDur };', ctx);
   sent.api = ctx.api;
   return sent;
 }
@@ -171,6 +171,29 @@ const saved = { state: 'ok', saved: { v: 1, boxes: { today: box(103000), week: b
   w.S.tsChatOpen = true;
   h = w.api.chatSavedHtml();
   ok(h.includes('href="saved.html"') && h.includes('暫無逐筆明細') && !h.includes('這類還沒有紀錄'), 'reason: empty_recent_with_today\n' + h);
+
+  // ── 可安裝外掛目錄 ──
+  w = world(['other'], {});
+  ok(w.api.marketplaceHtml() === '', 'reason: marketplace_shown_without_act');
+  const mktResp = {
+    state: 'ok',
+    plugins: [
+      { name: 'aib-skipstop', version: '0.4.1', summary: 'Skip + Stop', paid: false, supported: true },
+      { name: 'other-plg', version: '0.1.0', summary: 'Other', paid: false, supported: false },
+    ],
+  };
+  w = world(['plugin_list', 'marketplace_list', 'marketplace_install'], {
+    plugin_list: list({ plugins: [{ name: 'aib-skipstop', version: '0.4.0', summary: 'Skip + Stop', paid: false, on: true, runs: 'ok' }] }),
+    marketplace_list: mktResp,
+    marketplace_install: list({ plugins: [{ name: 'aib-skipstop', version: '0.4.1', summary: 'Skip + Stop', paid: false, on: true, runs: 'ok' }] }),
+  });
+  await w.api.plgLoad();
+  await w.api.mktLoad();
+  h = w.api.marketplaceHtml();
+  ok(h.includes('data-mktinst="aib-skipstop"') && h.includes('更新') && h.includes('此系統未支援'), 'reason: marketplace_list_render\n' + h);
+  await w.api.mktInstall('aib-skipstop');
+  h = w.api.marketplaceHtml();
+  ok(h.includes('已裝 0.4.1') && !h.includes('data-mktinst="aib-skipstop"'), 'reason: marketplace_install_refresh\n' + h);
 
   console.log('saved-blocks: ' + n + ' 項全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

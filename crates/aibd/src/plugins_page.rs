@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 
 pub const LIST: &str = "plugin_list";
 pub const SET: &str = "plugin_set";
+pub const MARKETPLACE_LIST: &str = "marketplace_list";
+pub const MARKETPLACE_INSTALL: &str = "marketplace_install";
 
 /// The list the page is shown, from the plugin area under `home`.
 pub fn list(home: &Path, windows: bool) -> Value {
@@ -140,6 +142,123 @@ pub async fn set_act(body: Value) -> Response {
     let got = tokio::task::spawn_blocking(move || {
         let _turn = turn();
         home_now().map(|h| set(&h, &body, cfg!(windows)))
+    })
+    .await;
+    match got {
+        Ok(Some(Ok(v))) => Json(v).into_response(),
+        Ok(Some(Err((status, code)))) => refuse(status, code),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
+    }
+}
+
+/// Format marketplace entries for the current OS/arch target from catalog JSON.
+pub fn marketplace_list_from(
+    catalog_text: &str,
+    os: &str,
+    arch: &str,
+) -> Result<Value, (StatusCode, &'static str)> {
+    let entries = aib_plugin::marketplace::parse_catalog(catalog_text)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_bad_catalog"))?;
+    let target = aib_plugin::marketplace::target_triple(os, arch);
+    let rows: Vec<Value> = entries
+        .into_iter()
+        .map(|e| {
+            let has_target = target.is_some_and(|t| e.targets.contains_key(t));
+            json!({
+                "name": e.name,
+                "version": e.version,
+                "summary": e.summary,
+                "paid": e.paid,
+                "default_on": e.default_on,
+                "supported": has_target,
+            })
+        })
+        .collect();
+    Ok(json!({ "state": "ok", "target": target, "plugins": rows }))
+}
+
+/// What `marketplace_install` asks: only `type` and `name`.
+pub fn asked_install(body: &Value) -> Option<String> {
+    let o = body.as_object()?;
+    if o.keys().any(|k| !matches!(k.as_str(), "type" | "name")) {
+        return None;
+    }
+    let name = o.get("name")?.as_str()?;
+    aib_plugin::name_ok(name).then(|| name.to_string())
+}
+
+pub fn marketplace_install_with<F>(
+    home: &Path,
+    body: &Value,
+    os: &str,
+    arch: &str,
+    windows: bool,
+    mut fetch: F,
+) -> Result<Value, (StatusCode, &'static str)>
+where
+    F: FnMut(&str) -> Result<Vec<u8>, String>,
+{
+    let name = asked_install(body).ok_or((StatusCode::BAD_REQUEST, "bad_marketplace_install"))?;
+    let target = aib_plugin::marketplace::target_triple(os, arch)
+        .ok_or((StatusCode::BAD_REQUEST, "unsupported_target"))?;
+    let cat_bytes = fetch(aib_plugin::marketplace::MARKETPLACE_URL)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_unreachable"))?;
+    let cat_text = std::str::from_utf8(&cat_bytes)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_bad_catalog"))?;
+    let entries = aib_plugin::marketplace::parse_catalog(cat_text)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_bad_catalog"))?;
+    let entry = entries
+        .into_iter()
+        .find(|e| e.name == name)
+        .ok_or((StatusCode::NOT_FOUND, "no_such_plugin"))?;
+    let asset = entry
+        .targets
+        .get(target)
+        .ok_or((StatusCode::BAD_REQUEST, "unsupported_target"))?;
+    let manifest_bytes =
+        fetch(&entry.manifest.url).map_err(|_| (StatusCode::BAD_GATEWAY, "download_failed"))?;
+    let bin_bytes = fetch(&asset.url).map_err(|_| (StatusCode::BAD_GATEWAY, "download_failed"))?;
+    aib_plugin::marketplace::install_from_bytes(
+        home,
+        &entry,
+        target,
+        windows,
+        &manifest_bytes,
+        &bin_bytes,
+    )
+    .map_err(|_| (StatusCode::CONFLICT, "install_failed"))?;
+    Ok(list(home, windows))
+}
+
+pub async fn marketplace_list_act() -> Response {
+    let got = tokio::task::spawn_blocking(|| {
+        let bytes = aib_plugin::marketplace::fetch_https(aib_plugin::marketplace::MARKETPLACE_URL)
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_unreachable"))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "marketplace_bad_catalog"))?;
+        marketplace_list_from(text, std::env::consts::OS, std::env::consts::ARCH)
+    })
+    .await;
+    match got {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err((status, code))) => refuse(status, code),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "marketplace_failed"),
+    }
+}
+
+pub async fn marketplace_install_act(body: Value) -> Response {
+    let got = tokio::task::spawn_blocking(move || {
+        let _turn = turn();
+        home_now().map(|h| {
+            marketplace_install_with(
+                &h,
+                &body,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                cfg!(windows),
+                aib_plugin::marketplace::fetch_https,
+            )
+        })
     })
     .await;
     match got {
@@ -335,5 +454,97 @@ mod tests {
             std::fs::read_to_string(aib_plugin::switches_file(&h.0)).expect("read"),
             "{"
         );
+    }
+
+    #[test]
+    fn marketplace_list_and_install_verify_sha_and_reject_bad_requests() {
+        let h = home("mkt");
+        let man = json!({
+            "schema": aib_plugin::SCHEMA,
+            "name": "gamma",
+            "version": "0.1.0",
+            "summary": "g",
+            "paid": false,
+            "default": "on",
+            "commands": [{"name": "gamma", "bin": "bin/gamma"}]
+        })
+        .to_string()
+        .into_bytes();
+        let bin = b"#!/bin/sh\necho ok\n";
+        let m_sha = aib_plugin::sha256_hex(&man);
+        let b_sha = aib_plugin::sha256_hex(bin);
+        let cat = json!({
+            "schema": aib_plugin::marketplace::MARKETPLACE_SCHEMA,
+            "plugins": [{
+                "name": "gamma",
+                "version": "0.1.0",
+                "summary": "g",
+                "paid": false,
+                "default": "on",
+                "manifest": {
+                    "url": "https://github.com/ez2app/gamma/releases/download/v0.1.0/aib-plugin.json",
+                    "sha256": m_sha
+                },
+                "targets": {
+                    "aarch64-apple-darwin": {
+                        "url": "https://github.com/ez2app/gamma/releases/download/v0.1.0/gamma",
+                        "sha256": b_sha
+                    }
+                }
+            }]
+        })
+        .to_string();
+
+        let listed = marketplace_list_from(&cat, "macos", "aarch64").expect("list");
+        assert_eq!(listed["plugins"][0]["supported"], true);
+        let win_list = marketplace_list_from(&cat, "windows", "x86_64").expect("win list");
+        assert_eq!(win_list["plugins"][0]["supported"], false);
+
+        // bad body / unknown plugin / sha mismatch
+        let mut fetcher = |url: &str| -> Result<Vec<u8>, String> {
+            if url == aib_plugin::marketplace::MARKETPLACE_URL {
+                Ok(cat.as_bytes().to_vec())
+            } else if url.ends_with("aib-plugin.json") {
+                Ok(man.clone())
+            } else {
+                Ok(bin.to_vec())
+            }
+        };
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "../gamma"}),
+                "macos",
+                "aarch64",
+                false,
+                &mut fetcher,
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((400, "bad_marketplace_install"))
+        );
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "missing"}),
+                "macos",
+                "aarch64",
+                false,
+                &mut fetcher,
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((404, "no_such_plugin"))
+        );
+
+        let installed = marketplace_install_with(
+            &h.0,
+            &json!({"type": MARKETPLACE_INSTALL, "name": "gamma"}),
+            "macos",
+            "aarch64",
+            false,
+            &mut fetcher,
+        )
+        .expect("install");
+        assert_eq!(installed["plugins"][0]["name"], "gamma");
+        assert_eq!(installed["plugins"][0]["runs"], "ok");
     }
 }
