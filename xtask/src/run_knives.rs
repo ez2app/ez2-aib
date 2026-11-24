@@ -52,6 +52,7 @@ fn run_env(root: &Path, job: &str, shard: Option<&str>, env: &[(&str, &str)]) ->
         .env_remove("AIB_KNIVES_PLAN")
         .env_remove("AIB_KNIVES_LIST")
         .env_remove("AIB_KNIVES_LIMITS")
+        .env_remove("AIB_SKIP_FILES")
         .env_remove("AIB_KNIVES_SHARD");
     if let Some(s) = shard {
         c.env("AIB_KNIVES_SHARD", s);
@@ -633,4 +634,56 @@ fn bad_or_unreadable_limits_file_is_refused_with_rc_2() {
         let (rc, out) = run_env(&r, "rust", None, &[("AIB_KNIVES_LIMITS", "limits.tsv")]);
         assert_eq!(rc, 2, "bad={bad:?}\n{out}");
     }
+}
+
+#[test]
+fn skip_files_skips_unaffected_scripts_and_does_not_leak() {
+    let r = repo(&[
+        (
+            "crates/a/knives/k1.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nexit 9\n",
+        ),
+        (
+            "crates/a/knives/k2.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\n[ -z \"${AIB_SKIP_FILES:-}\" ] && exit 0 || exit 8\n",
+        ),
+    ]);
+    let (rc, out) = run_env(
+        &r,
+        "rust",
+        None,
+        &[("AIB_SKIP_FILES", ",crates/a/knives/k1.sh,")],
+    );
+    assert_eq!(rc, 0, "{out}");
+    assert!(
+        out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: SKIPPED why=unaffected"),
+        "{out}"
+    );
+    assert!(
+        out.contains("KNIVES-SCRIPT crates/a/knives/k2.sh: rc=0"),
+        "{out}"
+    );
+
+    // Even when every script in a shard is skipped as unaffected, the shard exits 0
+    let r2 = repo(&[
+        (
+            "crates/a/knives/k1.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nexit 9\n",
+        ),
+        (
+            "crates/a/knives/k2.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nexit 9\n",
+        ),
+    ]);
+    let (rc_all, out_all) = run_env(
+        &r2,
+        "rust",
+        Some("1/2"),
+        &[(
+            "AIB_SKIP_FILES",
+            ",crates/a/knives/k1.sh,crates/a/knives/k2.sh,",
+        )],
+    );
+    assert_eq!(rc_all, 0, "{out_all}");
+    assert!(out_all.contains("KNIVES-OK "), "{out_all}");
 }
