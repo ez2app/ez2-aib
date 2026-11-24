@@ -423,8 +423,13 @@ fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
         return true;
     };
 
-    let repo_looser = repo["linux_knives"].as_bool() == Some(true)
-        || repo["knife_length_check"].as_str() == Some("warn");
+    let Some(linux_knives) = repo.get("linux_knives").and_then(Value::as_bool) else {
+        return true;
+    };
+    let Some(knife_length_check) = repo.get("knife_length_check").and_then(Value::as_str) else {
+        return true;
+    };
+    let repo_looser = linux_knives || knife_length_check != "reject";
     if repo_looser {
         return true;
     }
@@ -599,6 +604,45 @@ pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'stati
                     }
                 }
                 _ => return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides")),
+            }
+        }
+    }
+    if let Some(rs) = o.get("repo_settings") {
+        let rs_obj = rs
+            .as_object()
+            .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+        for (k, v) in rs_obj {
+            match k.as_str() {
+                "linux_knives" => {
+                    if !v.is_boolean() {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "knife_length_check" => {
+                    if !v.as_str().is_some_and(|s| matches!(s, "reject" | "warn")) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "merge_batch_tz" => {
+                    if !v.as_str().is_some_and(|s| {
+                        let t = s.trim();
+                        !t.is_empty() && t.len() <= 64 && !t.chars().any(char::is_control)
+                    }) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "merge_batch_hours" => {
+                    let Some(arr) = v.as_array() else {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    };
+                    if arr.is_empty()
+                        || arr.len() > 24
+                        || arr.iter().any(|h| !h.as_u64().is_some_and(|n| n <= 23))
+                    {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                _ => return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings")),
             }
         }
     }
@@ -1111,6 +1155,38 @@ mod tests {
         let disk_bad = tier_get(&h.0);
         assert_eq!(disk_bad["fell_back_to_strict"], true);
         assert_eq!(disk_bad["effective_tier"], "strict");
+
+        // M2 repo_settings: unknown string, string bool, bad merge_batch_hours rejected; unknown on disk falls back
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"knife_length_check": "off"}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"linux_knives": "true"}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"merge_batch_hours": ["10"]}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        std::fs::write(
+            tiers_file(&h.0),
+            r#"{"tier":"normal","repo_settings":{"knife_length_check":"off"}}"#,
+        )
+        .unwrap();
+        let disk_bad_repo = tier_get(&h.0);
+        assert_eq!(disk_bad_repo["fell_back_to_strict"], true);
+        assert_eq!(disk_bad_repo["effective_tier"], "strict");
+        assert_eq!(
+            disk_bad_repo["repo_settings"]["knife_length_check"],
+            "reject"
+        );
 
         // N1: corrupt JSON is backed up to .bad before overwrite
         std::fs::write(tiers_file(&h.0), "{not json").unwrap();
