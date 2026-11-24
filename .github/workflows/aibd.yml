@@ -206,6 +206,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -3883,6 +3892,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -3998,6 +4016,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -4226,6 +4253,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
