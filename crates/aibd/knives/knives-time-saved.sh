@@ -15,7 +15,7 @@ ts '    if rc != Some(0) {' '    if rc.is_none() {' with_a_plugin::the_plugin_s_
 # TSK5 an answer that is not understood gives an empty ok
 ts '        Err(_) => json!({ "state": "bad_answer" }),' '        Err(_) => json!({ "state": "ok" }),' with_a_plugin::the_plugin_s_numbers_reach_the_page_only_from_the_installed_executable
 # TSK6 the program is not asked on the page's clock
-ts '    c.args(["saved", "--json", "--utc-offset", &offset.to_string()])' '    c.args(["saved", "--json", "--utc-offset", "0"])' with_a_plugin::the_program_is_asked_for_saved_json_on_the_page_s_clock
+ts '    c.args(["saved", "--json", "--utc-offset", &offset.to_string()])' '    c.args(["saved", "--json", "--utc-offset", &(offset * 0).to_string()])' with_a_plugin::the_program_is_asked_for_saved_json_on_the_page_s_clock
 # TSK7 a plugin switched off is said to be broken, not off
 ts '        aib_plugin::No::Off => ("off", ""),' '        aib_plugin::No::Off => ("not_runnable", "off"),' with_a_plugin::the_plugin_s_numbers_reach_the_page_only_from_the_installed_executable
 # TSK8 an old answer, or one to another question, is given again
