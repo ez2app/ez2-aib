@@ -113,11 +113,10 @@ pub fn holds(
         }
         let ask = Ask {
             category: Category::WindowGrant,
-            operation: OP_ALWAYS.to_owned(),
+            operation: OP_ALWAYS,
             resource: row.resource.clone(),
-            params: serde_json::Value::String(String::from_utf8_lossy(&row.params).into_owned()),
+            params: row.params.clone(),
             by: row.by_key.clone(),
-            top_words: row.resource.clone(),
         };
         let msg = owner_ok::binding(&row.ticket, &ask);
         if !verify_fn(&msg, &row.sig) {
@@ -255,11 +254,10 @@ mod tests {
         let by = "page:test".to_owned();
         let ask = Ask {
             category: Category::WindowGrant,
-            operation: OP_ALWAYS.to_owned(),
+            operation: OP_ALWAYS,
             resource: resource.clone(),
-            params: serde_json::Value::String(String::from_utf8_lossy(&params).into_owned()),
+            params: params.clone(),
             by: by.clone(),
-            top_words: resource.clone(),
         };
         let msg = owner_ok::binding(ticket, &ask);
         let mut sig = msg;
@@ -520,5 +518,52 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(read_res, 0);
+    }
+
+    #[test]
+    fn e2e_ask_always_sign_writes_db_and_holds_and_tamper_fails() {
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.db")).unwrap();
+        let now = 2_000_000;
+        let addr = p_addr();
+        let own = own_ips();
+
+        let card = crate::net_card::Card {
+            request_id: "rq_e2e".into(),
+            seat_id: "seat1".into(),
+            persona_uid: "un0eba".into(),
+            persona_name: "Web".into(),
+            dest_name: "db.lan".into(),
+            dest: addr,
+            source: "proxy",
+            why: None,
+            expires_at: now + 100,
+            high: false,
+            listener: None,
+        };
+        let ask = card.ask_always("page:test", now);
+        let msg = owner_ok::binding("tk_e2e", &ask);
+        let mut sig = msg;
+        sig.extend_from_slice(b":ok");
+
+        let row = NetAllowRow {
+            ticket: "tk_e2e".into(),
+            by_key: ask.by,
+            resource: ask.resource,
+            params: ask.params,
+            sig,
+            approved_at: now as i64,
+        };
+        assert!(db.net_allow_add(row.clone()).unwrap());
+        assert!(holds(&db, "un0eba", addr, &own, now, true, &test_verify).is_some());
+
+        // Flip 1 byte in params: verification MUST fail
+        let mut tampered = row;
+        let last = tampered.params.len() - 2;
+        tampered.params[last] ^= 1;
+        tampered.ticket = "tk_e2e_bad".into();
+        let db2 = MessageDb::open(&d.path().join("m2.db")).unwrap();
+        assert!(db2.net_allow_add(tampered).unwrap());
+        assert!(holds(&db2, "un0eba", addr, &own, now, true, &test_verify).is_none());
     }
 }

@@ -281,6 +281,27 @@ impl Card {
         v
     }
 
+    /// The owner's window for `Choice::Always` at `issued_at`: signs `always_params`
+    /// (`PREFIX\npersona_uid\ncanon\nissued_at\nuntil\nrequest_id\n`) so `issued_at`/`until`
+    /// and the 30-day cap are bound inside the owner's signature (`ebab8` review).
+    pub fn ask_always(&self, by: &str, issued_at: u64) -> crate::owner_ok::Ask {
+        let params = crate::net_allow::always_params(
+            &self.persona_uid,
+            self.dest,
+            issued_at,
+            issued_at + crate::net_allow::MAX_DAYS_SECS,
+            &self.request_id,
+        )
+        .unwrap_or_default();
+        crate::owner_ok::Ask {
+            category: aib_approve::category::Category::WindowGrant,
+            operation: OP_NET_ALLOW_ALWAYS,
+            resource: format!("{} → {} {}", self.persona_name, self.dest_name, self.dest),
+            params,
+            by: by.to_owned(),
+        }
+    }
+
     /// The owner's window for choice `c`: the operation, what is shown, and parameters that bind
     /// only this card and this choice (f163c 08:00: `request_id` + the choice, never the ticket).
     pub fn ask(&self, c: Choice, by: &str) -> crate::owner_ok::Ask {
@@ -452,7 +473,11 @@ impl Cards {
             let yes = (c != Choice::Deny).then_some(Verified { lasts: Lasts::Once });
             return Step::Done(c, yes);
         }
-        let ask = card.ask(c, by);
+        let ask = if c == Choice::Always {
+            card.ask_always(by, now)
+        } else {
+            card.ask(c, by)
+        };
         match (ticket, *state) {
             // the window; the card is marked only once it is up (Cards::opened)
             (None, State::Open) => Step::Ask(Box::new(ask)),

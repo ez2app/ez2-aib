@@ -122,10 +122,17 @@ struct Answer {
 
 /// The card's answer through aibd's own owner check: `OP_NET_ALLOW_ALWAYS` requires a
 /// hardware-signed ticket (`owner_ok::approved_signed_for`); others use `approved_for`.
-fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step, Option<(String, Vec<u8>)>)> {
+fn step(
+    req: &Answer,
+    by: &str,
+) -> Option<(
+    Option<Card>,
+    Step,
+    Option<(String, String, Vec<u8>, Vec<u8>)>,
+)> {
     with_cards(|c| {
         let held = c.find(&req.request_id);
-        let mut signed: Option<(String, Vec<u8>)> = None;
+        let mut signed: Option<(String, String, Vec<u8>, Vec<u8>)> = None;
         let step = c.answer(
             &req.request_id,
             &req.choice,
@@ -137,7 +144,7 @@ fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step, Option<(String, V
                     let Some(sig) = crate::owner_ok::approved_signed_for(t, ask) else {
                         return false;
                     };
-                    signed = Some((t.to_owned(), sig));
+                    signed = Some((t.to_owned(), ask.resource.clone(), ask.params.clone(), sig));
                     true
                 } else {
                     crate::owner_ok::approved_for(t, ask)
@@ -175,29 +182,18 @@ pub async fn answer(st: AppState, body: Value, by: String) -> Response {
             let mut listed = false;
             if let (Some(card), Some(yes)) = (&held, &yes) {
                 if yes.lasts() == Lasts::Always {
-                    if let Some((ticket, sig)) = signed {
-                        let ts = now();
-                        if let Ok(params) = crate::net_allow::always_params(
-                            &card.persona_uid,
-                            card.dest,
-                            ts,
-                            ts + crate::net_allow::MAX_DAYS_SECS,
-                            &card.request_id,
-                        ) {
-                            let row = aib_store::net_allow::NetAllowRow {
-                                ticket,
-                                by_key: by.clone(),
-                                resource: format!(
-                                    "{} → {} {}",
-                                    card.persona_name, card.dest_name, card.dest
-                                ),
-                                params,
-                                sig,
-                                approved_at: ts as i64,
-                            };
-                            if st.messages.net_allow_add(row).unwrap_or(false) {
-                                listed = true;
-                            }
+                    if let Some((ticket, resource, params, sig)) = signed {
+                        let row = aib_store::net_allow::NetAllowRow {
+                            ticket,
+                            by_key: by.clone(),
+                            resource,
+                            params,
+                            sig,
+                            approved_at: now() as i64,
+                        };
+                        match st.messages.net_allow_add(row) {
+                            Ok(added) => listed = added,
+                            Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "allow"),
                         }
                     }
                     if let Ok(mut a) = ALLOW.lock() {
