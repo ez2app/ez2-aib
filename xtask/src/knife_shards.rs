@@ -294,7 +294,7 @@ pub fn check_size(
     Ok(summary)
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]\n       aib-xtask knife-shards summary --tier <strict|normal|fast> [--passed N] [--deferred N] [--failed N] [--timed-out N] [--cancelled N]";
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]\n       aib-xtask knife-shards summary --tier <strict|normal|fast> [--passed N] [--deferred N] [--failed N] [--timed-out N] [--cancelled N]\n       aib-xtask knife-shards queue [--repo OWNER/NAME]";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -542,13 +542,63 @@ fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
     Ok((u8::from(bad > 0), line))
 }
 
+pub fn estimate_macos_queue_min(running: usize, queued: usize, macos_slots: usize) -> usize {
+    let slots = macos_slots.max(1);
+    let total = running.saturating_add(queued);
+    // Average ~45m per macOS knife/rust cell across slots
+    (total.div_ceil(slots)).saturating_mul(45)
+}
+
+fn queue_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let mut repo = "ez2app/ez2-aib".to_string();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => {
+                repo = it
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| format!("--repo needs a value\n{USAGE}"))?;
+            }
+            other => return Err(format!("{other}: not an option\n{USAGE}")),
+        }
+    }
+    let query = |status: &str| -> Result<usize, String> {
+        let out = std::process::Command::new("gh")
+            .args([
+                "api",
+                &format!("repos/{repo}/actions/runs?status={status}&per_page=30"),
+                "--jq",
+                ".workflow_runs | length",
+            ])
+            .output()
+            .map_err(|e| format!("gh api: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| format!("bad gh count: {e}"))
+    };
+    let running = query("in_progress")?;
+    let queued = query("queued")?;
+    let est = estimate_macos_queue_min(running, queued, 5);
+    Ok((
+        0,
+        format!(
+            "CI-QUEUE repo={repo} running_runs={running} queued_runs={queued} est_wait_min={est}\n"
+        ),
+    ))
+}
+
 pub fn run(args: &[String]) -> u8 {
     if let [cmd, rest @ ..] = args {
-        if cmd == "check" || cmd == "summary" {
-            let res = if cmd == "check" {
-                check_cmd(rest)
-            } else {
-                summary_cmd(rest)
+        if cmd == "check" || cmd == "summary" || cmd == "queue" {
+            let res = match cmd.as_str() {
+                "check" => check_cmd(rest),
+                "summary" => summary_cmd(rest),
+                _ => queue_cmd(rest),
             };
             return match res {
                 Ok((rc, text)) => {
@@ -848,5 +898,7 @@ mod tests {
         )
         .unwrap();
         assert!(ok.violations.is_empty(), "{:?}", ok.violations);
+        assert_eq!(estimate_macos_queue_min(2, 3, 5), 45);
+        assert_eq!(estimate_macos_queue_min(5, 5, 5), 90);
     }
 }
