@@ -332,6 +332,7 @@ mod tests {
         let fut = sign_row("tk_fut", "un0eba", addr, now, now + 86_400, b":ok");
         assert!(db.net_allow_add(fut).unwrap());
         assert!(holds(&db, "un0eba", addr, &own_ips(), now - 1, true, &test_verify).is_none());
+        assert!(db.net_allow_revoke("tk_fut", now as i64).unwrap());
 
         // Revoked ticket cannot be re-used even if re-inserted
         let ok = sign_row("tk_rev", "un0eba", addr, now, now + 86_400, b":ok");
