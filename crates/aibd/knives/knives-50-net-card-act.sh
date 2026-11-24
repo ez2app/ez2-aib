@@ -14,7 +14,7 @@ na '            (Some(_), _) => Step::NotApproved,' '            (Some(_), _) =>
 # NA4 the window's parameters do not bind the choice (a min15 ticket would open an hour)
 na '        let params = serde_json::json!({"request_id": self.request_id, "hold": c.id()})' '        let params = serde_json::json!({"request_id": self.request_id, "hold": "hour1"}) // knife' net_card::tests::the_window_binds_only_this_card_and_this_choice
 # NA5 a finished card counts as waiting
-na '            .retain(|(c, s)| *s != State::Finished && now < c.expires_at.saturating_add(CARD_SECS));' '            .retain(|(c, _s)| now < c.expires_at.saturating_add(CARD_SECS)); // knife' net_card::tests::the_cards_list_counts_and_ends
+na '            .filter(|(c, s)| !matches!(s, State::Finished) && now < c.expires_at)' '            .filter(|(c, _s)| now < c.expires_at) // knife' net_card::tests::the_cards_list_counts_and_ends
 # NA6 the high-risk card's 只這一次 finishes without the owner
 na '        c != Choice::Deny && (self.high || c.needs_owner())' '        c != Choice::Deny && c.needs_owner() // knife' net_card::tests::the_cards_list_counts_and_ends
 # NA7 (A6d §18) aibd's own port gets the high-risk card
