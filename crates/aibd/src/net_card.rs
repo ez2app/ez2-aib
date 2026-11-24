@@ -419,7 +419,7 @@ impl Cards {
         self.sweep(now);
         self.rows
             .iter()
-            .filter(|(c, s, _)| *s != State::Finished && now < c.expires_at)
+            .filter(|(c, s, _)| !matches!(s, State::Finished) && now < c.expires_at)
             .count()
     }
 

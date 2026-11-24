@@ -52,10 +52,10 @@ kn egress.rs '    if own.is_empty() {' '    if own.is_empty() && ips.is_empty() 
 # EV23 (c2f0b E5) the same for a test machine
 kn managed_test.rs '    if own.is_empty() {' '    if own.is_empty() && h.port == 0 { // knife' managed_test::tests::an_add_names_a_trusted_machine_and_nothing_else
 # EV24 (c2f0b E6) SMB back into this computer gets a card
-kn egress.rs '    445..=445,' '    446..=446, // knife' $PORT_T
+kn egress.rs '    445..=445,' '    446..=446, // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
 # EV25 (c2f0b E6) a Jupyter server on this computer gets a card
-kn egress.rs '    8888..=8888,' '    8889..=8889, // knife' $PORT_T
+kn egress.rs '    8888..=8888,' '    8889..=8889, // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
 # EV26 (c2f0b E6) the kubelet gets a card
-kn egress.rs '    10250..=10250,' '    10251..=10251, // knife' $PORT_T
+kn egress.rs '    10250..=10250,' '    10251..=10251, // knife' egress::tests::aibds_ports_are_the_reserved_range_its_own_and_the_previews_and_nothing_else_is
 # EV27 (DEEP2 T1) this computer's ssh is looked for somewhere else than the system's place
 kn host_ssh.rs '        Os::Mac => ssh_program(Os::Mac, Path::new("/")),' '        Os::Mac => ssh_program(Os::Mac, Path::new("/usr/local")), // knife' host_ssh::tests::this_computers_ssh_is_found_from_the_os_not_the_environment

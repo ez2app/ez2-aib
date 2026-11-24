@@ -14,7 +14,7 @@ na '            (Some(_), _) => Step::NotApproved,' '            (Some(_), _) =>
 # NA4 the window's parameters do not bind the choice (a min15 ticket would open an hour)
 na '        let params = serde_json::json!({"request_id": self.request_id, "hold": c.id()})' '        let params = serde_json::json!({"request_id": self.request_id, "hold": "hour1"}) // knife' net_card::tests::the_window_binds_only_this_card_and_this_choice
 # NA5 a finished card counts as waiting
-na '            .filter(|(c, s)| *s != State::Finished && now < c.expires_at)' '            .filter(|(c, _s)| now < c.expires_at) // knife' net_card::tests::the_cards_list_counts_and_ends
+na '            .filter(|(c, s, _)| !matches!(s, State::Finished) && now < c.expires_at)' '            .filter(|(c, _s, _)| now < c.expires_at) // knife' net_card::tests::the_cards_list_counts_and_ends
 # NA6 the high-risk card's 只這一次 finishes without the owner
 na '        c != Choice::Deny && (self.high || c.needs_owner())' '        c != Choice::Deny && c.needs_owner() // knife' net_card::tests::the_cards_list_counts_and_ends
 # NA7 (A6d §18) aibd's own port gets the high-risk card
@@ -32,9 +32,9 @@ nw crates/aibd/src/seat_input.rs '            if net_outside {' '            if 
 # NW2 a window that could not be raised locks the card (L1)
 nw crates/aibd/src/net_card_web.rs '            let window_up = r.status() == StatusCode::ACCEPTED;' '            let window_up = r.status() == StatusCode::ACCEPTED || r.status() == StatusCode::FORBIDDEN; // knife' '--test net_card' a_card_is_answered_by_the_built_in_page_only_and_a_yes_only_through_the_owner
 # NW3 the answer does not go through aibd's own owner check (L2)
-nw crates/aibd/src/net_card_web.rs '            crate::owner_ok::approved_for,' '            |_: &str, _: &crate::owner_ok::Ask| true, // knife' '--test net_card_owner' a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
+nw crates/aibd/src/net_card_web.rs '                    crate::owner_ok::approved_for(t, ask)' '                    true // knife' '--test net_card_owner' a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
 # NW4 the card is marked as asked before any window (L1, the pure side)
-nw crates/aibd/src/net_card.rs '            (None, State::Open) => Step::Ask(Box::new(ask)),' '            (None, State::Open) => { *state = State::Asked(c); Step::Ask(Box::new(ask)) } // knife' '--lib' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
+nw crates/aibd/src/net_card.rs '                Step::Ask(Box::new(ask))' '                { *state = State::Asked(c); Step::Ask(Box::new(ask)) } // knife' '--lib' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NW5 (N1) a ticket for another choice than the window's is looked up
 nw crates/aibd/src/net_card.rs '            (Some(_), State::Asked(asked)) if asked != c => Step::NotApproved,' '            (Some(_), State::Asked(asked)) if asked != c && c == Choice::Deny => Step::NotApproved, // knife' '--lib' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NW6 (f163c incremental) 一直允許 is not written to the seat's list after the owner's yes

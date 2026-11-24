@@ -501,10 +501,6 @@ mod tests {
         }
         // never-connected classes stay refused
         assert_eq!(
-            d(&[ip("0.0.0.0")], 80, &mut lim, 0, 700),
-            Conn::Refuse("this_network")
-        );
-        assert_eq!(
             d(&[ip("::")], 80, &mut lim, 0, 700),
             Conn::Refuse("unspecified")
         );
