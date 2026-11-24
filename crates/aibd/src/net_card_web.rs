@@ -120,8 +120,8 @@ struct Answer {
     ticket: Option<String>,
 }
 
-/// The card's answer through aibd's own owner check (`owner_ok::approved_for`): the card as it
-/// was, and the step.
+/// The card's answer through aibd's own owner check: `OP_NET_ALLOW_ALWAYS` requires a
+/// hardware-signed ticket (`owner_ok::approved_signed_for`); others use `approved_for`.
 fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step)> {
     with_cards(|c| {
         let held = c.find(&req.request_id);
@@ -131,7 +131,13 @@ fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step)> {
             req.ticket.as_deref(),
             now(),
             by,
-            crate::owner_ok::approved_for,
+            |t, ask| {
+                if ask.operation == crate::net_card::OP_NET_ALLOW_ALWAYS {
+                    crate::owner_ok::approved_signed_for(t, ask).is_some()
+                } else {
+                    crate::owner_ok::approved_for(t, ask)
+                }
+            },
         );
         (held, step)
     })

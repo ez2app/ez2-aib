@@ -128,6 +128,83 @@ pub fn holds(
     None
 }
 
+/// Predicate for [`crate::proxy::decide`] / [`crate::proxy::Tunnels::sweep`] backed by
+/// [`holds`].
+pub fn proxy_allowed(
+    db: &MessageDb,
+    persona_uid: &str,
+    own: &[IpAddr],
+    now: u64,
+    persona_active: bool,
+    verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
+    ip: IpAddr,
+    port: u16,
+) -> bool {
+    holds(
+        db,
+        persona_uid,
+        SocketAddr::new(ip, port),
+        own,
+        now,
+        persona_active,
+        verify_fn,
+    )
+    .is_some()
+}
+
+/// Sweep open tunnels against [`proxy_allowed`] (used on expire, merge, or archive where
+/// `persona_active` becomes `false`).
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_tunnels(
+    db: &MessageDb,
+    now: u64,
+    tunnels: &mut crate::proxy::Tunnels,
+    grants: &crate::grants::Grants,
+    persona_uid: &str,
+    own: &[IpAddr],
+    persona_active: bool,
+    verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
+) -> Vec<u64> {
+    tunnels.sweep(now, grants, &|_seat, ip, port| {
+        proxy_allowed(
+            db,
+            persona_uid,
+            own,
+            now,
+            persona_active,
+            verify_fn,
+            ip,
+            port,
+        )
+    })
+}
+
+/// Revoke `ticket` and immediately close any open tunnels that relied on it.
+#[allow(clippy::too_many_arguments)]
+pub fn revoke_and_sweep(
+    db: &MessageDb,
+    ticket: &str,
+    now: u64,
+    tunnels: &mut crate::proxy::Tunnels,
+    grants: &crate::grants::Grants,
+    persona_uid: &str,
+    own: &[IpAddr],
+    persona_active: bool,
+    verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
+) -> Vec<u64> {
+    let _ = db.net_allow_revoke(ticket, now as i64);
+    sweep_tunnels(
+        db,
+        now,
+        tunnels,
+        grants,
+        persona_uid,
+        own,
+        persona_active,
+        verify_fn,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +336,119 @@ mod tests {
         assert!(db.net_allow_revoke("tk_rev", now as i64).unwrap());
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_none());
         assert!(!db.net_allow_add(ok).unwrap());
+    }
+
+    #[test]
+    fn proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive() {
+        use crate::grants::Grants;
+        use crate::proxy::{decide, By, CardLimit, Conn, Here, Ports, Tunnels, Who};
+
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.db")).unwrap();
+        let now = 2_000_000;
+        let addr = p_addr();
+        let own = own_ips();
+
+        let row = sign_row("tk_proxy_1", "un0eba", addr, now, now + 86_400, b":ok");
+        assert!(db.net_allow_add(row).unwrap());
+
+        let mut ports = Ports::default();
+        let port = ports.give("seat1", &[47770, 47780], 0).unwrap();
+        let grants = Grants::default();
+        let mut lim = CardLimit::default();
+        let here = Here {
+            own: &own,
+            own_binds: &[],
+            preview_ports: &[],
+            now,
+        };
+        let who = Who {
+            persona_uid: "un0eba",
+            persona_name: "Test",
+        };
+
+        let allowed = |_: &str, ip: IpAddr, p: u16| {
+            proxy_allowed(&db, "un0eba", &own, now, true, &test_verify, ip, p)
+        };
+        assert_eq!(
+            decide(
+                &ports,
+                port,
+                "db.lan",
+                &[addr.ip()],
+                addr.port(),
+                here,
+                &who,
+                &grants,
+                &allowed,
+                &mut lim,
+                0,
+                "rq_1".into(),
+            ),
+            Conn::Pass(addr)
+        );
+
+        // Open tunnel held by always-allow; revoke closes it immediately
+        let mut tunnels = Tunnels::default();
+        let tid = tunnels.open("seat1", addr, By::Held);
+        assert_eq!(
+            revoke_and_sweep(
+                &db,
+                "tk_proxy_1",
+                now,
+                &mut tunnels,
+                &grants,
+                "un0eba",
+                &own,
+                true,
+                &test_verify,
+            ),
+            vec![tid]
+        );
+
+        // Second valid ticket: closes immediately on expiry or persona inactive (merge/archive)
+        let row2 = sign_row("tk_proxy_2", "un0eba", addr, now, now + 100, b":ok");
+        assert!(db.net_allow_add(row2).unwrap());
+        let tid2 = tunnels.open("seat1", addr, By::Held);
+        assert!(sweep_tunnels(
+            &db,
+            now + 50,
+            &mut tunnels,
+            &grants,
+            "un0eba",
+            &own,
+            true,
+            &test_verify,
+        )
+        .is_empty());
+        // Inactive persona (archived/merged) closes immediately
+        assert_eq!(
+            sweep_tunnels(
+                &db,
+                now + 50,
+                &mut tunnels,
+                &grants,
+                "un0eba",
+                &own,
+                false,
+                &test_verify,
+            ),
+            vec![tid2]
+        );
+        // Expired ticket also closes immediately
+        let tid3 = tunnels.open("seat1", addr, By::Held);
+        assert_eq!(
+            sweep_tunnels(
+                &db,
+                now + 100,
+                &mut tunnels,
+                &grants,
+                "un0eba",
+                &own,
+                true,
+                &test_verify,
+            ),
+            vec![tid3]
+        );
     }
 }
