@@ -780,6 +780,26 @@ pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
     OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
 }
 
+#[doc(hidden)]
+pub fn test_expire_ticket(ticket: &str) {
+    if let Some(o) = OWNER.get() {
+        if let Some(v) = o.slots().get_mut(ticket) {
+            v.rec.expires_at = 0;
+            v.state = State::Expired;
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn test_revoke_ticket(ticket: &str) {
+    if let Some(o) = OWNER.get() {
+        if let Some(v) = o.slots().get_mut(ticket) {
+            v.rec.approved = false;
+            v.state = State::Refused("revoked".to_owned());
+        }
+    }
+}
+
 /// [`approved_for`] for a caller that keeps the approval: the key's signature of the ticket's
 /// [`binding`], to store and check again with [`verify`]. Without the switch: none.
 pub fn approved_signed_for(ticket: &str, ask: &Ask) -> Option<Vec<u8>> {

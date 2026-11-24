@@ -2569,6 +2569,27 @@ async fn open_checked(
                 })
                 .await;
                 if !matches!(kept, Ok(Ok(aib_store::PermWrite::Done(_)))) {
+                    let store = st.store.clone();
+                    let sid = seat_id.clone();
+                    let arch = tokio::task::spawn_blocking(move || {
+                        store.archive_seat(
+                            &sid,
+                            format!("perm_open_fail_{sid}"),
+                            now_rfc3339(),
+                            "aibd:perm_open_failed",
+                        )
+                    })
+                    .await;
+                    if !matches!(arch, Ok(Ok(_))) {
+                        tracing::warn!(seat_id = %seat_id, ?arch, "archive_seat after perm_open_failed failed");
+                        crate::seats::side_event(
+                            &st,
+                            "seat_open",
+                            "seat.perm.open_archive_failed",
+                            serde_json::json!({"seat_id": seat_id}),
+                        )
+                        .await;
+                    }
                     return internal();
                 }
                 response["not_enforceable"] = crate::perm_apply::not_given_json(&p.base, &p.items);

@@ -326,7 +326,7 @@ pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
         // f163c REVIEW-papply M1: the change waiting for this restart was not written; say so
         tracing::warn!(
             seat_id,
-            "seat_perm pending not applied at restart: brain held back"
+            "seat_perm pending not applied at restart: droppable tools held back"
         );
         // the house shape (seats::side_event): the event's own id as its aggregate, the seat
         // in the payload (f163c N8: one aggregate per seat would collide on sequence 1)
@@ -334,7 +334,7 @@ pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
             st,
             "seat_perm",
             "seat.perm.restart_unapplied",
-            json!({"seat_id": seat_id, "held_back": [crate::seats::BRAIN_TOOL]}),
+            json!({"seat_id": seat_id, "held_back": tools_dropped(&Items::from_keys(&[]))}),
         )
         .await;
     }
@@ -342,19 +342,22 @@ pub async fn at_restart(st: &AppState, seat_id: &str) -> Vec<&'static str> {
 }
 
 /// [`at_restart`] on what was read: `written` = the waiting change was written (or there was none).
-/// Not written, or the row unread: hold less, never more (f163c REVIEW-papply M1: a lowering
-/// waiting for this restart must not be skipped by running on the old items).
+/// Not written, or the row unread: hold less, never more (f163c REVIEW-papply M1 + N10: drop
+/// all droppable tools instead of hardcoding one tool).
 pub fn restart_drop(written: bool, row: Result<Option<String>, ()>) -> Vec<&'static str> {
     if !written {
-        return vec![crate::seats::BRAIN_TOOL];
+        return tools_dropped(&Items::from_keys(&[]));
     }
     match row {
         Ok(Some(items_json)) => serde_json::from_str::<Value>(&items_json)
             .ok()
             .and_then(|v| Items::parse(&v))
-            .map_or_else(|| vec![crate::seats::BRAIN_TOOL], |i| tools_dropped(&i)),
+            .map_or_else(
+                || tools_dropped(&Items::from_keys(&[])),
+                |i| tools_dropped(&i),
+            ),
         Ok(None) => Vec::new(),
-        Err(()) => vec![crate::seats::BRAIN_TOOL],
+        Err(()) => tools_dropped(&Items::from_keys(&[])),
     }
 }
 
@@ -420,7 +423,16 @@ fn fields(body: &Value) -> Option<(String, String, i64, Option<String>)> {
 async fn now_of(
     st: &AppState,
     seat_id: &str,
-) -> Result<(String, Items, Option<Items>), Box<Response>> {
+) -> Result<
+    (
+        String,
+        Items,
+        Option<Items>,
+        aib_store::PermState,
+        Option<aib_store::PermState>,
+    ),
+    Box<Response>,
+> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
     let mode = match tokio::task::spawn_blocking(move || store.seat_metas()).await {
         Ok(Ok(m)) => m.into_iter().find(|x| x.seat_id == id).and_then(|x| x.mode),
@@ -473,11 +485,11 @@ async fn now_of(
         ))
     };
     let now = parse(&p.now.items_json).ok_or_else(unreadable)?;
-    let pending = match p.pending {
+    let pending = match &p.pending {
         None => None,
         Some(w) => Some(parse(&w.items_json).ok_or_else(unreadable)?),
     };
-    Ok((mode, now, pending))
+    Ok((mode, now, pending, p.now, p.pending))
 }
 
 /// An apply of `new` to a seat of `mode` running `now`, with `pending` waiting for its restart.
@@ -507,7 +519,7 @@ async fn apply_to(
     by: &str,
     revoking: Option<i64>,
 ) -> Response {
-    let (mode, now, pending) = match now_of(st, seat_id).await {
+    let (mode, now, pending, now_state, pending_state) = match now_of(st, seat_id).await {
         Ok(x) => x,
         Err(r) => return *r,
     };
@@ -544,24 +556,39 @@ async fn apply_to(
         (None, Change::Lower) => "lower",
         _ => "raise_pending",
     };
-    let (db, id, s, act, who) = (
+    let (db, id, s, exp_now, exp_pend, act, who) = (
         st.messages.clone(),
         seat_id.to_owned(),
         e.state(),
+        now_state,
+        pending_state,
         action.to_owned(),
         by.to_owned(),
     );
     let w = tokio::task::spawn_blocking(move || {
         let at = crate::sessions::now_rfc3339();
-        let w = db.seat_perm_pend(&id, &s, &act, &who, &at)?;
-        if let Some(log_id) = revoking {
-            db.seat_perm_log_revoked(&id, log_id, &who, &at)?;
-        }
-        Ok::<_, aib_store::StoreError>(w)
+        db.seat_perm_pend_if(
+            &id,
+            &s,
+            &exp_now,
+            exp_pend.as_ref(),
+            &act,
+            &who,
+            &at,
+            revoking,
+        )
     })
     .await;
-    if !matches!(w, Ok(Ok(aib_store::PermWrite::Done(_)))) {
-        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not written");
+    match w {
+        Ok(Ok(aib_store::PermWrite::Done(_))) => {}
+        Ok(Ok(aib_store::PermWrite::Conflict)) => {
+            return refuse(
+                StatusCode::CONFLICT,
+                "perm_changed",
+                "權限狀態已變更,請重整後再試",
+            );
+        }
+        _ => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not written"),
     }
     crate::seats::side_event(
         st,
