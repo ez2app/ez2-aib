@@ -435,6 +435,7 @@ mod tests {
     #[test]
     fn contained_name_scores_point_nine() {
         assert_eq!(score("AIB2.0跨平台重構", "AIB2.0跨平台重構筆記"), 0.9);
+        assert_eq!(score("核心架構", "核心架構師工作台"), 0.9);
         // too short to count as contained
         assert!(score("重構", "AIB2.0跨平台重構") < SURE_AT);
     }
