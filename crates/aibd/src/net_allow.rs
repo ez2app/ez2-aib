@@ -112,7 +112,7 @@ pub fn holds(
             continue;
         }
         let ask = Ask {
-            category: Category::WindowGrant,
+            category: aib_approve::category::Category::WindowGrant,
             operation: OP_ALWAYS,
             resource: row.resource.clone(),
             params: row.params.clone(),
@@ -253,7 +253,7 @@ mod tests {
         let resource = format!("{uid} -> {addr}");
         let by = "page:test".to_owned();
         let ask = Ask {
-            category: Category::WindowGrant,
+            category: aib_approve::category::Category::WindowGrant,
             operation: OP_ALWAYS,
             resource: resource.clone(),
             params: params.clone(),
@@ -427,7 +427,7 @@ mod tests {
             vec![tid_b]
         );
         // Inactive persona (archived/merged) closes immediately
-        let seat_inactive = |s: &str| match s {
+        let seat_inactive: &dyn Fn(&str) -> Option<(&str, bool)> = &|s: &str| match s {
             "seat1" => Some(("un0eba", false)),
             _ => None,
         };
@@ -437,7 +437,7 @@ mod tests {
                 now + 50,
                 &mut tunnels,
                 &grants,
-                &seat_inactive,
+                seat_inactive,
                 &own,
                 &test_verify,
             ),
@@ -491,14 +491,15 @@ mod tests {
         });
 
         let grants = Grants::default();
-        let seat_map = |s: &str| (s == "seat1").then_some(("un0eba", true));
+        let seat_map: &dyn Fn(&str) -> Option<(&str, bool)> =
+            &|s: &str| (s == "seat1").then_some(("un0eba", true));
         let closed = revoke_and_sweep(
             &db,
             "tk_live_1",
             now,
             &mut tunnels,
             &grants,
-            &seat_map,
+            seat_map,
             &own,
             &test_verify,
         )
