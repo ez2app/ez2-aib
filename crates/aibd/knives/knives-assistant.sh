@@ -125,10 +125,22 @@ python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   -- cargo test -p aibd --locked --lib 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode'
 # as-pageacts
 python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
-  'crate::seat_input::PAGE_ACTS.contains(&a) || ACTS_NOT_IN_MAIN_YET.contains(&a),' \
-  'false && (crate::seat_input::PAGE_ACTS.contains(&a) || ACTS_NOT_IN_MAIN_YET.contains(&a)),' \
+  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 1] = ["persona_set"];' \
+  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 1] = ["not_a_real_act"];' \
   --expect-fail 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet' \
   -- cargo test -p aibd --locked --lib 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet'
+# as-persona-set-refused
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '        ("persona", Some(_), Some(_)) => return Err(RequestRefused::ActNotListed),' \
+  '        ("persona", Some(u), Some(_)) => ("persona_set", serde_json::json!({"persona_uid": u, "card_text": d})),' \
+  --expect-fail 'assistant::tests::m1_persona_set_refused_and_perm_template_add_requires_safe_or_work_base' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::m1_persona_set_refused_and_perm_template_add_requires_safe_or_work_base'
+# as-tpl-base
+python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
+  '        if !matches!(base, "safe" | "work") {' \
+  '        if false && !matches!(base, "safe" | "work") {' \
+  --expect-fail 'assistant::tests::m1_persona_set_refused_and_perm_template_add_requires_safe_or_work_base' \
+  -- cargo test -p aibd --locked --lib 'assistant::tests::m1_persona_set_refused_and_perm_template_add_requires_safe_or_work_base'
 # as-fmt
 python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   '                        | '\''\u{2060}'\''..='\''\u{2064}'\''' \

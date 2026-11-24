@@ -169,6 +169,16 @@ pub fn may_request(act: &str, params: &Value) -> Result<(), RequestRefused> {
             return Err(RequestRefused::Mode);
         }
     }
+    if act == "perm_template_add" {
+        let o = params.as_object().ok_or(RequestRefused::Field)?;
+        let base = o
+            .get("base")
+            .and_then(Value::as_str)
+            .ok_or(RequestRefused::Mode)?;
+        if !matches!(base, "safe" | "work") {
+            return Err(RequestRefused::Mode);
+        }
+    }
     Ok(())
 }
 
@@ -184,9 +194,9 @@ pub const SEAT_OPEN_FIELDS: [&str; 8] = [
     "name",
 ];
 
-/// [`REQUEST_ACTS`] not yet in `seat_input::PAGE_ACTS` of main; emptied now that `persona_set`
-/// and `perm_template_add` have landed.
-pub const ACTS_NOT_IN_MAIN_YET: [&str; 0] = [];
+/// [`REQUEST_ACTS`] not yet aligned with `seat_input::PAGE_ACTS` of main (`persona_set` in
+/// main edits `duty`/`redlines`/`knowledge` + `base_sha`, not `card_text`).
+pub const ACTS_NOT_IN_MAIN_YET: [&str; 1] = ["persona_set"];
 
 /// `true` when a request body carries a `kind` field at its top or in its `params`: only the
 /// act that opens the assistant sets a seat's kind (AS10).
@@ -381,20 +391,7 @@ pub fn to_request(it: &SuggestItem) -> Result<Option<(&'static str, Value)>, Req
     let d = it.draft.clone().unwrap_or(Value::Null);
     let (act, params): (&'static str, Value) = match (it.what.as_str(), &it.uid, &it.draft) {
         (_, Some(_), None) => return Ok(None),
-        ("persona", Some(u), Some(_)) => {
-            let Some(text) = d
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            else {
-                return Err(RequestRefused::SuggestShape);
-            };
-            (
-                "persona_set",
-                serde_json::json!({"persona_uid": u, "card_text": text}),
-            )
-        }
+        ("persona", Some(_), Some(_)) => return Err(RequestRefused::ActNotListed),
         ("persona", None, Some(_)) => ("persona_add", d),
         ("brain", None, Some(_)) => ("brain_add", d),
         ("role", None, Some(_)) => ("role_add", d),
@@ -538,17 +535,10 @@ mod tests {
             {"what":"seat","draft":{"persona_uid":"aaaaa1","mode":"work"}},
             {"what":"seat","draft":{"persona_uid":"aaaaa1","mode":"dgrs"}},
             {"what":"seat","draft":{"persona_uid":"aaaaa1","kind":"assistant"}},
-            {"what":"template","draft":{"name":"t","items":["chat"]}}]}))
+            {"what":"template","draft":{"name":"t","base":"work","items":["chat"]}}]}))
         .unwrap();
         assert_eq!(to_request(&v[0]), Ok(None));
-        let (a, p) = to_request(&v[1]).unwrap().unwrap();
-        assert_eq!(
-            (a, p),
-            (
-                "persona_set",
-                json!({"persona_uid":"aaaaa1","card_text":"新卡"})
-            )
-        );
+        assert_eq!(to_request(&v[1]), Err(RequestRefused::ActNotListed));
         assert_eq!(to_request(&v[2]).unwrap().unwrap().0, "persona_add");
         assert_eq!(to_request(&v[3]).unwrap().unwrap().0, "seat_open");
         assert_eq!(to_request(&v[4]), Err(RequestRefused::Mode));
@@ -559,12 +549,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(to_request(&w[0]), Err(RequestRefused::Field));
-        let empty_persona =
-            parse_suggest(&json!({"items":[{"what":"persona","uid":"aaaaa1","draft":{}}]}))
+    }
+
+    #[test]
+    fn m1_persona_set_refused_and_perm_template_add_requires_safe_or_work_base() {
+        let p_edit = parse_suggest(
+            &json!({"items":[{"what":"persona","uid":"aaaaa1","draft":{"text":"x"}}]}),
+        )
+        .unwrap();
+        assert_eq!(to_request(&p_edit[0]), Err(RequestRefused::ActNotListed));
+        let no_base =
+            parse_suggest(&json!({"items":[{"what":"template","draft":{"name":"t","items":[]}}]}))
                 .unwrap();
+        assert_eq!(to_request(&no_base[0]), Err(RequestRefused::Mode));
+        let bad_base = parse_suggest(
+            &json!({"items":[{"what":"template","draft":{"name":"t","base":"dgrs","items":[]}}]}),
+        )
+        .unwrap();
+        assert_eq!(to_request(&bad_base[0]), Err(RequestRefused::Mode));
+        let ok_base = parse_suggest(
+            &json!({"items":[{"what":"template","draft":{"name":"t","base":"safe","items":[]}}]}),
+        )
+        .unwrap();
         assert_eq!(
-            to_request(&empty_persona[0]),
-            Err(RequestRefused::SuggestShape)
+            to_request(&ok_base[0]).unwrap().unwrap().0,
+            "perm_template_add"
         );
     }
 
