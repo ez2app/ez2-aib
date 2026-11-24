@@ -3,7 +3,7 @@
 //! hardware-backed pairing key (`owner_ok::verify`).
 
 use crate::egress::Verdict;
-use crate::owner_ok::{self, Ask, Category};
+use crate::owner_ok::{self, Ask};
 use aib_store::net_allow::NetAllowRow;
 use aib_store::MessageDb;
 use std::net::{IpAddr, SocketAddr};
@@ -389,7 +389,7 @@ mod tests {
         // Open tunnel held by always-allow; revoke closes it immediately
         let mut tunnels = Tunnels::default();
         let tid = tunnels.open("seat1", addr, By::Held);
-        let seat_map = |s: &str| match s {
+        let seat_map: &dyn Fn(&str) -> Option<(&str, bool)> = &|s: &str| match s {
             "seat1" => Some(("un0eba", true)),
             "seat_b" => Some(("other_p", true)),
             _ => None,
@@ -401,7 +401,7 @@ mod tests {
                 now,
                 &mut tunnels,
                 &grants,
-                &seat_map,
+                seat_map,
                 &own,
                 &test_verify,
             )
@@ -463,7 +463,6 @@ mod tests {
     async fn live_tcp_tunnel_closes_within_one_second_on_revoke() {
         use crate::grants::Grants;
         use crate::proxy::{By, Tunnels};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
 
         let d = tempfile::tempdir().unwrap();
@@ -477,19 +476,18 @@ mod tests {
 
         let srv = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let srv_addr = srv.local_addr().unwrap();
-        let mut client = TcpStream::connect(srv_addr).await.unwrap();
-        let (mut peer, _) = srv.accept().await.unwrap();
+        let client = TcpStream::connect(srv_addr).await.unwrap();
+        let (peer, _) = srv.accept().await.unwrap();
 
         let mut tunnels = Tunnels::default();
         let tid = tunnels.open("seat1", addr, By::Held);
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
-            let mut buf = [0u8; 16];
             tokio::select! {
                 _ = rx => {}
-                _ = peer.read(&mut buf) => {}
+                _ = peer.readable() => {}
             }
-            let _ = peer.shutdown().await;
+            drop(peer);
         });
 
         let grants = Grants::default();
@@ -511,12 +509,12 @@ mod tests {
             .await
             .unwrap();
 
+        tokio::time::timeout(std::time::Duration::from_secs(1), client.readable())
+            .await
+            .unwrap()
+            .unwrap();
         let mut buf = [0u8; 8];
-        let read_res =
-            tokio::time::timeout(std::time::Duration::from_secs(1), client.read(&mut buf))
-                .await
-                .unwrap()
-                .unwrap();
+        let read_res = client.try_read(&mut buf).unwrap();
         assert_eq!(read_res, 0);
     }
 

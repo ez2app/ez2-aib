@@ -347,7 +347,7 @@ mod tests {
             choice: "min15".into(),
             ticket: Some("ot_forged".into()),
         };
-        let (_, s) = step(&req, "page:1").unwrap();
+        let (_, s, _) = step(&req, "page:1").unwrap();
         assert_eq!(
             s,
             Step::NotApproved,
