@@ -229,6 +229,32 @@ impl Cut {
     }
 }
 
+/// If `aibd.yml` only changed `steps:` inside existing jobs (same top-level and job headers),
+/// return the set of job ids whose steps changed. `None` means top-level, job list, headers, or
+/// YAML parsing could not be narrowed safely.
+pub fn aibd_changed_jobs(base: &str, head: &str) -> Option<BTreeSet<String>> {
+    let (Some(b), Some(h)) = (cut(base), cut(head)) else {
+        return None;
+    };
+    if b.top != h.top {
+        return None;
+    }
+    let names = |c: &Cut| c.jobs.iter().map(|j| j.0.clone()).collect::<Vec<_>>();
+    if names(&b) != names(&h) {
+        return None;
+    }
+    let mut changed = BTreeSet::new();
+    for (bj, hj) in b.jobs.iter().zip(&h.jobs) {
+        if bj.1 != hj.1 {
+            return None;
+        }
+        if bj.2 != hj.2 {
+            changed.insert(bj.0.clone());
+        }
+    }
+    Some(changed)
+}
+
 /// Rule 4: how aibd.yml changed between `base` and `head`.
 pub fn aibd_change(base: &str, head: &str) -> Verdict {
     let (Some(b), Some(h)) = (cut(base), cut(head)) else {

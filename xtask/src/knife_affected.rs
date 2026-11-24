@@ -289,6 +289,9 @@ pub struct Inputs<'a> {
     pub changed: Result<&'a [String], String>,
     /// Knife contract problems (`knife-anchors` unresolved, calls not filled in).
     pub unresolved: usize,
+    /// When `.github/workflows/aibd.yml` only changed `steps:` in specific existing jobs,
+    /// `Some(job_ids)` narrows workflow invalidation to those jobs. `None` = full fallback.
+    pub aibd_changed_jobs: Option<BTreeSet<String>>,
 }
 
 /// Why every knife is affected, if one reason applies to all of them.
@@ -338,6 +341,9 @@ pub fn why_all_code(i: &Inputs) -> Option<(&'static str, String)> {
                 f == x
             };
             if hit {
+                if *x == ".github/workflows/aibd.yml" && i.aibd_changed_jobs.is_some() {
+                    continue;
+                }
                 let code = if x.starts_with(".github/workflows/") {
                     "workflow_changed"
                 } else {
@@ -354,6 +360,12 @@ fn source_of(at: &str) -> &str {
     at.rsplit_once(':').map_or(at, |(s, _)| s)
 }
 
+pub fn is_knife_script(path: &str) -> bool {
+    path.ends_with(".sh")
+        && ((path.starts_with("crates/") && path.contains("/knives/"))
+            || path.starts_with("xtask/knives/"))
+}
+
 /// Judge the selected knives.
 pub fn judge(entries: &[&Entry], i: &Inputs, root: &Path) -> (Option<String>, Vec<Judged>) {
     let all = why_all(i);
@@ -367,7 +379,9 @@ pub fn judge(entries: &[&Entry], i: &Inputs, root: &Path) -> (Option<String>, Ve
             .unwrap_or_else(|| "unknown".into());
         let (affected, why) = match (&all, &i.meta, &i.changed) {
             (Some(w), _, _) => (true, w.clone()),
-            (None, Ok(meta), Ok(changed)) => one(e, &pk, meta, changed, root),
+            (None, Ok(meta), Ok(changed)) => {
+                one(e, &pk, meta, changed, i.aibd_changed_jobs.as_ref(), root)
+            }
             _ => (true, "inputs not read".into()),
         };
         out.push(Judged {
@@ -386,12 +400,16 @@ fn one(
     pk: &Result<Vec<String>, String>,
     meta: &Value,
     changed: &[String],
+    aibd_changed_jobs: Option<&BTreeSet<String>>,
     root: &Path,
 ) -> (bool, String) {
     let pk = match pk {
         Ok(p) => p,
         Err(w) => return (true, format!("command not read: {w}")),
     };
+    if aibd_changed_jobs.is_some_and(|jobs| jobs.contains(&e.knife.job)) {
+        return (true, format!("aibd.yml job {} steps changed", e.knife.job));
+    }
     let src = source_of(&e.knife.at);
     if let Some(f) = changed.iter().find(|f| **f == e.call.file || *f == src) {
         return (
@@ -406,7 +424,7 @@ fn one(
             Err(w) => return (true, format!("closure of {p} not read: {w}")),
         };
         for d in &dirs {
-            if let Some(f) = changed.iter().find(|f| covers(d, f)) {
+            if let Some(f) = changed.iter().find(|f| !is_knife_script(f) && covers(d, f)) {
                 return (true, format!("{f} is in the closure of {p} ({d})"));
             }
         }
@@ -741,6 +759,28 @@ pub fn run(o: &Opts) -> u8 {
                 .collect()
         }),
     };
+    let aibd_changed_jobs = if o.event == "pull_request"
+        && !o.base.is_empty()
+        && !o.head.is_empty()
+        && changed
+            .as_ref()
+            .is_ok_and(|c| c.iter().any(|p| p == ".github/workflows/aibd.yml"))
+    {
+        let base_yml = git(
+            root,
+            &["show", &format!("{}:.github/workflows/aibd.yml", o.base)],
+        );
+        let head_yml = git(
+            root,
+            &["show", &format!("{}:.github/workflows/aibd.yml", o.head)],
+        );
+        match (base_yml, head_yml) {
+            (Ok(b), Ok(h)) => crate::ci_scope::aibd_changed_jobs(&b, &h),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let inputs = Inputs {
         event: &o.event,
         base: &o.base,
@@ -748,6 +788,7 @@ pub fn run(o: &Opts) -> u8 {
         meta: meta.as_ref().map_err(Clone::clone),
         changed: changed.as_deref().map_err(Clone::clone),
         unresolved: unresolved.len(),
+        aibd_changed_jobs,
     };
     let code = why_all_code(&inputs).map(|(c, _)| c);
     let (why, judged) = judge(&picked, &inputs, root);
@@ -866,6 +907,7 @@ mod tests {
             meta: Ok(&m),
             changed: Ok(&c),
             unresolved: 0,
+            aibd_changed_jobs: None,
         };
         judge(&[e], &i, Path::new("/nonexistent-aib-xtask"))
             .1
@@ -971,6 +1013,7 @@ mod tests {
                 meta: Ok(&m),
                 changed: Ok(&c),
                 unresolved: 0,
+                aibd_changed_jobs: None,
             };
             let (all, j) = judge(&[&knife_a()], &i, Path::new("."));
             assert!(all.is_some() && j[0].affected, "{ev}: {all:?}");
@@ -992,6 +1035,7 @@ mod tests {
                     meta: Ok(&m),
                     changed: Ok(&none),
                     unresolved: 0,
+                    aibd_changed_jobs: None,
                 },
             ),
             (
@@ -1003,6 +1047,7 @@ mod tests {
                     meta: Ok(&m),
                     changed: Ok(&none),
                     unresolved: 0,
+                    aibd_changed_jobs: None,
                 },
             ),
             (
@@ -1014,6 +1059,7 @@ mod tests {
                     meta: Err("x".into()),
                     changed: Ok(&none),
                     unresolved: 0,
+                    aibd_changed_jobs: None,
                 },
             ),
             (
@@ -1025,6 +1071,7 @@ mod tests {
                     meta: Ok(&m),
                     changed: Err("x".into()),
                     unresolved: 0,
+                    aibd_changed_jobs: None,
                 },
             ),
             (
@@ -1036,6 +1083,7 @@ mod tests {
                     meta: Ok(&m),
                     changed: Ok(&quoted),
                     unresolved: 0,
+                    aibd_changed_jobs: None,
                 },
             ),
             (
@@ -1047,6 +1095,7 @@ mod tests {
                     meta: Ok(&m),
                     changed: Ok(&none),
                     unresolved: 1,
+                    aibd_changed_jobs: None,
                 },
             ),
         ];
@@ -1118,6 +1167,7 @@ mod tests {
             meta: Ok(&m),
             changed: Ok(&c),
             unresolved: 0,
+            aibd_changed_jobs: None,
         };
         let (_, j) = judge(&[&knife_a()], &i, &d);
         assert!(j[0].affected && j[0].why.contains("not vetted"), "{j:?}");
@@ -1220,6 +1270,7 @@ mod tests {
             meta: Ok(&m),
             changed: Ok(&c),
             unresolved: 0,
+            aibd_changed_jobs: None,
         };
         let j = judge(&[&k], &i, none).1.remove(0);
         assert!(j.affected, "{j:?}");
@@ -1390,6 +1441,7 @@ mod tests {
                 meta: Ok(&m),
                 changed: Ok(&c),
                 unresolved: 0,
+                aibd_changed_jobs: None,
             };
             why_all_code(&i).map(|(c, _)| c)
         };
@@ -1413,6 +1465,7 @@ mod tests {
             meta: Err("x".into()),
             changed: Ok(&c),
             unresolved: 0,
+            aibd_changed_jobs: None,
         };
         assert_eq!(
             why_all_code(&unread).map(|(c, _)| c),
@@ -1485,5 +1538,40 @@ jobs:
 ";
         let got: Vec<String> = steps_calling_scripts(wf).into_iter().collect();
         assert_eq!(got, v(&["a knives (macOS)", "c loop (macOS)", "d (macOS)"]));
+    }
+
+    #[test]
+    fn other_knife_script_and_unrelated_aibd_job_do_not_affect_this_knife() {
+        let mut e1 = knife_a();
+        e1.knife.at = "crates/a/knives/one.sh:10".into();
+        e1.knife.job = "crate-knives".into();
+        let mut e2 = knife_a();
+        e2.knife.at = "crates/a/knives/other.sh:10".into();
+        e2.knife.job = "cloud-knives".into();
+
+        // Changing crates/a/knives/other.sh affects only e2, not e1 (even though both test crate `a`)
+        let j1 = judge_one(&e1, &["crates/a/knives/other.sh"]);
+        let j2 = judge_one(&e2, &["crates/a/knives/other.sh"]);
+        assert!(!j1.affected, "{j1:?}");
+        assert!(j2.affected, "{j2:?}");
+
+        // Changing aibd.yml only in `cloud-knives` steps affects only e2, not e1
+        let m = meta();
+        let c = v(&[".github/workflows/aibd.yml"]);
+        let jobs: BTreeSet<String> = ["cloud-knives".to_string()].into();
+        let i = Inputs {
+            event: "pull_request",
+            base: "b",
+            head: "h",
+            meta: Ok(&m),
+            changed: Ok(&c),
+            unresolved: 0,
+            aibd_changed_jobs: Some(jobs),
+        };
+        let (all, judged) = judge(&[&e1, &e2], &i, Path::new("/nonexistent-aib-xtask"));
+        assert!(all.is_none(), "{all:?}");
+        assert!(!judged[0].affected, "{:?}", judged[0]);
+        assert!(judged[1].affected, "{:?}", judged[1]);
+        assert!(judged[1].why.contains("cloud-knives"), "{:?}", judged[1]);
     }
 }
