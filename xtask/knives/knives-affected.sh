@@ -61,7 +61,7 @@ kf '    if let Some(f) = changed.iter().find(|f| **f == e.call.file || *f == src
   '    if let Some(f) = changed.iter().find(|f| *f == src) { // knife' its_anchor_file_or_script_changing_affects_it
 # KF19 only a closure folder itself counts, not the files in it
 kf '            if let Some(f) = changed.iter().find(|f| !is_knife_script(f) && covers(d, f)) {' \
-  '            if let Some(f) = changed.iter().find(|f| *f == d) { // knife' \
+  '            if let Some(f) = changed.iter().find(|f| !is_knife_script(f) && *f == d) { // knife' \
   a_change_in_the_closure_affects_and_outside_does_not
 # KF20 the verdicts are swapped
 kf '                "verdict": if j.affected { "cannot_reuse" } else { "could_reuse" },' \
