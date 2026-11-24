@@ -566,4 +566,70 @@ mod tests {
         assert!(db2.net_allow_add(tampered).unwrap());
         assert!(holds(&db2, "un0eba", addr, &own, now, true, &test_verify).is_none());
     }
+
+    #[test]
+    fn two_step_answer_always_with_clock_advance_succeeds_and_holds() {
+        use crate::net_card::{Card, Cards, Choice, Step};
+
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.db")).unwrap();
+        let t1 = 2_000_000;
+        let t2 = t1 + 10;
+        let addr = p_addr();
+        let own = own_ips();
+
+        let mut cards = Cards::default();
+        cards.add(Card {
+            request_id: "rq_2step".into(),
+            seat_id: "seat1".into(),
+            persona_uid: "un0eba".into(),
+            persona_name: "Web".into(),
+            dest_name: "db.lan".into(),
+            dest: addr,
+            source: "proxy",
+            why: None,
+            expires_at: t1 + 120,
+            high: false,
+            listener: None,
+        });
+
+        let Step::Ask(ask1) =
+            cards.answer("rq_2step", "always", None, t1, "page:test", |_, _| false)
+        else {
+            panic!("expected Step::Ask");
+        };
+        cards.opened("rq_2step", Choice::Always);
+        let expected_msg = owner_ok::binding("tk_2step", &ask1);
+
+        let mut captured: Option<(String, Vec<u8>, Vec<u8>)> = None;
+        let step2 = cards.answer(
+            "rq_2step",
+            "always",
+            Some("tk_2step"),
+            t2,
+            "page:test",
+            |t, ask2| {
+                let got_msg = owner_ok::binding(t, ask2);
+                if got_msg != expected_msg {
+                    return false;
+                }
+                let mut sig = got_msg;
+                sig.extend_from_slice(b":ok");
+                captured = Some((ask2.resource.clone(), ask2.params.clone(), sig));
+                true
+            },
+        );
+        assert!(matches!(step2, Step::Done(Choice::Always, Some(_))));
+        let (resource, params, sig) = captured.unwrap();
+        let row = NetAllowRow {
+            ticket: "tk_2step".into(),
+            by_key: "page:test".into(),
+            resource,
+            params,
+            sig,
+            approved_at: t2 as i64,
+        };
+        assert!(db.net_allow_add(row).unwrap());
+        assert!(holds(&db, "un0eba", addr, &own, t2, true, &test_verify).is_some());
+    }
 }

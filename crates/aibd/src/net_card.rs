@@ -378,35 +378,35 @@ impl PartialEq for Step {
 /// The open cards. Kept only while aibd runs: a card lives two minutes.
 #[derive(Debug, Default)]
 pub struct Cards {
-    rows: Vec<(Card, State)>,
+    rows: Vec<(Card, State, Option<u64>)>,
 }
 
 impl Cards {
     pub fn add(&mut self, c: Card) {
-        self.rows.push((c, State::Open));
+        self.rows.push((c, State::Open, None));
     }
 
     fn sweep(&mut self, now: u64) {
         self.rows
-            .retain(|(c, _)| now < c.expires_at.saturating_add(CARD_SECS));
+            .retain(|(c, _, _)| now < c.expires_at.saturating_add(CARD_SECS));
     }
 
     /// The card of this request, as it is now.
     pub fn find(&self, request_id: &str) -> Option<Card> {
         self.rows
             .iter()
-            .find(|(c, _)| c.request_id == request_id)
-            .map(|(c, _)| c.clone())
+            .find(|(c, _, _)| c.request_id == request_id)
+            .map(|(c, _, _)| c.clone())
     }
 
     /// The owner's window for choice `c` is up (aibd answered 202 with a ticket): from now on
     /// only that ticket finishes the card. A window that could not be raised marks nothing, so
     /// the card can be answered again (f163c REVIEW-netcardact L1).
     pub fn opened(&mut self, request_id: &str, c: Choice) {
-        if let Some((_, s)) = self
+        if let Some((_, s, _)) = self
             .rows
             .iter_mut()
-            .find(|(card, _)| card.request_id == request_id)
+            .find(|(card, _, _)| card.request_id == request_id)
         {
             if *s == State::Open {
                 *s = State::Asked(c);
@@ -419,7 +419,7 @@ impl Cards {
         self.sweep(now);
         self.rows
             .iter()
-            .filter(|(c, s)| *s != State::Finished && now < c.expires_at)
+            .filter(|(c, s, _)| *s != State::Finished && now < c.expires_at)
             .count()
     }
 
@@ -428,8 +428,8 @@ impl Cards {
         self.sweep(now);
         self.rows
             .iter()
-            .filter(|(c, s)| *s != State::Finished && now < c.expires_at)
-            .map(|(c, _)| c.shown())
+            .filter(|(c, s, _)| *s != State::Finished && now < c.expires_at)
+            .map(|(c, _, _)| c.shown())
             .collect()
     }
 
@@ -447,11 +447,11 @@ impl Cards {
         let Some(i) = self
             .rows
             .iter()
-            .position(|(c, _)| c.request_id == request_id)
+            .position(|(c, _, _)| c.request_id == request_id)
         else {
             return Step::Refused("net_card_unknown");
         };
-        let (card, state) = &mut self.rows[i];
+        let (card, state, asked_at) = &mut self.rows[i];
         if *state == State::Finished {
             return Step::Refused("net_card_used");
         }
@@ -473,19 +473,28 @@ impl Cards {
             let yes = (c != Choice::Deny).then_some(Verified { lasts: Lasts::Once });
             return Step::Done(c, yes);
         }
-        let ask = if c == Choice::Always {
-            card.ask_always(by, now)
-        } else {
-            card.ask(c, by)
-        };
         match (ticket, *state) {
             // the window; the card is marked only once it is up (Cards::opened)
-            (None, State::Open) => Step::Ask(Box::new(ask)),
+            (None, State::Open) => {
+                *asked_at = Some(now);
+                let ask = if c == Choice::Always {
+                    card.ask_always(by, now)
+                } else {
+                    card.ask(c, by)
+                };
+                Step::Ask(Box::new(ask))
+            }
             // the second send without the ticket (IFACE r1)
             (None, _) => Step::Refused("net_card_used"),
             // a ticket for another choice than the window's (f163c N1): not even looked up
             (Some(_), State::Asked(asked)) if asked != c => Step::NotApproved,
             (Some(t), State::Asked(_)) => {
+                let issued_at = asked_at.unwrap_or(now);
+                let ask = if c == Choice::Always {
+                    card.ask_always(by, issued_at)
+                } else {
+                    card.ask(c, by)
+                };
                 if !approved(t, &ask) {
                     return Step::NotApproved;
                 }
