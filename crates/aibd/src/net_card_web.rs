@@ -295,7 +295,7 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
 #[allow(clippy::too_many_arguments)]
 fn append_db_allow_rows(
     items: &mut Vec<Value>,
-    db_rows: &[aib_store::NetAllowRow],
+    db_rows: &[aib_store::net_allow::NetAllowRow],
     seat_id: Option<&str>,
     want_uid: Option<&str>,
     persona_active: bool,
@@ -325,7 +325,8 @@ fn append_db_allow_rows(
         {
             "expired"
         } else if parsed_addr.is_none_or(|sa| {
-            crate::egress::classify(sa.ip(), own_ips) != crate::egress::Verdict::AllowPrivate
+            crate::egress::verdict(&[sa.ip()], sa.port(), own_ips, &|_, _| true)
+                != crate::egress::Verdict::Pass(sa.ip())
         }) {
             "class_changed"
         } else if !persona_active {
@@ -502,7 +503,7 @@ mod tests {
     #[test]
     fn db_allow_rows_emit_all_states_and_never_hide_invalid_rows() {
         let mk = |ticket: &str, uid: &str, canon: &str, until: u64, sig: Vec<u8>| {
-            aib_store::NetAllowRow {
+            aib_store::net_allow::NetAllowRow {
                 ticket: ticket.into(),
                 by_key: "owner".into(),
                 resource: canon.into(),

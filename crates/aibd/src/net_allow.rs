@@ -72,7 +72,7 @@ pub fn parse_always_params(raw: &[u8]) -> Option<(String, String, u64, u64)> {
 }
 
 /// Verify the owner signature on a [`NetAllowRow`] against `verify_fn`.
-pub fn row_sig_ok(row: &aib_store::NetAllowRow, verify_fn: &dyn Fn(&[u8], &[u8]) -> bool) -> bool {
+pub fn row_sig_ok(row: &NetAllowRow, verify_fn: &dyn Fn(&[u8], &[u8]) -> bool) -> bool {
     let ask = Ask {
         category: aib_approve::category::Category::WindowGrant,
         operation: OP_ALWAYS,

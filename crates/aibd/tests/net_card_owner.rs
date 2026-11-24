@@ -258,7 +258,7 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
             by: "page:1".into(),
         };
         let sig = aibd::owner_ok::binding("ot_restart_1", &ask);
-        db.net_allow_add(aib_store::NetAllowRow {
+        db.net_allow_add(aib_store::net_allow::NetAllowRow {
             ticket: "ot_restart_1".into(),
             by_key: "page:1".into(),
             resource: "10.0.0.8:5432".into(),
