@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn restore_before_archived_at_is_invalid() {
         let (_d, m) = db();
-        m.archive_put(item("persona", "p1", 100)).unwrap();
+        m.archive_add(item("persona", "p1", 100)).unwrap();
         assert!(
             m.archive_restore("persona", "p1", 99).is_err(),
             "R6: at < archived_at"

@@ -743,7 +743,7 @@ pub async fn revoke(st: AppState, body: Value, by: String) -> Response {
             )
         }
     };
-    let Some(row) = log.into_iter().find(|l| l.log_id == log_id) else {
+    let Some(row) = log.iter().find(|l| l.log_id == log_id) else {
         return refuse(
             StatusCode::NOT_FOUND,
             "log_not_found",

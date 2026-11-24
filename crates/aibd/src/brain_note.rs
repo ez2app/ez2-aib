@@ -838,7 +838,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             library().and_then(|root| take_back(&root, &rel2, &sha2, &tmp))
         })
         .await;
-        if !matches!(rolled, Ok(Ok(()))) {
+        if !matches!(rolled, Ok(Ok(_))) {
             crate::seats::side_event(
                 &st,
                 "brain_note",
