@@ -4064,15 +4064,18 @@ jobs:
         timeout-minutes: 3
         shell: bash
         env:
-          AIB_SHADOW_SKIP_AFTER_S: "8400"
+          AIB_SHADOW_SKIP_AFTER_S: "7500"
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          f="knife-secs/cell-${{ strategy.job-index }}.txt"
           args=()
-          while IFS= read -r s; do
-            [ -n "$s" ] && args+=("--source=$s")
-          done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+):.*/\1/p' knife-secs/cell-*.txt)
+          if [ -r "$f" ]; then
+            while IFS= read -r s; do
+              [ -n "$s" ] && args+=("--source=$s")
+            done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
+          fi
           [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
           ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
       - uses: actions/upload-artifact@v4
