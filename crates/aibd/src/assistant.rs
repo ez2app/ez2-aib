@@ -132,6 +132,8 @@ pub enum RequestRefused {
     Mode,
     /// A seat_open field the assistant may not set (403 `request_field`).
     Field,
+    /// A draft item is missing a required field or has an invalid shape (`suggest_shape`).
+    SuggestShape,
 }
 
 impl RequestRefused {
@@ -140,6 +142,7 @@ impl RequestRefused {
             RequestRefused::ActNotListed => "request_act_not_listed",
             RequestRefused::Mode => "request_mode",
             RequestRefused::Field => "request_field",
+            RequestRefused::SuggestShape => "suggest_shape",
         }
     }
 }
@@ -226,7 +229,7 @@ pub fn catalog_fields(kind: &str) -> &'static [&'static str] {
 pub const CARD_TEXT_MAX: usize = 32 * 1024;
 
 /// Invisible / control characters out (the object_shown rule), for names read back.
-fn shown(s: &str) -> String {
+pub(crate) fn shown(s: &str) -> String {
     s.chars()
         .filter(|c| {
             !c.is_control()
@@ -378,10 +381,20 @@ pub fn to_request(it: &SuggestItem) -> Result<Option<(&'static str, Value)>, Req
     let d = it.draft.clone().unwrap_or(Value::Null);
     let (act, params): (&'static str, Value) = match (it.what.as_str(), &it.uid, &it.draft) {
         (_, Some(_), None) => return Ok(None),
-        ("persona", Some(u), Some(_)) => (
-            "persona_set",
-            serde_json::json!({"persona_uid": u, "card_text": d.get("text").cloned().unwrap_or(Value::Null)}),
-        ),
+        ("persona", Some(u), Some(_)) => {
+            let Some(text) = d
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return Err(RequestRefused::SuggestShape);
+            };
+            (
+                "persona_set",
+                serde_json::json!({"persona_uid": u, "card_text": text}),
+            )
+        }
         ("persona", None, Some(_)) => ("persona_add", d),
         ("brain", None, Some(_)) => ("brain_add", d),
         ("role", None, Some(_)) => ("role_add", d),
@@ -546,6 +559,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(to_request(&w[0]), Err(RequestRefused::Field));
+        let empty_persona =
+            parse_suggest(&json!({"items":[{"what":"persona","uid":"aaaaa1","draft":{}}]}))
+                .unwrap();
+        assert_eq!(
+            to_request(&empty_persona[0]),
+            Err(RequestRefused::SuggestShape)
+        );
     }
 
     #[test]

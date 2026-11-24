@@ -99,23 +99,30 @@ fn closest<'a>(
     best.map(|(s, _, u)| (u, s))
 }
 
-/// A drafted name: the purpose's first [`NAME_MAX`] characters, trailing punctuation off.
+/// A drafted name: the purpose's first [`NAME_MAX`] characters, punctuation trimmed;
+/// if the leading window is all punctuation, advance to the first alphanumeric char.
 fn draft_name(purpose: &str) -> String {
-    let n: String = purpose.chars().take(NAME_MAX).collect();
-    n.trim_end_matches(|c: char| !c.is_alphanumeric())
-        .to_string()
+    let take_trimmed = |s: &str| -> String {
+        let n: String = s.chars().take(NAME_MAX).collect();
+        n.trim_matches(|c: char| !c.is_alphanumeric()).to_string()
+    };
+    let first = take_trimmed(purpose);
+    if !first.is_empty() {
+        return first;
+    }
+    take_trimmed(purpose.trim_start_matches(|c: char| !c.is_alphanumeric()))
 }
 
 /// The suggestion card for a purpose. Errors: `purpose_shape` (empty / too long after
-/// control characters are taken out), `request_mode` (a seat mode the assistant may not ask
-/// for).
+/// control and A13 format characters are taken out), `request_mode` (a seat mode the
+/// assistant may not ask for).
 pub fn propose(
     purpose: &str,
     personas: &[PersonaRow],
     brains: &[BrainRow],
     mode: &str,
 ) -> Result<Value, &'static str> {
-    let purpose: String = purpose.chars().filter(|c| !c.is_control()).collect();
+    let purpose = crate::assistant::shown(purpose);
     let purpose = purpose.trim();
     if norm(purpose).len() < 2 || purpose.chars().count() > PURPOSE_MAX {
         return Err("purpose_shape");
@@ -124,6 +131,9 @@ pub fn propose(
         return Err(RequestRefused::Mode.code());
     }
     let name = draft_name(purpose);
+    if name.is_empty() {
+        return Err("purpose_shape");
+    }
     let mut items = Vec::new();
     let persona = closest(
         purpose,
@@ -142,12 +152,15 @@ pub fn propose(
     let bound = chosen
         .and_then(|p| p.brain.as_deref())
         .filter(|b| brains.iter().any(|r| r.uid == *b));
+    let mut chosen_brain: Option<String> = None;
     if let Some(b) = bound {
+        chosen_brain = Some(b.to_string());
         items.push(json!({"what":"brain","uid":b,"note":"這個人格原本綁的第二大腦"}));
     } else if let Some((u, _)) = closest(
         purpose,
         brains.iter().map(|b| (b.uid.as_str(), b.name.as_str())),
     ) {
+        chosen_brain = Some(u.clone());
         items.push(json!({"what":"brain","uid":u,"note":"跟用途最像的第二大腦"}));
     } else {
         items.push(
@@ -158,8 +171,11 @@ pub fn propose(
     if let Some(p) = chosen {
         seat["persona_uid"] = json!(p.uid);
     }
+    if let Some(b) = &chosen_brain {
+        seat["brain"] = json!(b);
+    }
     items.push(json!({"what":"seat","draft":seat,
-        "note": if chosen.is_some() { "用上面的人格開一位" } else { "新人格建好後再開" }}));
+        "note": if chosen.is_some() { "用上面的人格開一位" } else { "先建人格,建好再按一次開席" }}));
     let card = json!({ "items": items });
     // the card must read back like one the assistant wrote
     parse_suggest(&card)?;
@@ -168,23 +184,30 @@ pub fn propose(
 
 /// Where a confirmed card's requests go (owner_request once it is in main; a list in tests).
 pub trait Requests {
-    /// Hand one request on; its id.
-    fn submit(&mut self, act: &str, params: Value) -> Result<String, String>;
+    /// Hand a validated batch of requests on together (one owner_batch, one check); their ids.
+    fn submit_batch(&mut self, reqs: &[(&'static str, Value)]) -> Result<Vec<String>, String>;
 }
 
 /// Turn every item of a confirmed card into its owner request; an existing one used as it is
 /// makes none. Every item is checked before any is handed on, so a card with one refused
-/// item hands on nothing.
+/// item hands on nothing. When a new persona is being drafted, `seat_open` waits for it
+/// (never opens a seat with no persona).
 pub fn submit_all(items: &[SuggestItem], to: &mut impl Requests) -> Result<Vec<String>, String> {
+    let has_new_persona = items.iter().any(|i| i.what == "persona" && i.uid.is_none());
     let mut reqs = Vec::new();
     for it in items {
         match to_request(it) {
-            Ok(Some(r)) => reqs.push(r),
+            Ok(Some((act, params))) => {
+                if act == "seat_open" && has_new_persona {
+                    continue;
+                }
+                reqs.push((act, params));
+            }
             Ok(None) => {}
             Err(e) => return Err(e.code().to_string()),
         }
     }
-    reqs.into_iter().map(|(a, p)| to.submit(a, p)).collect()
+    to.submit_batch(&reqs)
 }
 
 #[cfg(test)]
@@ -209,9 +232,13 @@ mod tests {
     #[derive(Default)]
     struct Got(Vec<(String, Value)>);
     impl Requests for Got {
-        fn submit(&mut self, act: &str, params: Value) -> Result<String, String> {
-            self.0.push((act.to_string(), params));
-            Ok(format!("r{}", self.0.len()))
+        fn submit_batch(&mut self, reqs: &[(&'static str, Value)]) -> Result<Vec<String>, String> {
+            let mut ids = Vec::with_capacity(reqs.len());
+            for (act, params) in reqs {
+                self.0.push(((*act).to_string(), params.clone()));
+                ids.push(format!("r{}", self.0.len()));
+            }
+            Ok(ids)
         }
     }
 
@@ -241,19 +268,20 @@ mod tests {
         assert_eq!(items[1].uid.as_deref(), Some("brn_a"));
         assert_eq!(
             items[2].draft,
-            Some(json!({"mode":"work","persona_uid":"aaaaa1"}))
+            Some(json!({"mode":"work","persona_uid":"aaaaa1","brain":"brn_a"}))
         );
         let mut got = Got::default();
         let ids = submit_all(&items, &mut got).unwrap();
         assert_eq!(ids, vec!["r1"]);
         assert_eq!(got.0[0].0, "seat_open");
+        assert_eq!(got.0[0].1["brain"], "brn_a");
     }
 
     #[test]
     fn nothing_close_drafts_new_ones_and_the_seat_waits_for_the_persona() {
         let ps = [p("aaaaa1", "SEO專家", None)];
         let bs = [b("brn_a", "SEO 筆記")];
-        let card = propose("  幫我整理每天的家庭帳本\u{7}  ", &ps, &bs, "safe").unwrap();
+        let card = propose("  幫我整理每天的家庭帳本\u{7}\u{202E}  ", &ps, &bs, "safe").unwrap();
         let items = parse_suggest(&card).unwrap();
         assert!(items.iter().all(|i| i.uid.is_none()));
         assert_eq!(
@@ -264,7 +292,7 @@ mod tests {
         let mut got = Got::default();
         submit_all(&items, &mut got).unwrap();
         let acts: Vec<&str> = got.0.iter().map(|(a, _)| a.as_str()).collect();
-        assert_eq!(acts, vec!["persona_add", "brain_add", "seat_open"]);
+        assert_eq!(acts, vec!["persona_add", "brain_add"]);
         assert!(acts.iter().all(|a| REQUEST_ACTS.contains(a)));
     }
 

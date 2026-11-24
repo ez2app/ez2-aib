@@ -51,3 +51,15 @@ python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
   'Err(_) => {}' \
   --expect-fail 'assistant_propose::tests::a_card_with_one_refused_item_hands_on_nothing' \
   -- cargo test -p aibd --locked --lib 'assistant_propose::tests::a_card_with_one_refused_item_hands_on_nothing'
+# ap-wait-persona
+python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
+  'if act == "seat_open" && has_new_persona {' \
+  'if act == "seat_open" && has_new_persona && false {' \
+  --expect-fail 'assistant_propose::tests::nothing_close_drafts_new_ones_and_the_seat_waits_for_the_persona' \
+  -- cargo test -p aibd --locked --lib 'assistant_propose::tests::nothing_close_drafts_new_ones_and_the_seat_waits_for_the_persona'
+# ap-seat-brain
+python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
+  'if let Some(b) = &chosen_brain {' \
+  'if let Some(b) = chosen_brain.as_ref().filter(|_| false) {' \
+  --expect-fail 'assistant_propose::tests::an_existing_persona_and_its_brain_are_used_and_the_seat_names_it' \
+  -- cargo test -p aibd --locked --lib 'assistant_propose::tests::an_existing_persona_and_its_brain_are_used_and_the_seat_names_it'
