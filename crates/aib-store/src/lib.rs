@@ -7,6 +7,7 @@
 mod alive;
 pub mod brain_notes;
 mod idem;
+pub mod managed_test;
 mod messages;
 mod migrate;
 pub mod net_allow;

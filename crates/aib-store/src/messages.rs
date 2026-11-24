@@ -195,6 +195,7 @@ fn prepare(conn: &mut Connection) -> Result<()> {
             crate::threads::add_tables(conn)?;
             crate::seat_moves::add_tables(conn)?;
             crate::net_allow::add_tables(conn)?;
+            crate::managed_test::add_tables(conn)?;
             crate::ranks::add_tables(conn)?;
             crate::brain_notes::add_tables(conn)?;
             crate::perm_templates::add_tables(conn)?;
@@ -205,6 +206,7 @@ fn prepare(conn: &mut Connection) -> Result<()> {
             crate::threads::add_tables(conn)?;
             crate::seat_moves::add_tables(conn)?;
             crate::net_allow::add_tables(conn)?;
+            crate::managed_test::add_tables(conn)?;
             crate::ranks::add_tables(conn)?;
             crate::brain_notes::add_tables(conn)?;
             crate::perm_templates::add_tables(conn)?;
