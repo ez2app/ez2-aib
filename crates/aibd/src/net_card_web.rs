@@ -260,7 +260,7 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
             .contains(uid),
         None => true,
     };
-    let own_ips = crate::host_addr::own_addresses();
+    let own_ips = crate::host_addr::own_addresses().unwrap_or_default();
     let now_unix = now();
     let mut bad_events = Vec::new();
     if let Ok(db_rows) = st.messages.net_allow_list() {
