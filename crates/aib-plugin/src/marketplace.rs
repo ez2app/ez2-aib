@@ -132,7 +132,7 @@ pub fn parse_catalog(text: &str) -> Result<Vec<CatalogEntry>, String> {
         }
         out.push(CatalogEntry {
             name: name.to_string(),
-            version: version.to_string(),
+            version: version.trim().to_string(),
             summary,
             paid,
             default_on,
@@ -196,6 +196,13 @@ pub fn install_from_bytes(
     std::fs::create_dir_all(&plugins_dir).map_err(|e| format!("create plugins dir: {e}"))?;
     let stage = plugins_dir.join(format!(".staging-{}-{}", entry.name, std::process::id()));
     let _ = std::fs::remove_dir_all(&stage);
+    struct StageGuard(PathBuf);
+    impl Drop for StageGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = StageGuard(stage.clone());
     let exe_dst = crate::exe_path(&stage, &cmd.bin, windows);
     if let Some(parent) = exe_dst.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create bin dir: {e}"))?;
@@ -211,19 +218,17 @@ pub fn install_from_bytes(
         .map_err(|e| format!("write manifest: {e}"))?;
 
     let dest = plugins_dir.join(&entry.name);
-    if dest.exists() {
+    if dest.symlink_metadata().is_ok() {
         let backup = plugins_dir.join(format!(".old-{}-{}", entry.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&backup);
         std::fs::rename(&dest, &backup).map_err(|e| format!("move old plugin: {e}"))?;
         if let Err(e) = std::fs::rename(&stage, &dest) {
             let _ = std::fs::rename(&backup, &dest);
-            let _ = std::fs::remove_dir_all(&stage);
             return Err(format!("install plugin: {e}"));
         }
         let _ = std::fs::remove_dir_all(&backup);
-    } else if let Err(e) = std::fs::rename(&stage, &dest) {
-        let _ = std::fs::remove_dir_all(&stage);
-        return Err(format!("install plugin: {e}"));
+    } else {
+        std::fs::rename(&stage, &dest).map_err(|e| format!("install plugin: {e}"))?;
     }
     Ok(dest)
 }
@@ -235,6 +240,7 @@ pub fn fetch_https(url: &str) -> Result<Vec<u8>, String> {
     }
     let out = Command::new("curl")
         .args([
+            "-q",
             "--proto",
             "=https",
             "--tlsv1.2",
@@ -311,6 +317,12 @@ mod tests {
             parse_catalog(&ok.replace("https://github.com/", "https://evil.example/")).is_err()
         );
         assert!(parse_catalog(&ok.replace(&h, "deadbeef")).is_err());
+        assert!(parse_catalog(&ok.replacen(
+            "\"version\":",
+            "\"version\":\"0.0.1\",\"version\":",
+            1
+        ))
+        .is_err());
     }
 
     #[test]
@@ -328,11 +340,36 @@ mod tests {
         let entries = parse_catalog(&cat).expect("catalog");
         let entry = &entries[0];
 
-        // wrong manifest sha or wrong binary sha is refused before writing
+        // wrong manifest sha, wrong binary sha, or version mismatch is refused before writing
         assert!(
             install_from_bytes(dir.path(), entry, "aarch64-apple-darwin", false, b"{}", bin)
                 .is_err()
         );
+        assert!(install_from_bytes(
+            dir.path(),
+            entry,
+            "aarch64-apple-darwin",
+            false,
+            &man,
+            b"bad"
+        )
+        .is_err());
+        let bad_ver = sample_manifest("9.9.9");
+        let mut wrong_ver_entry = entry.clone();
+        wrong_ver_entry.manifest.sha256 = crate::sha256_hex(&bad_ver);
+        assert!(install_from_bytes(
+            dir.path(),
+            &wrong_ver_entry,
+            "aarch64-apple-darwin",
+            false,
+            &bad_ver,
+            bin
+        )
+        .is_err());
+        assert!(!crate::plugins_dir(dir.path()).join("demo-plg").exists());
+        assert!(crate::find(&crate::plugins_dir(dir.path()))
+            .expect("find")
+            .is_empty());
         assert!(install_from_bytes(
             dir.path(),
             entry,

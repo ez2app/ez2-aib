@@ -247,6 +247,13 @@ fn kept(last: &Last, offset: i64, now: std::time::Instant) -> Option<Value> {
 /// One read at a time: a second asker waits for the first and is given its answer.
 static LAST: std::sync::Mutex<Last> = std::sync::Mutex::new(None);
 
+/// Drop the cached `time_saved` answer (e.g. after a plugin is switched or installed).
+pub fn clear_cache() {
+    *LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 fn answer_once(home: &Path, offset: i64, windows: bool) -> Value {
     // a poisoned lock only means an earlier read panicked: what it kept is still an answer
     let mut last = LAST

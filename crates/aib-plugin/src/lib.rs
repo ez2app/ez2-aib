@@ -437,6 +437,9 @@ pub fn find(dir: &Path) -> Result<Vec<Found>, String> {
             continue;
         }
         let folder = e.file_name().to_string_lossy().into_owned();
+        if folder.starts_with('.') {
+            continue;
+        }
         let manifest = std::fs::read_to_string(e.path().join("aib-plugin.json"))
             .map_err(|e| match e.kind() {
                 // a folder of another kind (an older add-on has no such file)

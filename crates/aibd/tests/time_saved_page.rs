@@ -192,6 +192,21 @@ async fn the_page_gets_the_plugin_s_boxes_and_nobody_else_does() {
         r.code,
         r.body
     );
+    let inst = json!({"type": "marketplace_install", "name": "aib-skipstop"});
+    let r = act(&d, Some(&user), inst.clone()).await;
+    assert_eq!(
+        (r.code, r.json["code"].as_str()),
+        (403, Some("page_only")),
+        "{}",
+        r.body
+    );
+    let r = act(&d, Some(&tok), inst).await;
+    assert!(
+        r.code >= 400,
+        "a seat's token installed a plugin: {} {}",
+        r.code,
+        r.body
+    );
     let l = act(&d, Some(&page), json!({"type": "plugin_list"})).await;
     assert_eq!(l.json["plugins"][0]["on"], true, "{}", l.body);
 

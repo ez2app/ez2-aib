@@ -145,7 +145,10 @@ pub async fn set_act(body: Value) -> Response {
     })
     .await;
     match got {
-        Ok(Some(Ok(v))) => Json(v).into_response(),
+        Ok(Some(Ok(v))) => {
+            crate::time_saved::clear_cache();
+            Json(v).into_response()
+        }
         Ok(Some(Err((status, code)))) => refuse(status, code),
         _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
     }
@@ -193,8 +196,39 @@ pub fn marketplace_install_with<F>(
     os: &str,
     arch: &str,
     windows: bool,
-    mut fetch: F,
+    fetch: F,
 ) -> Result<Value, (StatusCode, &'static str)>
+where
+    F: FnMut(&str) -> Result<Vec<u8>, String>,
+{
+    let (entry, target, manifest_bytes, bin_bytes) =
+        marketplace_download_with(body, os, arch, fetch)?;
+    let _turn = turn();
+    aib_plugin::marketplace::install_from_bytes(
+        home,
+        &entry,
+        target,
+        windows,
+        &manifest_bytes,
+        &bin_bytes,
+    )
+    .map_err(|_| (StatusCode::CONFLICT, "install_failed"))?;
+    Ok(list(home, windows))
+}
+
+type DownloadedPlugin = (
+    aib_plugin::marketplace::CatalogEntry,
+    &'static str,
+    Vec<u8>,
+    Vec<u8>,
+);
+
+fn marketplace_download_with<F>(
+    body: &Value,
+    os: &str,
+    arch: &str,
+    mut fetch: F,
+) -> Result<DownloadedPlugin, (StatusCode, &'static str)>
 where
     F: FnMut(&str) -> Result<Vec<u8>, String>,
 {
@@ -218,16 +252,7 @@ where
     let manifest_bytes =
         fetch(&entry.manifest.url).map_err(|_| (StatusCode::BAD_GATEWAY, "download_failed"))?;
     let bin_bytes = fetch(&asset.url).map_err(|_| (StatusCode::BAD_GATEWAY, "download_failed"))?;
-    aib_plugin::marketplace::install_from_bytes(
-        home,
-        &entry,
-        target,
-        windows,
-        &manifest_bytes,
-        &bin_bytes,
-    )
-    .map_err(|_| (StatusCode::CONFLICT, "install_failed"))?;
-    Ok(list(home, windows))
+    Ok((entry, target, manifest_bytes, bin_bytes))
 }
 
 pub async fn marketplace_list_act() -> Response {
@@ -248,21 +273,37 @@ pub async fn marketplace_list_act() -> Response {
 
 pub async fn marketplace_install_act(body: Value) -> Response {
     let got = tokio::task::spawn_blocking(move || {
+        // download outside turn() so network timeouts never block plugin_list / plugin_set
+        let (entry, target, manifest_bytes, bin_bytes) = match marketplace_download_with(
+            &body,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            aib_plugin::marketplace::fetch_https,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
         let _turn = turn();
         home_now().map(|h| {
-            marketplace_install_with(
+            let windows = cfg!(windows);
+            aib_plugin::marketplace::install_from_bytes(
                 &h,
-                &body,
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                cfg!(windows),
-                aib_plugin::marketplace::fetch_https,
+                &entry,
+                target,
+                windows,
+                &manifest_bytes,
+                &bin_bytes,
             )
+            .map_err(|_| (StatusCode::CONFLICT, "install_failed"))?;
+            Ok(list(&h, windows))
         })
     })
     .await;
     match got {
-        Ok(Some(Ok(v))) => Json(v).into_response(),
+        Ok(Some(Ok(v))) => {
+            crate::time_saved::clear_cache();
+            Json(v).into_response()
+        }
         Ok(Some(Err((status, code)))) => refuse(status, code),
         _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
     }
@@ -521,6 +562,62 @@ mod tests {
             )
             .map_err(|(s, c)| (s.as_u16(), c)),
             Err((400, "bad_marketplace_install"))
+        );
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "gamma", "extra": 1}),
+                "macos",
+                "aarch64",
+                false,
+                &mut fetcher,
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((400, "bad_marketplace_install"))
+        );
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "gamma"}),
+                "windows",
+                "x86_64",
+                true,
+                &mut fetcher,
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((400, "unsupported_target"))
+        );
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "gamma"}),
+                "macos",
+                "aarch64",
+                false,
+                |_| Err("offline".into()),
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((502, "marketplace_unreachable"))
+        );
+        assert_eq!(
+            marketplace_install_with(
+                &h.0,
+                &json!({"type": MARKETPLACE_INSTALL, "name": "gamma"}),
+                "macos",
+                "aarch64",
+                false,
+                |url| {
+                    if url == aib_plugin::marketplace::MARKETPLACE_URL {
+                        Ok(cat.as_bytes().to_vec())
+                    } else if url.ends_with("aib-plugin.json") {
+                        Ok(man.clone())
+                    } else {
+                        Ok(b"tampered".to_vec())
+                    }
+                },
+            )
+            .map_err(|(s, c)| (s.as_u16(), c)),
+            Err((409, "install_failed"))
         );
         assert_eq!(
             marketplace_install_with(
