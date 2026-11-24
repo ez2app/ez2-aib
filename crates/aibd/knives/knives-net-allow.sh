@@ -13,7 +13,7 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
 # na-uid
 python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   '        if uid != persona_uid || canon != want_canon {' \
-  '        if persona_uid.is_empty() || canon != want_canon {' \
+  '        if (uid.is_empty() && persona_uid.is_empty()) || canon != want_canon {' \
   --expect-fail net_allow::tests::valid_signed_row_holds_and_forged_or_tampered_row_is_refused \
   -- cargo test -p aibd --locked --lib net_allow::tests::valid_signed_row_holds_and_forged_or_tampered_row_is_refused
 # na-30d
