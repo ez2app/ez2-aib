@@ -12,18 +12,32 @@ pub const OP_ALWAYS: &str = "net.allow_always";
 pub const PREFIX: &str = "aibd/net-allow/v1";
 pub const MAX_DAYS_SECS: u64 = 30 * 86_400;
 
-/// Build the canonical signed params for an "always allow" network grant.
-pub fn always_params(persona_uid: &str, addr: SocketAddr, until: u64, request_id: &str) -> Vec<u8> {
+/// Build the canonical signed params for an "always allow" network grant (with `issued_at`
+/// signed inside so `until - issued_at <= 30d` cannot be bypassed by pre-signing a far-future
+/// `until`, ebab8 review 15:47).
+pub fn always_params(
+    persona_uid: &str,
+    addr: SocketAddr,
+    issued_at: u64,
+    until: u64,
+    request_id: &str,
+) -> Result<Vec<u8>, &'static str> {
+    if until <= issued_at || until - issued_at > MAX_DAYS_SECS {
+        return Err("until_exceeds_30d");
+    }
     let canon = crate::grants::canon(addr);
-    format!("{PREFIX}\n{persona_uid}\n{canon}\n{until}\n{request_id}\n").into_bytes()
+    Ok(
+        format!("{PREFIX}\n{persona_uid}\n{canon}\n{issued_at}\n{until}\n{request_id}\n")
+            .into_bytes(),
+    )
 }
 
-/// Strictly parse `always_params`: exact 6 lines (trailing newline), valid persona uid,
-/// canonical `SocketAddr`, ASCII `until`.
-pub fn parse_always_params(raw: &[u8]) -> Option<(String, String, u64)> {
+/// Strictly parse `always_params`: exact 7 lines (trailing newline), valid persona uid,
+/// canonical `SocketAddr`, ASCII `issued_at` and `until`.
+pub fn parse_always_params(raw: &[u8]) -> Option<(String, String, u64, u64)> {
     let text = std::str::from_utf8(raw).ok()?;
     let lines: Vec<&str> = text.split('\n').collect();
-    if lines.len() != 6 || !lines[5].is_empty() {
+    if lines.len() != 7 || !lines[6].is_empty() {
         return None;
     }
     if lines[0] != PREFIX {
@@ -46,11 +60,15 @@ pub fn parse_always_params(raw: &[u8]) -> Option<(String, String, u64)> {
     if lines[3].is_empty() || !lines[3].bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let until: u64 = lines[3].parse().ok()?;
-    if lines[4].is_empty() {
+    let issued_at: u64 = lines[3].parse().ok()?;
+    if lines[4].is_empty() || !lines[4].bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    Some((uid.to_owned(), canon, until))
+    let until: u64 = lines[4].parse().ok()?;
+    if lines[5].is_empty() {
+        return None;
+    }
+    Some((uid.to_owned(), canon, issued_at, until))
 }
 
 /// Verify and match an always-allow entry for `(persona_uid, addr, now)`.
@@ -80,13 +98,17 @@ pub fn holds(
         if db.net_allow_is_revoked(&row.ticket).unwrap_or(true) {
             continue;
         }
-        let Some((uid, canon, until)) = parse_always_params(&row.params) else {
+        let Some((uid, canon, issued_at, until)) = parse_always_params(&row.params) else {
             continue;
         };
         if uid != persona_uid || canon != want_canon {
             continue;
         }
-        if now >= until || until > now.saturating_add(MAX_DAYS_SECS) {
+        if now < issued_at
+            || now >= until
+            || until <= issued_at
+            || until - issued_at > MAX_DAYS_SECS
+        {
             continue;
         }
         let ask = Ask {
@@ -119,8 +141,39 @@ mod tests {
         vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))]
     }
 
-    fn sign_row(ticket: &str, uid: &str, addr: SocketAddr, until: u64, tag: &[u8]) -> NetAllowRow {
-        let params = always_params(uid, addr, until, "req_1");
+    fn sign_row(
+        ticket: &str,
+        uid: &str,
+        addr: SocketAddr,
+        issued_at: u64,
+        until: u64,
+        tag: &[u8],
+    ) -> NetAllowRow {
+        let params = always_params(uid, addr, issued_at, until, "req_1").unwrap();
+        sign_row_with_params(ticket, uid, addr, params, tag)
+    }
+
+    fn sign_row_raw(
+        ticket: &str,
+        uid: &str,
+        addr: SocketAddr,
+        issued_at: u64,
+        until: u64,
+        tag: &[u8],
+    ) -> NetAllowRow {
+        let canon = crate::grants::canon(addr);
+        let params =
+            format!("{PREFIX}\n{uid}\n{canon}\n{issued_at}\n{until}\nreq_1\n").into_bytes();
+        sign_row_with_params(ticket, uid, addr, params, tag)
+    }
+
+    fn sign_row_with_params(
+        ticket: &str,
+        uid: &str,
+        addr: SocketAddr,
+        params: Vec<u8>,
+        tag: &[u8],
+    ) -> NetAllowRow {
         let resource = format!("{uid} -> {addr}");
         let by = "page:test".to_owned();
         let ask = Ask {
@@ -154,7 +207,7 @@ mod tests {
         let db = MessageDb::open(&d.path().join("m.db")).unwrap();
         let now = 1_000_000;
         let addr = p_addr();
-        let row = sign_row("tk_1", "un0eba", addr, now + 86_400, b":ok");
+        let row = sign_row("tk_1", "un0eba", addr, now, now + 86_400, b":ok");
         assert!(db.net_allow_add(row).unwrap());
 
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_some());
@@ -162,7 +215,7 @@ mod tests {
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, false, &test_verify).is_none());
 
         // Forged sig is refused
-        let forged = sign_row("tk_2", "un0eba", addr, now + 86_400, b":bad");
+        let forged = sign_row("tk_2", "un0eba", addr, now, now + 86_400, b":bad");
         assert!(db.net_allow_add(forged).unwrap());
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &|m, s| {
             s.strip_suffix(b":never") == Some(m)
@@ -177,19 +230,30 @@ mod tests {
         let now = 1_000_000;
         let addr = p_addr();
 
-        // > 30 days even if signed
-        let long = sign_row("tk_long", "un0eba", addr, now + MAX_DAYS_SECS + 10, b":ok");
-        assert!(db.net_allow_add(long).unwrap());
-        assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_none());
+        // > 30 days from issued_at even if signed (and even when checked in the last 30 days)
+        assert!(always_params("un0eba", addr, now, now + MAX_DAYS_SECS + 10, "req_1").is_err());
+        let year = 365 * 86_400;
+        let pre_signed = sign_row_raw("tk_long", "un0eba", addr, now, now + year, b":ok");
+        assert!(db.net_allow_add(pre_signed).unwrap());
+        assert!(holds(
+            &db,
+            "un0eba",
+            addr,
+            &own_ips(),
+            now + year - 86_400,
+            true,
+            &test_verify
+        )
+        .is_none());
 
         // Own IP is never passed through always-allow
         let own_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 8080));
-        let own_row = sign_row("tk_own", "un0eba", own_addr, now + 86_400, b":ok");
+        let own_row = sign_row("tk_own", "un0eba", own_addr, now, now + 86_400, b":ok");
         assert!(db.net_allow_add(own_row).unwrap());
         assert!(holds(&db, "un0eba", own_addr, &own_ips(), now, true, &test_verify).is_none());
 
         // Revoked ticket cannot be re-used even if re-inserted
-        let ok = sign_row("tk_rev", "un0eba", addr, now + 86_400, b":ok");
+        let ok = sign_row("tk_rev", "un0eba", addr, now, now + 86_400, b":ok");
         assert!(db.net_allow_add(ok.clone()).unwrap());
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_some());
         assert!(db.net_allow_revoke("tk_rev", now as i64).unwrap());
