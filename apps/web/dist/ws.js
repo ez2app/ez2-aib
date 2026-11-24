@@ -1184,9 +1184,9 @@
     const eff = String(d.effective_tier || 'normal');
     const canSet = hasAct('skipstop_tier_set') === true;
     const tiers = [
-      ['strict', '🔒 嚴格', '只沿用同版紀錄 · 每 5 次抽查 · 全刀雙平台', '不省'],
-      ['normal', '⚖️ 一般（預設）', '只沿用同版紀錄 · 每 10 次抽查 · 只跑受影響刀', '省'],
-      ['fast', '⚡ 快速（需硬體簽章）', '同範圍沿用 · 每 20 次抽查 · 只跑改動刀（未簽章退回嚴格）', '省'],
+      ['strict', '🔒 嚴格', '同版完全相符 · 每 5 次抽 1 · 有變全刀 · 失敗重跑 · Mac + Win', '不省'],
+      ['normal', '⚖️ 一般（預設）', '改動碰不到也沿用 · 每 10 次抽 1 · 只跑受影響刀 · 主要平台', '省'],
+      ['fast', '⚡ 快速（需硬體簽章）', '改動碰不到也沿用 · 每 20 次抽 1 · 只跑受影響刀 · 裝不下延後（未簽章退回嚴格）', '省'],
     ];
     let h = head + '<div class="thr">';
     for (const [id, lbl, desc, tag] of tiers) {

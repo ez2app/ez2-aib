@@ -265,7 +265,7 @@ if [ "$mine" = 0 ]; then
   echo "KNIVES-NONE job=$job: no crates/*/knives/*.sh belongs to it (a broken glob reads as clean otherwise)"
   exit 1
 fi
-if [ "$shard_n" != 1 ] && [ "$((ran + skipped_unaffected))" = 0 ]; then
+if [ "$shard_n" != 1 ] && [ "$ran" = 0 ]; then
   echo "KNIVES-NONE job=$job shard=$shard_k/$shard_n: this shard ran no script (more shards than scripts?)"
   exit 1
 fi
@@ -273,7 +273,9 @@ if [ "${#bad[@]}" -gt 0 ]; then
   echo "KNIVES-RED ${#bad[@]}: ${bad[*]}"
   exit 1
 fi
-if [ "$shard_n" = 1 ]; then
+if [ "$skipped_unaffected" -gt 0 ]; then
+  echo "KNIVES-PARTIAL job=$job scripts=$mine skipped=$skipped_unaffected ran=$ran"
+elif [ "$shard_n" = 1 ]; then
   echo "KNIVES-OK job=$job scripts=$mine"
 else
   echo "KNIVES-OK job=$job scripts=$mine shard=$shard_k/$shard_n ran=$ran"

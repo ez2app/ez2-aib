@@ -663,8 +663,13 @@ fn skip_files_skips_unaffected_scripts_and_does_not_leak() {
         out.contains("KNIVES-SCRIPT crates/a/knives/k2.sh: rc=0"),
         "{out}"
     );
+    assert!(out.contains("KNIVES-PARTIAL "), "{out}");
+    assert!(
+        !out.contains("KNIVES-OK"),
+        "skip must never emit KNIVES-OK: {out}"
+    );
 
-    // Even when every script in a shard is skipped as unaffected, the shard exits 0
+    // When every script in a multi-shard run is skipped so ran=0, RK11 still fails (rc=1)
     let r2 = repo(&[
         (
             "crates/a/knives/k1.sh",
@@ -684,6 +689,6 @@ fn skip_files_skips_unaffected_scripts_and_does_not_leak() {
             ",crates/a/knives/k1.sh,crates/a/knives/k2.sh,",
         )],
     );
-    assert_eq!(rc_all, 0, "{out_all}");
-    assert!(out_all.contains("KNIVES-OK "), "{out_all}");
+    assert_eq!(rc_all, 1, "{out_all}");
+    assert!(out_all.contains("KNIVES-NONE"), "{out_all}");
 }
