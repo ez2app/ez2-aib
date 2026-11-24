@@ -31,7 +31,7 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
 # na-revoked
 python3 -I scripts/knife.py crates/aib-store/src/net_allow.rs \
   '            if revoked.is_some() {' \
-  '            if false {' \
+  '            if revoked.is_none() && false {' \
   --expect-fail net_allow::tests::over_30_days_own_ip_and_revoked_tickets_are_refused \
   -- cargo test -p aibd --locked --lib net_allow::tests::over_30_days_own_ip_and_revoked_tickets_are_refused
 # na-issued
