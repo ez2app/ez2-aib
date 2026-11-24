@@ -201,6 +201,7 @@
 14	crates/aibd/knives/knives-871-plan-move-repo.sh
 126	crates/aibd/knives/knives-a1-edit-archive.sh
 64	crates/aibd/knives/knives-a11-dgrs-asks.sh
+64	crates/aibd/knives/knives-a13-model-list.sh
 77	crates/aibd/knives/knives-a15-quota.sh
 42	crates/aibd/knives/knives-a20-weak-pairing.sh
 128	crates/aibd/knives/knives-brain-note.sh
