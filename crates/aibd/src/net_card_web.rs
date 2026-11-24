@@ -40,6 +40,14 @@ pub const ALLOW_REVOKE: &str = "net_allow_revoke";
 static CARDS: Mutex<Option<Cards>> = Mutex::new(None);
 static ALLOW: Mutex<BTreeMap<String, AllowList>> = Mutex::new(BTreeMap::new());
 
+/// Test-only helper to clear the in-memory allow map (simulating an `aibd` restart).
+#[doc(hidden)]
+pub fn clear_allow_for_test() {
+    if let Ok(mut a) = ALLOW.lock() {
+        a.clear();
+    }
+}
+
 fn now() -> u64 {
     crate::pair_carry::now_unix()
 }
@@ -273,6 +281,23 @@ fn append_db_allow_rows(
                 continue;
             }
             let parsed_addr = canon.parse::<SocketAddr>().ok();
+            let dup = parsed_addr.and_then(|sa| {
+                let ip_str = sa.ip().to_string();
+                let port_u64 = u64::from(sa.port());
+                items.iter_mut().find(|existing| {
+                    existing.get("ip").and_then(Value::as_str) == Some(ip_str.as_str())
+                        && existing.get("port").and_then(Value::as_u64) == Some(port_u64)
+                        && (seat_id.is_none()
+                            || existing.get("seat_id").and_then(Value::as_str) == seat_id)
+                })
+            });
+            if let Some(existing) = dup {
+                existing["ticket"] = json!(r.ticket);
+                existing["persona_uid"] = json!(uid);
+                existing["addr"] = json!(canon);
+                existing["until"] = json!(until);
+                continue;
+            }
             let mut obj = json!({
                 "ticket": r.ticket,
                 "persona_uid": uid,

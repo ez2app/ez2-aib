@@ -100,6 +100,47 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     aibd::owner_ok::set_presence(Arc::new(Yes(n.clone())), Arc::new(Open));
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let mut d = Daemon::start(dir.path()).await;
+    {
+        let store = aib_store::Store::open(&dir.path().join("data").join("db.sqlite")).unwrap();
+        let ts = "2026-11-25T00:00:00Z".to_string();
+        let seat = aib_store::Seat {
+            seat_id: "a1b2c".into(),
+            name: "測試夥伴".into(),
+            state: "created".into(),
+            revision: 1,
+            created_at: ts.clone(),
+            updated_at: ts.clone(),
+        };
+        let meta = aib_store::SeatMeta {
+            seat_id: "a1b2c".into(),
+            provider: "claude".into(),
+            role: None,
+            cwd: dir.path().display().to_string(),
+            model: None,
+            model_pinned: false,
+            resume_id: None,
+            project_uid: None,
+            persona_uid: Some("p_1".into()),
+            brain_route: None,
+            updated_at: ts.clone(),
+            mode: Some("safe".into()),
+            cabin: None,
+            axis_id: None,
+        };
+        let ev = aib_store::NewEvent {
+            event_id: "ev_a1b2c".into(),
+            aggregate_type: "seat".into(),
+            aggregate_id: "a1b2c".into(),
+            sequence: 1,
+            event_type: "seat.created".into(),
+            correlation_id: None,
+            occurred_at: ts,
+            payload: json!({}),
+        };
+        store
+            .create_seat_with_meta(seat, meta, ev, None, 201, json!({}))
+            .unwrap();
+    }
     let page = d.page(true).await;
     let act = |b: Value| {
         let (d, page) = (&d, page.clone());
@@ -177,11 +218,27 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     assert_eq!(r.code, 200, "{}", r.body);
     let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
     let items = r.json["items"].as_array().unwrap();
-    assert!(
-        items.contains(&json!({"seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432})),
-        "reason: always_not_listed {}",
+    assert_eq!(items.len(), 1, "reason: dup_in_mem_and_db {}", r.body);
+    assert_eq!(items[0]["ip"], "10.0.0.5", "{}", r.body);
+    assert_eq!(items[0]["port"], 5432, "{}", r.body);
+    assert!(items[0]["ticket"].as_str().is_some(), "{}", r.body);
+
+    // Simulate aibd restart: clear in-memory ALLOW, then list + revoke via DB row
+    aibd::net_card_web::clear_allow_for_test();
+    let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
+    let items = r.json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "reason: restart_lost_always {}", r.body);
+    assert_eq!(
+        items[0]["ip"], "10.0.0.5",
+        "reason: restart_missing_ip {}",
         r.body
     );
+    assert_eq!(
+        items[0]["port"], 5432,
+        "reason: restart_missing_port {}",
+        r.body
+    );
+
     let r = act(
         json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432}),
     )
