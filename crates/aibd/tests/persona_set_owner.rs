@@ -55,9 +55,10 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
     let n = Arc::new(AtomicUsize::new(0));
     aibd::owner_ok::set_presence(Arc::new(Yes(n.clone())), Arc::new(Open));
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-    let mut d = Daemon::start(dir.path()).await;
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let mut d = Daemon::start(&root).await;
     // a card aibd can read (cards.json is read on every ask): the registry's shape
-    let vault = dir.path().join("vault");
+    let vault = root.join("vault");
     let card_dir = vault.join("lib").join("pw0set");
     std::fs::create_dir_all(&card_dir).unwrap();
     let text = "---\nuid: pw0set\nname: \"寫卡測試\"\n---\n\n## 職責\n\n舊的職責\n";
@@ -76,7 +77,7 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
                        "card_path_rel": "lib/pw0set/角色.md"}
         }
     });
-    std::fs::write(dir.path().join("cards.json"), doc.to_string()).unwrap();
+    std::fs::write(root.join("cards.json"), doc.to_string()).unwrap();
 
     let cred = d.page(true).await;
     let post = |c: &str, b: Value| {

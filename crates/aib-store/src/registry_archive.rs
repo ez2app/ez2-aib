@@ -603,7 +603,7 @@ impl MessageDb {
                 )
                 .optional()?;
             need(
-                batch_state.as_deref() == Some("running"),
+                batch_state.as_deref() == Some("run"),
                 "batch is not running",
             )?;
             let n = tx.execute(
