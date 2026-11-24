@@ -1361,6 +1361,19 @@ mod tests {
             .expect("reason: arm_does_not_switch");
         assert!(gate < moved, "reason: switched_before_the_gate");
         assert!(arm.contains("\"page_only\""));
+
+        let tat = src
+            .find("        Some(crate::plugins_page::TIER_SET) => {")
+            .expect("reason: tier_set_arm_moved");
+        let tarm = &src[tat..tat + src[tat..].find("\n        }\n").unwrap()];
+        let tgate = tarm
+            .find("held_as_user_page(&page).await || page.carried;")
+            .expect("reason: a_user_page_or_carried_pairing_sets_tier");
+        let tcall = tarm
+            .find("return crate::plugins_page::tier_set_act(body).await;")
+            .expect("reason: tier_set_arm_missing");
+        assert!(tgate < tcall, "reason: tier_set_before_the_gate");
+        assert!(tarm.contains("\"page_only\""));
     }
 
     #[test]

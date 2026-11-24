@@ -1177,16 +1177,16 @@
     if (hasAct('skipstop_tier_get') !== true) return '';
     const T = S.tier;
     if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tierLoad, 0); return '<div class="thh"><b>省時續跑檔次</b><span class="hv">讀取中…</span></div>'; }
-    const head = '<div class="thh"><b>省時續跑檔次</b><button type="button" class="k" data-tierreload="1" title="重讀檔次設定">重讀</button></div>';
+    const savedWeek = S.ts && S.ts.r && S.ts.r.boxes && S.ts.r.boxes.week ? fmtMs(S.ts.r.boxes.week.confirmed_ms || 0) : '0 秒';
+    const head = `<div class="thh"><b>省時續跑檔次</b><span class="hv">本週已省 ${esc(savedWeek)}</span><button type="button" class="k" data-tierreload="1" title="重讀檔次設定">重讀</button></div>`;
     if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
     const d = T.r || {}, p = d.policy || {}, rs = d.repo_settings || {};
     const eff = String(d.effective_tier || 'normal');
     const canSet = hasAct('skipstop_tier_set') === true;
-    const savedWeek = S.ts && S.ts.r && S.ts.r.boxes && S.ts.r.boxes.week ? fmtMs(S.ts.r.boxes.week.confirmed_ms || 0) : '0 秒';
     const tiers = [
-      ['strict', '🔒 嚴格', 'main_exact · 1/5 抽查 · 全刀雙平台', '不省'],
-      ['normal', '⚖️ 一般（預設）', `main_exact · 1/10 抽查 · 受影響刀 · 本週已省 ${savedWeek}`, '省'],
-      ['fast', '⚡ 快速（需硬體簽章）', 'scope · 1/20 抽查 · 改動刀（未簽章退回嚴格）', '省'],
+      ['strict', '🔒 嚴格', '只沿用同版紀錄 · 每 5 次抽查 · 全刀雙平台', '不省'],
+      ['normal', '⚖️ 一般（預設）', '只沿用同版紀錄 · 每 10 次抽查 · 只跑受影響刀', '省'],
+      ['fast', '⚡ 快速（需硬體簽章）', '同範圍沿用 · 每 20 次抽查 · 只跑改動刀（未簽章退回嚴格）', '省'],
     ];
     let h = head + '<div class="thr">';
     for (const [id, lbl, desc, tag] of tiers) {
@@ -1194,18 +1194,23 @@
       h += `<button type="button" class="k ${on ? 'g' : ''}" data-tierpick="${id}" ${!canSet || T.busy ? 'disabled' : ''} title="${esc(desc)}">${lbl}（${tag}）${on ? ' ✓' : ''}</button>`;
     }
     h += '</div>';
+    h += '<div class="thm">目前只記錄於本機設定，一期尚未接入 CI 執行；無硬體簽章之放寬設定會自動退回嚴格。</div>';
     if (d.fell_back_to_strict) {
-      h += '<div class="thm" role="status">未完成硬體簽章驗證，放寬設定已自動退回嚴格 (main_exact)</div>';
+      h += '<div class="thm" role="status">未完成硬體簽章驗證，已自動退回嚴格。</div>';
     }
+    const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'off' ? '關閉' : p.reuse === 'observe' ? '觀察模式' : '放寬沿用';
+    const knivesLbl = p.knives === 'all' ? '全部刀' : p.knives === 'affected' ? '受影響刀' : '只跑改動刀';
+    const platLbl = p.platforms === 'both' ? '雙平台' : p.platforms === 'native' ? '本機平台' : '只跑 Linux';
+    const stopLbl = p.stop === 'reject' ? '失敗即擋' : '僅警告';
     const fields = [
-      ['沿用 reuse', p.reuse, p.reuse !== 'off' && p.reuse !== 'observe' ? '省' : '不省'],
-      ['抽查 spot_every', p.spot_every ? `1/${p.spot_every}` : '0', '省'],
-      ['刀範圍 knives', p.knives, p.knives === 'all' ? '不省' : '省'],
-      ['平台 platforms', p.platforms, p.platforms === 'both' ? '不省' : '省'],
-      ['預檢 stop', p.stop, p.stop === 'reject' ? '不省' : '省'],
-      ['每格分鐘 cell_max_min', `${p.cell_max_min || 90} 分`, '不省'],
-      ['單支刀數 script_max_knives', `${p.script_max_knives || 140} 把`, '不省'],
-      ['單支分鐘 script_max_min', `${p.script_max_min || 25} 分`, '不省'],
+      ['沿用規則', reuseLbl, p.reuse !== 'off' && p.reuse !== 'observe' ? '省' : '不省'],
+      ['抽查頻率', p.spot_every ? `每 ${p.spot_every} 次抽 1` : '不抽查', '省'],
+      ['刀範圍', knivesLbl, p.knives === 'all' ? '不省' : '省'],
+      ['執行平台', platLbl, p.platforms === 'both' ? '不省' : '省'],
+      ['預檢守門', stopLbl, p.stop === 'reject' ? '不省' : '省'],
+      ['每格上限', `${p.cell_max_min || 90} 分`, '不省'],
+      ['單支刀數上限', `${p.script_max_knives || 140} 把`, '不省'],
+      ['單支時間上限', `${p.script_max_min || 25} 分`, '不省'],
     ];
     h += '<details class="thr"><summary class="hv">八欄明細與全倉設定（我的組合：' + (Array.isArray(d.presets) ? d.presets.length : 0) + ' 組）</summary>';
     for (const [k, v, s] of fields) {

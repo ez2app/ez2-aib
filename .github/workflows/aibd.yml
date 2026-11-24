@@ -4176,6 +4176,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: summarize knife cells
+        shell: bash
         env:
           R_RUST: ${{ needs.rust.result }}
           R_CRATE: ${{ needs.crate-knives-gate.result }}
@@ -4186,12 +4187,11 @@ jobs:
           for r in "$R_RUST" "$R_CRATE" "$R_CLOUD" "$R_HOST"; do
             case "$r" in
               success) passed=$((passed + 1)) ;;
-              skipped) deferred=$((deferred + 1)) ;;
               cancelled) cancelled=$((cancelled + 1)) ;;
               *) failed=$((failed + 1)) ;;
             esac
           done
-          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier normal --passed "$passed" --deferred "$deferred" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier unknown --passed "$passed" --deferred "$deferred" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)

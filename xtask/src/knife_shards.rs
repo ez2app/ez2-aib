@@ -535,8 +535,10 @@ fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
             other => return Err(format!("{other}: not an option\n{USAGE}")),
         }
     }
-    if !matches!(tier.as_str(), "strict" | "normal" | "fast") {
-        return Err(format!("--tier {tier}: must be strict, normal, or fast"));
+    if !matches!(tier.as_str(), "strict" | "normal" | "fast" | "unknown") {
+        return Err(format!(
+            "--tier {tier}: must be strict, normal, fast, or unknown"
+        ));
     }
     let bad = failed.saturating_add(timed_out).saturating_add(cancelled);
     let label = if bad > 0 {
@@ -545,6 +547,8 @@ fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
         "條件通過"
     } else if tier == "strict" {
         "嚴格通過"
+    } else if tier == "unknown" {
+        "一般通過（一期未讀設定）"
     } else {
         "一般通過"
     };
