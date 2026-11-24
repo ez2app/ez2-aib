@@ -218,7 +218,83 @@ pub fn limits(table: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
         .collect()
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE";
+/// A single knife script must stay under 25 minutes (1500s, well below the 30m cap) and 140 knives.
+pub const MAX_SCRIPT_SECS: u64 = 1500;
+pub const MAX_SCRIPT_KNIVES: usize = 140;
+/// No shard should exceed 140 minutes (8400s) of projected work.
+pub const MAX_SHARD_SECS: u64 = 8400;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SizeSummary {
+    pub scripts: usize,
+    pub max_secs: u64,
+    pub max_knives: usize,
+    pub max_shard_secs: u64,
+    pub violations: Vec<String>,
+}
+
+/// Check per-script knife count, historical seconds, and projected shard load.
+/// When `only` is `Some(paths)`, per-script checks apply only to scripts in `paths`
+/// (so unrelated PRs are not blocked by pre-existing grandfathered scripts).
+pub fn check_size(
+    knives: &[crate::knife_anchors::Knife],
+    secs: &BTreeMap<String, u64>,
+    shards: u32,
+    max_secs: u64,
+    max_knives: usize,
+    max_shard_secs: u64,
+    only: Option<&BTreeSet<String>>,
+) -> Result<SizeSummary, String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for k in knives {
+        let file = crate::knife_precheck::written_in(&k.at);
+        if file.ends_with(".sh") {
+            *counts.entry(file.to_string()).or_default() += 1;
+        }
+    }
+    let mut summary = SizeSummary {
+        scripts: counts.len(),
+        ..SizeSummary::default()
+    };
+    for (file, &count) in &counts {
+        if only.is_some_and(|set| !set.contains(file)) {
+            continue;
+        }
+        summary.max_knives = summary.max_knives.max(count);
+        if count > max_knives {
+            summary.violations.push(format!(
+                "{file}: {count} knives (max {max_knives}; split into smaller scripts)"
+            ));
+        }
+        if let Some(&s) = secs.get(file) {
+            summary.max_secs = summary.max_secs.max(s);
+            if s > max_secs {
+                summary.violations.push(format!(
+                    "{file}: {s}s in secs table (max {max_secs}s / {}m; split into smaller scripts)",
+                    max_secs / 60
+                ));
+            }
+        }
+    }
+    let list: Vec<String> = counts.keys().cloned().collect();
+    if !list.is_empty() {
+        let p = plan(&list, secs, shards)?;
+        let l = loads(&p, secs, shards);
+        for (i, &load) in l.iter().enumerate() {
+            summary.max_shard_secs = summary.max_shard_secs.max(load);
+            if load > max_shard_secs {
+                summary.violations.push(format!(
+                    "shard {}/{shards}: {load}s projected (max {max_shard_secs}s / {}m)",
+                    i + 1,
+                    max_shard_secs / 60
+                ));
+            }
+        }
+    }
+    Ok(summary)
+}
+
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -326,7 +402,116 @@ fn limits_cmd(args: &[String]) -> Result<String, String> {
         .collect())
 }
 
+fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let (mut secs, mut shards, mut root) = (None, 4u32, None);
+    let (mut base, mut head) = (None, None);
+    let (mut max_secs, mut max_knives, mut max_shard_secs) =
+        (MAX_SCRIPT_SECS, MAX_SCRIPT_KNIVES, MAX_SHARD_SECS);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let val = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<String, String> {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))
+        };
+        match a.as_str() {
+            "--secs" => secs = Some(val(a, &mut it)?),
+            "--base" => base = Some(val(a, &mut it)?),
+            "--head" => head = Some(val(a, &mut it)?),
+            "--shards" => {
+                let v = val(a, &mut it)?;
+                shards = v
+                    .parse()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| format!("--shards {v}: not a whole number from 1"))?;
+            }
+            "--max-secs" => {
+                let v = val(a, &mut it)?;
+                max_secs = v
+                    .parse()
+                    .map_err(|_| format!("--max-secs {v}: not a number"))?;
+            }
+            "--max-knives" => {
+                let v = val(a, &mut it)?;
+                max_knives = v
+                    .parse()
+                    .map_err(|_| format!("--max-knives {v}: not a number"))?;
+            }
+            "--max-shard-secs" => {
+                let v = val(a, &mut it)?;
+                max_shard_secs = v
+                    .parse()
+                    .map_err(|_| format!("--max-shard-secs {v}: not a number"))?;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("{other}: not an option\n{USAGE}"));
+            }
+            other if root.is_none() => root = Some(other.to_string()),
+            other => return Err(format!("{other}: unexpected argument\n{USAGE}")),
+        }
+    }
+    let root_str = root.unwrap_or_else(|| ".".to_string());
+    let root_path = Path::new(&root_str);
+    let secs_path = secs.unwrap_or_else(|| {
+        root_path
+            .join("crates/aib-knife/knife-secs.tsv")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let only = match (base.as_deref(), head.as_deref()) {
+        (Some(b), Some(h)) => Some(crate::knife_precheck::changed(root_path, b, h)?),
+        (None, None) => None,
+        _ => return Err(format!("--base and --head go together\n{USAGE}")),
+    };
+    let table = parse_secs(&read(&secs_path)?).map_err(|e| format!("{secs_path}: {e}"))?;
+    let (_, knives, errs) = crate::knife_anchors::collect(root_path);
+    if !errs.is_empty() {
+        return Err(errs.join("\n"));
+    }
+    let summary = check_size(
+        &knives,
+        &table,
+        shards,
+        max_secs,
+        max_knives,
+        max_shard_secs,
+        only.as_ref(),
+    )?;
+    let mut out = String::new();
+    for v in &summary.violations {
+        out.push_str(&format!("KNIVES-SIZE-OVER {v}\n"));
+    }
+    if summary.violations.is_empty() {
+        out.push_str(&format!(
+            "KNIVES-SIZE-CHECK scripts={} shards={shards} max_secs={} max_knives={} max_shard_secs={} ok\n",
+            summary.scripts, summary.max_secs, summary.max_knives, summary.max_shard_secs
+        ));
+        Ok((0, out))
+    } else {
+        out.push_str(&format!(
+            "KNIVES-SIZE-CHECK violations={}\n",
+            summary.violations.len()
+        ));
+        Ok((1, out))
+    }
+}
+
 pub fn run(args: &[String]) -> u8 {
+    if let [cmd, rest @ ..] = args {
+        if cmd == "check" {
+            return match check_cmd(rest) {
+                Ok((rc, text)) => {
+                    print!("{text}");
+                    rc
+                }
+                Err(e) => {
+                    eprintln!("knife-shards: {e}");
+                    2
+                }
+            };
+        }
+    }
     let r = match args {
         [cmd, rest @ ..] if cmd == "plan" => plan_cmd(rest),
         [cmd, rest @ ..] if cmd == "secs" => secs_cmd(rest),
@@ -543,5 +728,75 @@ mod tests {
             secs_from_logs(&[a, b]),
             table(&[("crates/a/knives/k1.sh", 20), ("crates/a/knives/k2.sh", 4)])
         );
+    }
+
+    #[test]
+    fn check_size_flags_heavy_scripts_many_knives_and_overloaded_shards() {
+        let make = |file: &str, n: usize| -> Vec<crate::knife_anchors::Knife> {
+            (0..n)
+                .map(|i| crate::knife_anchors::Knife {
+                    at: format!("{file}:{}", i + 1),
+                    argv: Ok(vec!["true".into()]),
+                    file: "src/lib.rs".into(),
+                    old: "a".into(),
+                    step: String::new(),
+                    job: String::new(),
+                })
+                .collect()
+        };
+        let mut knives = make("crates/a/knives/ok.sh", 10);
+        knives.extend(make("crates/b/knives/many.sh", 141));
+        knives.extend(make("crates/c/knives/slow.sh", 5));
+        let secs = table(&[
+            ("crates/a/knives/ok.sh", 600),
+            ("crates/b/knives/many.sh", 100),
+            ("crates/c/knives/slow.sh", 1501),
+        ]);
+        let s = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            2000,
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.scripts, 3);
+        assert_eq!(s.max_knives, 141);
+        assert_eq!(s.max_secs, 1501);
+        assert_eq!(s.max_shard_secs, 2201);
+        assert_eq!(s.violations.len(), 3, "{:?}", s.violations);
+        assert!(s
+            .violations
+            .iter()
+            .any(|v| v.contains("many.sh: 141 knives")));
+        assert!(s.violations.iter().any(|v| v.contains("slow.sh: 1501s")));
+        assert!(s.violations.iter().any(|v| v.contains("shard 1/1: 2201s")));
+
+        let only: BTreeSet<String> = ["crates/a/knives/ok.sh".to_string()].into();
+        let filtered = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            Some(&only),
+        )
+        .unwrap();
+        assert!(filtered.violations.is_empty(), "{:?}", filtered.violations);
+
+        let ok = check_size(
+            &make("crates/a/knives/ok.sh", 140),
+            &table(&[("crates/a/knives/ok.sh", 1500)]),
+            4,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            None,
+        )
+        .unwrap();
+        assert!(ok.violations.is_empty(), "{:?}", ok.violations);
     }
 }
