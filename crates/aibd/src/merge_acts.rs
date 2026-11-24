@@ -191,7 +191,7 @@ fn load_live_items(st: &AppState, kind: &str) -> Result<Vec<Item>, Box<Response>
         })?
         .into_iter()
         .collect();
-    let metas = st.db.seat_metas().map_err(|_| {
+    let metas = st.store.seat_metas().map_err(|_| {
         Box::new(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             "store",
@@ -416,7 +416,7 @@ fn normalize_preview(
 
     let items = load_live_items(st, kind)?;
     let by_uid: HashMap<String, Item> = items.into_iter().map(|i| (i.uid.clone(), i)).collect();
-    let metas = st.db.seat_metas().map_err(|_| {
+    let metas = st.store.seat_metas().map_err(|_| {
         Box::new(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             "store",
