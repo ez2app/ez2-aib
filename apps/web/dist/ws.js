@@ -1186,7 +1186,7 @@
     const tiers = [
       ['strict', '🔒 嚴格', 'main_exact · 1/5 抽查 · 全刀雙平台', '不省'],
       ['normal', '⚖️ 一般（預設）', `main_exact · 1/10 抽查 · 受影響刀 · 本週已省 ${savedWeek}`, '省'],
-      ['fast', '⚡ 快速（二期解鎖）', 'scope · 1/20 抽查 · 改動刀（一期退回嚴格）', '省'],
+      ['fast', '⚡ 快速（需硬體簽章）', 'scope · 1/20 抽查 · 改動刀（未簽章退回嚴格）', '省'],
     ];
     let h = head + '<div class="thr">';
     for (const [id, lbl, desc, tag] of tiers) {
@@ -1195,7 +1195,7 @@
     }
     h += '</div>';
     if (d.fell_back_to_strict) {
-      h += '<div class="thm" role="status">一期未簽章放寬已自動退回嚴格 (main_exact)</div>';
+      h += '<div class="thm" role="status">未完成硬體簽章驗證，放寬設定已自動退回嚴格 (main_exact)</div>';
     }
     const fields = [
       ['沿用 reuse', p.reuse, p.reuse !== 'off' && p.reuse !== 'observe' ? '省' : '不省'],

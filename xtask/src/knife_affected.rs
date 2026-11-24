@@ -362,7 +362,7 @@ fn source_of(at: &str) -> &str {
 
 pub fn is_knife_script(path: &str) -> bool {
     path.ends_with(".sh")
-        && ((path.starts_with("crates/") && path.contains("/knives/"))
+        && ((path.starts_with("crates/") && path.split('/').nth(2) == Some("knives"))
             || path.starts_with("xtask/knives/"))
 }
 

@@ -3920,7 +3920,11 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022
-          for f in crates/aib-cloud/knives/knives-cloud-decision-*.sh; do "./$f"; done
+          ./crates/aib-cloud/knives/knives-cloud-decision-1.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-2.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-3.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-4.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-5.sh
       # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
       # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
       - name: knife-affected (shadow)
@@ -4151,15 +4155,16 @@ jobs:
           R_CLOUD: ${{ needs.cloud-knives.result }}
           R_HOST: ${{ needs.cloud-host-knives.result }}
         run: |
-          passed=0; failed=0; cancelled=0
+          passed=0; deferred=0; failed=0; cancelled=0
           for r in "$R_RUST" "$R_CRATE" "$R_CLOUD" "$R_HOST"; do
             case "$r" in
               success) passed=$((passed + 1)) ;;
+              skipped) deferred=$((deferred + 1)) ;;
               cancelled) cancelled=$((cancelled + 1)) ;;
               *) failed=$((failed + 1)) ;;
             esac
           done
-          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier normal --passed "$passed" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier normal --passed "$passed" --deferred "$deferred" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -4303,4 +4308,8 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022
-          for f in crates/aib-cloud-host/knives/knives-cloud-host-*.sh; do "./$f"; done
+          ./crates/aib-cloud-host/knives/knives-cloud-host-1.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-2.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-4.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-5.sh

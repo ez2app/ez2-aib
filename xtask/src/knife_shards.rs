@@ -567,9 +567,9 @@ fn queue_cmd(args: &[String]) -> Result<(u8, String), String> {
         let out = std::process::Command::new("gh")
             .args([
                 "api",
-                &format!("repos/{repo}/actions/runs?status={status}&per_page=30"),
+                &format!("repos/{repo}/actions/runs?status={status}&per_page=1"),
                 "--jq",
-                ".workflow_runs | length",
+                ".total_count",
             ])
             .output()
             .map_err(|e| format!("gh api: {e}"))?;

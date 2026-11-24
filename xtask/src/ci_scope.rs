@@ -249,6 +249,10 @@ pub fn aibd_changed_jobs(base: &str, head: &str) -> Option<BTreeSet<String>> {
             return None;
         }
         if bj.2 != hj.2 {
+            let is_knife = KNIFE_JOBS.contains(&bj.0.as_str());
+            if !is_knife {
+                return None;
+            }
             changed.insert(bj.0.clone());
         }
     }
