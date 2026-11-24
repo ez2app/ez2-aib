@@ -78,13 +78,13 @@ python3 -I scripts/knife.py crates/aibd/src/net_card.rs \
   -- cargo test -p aibd --locked --lib net_card::tests::choices_with_owner_hides_always_when_unavailable
 # na-restart-list-ip
 python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
-  '                obj["ip"] = json!(sa.ip().to_string());' \
-  '                let _ = sa;' \
+  '            obj["ip"] = json!(sa.ip().to_string());' \
+  '            let _ = sa;' \
   --expect-fail a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice \
   -- cargo test -p aibd --locked --test net_card_owner a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
 # na-dedup-allow
 python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
-  '            if let Some(existing) = dup {' \
-  '            if let Some(existing) = dup.filter(|_| false) {' \
+  '        if let Some(existing) = dup {' \
+  '        if let Some(existing) = dup.filter(|_| false) {' \
   --expect-fail a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice \
   -- cargo test -p aibd --locked --test net_card_owner a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
