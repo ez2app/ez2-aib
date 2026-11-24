@@ -301,15 +301,18 @@ mod fsops {
             Err("brain_folder_missing") => return Ok(Took::Gone),
             Err(e) => return Err(e),
         };
-        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let fd = match openat(&dir, *name, flags, nix::sys::stat::Mode::empty()) {
             Err(Errno::ENOENT) => return Ok(Took::Gone),
             Err(_) => return Err("brain_path_unsafe"),
             Ok(fd) => fd,
         };
+        let file = std::fs::File::from(fd);
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err("brain_path_unsafe");
+        }
         let mut bytes = Vec::new();
-        std::fs::File::from(fd)
-            .take(super::TEXT_MAX as u64 * 2 + 4096)
+        file.take(super::TEXT_MAX as u64 * 2 + 4096)
             .read_to_end(&mut bytes)
             .map_err(|_| "note_read_failed")?;
         if super::sha_hex(&bytes) != sha {
@@ -457,36 +460,48 @@ mod fsops {
 
 pub use fsops::{take_back, write_new};
 
-/// `bytes` as the archive copy `keep` (its folder made owner-only first). A copy already
-/// there with the same bytes is fine (a take-back tried again).
+/// `bytes` as the archive copy `keep` (its folder made owner-only first). L4: writes to a
+/// temp file beside `keep`, `sync_all`, `rename`, then `sync_all` the parent dir; removes the
+/// temp file on any failure. A copy already there with the same bytes is fine.
 fn keep_copy(keep: &Path, bytes: &[u8]) -> Result<(), &'static str> {
     use std::io::Write;
-    if let Some(dir) = keep.parent() {
-        std::fs::create_dir_all(dir).map_err(|_| "note_archive_failed")?;
-        // f163c bnote L3: the owner's alone on unix; on Windows the folder keeps aibd's data
-        // folder's own access list
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| "note_archive_failed")?;
-        }
-    }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(keep)
+    let dir = keep.parent().ok_or("note_archive_failed")?;
+    std::fs::create_dir_all(dir).map_err(|_| "note_archive_failed")?;
+    #[cfg(unix)]
     {
-        Ok(mut f) => f
-            .write_all(bytes)
-            .and_then(|()| f.sync_all())
-            .map_err(|_| "note_archive_failed"),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(keep) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "note_archive_failed")?;
+    }
+    if keep.exists() {
+        return match std::fs::read(keep) {
             Ok(b) if b == bytes => Ok(()),
             _ => Err("note_archive_failed"),
-        },
-        Err(_) => Err("note_archive_failed"),
+        };
     }
+    let name = keep
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("note_archive_failed")?;
+    let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, keep)?;
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if write_res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("note_archive_failed");
+    }
+    Ok(())
 }
 
 /// Where aibd keeps the notes it took back: `<data>/archive/brain-notes/<note id>.md`.
@@ -1388,5 +1403,17 @@ mod tests {
             Some(&home),
             true
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn take_back_refuses_fifo_without_blocking() {
+        let d = tempfile::tempdir().unwrap();
+        let fifo = d.path().join("pipe.md");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let keep = d.path().join("keep.md");
+        let r = take_back(d.path(), "pipe.md", &"0".repeat(64), &keep);
+        assert_eq!(r, Err("brain_path_unsafe"));
+        assert!(!keep.exists());
     }
 }

@@ -252,6 +252,15 @@ impl MessageDb {
             if live > 0 {
                 return Err(StoreError::Invalid("already archived"));
             }
+            let same_ts: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM archived_items WHERE kind = ?1 AND uid = ?2 \
+                 AND archived_at = ?3",
+                params![a.kind, a.uid, a.archived_at],
+                |r| r.get(0),
+            )?;
+            if same_ts > 0 {
+                return Err(StoreError::Invalid("already archived at this timestamp"));
+            }
             tx.execute(
                 &format!("INSERT INTO archived_items ({ACOLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)"),
                 params![
@@ -912,6 +921,13 @@ mod tests {
             "R6: at < archived_at"
         );
         assert!(m.archive_restore("persona", "p1", 100).unwrap());
+        assert!(
+            matches!(
+                m.archive_put(item("persona", "p1", 100)),
+                Err(StoreError::Invalid(_))
+            ),
+            "N5: same-second primary key must be Invalid"
+        );
     }
 
     #[test]
