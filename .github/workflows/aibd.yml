@@ -4006,6 +4006,11 @@ jobs:
             target
           key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      - name: knife timer
+        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: crate knives
         if: env.RUN == 'true'
         timeout-minutes: 140
@@ -4052,6 +4057,32 @@ jobs:
           name: knife-secs-${{ strategy.job-index }}
           path: knife-secs/*.txt
           if-no-files-found: warn
+          retention-days: 30
+      - name: knife-affected (shadow)
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: bash
+        env:
+          AIB_SHADOW_SKIP_AFTER_S: "8400"
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          args=()
+          while IFS= read -r s; do
+            [ -n "$s" ] && args+=("--source=$s")
+          done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+):.*/\1/p' knife-secs/cell-*.txt)
+          [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          name: cireuse-ledger-crate-knives-${{ strategy.job-index }}
+          path: reuse-ledger/*.jsonl
+          if-no-files-found: ignore
           retention-days: 30
 
   # The one required check for the cells above (S88-split; PLAN-s88-split r2 §1: GitHub reads a skipped cell
