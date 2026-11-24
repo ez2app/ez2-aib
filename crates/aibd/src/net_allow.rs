@@ -129,6 +129,7 @@ pub fn holds(
 
 /// Predicate for [`crate::proxy::decide`] / [`crate::proxy::Tunnels::sweep`] backed by
 /// [`holds`].
+#[allow(clippy::too_many_arguments)]
 pub fn proxy_allowed(
     db: &MessageDb,
     persona_uid: &str,
@@ -459,6 +460,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::disallowed_methods)] // test: 1s TCP tunnel close deadline
     #[tokio::test]
     async fn live_tcp_tunnel_closes_within_one_second_on_revoke() {
         use crate::grants::Grants;

@@ -120,19 +120,14 @@ struct Answer {
     ticket: Option<String>,
 }
 
+type SignedAlways = (String, String, Vec<u8>, Vec<u8>);
+
 /// The card's answer through aibd's own owner check: `OP_NET_ALLOW_ALWAYS` requires a
 /// hardware-signed ticket (`owner_ok::approved_signed_for`); others use `approved_for`.
-fn step(
-    req: &Answer,
-    by: &str,
-) -> Option<(
-    Option<Card>,
-    Step,
-    Option<(String, String, Vec<u8>, Vec<u8>)>,
-)> {
+fn step(req: &Answer, by: &str) -> Option<(Option<Card>, Step, Option<SignedAlways>)> {
     with_cards(|c| {
         let held = c.find(&req.request_id);
-        let mut signed: Option<(String, String, Vec<u8>, Vec<u8>)> = None;
+        let mut signed: Option<SignedAlways> = None;
         let step = c.answer(
             &req.request_id,
             &req.choice,
