@@ -14,7 +14,7 @@
 use crate::api::AppState;
 use crate::merge_find::{self, Item};
 use crate::merge_plan::{self, StepState};
-use aib_store::registry_archive::{ArchivedItem, MergeBatch, MergeStep, SeatNext};
+use aib_store::registry_archive::{ArchivedItem, MergeBatch, MergeStep};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -191,7 +191,7 @@ fn load_live_items(st: &AppState, kind: &str) -> Result<Vec<Item>, Box<Response>
         })?
         .into_iter()
         .collect();
-    let metas = st.messages.seat_metas().map_err(|_| {
+    let metas = st.db.seat_metas().map_err(|_| {
         Box::new(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             "store",
@@ -289,7 +289,7 @@ fn load_live_items(st: &AppState, kind: &str) -> Result<Vec<Item>, Box<Response>
                 }
             }
             let mut items = Vec::new();
-            for &(uid, name, _) in crate::registry::BUILTIN_ROLES {
+            for (uid, name, _) in crate::registry::BUILTIN_ROLES {
                 if archived.contains(uid) {
                     continue;
                 }
@@ -416,7 +416,7 @@ fn normalize_preview(
 
     let items = load_live_items(st, kind)?;
     let by_uid: HashMap<String, Item> = items.into_iter().map(|i| (i.uid.clone(), i)).collect();
-    let metas = st.messages.seat_metas().map_err(|_| {
+    let metas = st.db.seat_metas().map_err(|_| {
         Box::new(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             "store",
@@ -855,7 +855,7 @@ fn execute_merge(
                     reason: "merge".to_string(),
                     batch_id: Some(batch_id.clone()),
                     copy_dir: None,
-                    sha: None,
+                    sha256: None,
                     restored_at: None,
                 })
                 .is_err()
@@ -908,14 +908,7 @@ fn execute_merge(
                     });
                     if st
                         .messages
-                        .seat_next_set(SeatNext {
-                            seat_id: sid.clone(),
-                            persona_next: Some(target_uid.to_string()),
-                            brain_next: None,
-                            batch_id: batch_id.clone(),
-                            set_at: at,
-                            applied_at: None,
-                        })
+                        .seat_next_set(sid, Some(target_uid), None, &batch_id, at)
                         .is_err()
                     {
                         let _ = st.messages.merge_batch_state(&batch_id, "failed");
@@ -960,8 +953,8 @@ fn execute_merge(
                                 node_id: row.node_id,
                                 seat_id: row.seat_id,
                                 role: keep.to_string(),
-                                by_seat: row.by_seat,
-                                at: row.at,
+                                created: row.created,
+                                by_key: row.by_key,
                             });
                         }
                     }
