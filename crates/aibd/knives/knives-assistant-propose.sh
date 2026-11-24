@@ -53,10 +53,22 @@ python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
   -- cargo test -p aibd --locked --lib 'assistant_propose::tests::a_card_with_one_refused_item_hands_on_nothing'
 # ap-wait-persona
 python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
-  'if act == "seat_open" && has_new_persona {' \
-  'if act == "seat_open" && has_new_persona && false {' \
+  'if act == "seat_open" && waits_for_new {' \
+  'if act == "seat_open" && waits_for_new && false {' \
   --expect-fail 'assistant_propose::tests::nothing_close_drafts_new_ones_and_the_seat_waits_for_the_persona' \
   -- cargo test -p aibd --locked --lib 'assistant_propose::tests::nothing_close_drafts_new_ones_and_the_seat_waits_for_the_persona'
+# ap-wait-brain
+python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
+  'let waits_for_new = items' \
+  'let waits_for_new = false && items' \
+  --expect-fail 'assistant_propose::tests::existing_persona_with_new_brain_waits_before_seat_open' \
+  -- cargo test -p aibd --locked --lib 'assistant_propose::tests::existing_persona_with_new_brain_waits_before_seat_open'
+# ap-closest-brain
+python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
+  'chosen_brain = Some(u.clone());' \
+  'chosen_brain = None; let _ = u;' \
+  --expect-fail 'assistant_propose::tests::a_bound_brain_that_is_gone_falls_back_to_the_closest' \
+  -- cargo test -p aibd --locked --lib 'assistant_propose::tests::a_bound_brain_that_is_gone_falls_back_to_the_closest'
 # ap-seat-brain
 python3 -I scripts/knife.py crates/aibd/src/assistant_propose.rs \
   'if let Some(b) = &chosen_brain {' \

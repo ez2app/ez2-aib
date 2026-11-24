@@ -175,6 +175,49 @@ fn a_label_that_points_elsewhere_is_refused_and_adopt_only_writes_the_record() {
     );
 }
 
+/// FINDING-reporeg-ownercheck-ebab8-1123 (9918e 派工 11-23): AIBD_OWNER_TOUCH=1 is never
+/// written beside a pairing other than touchid, and a reinstall keeps the AIBD_* keys.
+#[test]
+fn owner_touch_is_written_only_with_touchid_and_kept_on_reinstall() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let t = T::new();
+    let o = t.install(&[
+        "--env",
+        "AIBD_OWNER_TOUCH=1",
+        "--env",
+        "AIBD_PAIRING=terminal-unverified",
+    ]);
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    assert!(!t.plist().exists(), "reason: plist_written_on_refusal");
+
+    let o = t.install(&[
+        "--env",
+        "AIBD_PAIRING=terminal-unverified",
+        "--env",
+        "AIBD_MAX_SESSIONS=8",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let o = t.install(&["--env", "AIBD_OWNER_TOUCH=1"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let s = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(s.contains("SET-ENV AIBD_PAIRING=touchid"), "{s}");
+    assert!(s.contains("NEXT aibd ctl pair-key init"), "{s}");
+
+    let o = t.install(&[]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let pl = plist_text(&t.plist());
+    for want in [
+        "<key>AIBD_OWNER_TOUCH</key>\n\t\t<string>1</string>",
+        "<key>AIBD_PAIRING</key>\n\t\t<string>touchid</string>",
+        "<key>AIBD_MAX_SESSIONS</key>\n\t\t<string>8</string>",
+    ] {
+        assert!(pl.contains(want), "{want}: {pl}");
+    }
+    assert!(!pl.contains("terminal-unverified"), "{pl}");
+}
+
 #[test]
 fn reinstall_keeps_old_env_keys_unless_unset() {
     if !cfg!(target_os = "macos") {

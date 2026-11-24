@@ -272,7 +272,7 @@ progress.usep::-webkit-progress-value{background:var(--green);border-radius:3px}
 progress.usep::-moz-progress-bar{background:var(--green)}
 .use.warn{color:var(--orange)}.use.warn progress.usep::-webkit-progress-value{background:var(--orange)}.use.warn progress.usep::-moz-progress-bar{background:var(--orange)}
 .use.red{color:var(--red)}.use.red progress.usep::-webkit-progress-value{background:var(--red)}.use.red progress.usep::-moz-progress-bar{background:var(--red)}
-.addb{width:34px;height:34px;border-radius:50%;border:1px dashed var(--line2);background:transparent;color:var(--dim);font-size:18px;cursor:pointer}
+.addb{height:34px;padding:0 12px;border-radius:999px;border:1px dashed var(--line2);background:transparent;color:var(--dim);font-size:13px;white-space:nowrap;cursor:pointer}
 .addb:hover{border-color:var(--gold);color:var(--gold2)}
 .dlgbg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
 .dlg{width:min(440px,100%);background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:10px}
@@ -521,17 +521,23 @@ progress.usep::-moz-progress-bar{background:var(--green)}
 .adlg .dx:hover{color:var(--text);border-color:var(--dim)}
 .adlg .asec{display:flex;flex-direction:column;gap:8px}
 .adlg .asec>span{font-size:12px;color:var(--dim);letter-spacing:.06em}
-.adlg .abrs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.adlg .abr{font:inherit;display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px 10px;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;transition:border-color .15s,transform .15s,background .15s}
+.adlg .abrs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:stretch}
+.adlg .abr{font:inherit;display:flex;flex-direction:row;align-items:flex-start;gap:10px;padding:9px 12px;text-align:left;min-width:0;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;transition:border-color .15s,transform .15s,background .15s}
 .adlg .abr:hover:not(:disabled){transform:translateY(-1px);border-color:var(--dim)}
 .adlg .abr.on{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 9%,var(--panel))}
 .adlg .abr b{font-size:13px;font-weight:600}
-.adlg .abr i,.adlg .amd i{font-style:normal;font-size:11px;color:var(--dim);border:1px solid var(--line2);border-radius:999px;padding:0 7px}
+.adlg .abr i,.adlg .amd i{font-style:normal;font-size:11px;color:var(--dim);line-height:1.45;overflow-wrap:anywhere;white-space:normal}
+.adlg .abt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.adlg .abr .lg{flex:none}
 .adlg .abr.off,.adlg .amd.off{opacity:.42;cursor:not-allowed}
 .adlg .lgb{width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center}
 .adlg .lgb svg{width:20px;height:20px}
-.adlg .amds{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.adlg .amd{font:inherit;display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;text-align:left}
+/* S1b 5(Andy 11-23 03:01「設計很差」):照示意 .opts.mrow —— 一列等寬等高,名稱橫排不換行、說明小字無框、危險程度小標 */
+.adlg .amds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:stretch}
+@media (max-width:460px){.adlg .amds{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.adlg .amd .amh{display:flex;align-items:center;gap:7px;white-space:nowrap;min-width:0}
+.adlg .amd .adang{margin-top:auto;align-self:flex-start}
+.adlg .amd{font:inherit;display:flex;flex-direction:column;align-items:flex-start;gap:5px;padding:10px 12px;min-width:0;height:100%;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;text-align:left}
 .adlg .amd svg{width:20px;height:20px;flex:none;color:var(--dim)}
 .adlg .amd b{font-size:14px;font-weight:600;flex:1}
 .adlg .amd.on{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 9%,var(--panel))}
@@ -557,6 +563,8 @@ progress.usep::-moz-progress-bar{background:var(--green)}
 .adlg .aerr{border:1px solid var(--red);background:color-mix(in srgb,var(--red) 10%,transparent);color:var(--text);border-radius:9px;padding:8px 10px;font-size:13px}
 .adlg .afoot{display:flex;justify-content:space-between;gap:10px;padding-top:4px;border-top:1px solid var(--line2);margin-top:2px;padding-top:12px}
 .adlg .afoot .go{min-width:120px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+/* S0-5:做事 / 全開席選了系統新開的資料夾 ⇒ 開鈕旁寫沒倉;要再按一次 */
+.adlg .afoot .anorepo{flex:1;align-self:center;color:var(--gold);font-size:13px;line-height:1.4}
 .adlg .spn{width:13px;height:13px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:rfspin .8s linear infinite;display:inline-block}
 @media (max-width:520px){.adlg .abrs{grid-template-columns:repeat(2,minmax(0,1fr))}.adlg .arow{grid-template-columns:1fr}}
 /* 已收起 */
@@ -1053,6 +1061,8 @@ label.rvr{cursor:pointer}
 .ghp a.lk{color:var(--blue);text-decoration:underline}
 .ghk.bad{color:var(--red)}
 .adlg .adm{padding:6px 10px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.adlg .adm .apn{flex-basis:100%;padding:0}.adlg .adm .apq{flex:1;min-width:140px}.msw{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.msw .apq{min-width:160px;font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text)}.msw .apq:focus{outline:none;border-color:var(--gold)}
+.host .tsb{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:6px}.host .tsx{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border:1px solid var(--line2);border-radius:8px;font-size:12px;min-width:0}.host .tsx i{font-style:normal;color:var(--dim)}.host .tsx b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.host .tsx .hv{font-size:11px}@media (max-width:520px){.host .tsb{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tschat{margin-top:6px;border:1px solid var(--line2);border-radius:10px;background:var(--card,#17181d)}.tschat .cpill{background:var(--line2);color:var(--dim)}.tschat .cpill.csave{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}.tschlist{padding:8px 10px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line2)}.tschlist .empty{padding:8px 2px;font-size:12px;color:var(--dim)}.tschchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.tschchips a.k{text-decoration:none;color:var(--text)}.tschrow{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;border-radius:8px;font-size:12.5px;border-left:3px solid var(--line2);background:var(--bg)}.tschrow.pre{border-left-color:var(--gold)}.tschrow.sh{border-left-color:var(--blue)}.tschrow .tb{min-width:0;flex:1}.tschrow .ta{margin-top:2px;overflow-wrap:anywhere}.tschrow small{display:block;color:var(--dim);font-size:11px;margin-top:2px;overflow-wrap:anywhere}.tschtag{font-size:10.5px;border-radius:6px;padding:0 5px;margin-left:6px}.tschtag.c{background:var(--green);color:#0b1a10}.tschtag.p{border:1px solid var(--dim);color:var(--dim)}
 .host .thh{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line2);font-size:13px}.host .thh b{flex:1}.host .thr{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;padding:3px 2px}.host .thr .hn{flex:1;min-width:0}.host .thr .k{padding:2px 10px;font-size:12px}.host .thm{flex-basis:100%;font-size:12px;color:var(--dim);padding-left:16px}.host .thm.bad,.host .thr.bad{color:var(--bad,#e5484d)}
 .host .thr .aw{display:block;font-style:normal;font-size:11px;color:var(--mute)}
 /* 519d0 10:07:失敗碼淡色、交回失敗的訊息放大、席卡倉標、母體頁導去預覽 */
@@ -1250,3 +1260,320 @@ label.rvr{cursor:pointer}
 .mvi code{color:var(--dim);margin-right:4px}
 .mvl small{color:var(--dim)}
 .drvsw{color:var(--dim);font-size:11px;margin-left:4px;white-space:nowrap}
+
+/* 「等你驗證」卡(fpbatch 頁面稿 r2 第 ①;Andy 11-23 02:0x 看過 verify-card 示意回 ok):每個要本人驗證的動作都用這一張。
+   掛在 body(或開著的 dialog)右上角;倒數圈 金 → 剩 30 秒橘 → 剩 10 秒紅;通過綠、取消 / 逾時紅 */
+.fpcbox{position:fixed;top:14px;right:14px;width:min(460px,calc(100vw - 28px));z-index:2147483000}
+.fpc{display:grid;grid-template-columns:64px minmax(0,1fr);gap:14px;align-items:center;border:1px solid var(--gold);border-radius:14px;padding:14px 14px 18px;background:var(--panel2);color:var(--text);box-shadow:0 10px 30px rgba(0,0,0,.45);animation:fpdrop .32s cubic-bezier(.2,.8,.2,1) both;font-size:13px;line-height:1.55}
+@keyframes fpdrop{from{transform:translateY(-6px);opacity:.3}to{transform:none;opacity:1}}
+.fpc .fpl{position:relative;width:64px;height:64px;display:grid;place-items:center}
+.fpc .ring{position:absolute;inset:0;transform:rotate(-90deg)}
+.fpc .ring circle{fill:none;stroke-width:3.5}
+.fpc .ring .bg{stroke:var(--line2)}
+.fpc .ring .fg{stroke:var(--gold);stroke-linecap:round;stroke-dasharray:157;transition:stroke-dashoffset 1s linear,stroke .3s}
+.fpc .fpi{font-size:26px;animation:fppulse 1.4s ease-in-out infinite}
+@keyframes fppulse{50%{opacity:.35}}
+.fpc .sec{position:absolute;bottom:-17px;left:-8px;right:-8px;text-align:center;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.fpc .fpm{display:flex;flex-direction:column;gap:7px;min-width:0}
+.fpc .fpm>b{font-size:15px;overflow-wrap:anywhere}
+.fpc .fpt{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 12px}
+.fpc .fpt .k{color:var(--dim)}
+.fpc .fpt span{overflow-wrap:anywhere}
+.fpc .fpt .up{color:var(--orange)}
+.fpc .fph{font-size:12.5px}
+.fpc .fph.dim{color:var(--dim)}
+.fpc .fpa{display:flex;gap:8px}
+.fpc.late .ring .fg{stroke:var(--orange)}
+.fpc.urg .ring .fg{stroke:var(--red)}
+.fpc.ok{border-color:var(--green)} .fpc.ok .ring .fg{stroke:var(--green)} .fpc.ok .fpi{animation:none}
+.fpc.no{border-color:var(--red)} .fpc.no .ring .fg{stroke:var(--red)} .fpc.no .fpi{animation:none}
+@media (max-width:420px){.fpc{grid-template-columns:1fr}.fpc .fpl{margin:0 auto 14px}}
+@media (prefers-reduced-motion:reduce){.fpc,.fpc .fpi{animation:none}.fpc .ring .fg{transition:none}}
+
+/* S1 新增 AI 夥伴(2e2cd 11-23,能看):接回 → 最近用過 → 大分類 → 小分類 → 帶出的設定(每列收合)→ 開 */
+.adlg.ap .apsub{margin-top:-6px}
+.adlg.ap .apblk{display:flex;flex-direction:column;gap:8px}
+.adlg.ap .aplab{font-size:12px;color:var(--dim);letter-spacing:.04em}
+.adlg.ap .aph{font:inherit;display:flex;align-items:center;gap:8px;width:100%;padding:10px 14px;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;text-align:left}
+.adlg.ap .aph i{font-style:normal;font-size:12px;color:var(--dim)}
+.adlg.ap .apcs,.adlg.ap .apsl{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+/* S1b 1(Andy 11-23 02:59「第二分類 底色要不同」):小分類那塊跨整列、最深的底 + 金框 + 小標,展開往下落、卡片依序浮現 */
+.adlg.ap .apsubs{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;padding:11px;border-radius:12px;background:var(--bg);border:1px solid var(--gold);animation:apdrop .3s cubic-bezier(.2,.8,.2,1) both;transform-origin:top}
+.adlg.ap .apst{font-size:12px;color:var(--gold)}
+.adlg.ap .apsubs .apc{background:var(--panel2);animation:aprise .3s ease both}
+@keyframes apdrop{from{transform:scaleY(.85);opacity:.4}to{transform:none;opacity:1}}
+@keyframes aprise{from{transform:translateY(4px);opacity:0}to{transform:none;opacity:1}}
+.adlg.ap .apc{font:inherit;display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:9px 12px;border-radius:12px;border:1.5px solid var(--line2);background:var(--panel);color:var(--text);cursor:pointer;text-align:left;transition:transform .15s,box-shadow .15s,border-color .15s}
+.adlg.ap .apc:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.adlg.ap .apc.on{border-color:var(--gold)}
+.adlg.ap .apc b{font-size:13px;font-weight:600}
+.adlg.ap .apc i{font-style:normal;font-size:11px;color:var(--dim)}
+.adlg.ap .apc span{font-size:16px}
+.adlg.ap .apwait{text-align:center;padding:6px 0}
+.adlg.ap .aprow{border:1px solid var(--line2);border-radius:12px;overflow:hidden}
+.adlg.ap .aprh{font:inherit;display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;background:transparent;border:0;color:var(--text);cursor:pointer;text-align:left}
+.adlg.ap .aprh span{width:96px;flex:none;font-size:12px;color:var(--dim)}
+.adlg.ap .aprh b{flex:1;font-size:13px;font-weight:600;min-width:0;overflow-wrap:anywhere}
+.adlg.ap .aprh i{font-style:normal;font-size:12px;color:var(--dim)}
+.adlg.ap .aprb{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.adlg.ap .aprow.open .aprb{grid-template-rows:1fr}
+.adlg.ap .aprb>div{overflow:hidden;min-height:0}
+.adlg.ap .aprow.open .aprb>div{padding:4px 12px 12px;display:flex;flex-direction:column;gap:8px}
+.adlg .adang{font-style:normal;font-size:11px;border-radius:999px;padding:0 7px;border:1px solid currentColor;flex:none}
+.adlg .adang.d1{color:var(--dim)}
+.adlg .adang.d2{color:var(--gold)}
+.adlg .adang.d4{color:var(--red)}
+.adlg .adang.d1{color:var(--green)}
+.adlg .adang.d3{color:var(--orange)}
+/* S1b 5 對照表(示意 .cmp):選中那一欄整欄亮 */
+.adlg .apcmp{display:grid;grid-template-columns:minmax(0,1.6fr) repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:11.5px;margin-top:8px}
+.adlg .apcmp>*{background:var(--panel2);padding:6px 8px;text-align:center;font-style:normal;transition:background .3s,color .3s,box-shadow .3s}
+.adlg .apcmp>span{text-align:left;color:var(--dim)}
+.adlg .apcmp .ch{border:0;font:inherit;font-weight:700;font-size:12px;color:var(--dim);cursor:pointer;padding:8px 6px}
+.adlg .apcmp .ch:hover{color:var(--text)}
+.adlg .apcmp .s{background:color-mix(in srgb,var(--gold) 12%,var(--panel2))}
+.adlg .apcmp .ch.s{color:var(--gold);box-shadow:inset 0 3px 0 var(--gold)}
+.adlg .apcmp .y{color:var(--green)}.adlg .apcmp .n{color:var(--line2)}.adlg .apcmp .p{color:var(--gold)}.adlg .apcmp .w{color:var(--orange)}
+.adlg .apcmp i small{display:block;font-size:10px;color:var(--dim)}
+@media (prefers-reduced-motion:reduce){.adlg.ap .apc,.adlg.ap .aprb{transition:none}.adlg.ap .apc:hover{transform:none}.adlg.ap .apsubs,.adlg.ap .apsubs .apc{animation:none}}
+/* S1b A(Andy 11-23 03:0x「設計與功能大致相同」):新增夥伴視窗照示意 v27(MOCK-ai-partner-ebab8-1122/add-seat-plan.html)整套搬,只套在 .adlg.ap 裡 */
+.adlg.ap{--mk-bg:#0d1117;--mk-panel:#161b24;--mk-card:#1c2230;--mk-card2:#222a3a;--mk-line:#2a3242;--mk-gold:#e3c06a;--mk-gold-bg:#2b2617;--mk-glow:rgba(227,192,106,.28);--mk-ok:#6cc79a;--mk-warn:#e8935a;--mk-ease:cubic-bezier(.2,.8,.2,1);width:min(640px,100%);background:var(--mk-panel);border-color:var(--mk-line);gap:20px;padding:18px 18px 0;animation:mkpop .35s var(--mk-ease) both}
+@keyframes mkpop{from{transform:translateY(10px) scale(.985)}to{transform:none}}
+.adlg.ap .ah h3{font-size:18px}
+.adlg.ap .dx{transition:transform .25s var(--mk-ease),color .2s,border-color .2s}
+.adlg.ap .dx:hover{transform:rotate(90deg);border-color:var(--mk-gold)}
+.adlg.ap .apblk{gap:9px}
+.adlg.ap .aplab{display:flex;align-items:baseline;gap:8px;font-size:12px;color:var(--dim);flex-wrap:wrap;letter-spacing:0}
+.adlg.ap .aplab b{color:var(--text);font-size:14px}
+.adlg.ap .apstep{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11px;color:var(--mk-gold);border:1px solid var(--mk-gold);border-radius:4px;padding:0 5px}
+/* 共用可點卡(示意 .tap):hover 浮起 + 金邊亮 + 光掃過;選中金框淡金底 */
+.adlg.ap .apc,.adlg.ap .aph,.adlg.ap .abr,.adlg.ap .amd{position:relative;overflow:hidden;background:var(--mk-card);border:1px solid var(--mk-line);border-radius:11px;transition:transform .22s var(--mk-ease),border-color .22s,box-shadow .22s,background .22s}
+.adlg.ap .apc::after,.adlg.ap .aph::after,.adlg.ap .abr::after,.adlg.ap .amd::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(227,192,106,.13) 50%,transparent 70%);transform:translateX(-120%);transition:transform .6s var(--mk-ease);pointer-events:none}
+.adlg.ap .apc:hover,.adlg.ap .aph:hover,.adlg.ap .abr:not(.off):hover,.adlg.ap .amd:not(.off):hover{transform:translateY(-2px);border-color:rgba(227,192,106,.6);box-shadow:0 8px 22px rgba(0,0,0,.35),0 0 0 3px var(--mk-glow)}
+.adlg.ap .apc:hover::after,.adlg.ap .aph:hover::after,.adlg.ap .abr:not(.off):hover::after,.adlg.ap .amd:not(.off):hover::after{transform:translateX(120%)}
+.adlg.ap .apc:active,.adlg.ap .abr:active,.adlg.ap .amd:active{transform:translateY(0) scale(.98)}
+.adlg.ap .apc.on,.adlg.ap .abr.on,.adlg.ap .amd.on{border-color:var(--mk-gold);background:var(--mk-gold-bg);box-shadow:0 0 0 1px var(--mk-gold) inset}
+/* 大分類(示意 .cat):圖示在左、hover 圖示放大轉一點 */
+.adlg.ap .apcats{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+.adlg.ap .apcats>.apc{flex-direction:row;align-items:center;gap:10px;padding:11px;font-size:13px}
+.adlg.ap .apcats>.apc span{font-size:20px;transition:transform .3s var(--mk-ease)}
+.adlg.ap .apcats>.apc:hover span{transform:scale(1.2) rotate(-8deg)}
+.adlg.ap .apsubs{background:var(--mk-bg);border-color:var(--mk-gold)}
+.adlg.ap .apst{color:var(--mk-gold)}
+.adlg.ap .apsl{grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:7px}
+.adlg.ap .apsubs .apc{background:var(--mk-card);animation:aprise .35s var(--mk-ease) both}
+/* 設定列(示意 .cfg / .it / .rh):一個框、列與列一條線,點一列往下展開、箭頭轉半圈 */
+.adlg.ap .apset{gap:0}
+.adlg.ap .apset .aplab{margin-bottom:9px}
+.adlg.ap .aprow{background:var(--mk-card);border:1px solid var(--mk-line);border-radius:0;border-top:0}
+.adlg.ap .aplab+.aprow{border-top:1px solid var(--mk-line);border-radius:12px 12px 0 0}
+.adlg.ap .apset>.aprow:last-child{border-radius:0 0 12px 12px}
+.adlg.ap .aprh{display:grid;grid-template-columns:92px 1fr 18px;gap:10px;padding:11px 13px;transition:background .2s}
+.adlg.ap .aprh:hover,.adlg.ap .aprow.open .aprh{background:var(--mk-card2)}
+.adlg.ap .aprh span{width:auto}
+.adlg.ap .apchev{color:var(--dim);transition:transform .3s var(--mk-ease),color .2s;text-align:center}
+.adlg.ap .aprow.open .apchev{transform:rotate(180deg);color:var(--mk-gold)}
+.adlg.ap .aprb{transition:grid-template-rows .32s var(--mk-ease)}
+/* 底部(示意 .foot):黏在視窗底,左摘要、右取消 / 開;「開」有光掃過 */
+.adlg.ap .afoot{position:sticky;bottom:0;z-index:2;background:var(--mk-panel);border-top:1px solid var(--mk-line);margin:0 -18px;padding:12px 18px;align-items:center;border-radius:0 0 16px 16px}
+.adlg.ap .apsum{flex:1;font-size:12px;color:var(--dim);min-width:0}
+.adlg.ap .afoot .go{position:relative;overflow:hidden;background:var(--mk-gold);color:#1a1607;border:0;font-weight:700;transition:transform .2s var(--mk-ease),box-shadow .2s}
+.adlg.ap .afoot .go:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 6px 20px var(--mk-glow)}
+.adlg.ap .afoot .go:not(:disabled)::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 35%,rgba(255,255,255,.45) 50%,transparent 65%);transform:translateX(-120%);animation:mkshine 2.8s ease-in-out infinite}
+@keyframes mkshine{60%,100%{transform:translateX(120%)}}
+.adlg.ap .afoot .go:disabled{opacity:.35}
+.adlg.ap.still{animation:none}
+@media (prefers-reduced-motion:reduce){.adlg.ap,.adlg.ap .apc,.adlg.ap .aph,.adlg.ap .abr,.adlg.ap .amd,.adlg.ap .apchev,.adlg.ap .aprb,.adlg.ap .dx{transition:none;animation:none}.adlg.ap .apc::after,.adlg.ap .abr::after,.adlg.ap .amd::after,.adlg.ap .aph::after,.adlg.ap .afoot .go::after{display:none}.adlg.ap .apc:hover,.adlg.ap .abr:hover,.adlg.ap .amd:hover,.adlg.ap .aph:hover,.adlg.ap .apcats>.apc:hover span{transform:none}}
+.adlg.ap .ah{align-items:flex-start}
+.adlg.ap .ah h3 small{display:block;font-size:12px;font-weight:400;color:var(--dim);margin-top:3px}
+.adlg.ap .apsrc{font-size:11px;color:var(--mk-ok);border:1px solid rgba(108,199,154,.4);border-radius:999px;padding:2px 9px;align-self:flex-start;margin-top:-8px}
+.adlg.ap .apct{display:flex;flex-direction:column;min-width:0}
+.adlg.ap .apct em{font-style:normal;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10px;color:var(--dim)}
+.adlg.ap .apct em.sens::after{content:" 敏感";color:#c98bd8}
+.adlg.ap .apc.util{border-style:dashed}
+.adlg.ap .apsubs .apc b{font-size:15px}
+.adlg.ap .apwarn{color:var(--mk-warn)}
+/* S1b B(示意 .opts / .op / .grp / .scroll):清單改成一顆顆可點的小卡、會換行;長清單捲動;區段小標金色 */
+.adlg.ap .apl{flex-direction:row;flex-wrap:wrap;align-content:flex-start;gap:6px;max-height:236px;border:0;border-radius:0;padding:3px 2px}
+.adlg.ap .apr{position:relative;overflow:hidden;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:1px;padding:7px 12px;font-size:12px;border:1px solid var(--mk-line);border-radius:9px;background:var(--mk-card);max-width:100%;transition:transform .22s var(--mk-ease),border-color .22s,box-shadow .22s,background .22s}
+.adlg.ap .apr:last-child{border-bottom:1px solid var(--mk-line)}
+.adlg.ap .apr:not(.off):hover{background:var(--mk-card);transform:translateY(-2px);border-color:rgba(227,192,106,.6);box-shadow:0 8px 22px rgba(0,0,0,.35),0 0 0 3px var(--mk-glow)}
+.adlg.ap .apr.on{border-color:var(--mk-gold);background:var(--mk-gold-bg);box-shadow:0 0 0 1px var(--mk-gold) inset}
+.adlg.ap .apr.on b{color:var(--text)}
+.adlg.ap .apr b{font-size:12px;font-weight:600;white-space:normal;overflow:visible}
+.adlg.ap .apr i{font:10.5px ui-monospace,Menlo,monospace;color:var(--dim)}
+.adlg.ap .apr.off{opacity:.4;cursor:not-allowed}
+.adlg.ap .asec>span{font-size:11px;color:var(--mk-gold)}
+@media (prefers-reduced-motion:reduce){.adlg.ap .apr{transition:none}.adlg.ap .apr:hover{transform:none}}
+/* ebab8 11-23 03:20:模式四顆一列、對照表四欄 + 註腳(示意) */
+.adlg .amds:has(>.amd:nth-child(4)){grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:460px){.adlg .amds:has(>.amd:nth-child(4)){grid-template-columns:repeat(2,minmax(0,1fr))}}
+.adlg .apcmp{grid-template-columns:minmax(0,1.5fr) repeat(4,minmax(0,1fr))}
+.adlg .apcmp b.ch{cursor:default;opacity:.7}
+.adlg .apfn{font-size:11px;line-height:1.6}
+/* 一次多 AI(示意 .pill.g / .ex) */
+.adlg .apill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;margin:0 4px 2px 0;border:1px solid var(--gold);color:var(--gold);font-weight:400}
+.adlg .apex{font-size:11px;color:var(--dim);font-weight:400}
+/* 我的 AI 夥伴(示意 .seats / .st):收合整塊、逐位展開 */
+.adlg .apmine{margin:12px 0 4px;border:1px solid var(--line);border-radius:14px;padding:4px 12px}
+.adlg .apmh,.adlg .apmrh{font:inherit;color:var(--text);background:none;border:0;width:100%;display:flex;gap:8px;align-items:center;padding:10px 0;cursor:pointer;text-align:left}
+.adlg .apmh b{font-size:14px}
+.adlg .apmh .apchev,.adlg .apmrh .apchev{margin-left:auto}
+.adlg .apmine.open>.apmh .apchev,.adlg .apmst.open .apchev{transform:rotate(180deg);color:var(--gold)}
+.adlg .apmrb{padding:0 0 12px}
+.adlg .apmb{display:flex;flex-direction:column;gap:6px;padding-bottom:10px}
+.adlg .apask{border:1px solid var(--warn,#e0a040);border-radius:10px;padding:8px 10px}
+.adlg .apmst{border-top:1px solid var(--line)}
+.adlg .apmav{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:var(--line);font-size:12px}
+.adlg .apmnm b{display:block;font-size:13px}
+.adlg .apmnm i{font-style:normal;font-size:11px;color:var(--dim)}
+.adlg .apmrh em{margin-left:auto}
+.adlg .apmrh em+.apchev{margin-left:0}
+@media (max-width:460px){.adlg .apmrh em{display:none}.adlg .apmrh em+.apchev{margin-left:auto}}
+/* 合併類似(示意 .mg / .mgp / .mgg / .mgi) */
+.adlg .apmg{align-self:flex-end;margin:0 0 8px auto;display:block;padding:4px 10px;border-radius:999px;border:1px solid var(--gold);background:none;color:var(--gold);font:inherit;font-size:12px;cursor:pointer}
+.adlg .apmg:hover,.adlg .apmg.on{background:var(--gold);color:var(--bg)}
+.adlg .apmg.none{border-color:var(--line);color:var(--dim)}
+.adlg .apmgp{border:1px solid var(--gold);border-radius:10px;padding:10px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+.adlg .apmgp.prev{border-style:dashed}
+.adlg .apmgh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.adlg .apmgh .apex{flex:1;min-width:0}
+.adlg .apmgg{border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.adlg .apmgi{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:8px;align-items:center;padding:2px 6px;border-radius:6px}
+.adlg .apmgi.keep{background:var(--line)}
+.adlg .apmgi.off{opacity:.45}
+.adlg .apmgr{background:none;border:0;color:var(--gold);font-size:16px;cursor:pointer}
+.adlg .apmgr:disabled{opacity:.3;cursor:not-allowed}
+.adlg .apmgn{font:inherit;font-size:13px;color:var(--text);background:none;border:0;text-align:left;cursor:pointer;min-width:0;overflow-wrap:anywhere}
+.adlg .apmgn:disabled{cursor:default}
+.adlg .apmgf{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.adlg .apmgc{border-radius:999px;padding:2px 9px;font-size:12px;border:1px solid var(--line)}
+.adlg .apmgc.out{text-decoration:line-through;color:var(--dim)}
+.adlg .apmgc.in{border-color:var(--gold);color:var(--gold)}
+/* 一次多 AI:逐位結果 */
+.adlg .apgrp{display:flex;flex-direction:column;gap:2px;font-size:12px;padding:6px 2px}
+.adlg .apgrp .ok{color:var(--ok,#5fd38d)}
+.adlg .apgrp .bad{color:var(--warn,#e0a040)}
+.adlg .apgrp .run{color:var(--dim)}
+/* ⚙️ 自訂對話框(示意 .clog / .cm / .bub / .prop / .chips / .cin) */
+.adlg .apchat{display:flex;flex-direction:column;gap:10px}
+.adlg .chlog{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto;padding:2px}
+.adlg .chm{display:flex;gap:8px;align-items:flex-start;animation:apRise .3s ease both}
+.adlg .chm.me{justify-content:flex-end}
+.adlg .chav{flex:none;width:26px;height:26px;border-radius:50%;background:var(--gold);color:var(--bg);font-size:11px;font-weight:700;display:grid;place-items:center}
+.adlg .chbub{max-width:min(560px,88%);min-width:0;padding:8px 11px;border-radius:12px;background:var(--line);line-height:1.6;overflow-wrap:anywhere;font-size:13px}
+.adlg .chm.me .chbub{background:var(--gold);color:var(--bg);border-bottom-right-radius:4px}
+.adlg .chm.ai .chbub{border-top-left-radius:4px}
+.adlg .chp{display:flex;flex-direction:column;gap:2px;margin:8px 0;border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--bg)}
+.adlg .chl{display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12.5px}
+.adlg .chl span{color:var(--dim)}
+.adlg .chl em{font-style:normal;font-size:11px;border-radius:999px;padding:0 7px;border:1px solid var(--line);color:var(--dim)}
+.adlg .chl em.ok{border-color:var(--ok,#5fd38d);color:var(--ok,#5fd38d)}
+.adlg .chl em.w{border-color:var(--warn,#e0a040);color:var(--warn,#e0a040)}
+.adlg .chips{display:flex;flex-wrap:wrap;gap:6px}
+.adlg .chin{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch}
+.adlg .chin textarea{resize:vertical;min-height:44px}
+.adlg .lnk{background:none;border:0;color:var(--gold);cursor:pointer;font:inherit;text-decoration:underline;padding:0}
+@keyframes apRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.adlg .chm{animation:none}}
+.adlg .chbub .ptact{display:flex;flex-direction:row;flex-wrap:wrap;gap:6px;align-items:center}
+.adlg .chbub .ptact .k{width:auto;min-height:32px;padding:4px 12px}
+/* 驗證卡的欄名是字、不是鈕(全域 .k 是按鈕樣式,示意 verify-card 的 .k 只是灰字) */
+.fpc .fpt span.k{border:0;border-radius:0;padding:0;background:none;box-shadow:none;font-size:inherit;white-space:normal}
+/* S3 權限模板(fc7f9 11-23):模式列底下「我的權限模板」+ 新增 / 改表單 + 夥伴列「權限模板」 */
+.adlg .ptb{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line2)}
+.ptl{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.ptc{display:flex;align-items:stretch;gap:6px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2)}
+.ptc.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+.ptc.cfm{align-items:center;padding:6px 10px;font-size:13px;flex-wrap:wrap}
+.ptp{font:inherit;flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:7px 10px;border:0;background:transparent;color:var(--text);cursor:pointer;text-align:left}
+.ptp:disabled{cursor:default;opacity:.75}
+.ptp em{font-style:normal;font-size:11px;color:var(--dim)}
+.ptp i{font-style:normal;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+.ptp i.ptne{color:var(--gold)}
+.pta{display:flex;align-items:center;gap:2px;padding-right:6px}
+.ptx{font:inherit;min-width:32px;min-height:32px;border:0;border-radius:6px;background:transparent;color:var(--dim);cursor:pointer}
+.ptx:hover,.ptx:focus-visible{background:var(--line);color:var(--text)}
+.ptact{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.ptoff{color:var(--dim)}
+.ptex{font-style:normal;font-size:11px;color:var(--dim)}
+.ptf{display:flex;flex-direction:column;gap:6px;margin:8px 0;padding:10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel)}
+.ptbs{display:flex;flex-wrap:wrap;gap:6px}
+.ptbs .k.on{border-color:var(--gold);color:var(--gold)}
+.ptis{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 12px}
+.pti{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)}
+.pti b{display:block;font-size:13px;font-weight:600}
+.pti i{display:block;font-style:normal;font-size:11px;color:var(--dim)}
+.adlg .ptsw{flex:none;position:relative;width:38px;height:22px;border-radius:999px;border:1px solid var(--line2);background:var(--line);cursor:pointer;padding:0}
+.adlg .ptsw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dim);transition:transform .15s}
+.adlg .ptsw[aria-checked="true"]{background:var(--gold);border-color:var(--gold)}
+.adlg .ptsw[aria-checked="true"]::after{transform:translateX(16px);background:var(--gold-ink)}
+.ptseat{margin:6px 0 8px;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2)}
+@media (prefers-reduced-motion:reduce){.adlg .ptsw::after{transition:none}}
+/* S4 人格 / 第二大腦 / 角色:旁邊 ✎ / 🗑(內建 🔒),同格展開改 / 確認(fc7f9 11-23) */
+.rgw{display:flex;flex-direction:column}
+.rgr{display:flex;align-items:stretch}
+.rgr>.apr,.rgr>.arc{flex:1;min-width:0}
+.rgr .pta{border-bottom:1px solid var(--line2)}
+.arl .rgr .pta{border-bottom:0}
+.rgk{display:inline-flex;align-items:center;justify-content:center;min-width:32px;color:var(--dim);font-size:12px}
+.rgw.open{background:var(--panel)}
+.rgf,.rgc{margin:4px 6px 8px}
+.rgc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px}
+.adlg .go.danger{background:var(--red);border-color:var(--red);color:#fff}
+/* S2 管理主機(fc7f9 11-23):第四顆危險 高、「可管的主機」的固定警語 */
+.adlg .adang.d3{color:var(--orange)}
+.adlg .hswarn{border-left:3px solid var(--orange);padding-left:8px;color:var(--text)}
+/* S2 × S1b:第四顆管理主機 —— 模式卡一列四顆、對照表四欄(示意 .opts.mrow / .cmp) */
+.adlg .amds:has(>.amd:nth-child(4)){grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:460px){.adlg .amds:has(>.amd:nth-child(4)){grid-template-columns:repeat(2,minmax(0,1fr))}}
+.adlg .apcmp.n4{grid-template-columns:minmax(0,1.5fr) repeat(4,minmax(0,1fr))}
+/* 逐項調整(示意 details.fine):對照表下面一條細列,打開是 S3 的逐項開關 */
+.adlg .apfine{margin-top:8px;border-top:1px dashed var(--line2);padding-top:6px}
+.adlg .apfs{font:inherit;font-size:12px;color:var(--dim);background:none;border:0;padding:4px 0;cursor:pointer;display:flex;gap:6px;align-items:center}
+.adlg .apfs:hover{color:var(--text)}
+.adlg .apfine.open .apchev{transform:rotate(180deg);color:var(--gold)}
+/* S3 權限紀錄(seat_perm_log)+ 收回 */
+.ptlog{display:flex;flex-direction:column;gap:2px;margin:4px 0}
+.ptlr{display:grid;grid-template-columns:88px 92px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12px;padding:3px 0;border-top:1px solid var(--line2)}
+.ptlr span{color:var(--dim);font-variant-numeric:tabular-nums}
+.ptlr i{font-style:normal;overflow-wrap:anywhere}
+.ptlr em{font-style:normal;color:var(--dim)}
+.ptlr.gone{opacity:.55}
+@media (max-width:460px){.ptlr{grid-template-columns:72px minmax(0,1fr) auto}.ptlr span{display:none}}
+/* S1c(400 寬再對示意):底部「取消 / 開」照示意 .k2 / .go 的尺寸,窄的時候摘要換行、鈕不縮 */
+.adlg.ap .afoot{display:flex;gap:10px}
+.adlg.ap .afoot .apsum{flex:1;min-width:0}
+.adlg.ap .afoot>.k,.adlg.ap .afoot>.go{flex:none;min-height:40px;border-radius:9px;font-size:14px}
+.adlg.ap .afoot>.k{background:none;border:1px solid var(--mk-line);box-shadow:none;padding:8px 15px}
+.adlg.ap .afoot>.go{padding:9px 20px}
+/* S1c:⚙️ 送出是外框款(示意 .cin .op.on);建議卡欄名在窄畫面縮成 64px,名字不斷兩行 */
+.adlg .chin .go{background:var(--mk-panel,var(--panel2));color:var(--gold);border:1px solid var(--gold);box-shadow:none;font-weight:700}
+@media (max-width:460px){.adlg .chl{grid-template-columns:64px minmax(0,1fr) auto;gap:6px}}
+@media (max-width:460px){.adlg .chm.ai .chbub{max-width:calc(100% - 34px)}.adlg .chl{font-size:12px}}
+/* S1c r2(ebab8 / f163c M3):底部鈕照示意約 48 高、字 15;窄畫面摘要自己一行,不擠成 4 行 */
+.adlg.ap .afoot>.k,.adlg.ap .afoot>.go{min-height:48px;font-size:15px}
+@media (max-width:460px){.adlg.ap .afoot{flex-wrap:wrap;row-gap:8px}.adlg.ap .afoot .apsum{flex:1 1 100%}.adlg.ap .afoot>.go{flex:1}}
+.adlg .apn.apwarn{color:var(--gold)}
+/* S1d(Andy 04:4x):AI 下拉 */
+.adlg .apsel{width:100%;min-height:42px;font:inherit;font-size:14px;padding:8px 12px;border-radius:10px;border:1px solid var(--mk-line,var(--line));background:var(--mk-card,var(--panel2));color:inherit}
+.adlg .apsel:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+.adlg .apsel option:disabled{color:var(--dim)}
+.adlg .apl.hsoff{display:flex;flex-wrap:wrap;gap:8px}.adlg .apl.hsoff .apr{flex:none}
+/* S1d:改人格三欄 */
+.adlg .rgta{width:100%;min-height:64px;resize:vertical;font:inherit;font-size:13px;line-height:1.5}
+.adlg .rgta:disabled{opacity:.5}
+/* S1d(ORDER-s1fix 第 7 條):席位窗上方的模式與危險程度 */
+.sh .smode{font-style:normal;font-size:11px;border-radius:999px;padding:0 7px;border:1px solid currentColor;flex:none;white-space:nowrap;color:var(--dim)}
+.sh .smode.d1{color:var(--green)}.sh .smode.d2{color:var(--gold)}.sh .smode.d3{color:var(--warn,#e8913a)}.sh .smode.d4{color:var(--red)}
+/* S1e(f163c 05:07 截圖):清單裡打開改 / 封存表單時,清單不限高,表單整個看得到 */
+.adlg .apl:has(.rgw.open){max-height:none}
+.adlg .aplab.apgold{color:var(--gold);font-size:12px;font-weight:700;margin:8px 0 4px}
+.fpc .fpcode{font-size:13px;margin:4px 0}.fpc .fpcode b{font:700 20px/1.2 ui-monospace,Menlo,monospace;letter-spacing:3px;color:var(--gold);margin-left:6px}
+.rgdiff{margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px}.rgdiff .rgdh{font-weight:700;margin:6px 0 2px}.rgdiff .rgdl{font:12.5px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all}.rgdiff .rgdl.add{color:var(--ok,#5c5)}.rgdiff .rgdl.del{color:var(--bad,#e66);text-decoration:line-through}
+.qws{display:grid;gap:4px;margin:4px 0 6px}.qws .qw{display:grid;grid-template-columns:7.5em 1fr auto;gap:2px 8px;align-items:center;font-size:12.5px}.qws .qw i{grid-column:1/-1;font-style:normal;color:var(--mute,#9aa)}.qws .qw.warn b{color:var(--warn,#e8b84a)}.qws .qw.red b{color:var(--bad,#e66)}@media (max-width:520px){.qws .qw{grid-template-columns:6em 1fr auto}}
+.netc{border:1px solid var(--line);border-left:3px solid var(--warn,#e8b84a);border-radius:8px;padding:8px 10px;margin:6px 0;display:grid;gap:4px}.netc .netd code,.netar code{font:12.5px ui-monospace,Menlo,monospace;word-break:break-all}.netc .netwhy{white-space:pre-wrap;word-break:break-word;font-size:12.5px}.netc .netwhy i{font-style:normal;color:var(--mute,#9aa);margin-right:4px}.netal{display:grid;gap:4px}.netar{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.ppdiff{max-height:240px;overflow:auto;margin:2px 0}.ppc .neth b{margin-right:2px}
+.mggrp .mgopt{display:grid;gap:4px;margin:6px 0}.mgin{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text);max-width:100%;min-width:0}
+.netdot{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:8px;background:var(--bad,#e5484d);color:#fff;font:700 10.5px/1 system-ui,sans-serif;font-style:normal;vertical-align:middle}
+.mgpv,.mgdone{display:grid;gap:4px;margin:6px 0}.mgst{margin:0 0 0 18px;padding:0;display:grid;gap:2px;font-size:12.5px}.mgef{font-size:12.5px}.mgef b{display:inline-block;margin-right:6px;padding:0 6px;border-radius:6px;border:1px solid var(--line);font-weight:600}.mgpv code{font:12.5px ui-monospace,Menlo,monospace;letter-spacing:.05em}

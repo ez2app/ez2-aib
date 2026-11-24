@@ -175,7 +175,13 @@ pub fn propose(
         seat["brain"] = json!(b);
     }
     items.push(json!({"what":"seat","draft":seat,
-        "note": if chosen.is_some() { "用上面的人格開一位" } else { "先建人格,建好再按一次開席" }}));
+    "note": if chosen.is_none() {
+        "先建人格,建好再按一次開席"
+    } else if chosen_brain.is_none() {
+        "先建第二大腦,建好再按一次開席"
+    } else {
+        "用上面的人格開一位"
+    }}));
     let card = json!({ "items": items });
     // the card must read back like one the assistant wrote
     parse_suggest(&card)?;
@@ -190,15 +196,17 @@ pub trait Requests {
 
 /// Turn every item of a confirmed card into its owner request; an existing one used as it is
 /// makes none. Every item is checked before any is handed on, so a card with one refused
-/// item hands on nothing. When a new persona is being drafted, `seat_open` waits for it
-/// (never opens a seat with no persona).
+/// item hands on nothing. When a new persona or new brain is being drafted, `seat_open`
+/// waits for it (never opens a seat with no persona or without the new brain).
 pub fn submit_all(items: &[SuggestItem], to: &mut impl Requests) -> Result<Vec<String>, String> {
-    let has_new_persona = items.iter().any(|i| i.what == "persona" && i.uid.is_none());
+    let waits_for_new = items
+        .iter()
+        .any(|i| matches!(i.what.as_str(), "persona" | "brain") && i.uid.is_none());
     let mut reqs = Vec::new();
     for it in items {
         match to_request(it) {
             Ok(Some((act, params))) => {
-                if act == "seat_open" && has_new_persona {
+                if act == "seat_open" && waits_for_new {
                     continue;
                 }
                 reqs.push((act, params));
@@ -302,6 +310,20 @@ mod tests {
         let bs = [b("brn_b", "SEO專家筆記")];
         let items = parse_suggest(&propose("SEO專家", &ps, &bs, "safe").unwrap()).unwrap();
         assert_eq!(items[1].uid.as_deref(), Some("brn_b"));
+        assert_eq!(items[2].draft.as_ref().unwrap()["brain"], "brn_b");
+    }
+
+    #[test]
+    fn existing_persona_with_new_brain_waits_before_seat_open() {
+        let ps = [p("aaaaa1", "SEO專家", None)];
+        let items = parse_suggest(&propose("SEO專家", &ps, &[], "safe").unwrap()).unwrap();
+        assert_eq!(items[0].uid.as_deref(), Some("aaaaa1"));
+        assert!(items[1].uid.is_none());
+        assert!(items[2].draft.as_ref().unwrap().get("brain").is_none());
+        let mut got = Got::default();
+        submit_all(&items, &mut got).unwrap();
+        let acts: Vec<&str> = got.0.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(acts, vec!["brain_add"]);
     }
 
     #[test]
