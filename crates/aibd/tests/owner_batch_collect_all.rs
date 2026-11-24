@@ -209,7 +209,7 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
     OPEN.store(false, Ordering::SeqCst);
     windows.store(0, Ordering::SeqCst);
 
-    let db = aib_store::MessageDb::open(&data.join("messages.sqlite")).unwrap();
+    let db = aib_store::Store::open(&data.join("db.sqlite")).unwrap();
     let before_tree = tree(dir.path());
     let before_db_events = db.events_after(0, 10_000).unwrap().len();
     let before_api_events = d
