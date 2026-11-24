@@ -29,9 +29,9 @@ nw() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$5" \
   -- cargo test -p aibd --locked "$4" "$5"; }
 IT=a_card_is_answered_by_the_built_in_page_only_and_a_yes_only_through_the_owner
 # NW1 a user folder page lists and answers cards
-nw crates/aibd/src/seat_input.rs '            if net_outside {' '            if false && net_outside { // knife' '--test net_card' "$IT"
+nw crates/aibd/src/seat_input.rs '            if net_outside {' '            if false && net_outside { // knife' '--test net_card' a_card_is_answered_by_the_built_in_page_only_and_a_yes_only_through_the_owner
 # NW2 a window that could not be raised locks the card (L1)
-nw crates/aibd/src/net_card_web.rs '            let window_up = r.status() == StatusCode::ACCEPTED;' '            let window_up = r.status() == StatusCode::ACCEPTED || r.status() == StatusCode::FORBIDDEN; // knife' '--test net_card' "$IT"
+nw crates/aibd/src/net_card_web.rs '            let window_up = r.status() == StatusCode::ACCEPTED;' '            let window_up = r.status() == StatusCode::ACCEPTED || r.status() == StatusCode::FORBIDDEN; // knife' '--test net_card' a_card_is_answered_by_the_built_in_page_only_and_a_yes_only_through_the_owner
 # NW3 the answer does not go through aibd's own owner check (L2)
 nw crates/aibd/src/net_card_web.rs '            crate::owner_ok::approved_for,' '            |_: &str, _: &crate::owner_ok::Ask| true, // knife' '--test net_card_owner' a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice
 # NW4 the card is marked as asked before any window (L1, the pure side)

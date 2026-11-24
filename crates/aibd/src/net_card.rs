@@ -367,7 +367,7 @@ impl Cards {
 
     fn sweep(&mut self, now: u64) {
         self.rows
-            .retain(|(c, s)| *s != State::Finished && now < c.expires_at.saturating_add(CARD_SECS));
+            .retain(|(c, _)| now < c.expires_at.saturating_add(CARD_SECS));
     }
 
     /// The card of this request, as it is now.
