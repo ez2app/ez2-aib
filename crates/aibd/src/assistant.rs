@@ -649,15 +649,14 @@ mod tests {
             );
         }
         assert_eq!(RequestRefused::Mode.code(), "request_mode");
-        for a in [
-            "persona_add",
-            "persona_set",
-            "brain_add",
-            "role_add",
-            "perm_template_add",
-        ] {
+        for a in ["persona_add", "persona_set", "brain_add", "role_add"] {
             assert_eq!(may_request(a, &json!({})), Ok(()), "{a}");
         }
+        assert_eq!(
+            may_request("perm_template_add", &json!({"base": "safe"})),
+            Ok(()),
+            "perm_template_add"
+        );
         for a in [
             "merge_run",
             "merge_undo",
