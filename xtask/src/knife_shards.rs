@@ -246,10 +246,14 @@ pub fn check_size(
     only: Option<&BTreeSet<String>>,
 ) -> Result<SizeSummary, String> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut non_crate_job: BTreeSet<String> = BTreeSet::new();
     for k in knives {
         let file = crate::knife_precheck::written_in(&k.at);
         if file.ends_with(".sh") {
             *counts.entry(file.to_string()).or_default() += 1;
+            if k.job == "cloud-knives" || k.job == "cloud-host-knives" {
+                non_crate_job.insert(file.to_string());
+            }
         }
     }
     let mut summary = SizeSummary {
@@ -274,6 +278,14 @@ pub fn check_size(
                     max_secs / 60
                 ));
             }
+        } else if only.is_some()
+            && !secs.is_empty()
+            && file.starts_with("crates/")
+            && !non_crate_job.contains(file)
+        {
+            summary.violations.push(format!(
+                "{file}: missing from crates/aib-knife/knife-secs.tsv (add an estimated/measured seconds row so shard planning does not fall back to median)"
+            ));
         }
     }
     let list: Vec<String> = counts.keys().cloned().collect();
@@ -898,6 +910,26 @@ mod tests {
         )
         .unwrap();
         assert!(ok.violations.is_empty(), "{:?}", ok.violations);
+        let missing_only: BTreeSet<String> = ["crates/d/knives/new.sh".to_string()].into();
+        knives.extend(make("crates/d/knives/new.sh", 3));
+        let missing_res = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            Some(&missing_only),
+        )
+        .unwrap();
+        assert!(
+            missing_res
+                .violations
+                .iter()
+                .any(|v| v.contains("missing from crates/aib-knife/knife-secs.tsv")),
+            "{:?}",
+            missing_res.violations
+        );
         assert_eq!(estimate_macos_queue_min(2, 3, 5), 45);
         assert_eq!(estimate_macos_queue_min(5, 5, 5), 90);
     }

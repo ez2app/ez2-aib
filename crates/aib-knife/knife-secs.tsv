@@ -238,6 +238,7 @@
 144	crates/aibd/knives/knives-t97-update.sh
 162	crates/aibd/knives/knives-t97.sh
 119	crates/aibd/knives/knives-test-host-add.sh
+60	crates/aibd/knives/knives-time-saved.sh
 36	crates/aibd/knives/knives-touch-close.sh
 107	crates/aibd/knives/knives-touch-hud.sh
 44	crates/aibd/knives/knives-touch-limited.sh
