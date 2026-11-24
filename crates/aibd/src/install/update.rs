@@ -749,6 +749,61 @@ mod tests {
         assert_eq!(prevs, 1);
     }
 
+    /// FINDING-reporeg-ownercheck-ebab8-1123 (9918e 派工 11-23 第 2 項): an update keeps the
+    /// owner's plist as it is, AIBD_* settings included; it only swaps the executable.
+    #[test]
+    fn update_keeps_the_plist_and_its_aibd_settings() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[Some("aaaa"), Some("bbbb")]);
+        let ot = format!("{}=1", crate::owner_ok::SWITCH);
+        let o = m.run(
+            "install",
+            &[
+                "--no-start",
+                "--env",
+                "AIBD_MAX_SESSIONS=8",
+                "--env",
+                &ot,
+                "--env",
+                "AIBD_PAIRING=touchid",
+            ],
+            &f.svc(&hl),
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        f.calls.borrow_mut().clear();
+        let before = std::fs::read(m.plist()).unwrap();
+        let (cs, ap, ck) = (FakeCs::default(), FakeAp::default(), FakeCheck::default());
+        let u = Upd {
+            cs: &cs,
+            ap: &ap,
+            check: &ck,
+        };
+        let new = new_file(&m, "0.3.0");
+        f.prints.borrow_mut().push_back(print_running(10));
+        let o = upd(&m, &new, &f.svc(&hl), &u);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert_eq!(
+            std::fs::read(m.plist()).unwrap(),
+            before,
+            "reason: update_rewrote_plist"
+        );
+        let rec: Record =
+            serde_json::from_slice(&std::fs::read(m.p("data/install/record.json")).unwrap())
+                .unwrap();
+        for (k, v) in [
+            ("AIBD_MAX_SESSIONS", "8"),
+            (crate::owner_ok::SWITCH, "1"),
+            ("AIBD_PAIRING", "touchid"),
+        ] {
+            assert_eq!(
+                rec.env.get(k).map(String::as_str),
+                Some(v),
+                "reason: record_env {k}"
+            );
+        }
+    }
+
     fn untouched(m: &Mac, f: &FakeLd) {
         assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), b"this build");
         assert!(!m.p("bin/aibd.prev").exists());

@@ -223,6 +223,9 @@ async fn the_web_build_serves_the_workspace_page() {
     for f in [
         "index.html",
         "contacts.html",
+        "saved.html",
+        "saved.js",
+        "saved.css",
         "ws.js",
         "ws.css",
         "tree.js",

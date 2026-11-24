@@ -5,13 +5,17 @@
 //! The API is synchronous on purpose; async callers use `spawn_blocking`.
 
 mod alive;
+pub mod brain_notes;
 mod idem;
 mod messages;
 mod migrate;
 pub mod net_allow;
+pub mod perm_templates;
 pub mod ranks;
+pub mod registry_archive;
 mod seat_meta;
 pub mod seat_moves;
+pub mod seat_perm;
 mod seats;
 mod sessions;
 mod threads;
@@ -23,13 +27,17 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
+pub use brain_notes::{BrainNote, NotesOf, NOTES_LIST_MAX};
 pub use idem::{IdemClaim, IN_PROGRESS};
 pub use messages::{
     Inserted, MessageDb, MessageFact, MessageRow, UnreadRow, Updated, BODY_KEEP_DAYS, IMPORTED_MAX,
     MESSAGES_FILE, MESSAGES_SCHEMA, PAGE_MAX, PERSON_WORDS,
 };
 pub use migrate::{Migration, MIGRATIONS};
+pub use perm_templates::{PermTemplate, PermTemplateLog, TplWrite};
+pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep};
 pub use seat_meta::{ResumeFill, SeatMeta};
+pub use seat_perm::{PermState, PermWrite, SeatPerm, SeatPermLog, SEAT_PERM_LOG_MAX};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
 pub use sessions::{seat_sessions_running_at, SessionRow, ENDED_BY_RESTART};
 pub use threads::{Member, Opened, ThreadHit, ThreadRow, CATEGORIES, SEARCH_MAX};

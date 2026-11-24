@@ -20,6 +20,9 @@ use std::sync::OnceLock;
 const INIT_ID: u64 = 1;
 /// The id of aibd's `thread/start` request; its answer carries the thread id.
 const THREAD_ID: u64 = 2;
+/// A15 (DESIGN-a15-quota-08de5-1123 r1): the id of aibd's `account/rateLimits/read`, sent
+/// last in the opening; its answer is read by `crate::usage` (whitelisted fields only).
+const QUOTA_ID: u64 = 3;
 /// `turn/start` ids count up from here (only told apart in logs).
 const FIRST_TURN_ID: u64 = 100;
 
@@ -47,7 +50,7 @@ fn line(v: &Value) -> Vec<u8> {
     b
 }
 
-/// The three opening lines. `persona` is the card's text (none: no developer instructions).
+/// The opening lines (A15: four; the last asks the account's limits). `persona` is the card's text (none: no developer instructions).
 pub fn opening(cwd: &str, persona: Option<&str>) -> Vec<u8> {
     let mut params = json!({"cwd": cwd});
     if let Some(p) = persona.filter(|p| !p.is_empty()) {
@@ -61,6 +64,9 @@ pub fn opening(cwd: &str, persona: Option<&str>) -> Vec<u8> {
     out.extend(line(
         &json!({"jsonrpc": "2.0", "id": THREAD_ID, "method": "thread/start",
         "params": params}),
+    ));
+    out.extend(line(
+        &json!({"jsonrpc": "2.0", "id": QUOTA_ID, "method": "account/rateLimits/read"}),
     ));
     out
 }
@@ -363,7 +369,9 @@ mod tests {
     #[test]
     fn the_opening_carries_the_persona_in_the_protocol() {
         let o = parse(&opening("/w/seat", Some("你是審查席")));
-        assert_eq!(o.len(), 3);
+        assert_eq!(o.len(), 4);
+        // A15: the account's limits are asked last, once the thread is on its way
+        assert_eq!(o[3]["method"], "account/rateLimits/read");
         assert_eq!(o[0]["method"], "initialize");
         assert_eq!(o[1]["method"], "initialized");
         assert!(o[1].get("id").is_none());

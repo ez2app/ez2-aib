@@ -21,6 +21,7 @@ members = [
     "crates/aib-consent",
     "crates/aib-drive",
     "crates/aib-plan",
+    "crates/aib-plugin",
     "crates/aib-receipt-gate",
     "crates/aib-title",
     "crates/aib-expect",
@@ -47,9 +48,6 @@ members = [
     "crates/aib-own-gate",
     "crates/aib-pending",
     "crates/aib-slice",
-    "crates/aib-test-audit",
-    "crates/aib-test-core",
-    "crates/aib-test-cargo",
     "crates/aib-mergewatch",
     "crates/aib-mergecheck",
     "crates/aib-notify",
@@ -68,3 +66,11 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 unwrap_used = "warn"
+
+# aibd digests its own executable at every start (pair_carry::exe). In a test that executable is the
+# test binary (74 MB for the smallest one), and sha2 without optimisation does about 20 MB/s: 3.6 s of
+# every test daemon's start on a quiet machine, and past the harness's 20 s on a busy runner (main run
+# 45048586994, rust macOS: seat_input_harness.rs:113 Elapsed). Optimising this one package changes no
+# behaviour and no shipped build (release is optimised already).
+[profile.dev.package.sha2]
+opt-level = 3
