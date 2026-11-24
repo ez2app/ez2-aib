@@ -747,7 +747,7 @@ pub async fn run(st: AppState, body: Value, by: String) -> Response {
     let (seats_next_open, days) = count_seats_and_days(&plan);
 
     if merge_plan::needs_owner(&kind) {
-        let Some(words) =
+        let Some(_words) =
             merge_plan::window_text(&kind, false, groups_len, seats_next_open, days, &plan_sha)
         else {
             return bad("window_too_long", "驗證視窗文字過長");
@@ -758,12 +758,11 @@ pub async fn run(st: AppState, body: Value, by: String) -> Response {
             OP_BRAIN
         };
         let ask = crate::owner_ok::Ask {
-            category: crate::owner_ok::Category::Command,
-            operation: op.to_string(),
+            category: aib_approve::category::Category::Command,
+            operation: op,
             resource: plan_sha.clone(),
-            params: plan.clone(),
+            params: serde_json::to_vec(&plan).unwrap_or_default(),
             by: by.clone(),
-            top_words: words,
         };
         match ticket {
             None => return crate::repos::asked(&ask),
@@ -1088,7 +1087,7 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
         let plan: Value = serde_json::from_str(&batch.plan_json).unwrap_or(Value::Null);
         let groups_len = plan["groups"].as_array().map_or(0, Vec::len);
         let (seats_next_open, days) = count_seats_and_days(&plan);
-        let Some(words) = merge_plan::window_text(
+        let Some(_words) = merge_plan::window_text(
             &batch.kind,
             true,
             groups_len,
@@ -1104,12 +1103,11 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
             OP_BRAIN
         };
         let ask = crate::owner_ok::Ask {
-            category: crate::owner_ok::Category::Command,
-            operation: op.to_string(),
+            category: aib_approve::category::Category::Command,
+            operation: op,
             resource: batch.batch_id.clone(),
-            params: json!({"batch_id": batch.batch_id}),
+            params: serde_json::to_vec(&json!({"batch_id": batch.batch_id})).unwrap_or_default(),
             by: by.clone(),
-            top_words: words,
         };
         match ticket {
             None => return crate::repos::asked(&ask),
