@@ -125,8 +125,8 @@ python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
   -- cargo test -p aibd --locked --lib 'assistant::tests::as3b_a_seat_request_carries_only_listed_fields_and_a_string_mode'
 # as-pageacts
 python3 -I scripts/knife.py crates/aibd/src/assistant.rs \
-  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "perm_template_add"];' \
-  'pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "persona_set"];' \
+  'crate::seat_input::PAGE_ACTS.contains(&a) || ACTS_NOT_IN_MAIN_YET.contains(&a),' \
+  'false && (crate::seat_input::PAGE_ACTS.contains(&a) || ACTS_NOT_IN_MAIN_YET.contains(&a)),' \
   --expect-fail 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet' \
   -- cargo test -p aibd --locked --lib 'assistant::tests::l2_every_request_act_is_a_page_act_or_named_as_not_in_main_yet'
 # as-fmt

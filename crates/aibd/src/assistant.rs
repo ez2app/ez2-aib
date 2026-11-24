@@ -184,9 +184,9 @@ pub const SEAT_OPEN_FIELDS: [&str; 8] = [
     "name",
 ];
 
-/// [`REQUEST_ACTS`] not yet in `seat_input::PAGE_ACTS` of main (their slices are 08de5 A1
-/// `persona_set` and `perm_template_add`); emptied when those land.
-pub const ACTS_NOT_IN_MAIN_YET: [&str; 2] = ["persona_set", "perm_template_add"];
+/// [`REQUEST_ACTS`] not yet in `seat_input::PAGE_ACTS` of main; emptied now that `persona_set`
+/// and `perm_template_add` have landed.
+pub const ACTS_NOT_IN_MAIN_YET: [&str; 0] = [];
 
 /// `true` when a request body carries a `kind` field at its top or in its `params`: only the
 /// act that opens the assistant sets a seat's kind (AS10).
