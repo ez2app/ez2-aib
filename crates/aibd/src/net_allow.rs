@@ -328,6 +328,11 @@ mod tests {
         assert!(db.net_allow_add(own_row).unwrap());
         assert!(holds(&db, "un0eba", own_addr, &own_ips(), now, true, &test_verify).is_none());
 
+        // Before issued_at is refused (`na-issued`)
+        let fut = sign_row("tk_fut", "un0eba", addr, now, now + 86_400, b":ok");
+        assert!(db.net_allow_add(fut).unwrap());
+        assert!(holds(&db, "un0eba", addr, &own_ips(), now - 1, true, &test_verify).is_none());
+
         // Revoked ticket cannot be re-used even if re-inserted
         let ok = sign_row("tk_rev", "un0eba", addr, now, now + 86_400, b":ok");
         assert!(db.net_allow_add(ok.clone()).unwrap());
