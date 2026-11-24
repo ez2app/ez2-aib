@@ -548,7 +548,7 @@ fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
     } else if tier == "strict" {
         "嚴格通過"
     } else if tier == "unknown" {
-        "一般通過（一期未讀設定）"
+        "通過(檔次未讀)"
     } else {
         "一般通過"
     };

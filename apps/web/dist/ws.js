@@ -1198,6 +1198,9 @@
     if (d.fell_back_to_strict) {
       h += '<div class="thm" role="status">未完成硬體簽章驗證，已自動退回嚴格。</div>';
     }
+    if (d.dropped && d.dropped.length) {
+      h += `<div class="thm" role="status">自訂條件超過上限，已略過較舊設定：${esc(d.dropped.join('、'))}</div>`;
+    }
     const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'exact' ? '同機完全相符' : '改動碰不到也沿用';
     const knivesLbl = p.knives === 'changed_all' ? '有變的全跑' : p.knives === 'affected' ? '只跑受影響的' : '只跑改動刀';
     const retryLbl = p.retry_miss === 'on' ? '當場重跑一次' : '不重跑';
