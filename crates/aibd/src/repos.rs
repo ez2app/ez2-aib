@@ -293,6 +293,108 @@ pub fn open_ask(
     }
 }
 
+/// A11 (DESIGN-a11-dgrs-open-asks-08de5-1123 r1; SPEC-ai-partner-open-ebab8-1123-r2 §3.1): the
+/// fingerprint a page's dgrs open with no repo asks. Same operation as with a repo; `kind`
+/// keeps an open's ticket from passing for a restart (f163c REVIEW-a11 r1 L1).
+pub fn open_ask_plain(
+    provider: &str,
+    persona_uid: &str,
+    persona_name: &str,
+    by: String,
+) -> crate::owner_ok::Ask {
+    let params = json!({
+        "kind": "open", "provider": provider, "persona_uid": persona_uid, "repo": null,
+    });
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_OPEN,
+        resource: format!("{persona_name}({persona_uid})· {provider} · 完全權限,不帶倉"),
+        params: serde_json::to_vec(&params).unwrap_or_default(),
+        by,
+    }
+}
+
+/// A11 r1 M1: the fingerprint a page's restart of a dgrs seat asks (重開, 換模型, 清對話: each
+/// starts the provider again with no sandbox), from the seat's own record; `seat_id` and
+/// `kind` bind the ticket to this seat and to a restart.
+pub fn restart_ask(
+    seat_id: &str,
+    provider: &str,
+    persona_uid: &str,
+    by: String,
+) -> crate::owner_ok::Ask {
+    let params = json!({
+        "kind": "restart", "seat_id": seat_id, "provider": provider, "persona_uid": persona_uid,
+    });
+    let code: String = seat_id
+        .strip_prefix("seat_")
+        .unwrap_or(seat_id)
+        .chars()
+        .take(5)
+        .collect();
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_OPEN,
+        resource: format!("重開完全權限的席 @{code}({persona_uid} · {provider})"),
+        params: serde_json::to_vec(&params).unwrap_or_default(),
+        by,
+    }
+}
+
+/// A11 (f163c L1): a seat record read as the gate needs it: there, not there, or not read.
+fn known_or_stop<T, E, J>(read: Result<Result<Option<T>, E>, J>) -> Result<Option<T>, ()> {
+    match read {
+        Ok(Ok(m)) => Ok(m),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
+}
+
+fn seat_unreadable() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"code": "internal", "reason": "seat_unreadable",
+            "message": "the seat's record could not be read; nothing was stopped or started",
+            "request_id": crate::guard::request_id()})),
+    )
+        .into_response()
+}
+
+/// A11: before a page's act starts a dgrs seat's provider again, the owner is asked (`Some`: the
+/// answer to give now, nothing stopped or started); a safe or work seat, or an unknown one (the
+/// act answers that itself), is not asked here.
+pub async fn dgrs_restart_gate(
+    st: &crate::api::AppState,
+    seat_id: &str,
+    ticket: Option<&str>,
+    by: String,
+) -> Option<Response> {
+    let (store, id) = (st.store.clone(), seat_id.to_owned());
+    let read = tokio::task::spawn_blocking(move || store.seat_meta(&id)).await;
+    // f163c REVIEW-a11 L1: only "no such seat" is left to the act; a read that failed stops
+    // here (a second read in revive could succeed and start a dgrs seat unasked)
+    let meta = match known_or_stop(read) {
+        Ok(Some(m)) => m,
+        Ok(None) => return None,
+        Err(()) => return Some(seat_unreadable()),
+    };
+    if meta.mode.as_deref() != Some("dgrs") {
+        return None;
+    }
+    let a = restart_ask(
+        seat_id,
+        &meta.provider,
+        meta.persona_uid.as_deref().unwrap_or("-"),
+        by,
+    );
+    let Some(t) = ticket else {
+        return Some(asked(&a));
+    };
+    if !crate::owner_ok::approved_for(t, &a) {
+        return Some(not_approved());
+    }
+    None
+}
+
 /// `202 {ticket}` while the owner has not answered, `403 owner_check_unavailable` when no
 /// fingerprint can be asked.
 pub fn asked(ask: &crate::owner_ok::Ask) -> Response {
@@ -302,13 +404,11 @@ pub fn asked(ask: &crate::owner_ok::Ask) -> Response {
             Json(json!({"done": false, "ticket": t, "reason": "owner_check_pending"})),
         )
             .into_response(),
-        crate::owner_ok::Asked::Unavailable(why) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({"code": "forbidden", "reason": why,
-                "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
-                "request_id": crate::guard::request_id()})),
-        )
-            .into_response(),
+        crate::owner_ok::Asked::Unavailable(why) => {
+            let mut v = crate::owner_ok::refusal(why);
+            v["request_id"] = json!(crate::guard::request_id());
+            (StatusCode::FORBIDDEN, Json(v)).into_response()
+        }
     }
 }
 
@@ -471,7 +571,63 @@ pub fn prepare_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// f163c REVIEW-a11 L1: a seat record that could not be read stops the gate; only a seat
+    /// that is not there is left to the act.
+    #[test]
+    fn a_seat_record_not_read_stops_the_dgrs_gate() {
+        // no string errors here: apps/web/test/ws-static.test.cjs reads every `Err("…")` in
+        // this file as a refusal the page must have words for
+        type R = Result<Result<Option<u8>, ()>, ()>;
+        let (some, none, db, join): (R, R, R, R) =
+            (Ok(Ok(Some(1))), Ok(Ok(None)), Ok(Err(())), Err(()));
+        assert_eq!(known_or_stop(some), Ok(Some(1)));
+        assert_eq!(known_or_stop(none), Ok(None));
+        assert_eq!(known_or_stop(db), Err(()), "reason: read_error_let_through");
+        assert_eq!(
+            known_or_stop(join),
+            Err(()),
+            "reason: join_error_let_through"
+        );
+    }
     use std::process::Command;
+
+    /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
+    /// on the window's first line, and their tickets are bound apart (kind, seat).
+    #[test]
+    fn a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other() {
+        let o = open_ask_plain("claude", "un0eba", "架構師", "page:p".into());
+        assert_eq!(o.operation, OP_OPEN);
+        assert_eq!(
+            crate::owner_ok::plain_words(o.operation, &o.params).as_deref(),
+            Some("開一個完全權限的席(claude),人格 un0eba")
+        );
+        assert!(
+            o.resource.contains("架構師"),
+            "reason: no_persona_name {}",
+            o.resource
+        );
+        let r = restart_ask("seat_ab12cdef", "claude", "un0eba", "page:p".into());
+        assert_eq!(
+            crate::owner_ok::plain_words(r.operation, &r.params).as_deref(),
+            Some("重開完全權限的席 @ab12c(claude)")
+        );
+        assert_ne!(
+            o.params, r.params,
+            "reason: open_and_restart_share_a_ticket"
+        );
+        let r2 = restart_ask("seat_ff12cdef", "claude", "un0eba", "page:p".into());
+        assert_ne!(
+            r.params, r2.params,
+            "reason: restart_ticket_not_bound_to_seat"
+        );
+        // the repo open keeps its own sentence
+        let p = br#"{"repo":"demo","provider":"claude","persona_uid":"p1"}"#;
+        assert_eq!(
+            crate::owner_ok::plain_words(OP_OPEN, p).as_deref(),
+            Some("開一個能改程式的席,帶倉 demo(claude)")
+        );
+    }
 
     fn g(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")

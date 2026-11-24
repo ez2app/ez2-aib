@@ -111,3 +111,9 @@ gv '                nix::sys::signal::Signal::SIGKILL,' \
 gv 'const LOOK_WITHOUT_REAPING: bool = true;' \
    'const LOOK_WITHOUT_REAPING: bool = false;' \
    an_ended_gh_is_seen_without_being_reaped
+# GL1 (1a93b 13:55, what: list) the list takes a number
+gv '        return if body.get("number").is_some() {' '        return if false {' \
+   the_open_prs_are_one_fixed_shape
+# GL2 a number is passed on to gh pr list
+gv '        return number.is_empty().then(|| {' '        return true.then(|| {' \
+   the_open_prs_are_one_fixed_shape

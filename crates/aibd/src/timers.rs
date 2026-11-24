@@ -260,6 +260,13 @@ pub static DRIVE_ACT_CHILD_WAIT: Timer = Timer::operation(
     "only during a drive wake: re-check aib-drive act --auto (next, seat facts, one act round; every act switch off = a dry run) until it exits, kill it at 180 s so a hung round cannot stop the floor (519d0 11-15, 56cda)",
 );
 
+pub static DRIVE_ACT_OUT_WAIT: Timer = Timer::operation(
+    "drive.act_out_wait",
+    secs(1),
+    secs(5),
+    "only after a drive act round aibd reads ends: re-check that its stdout is read to the end, give up at 5 s so a grandchild holding the pipe cannot hold the round; what was read by then is kept (S79-rust 3b, a9136 11-21)",
+);
+
 pub static SEAT_INPUT_WRITE_WAIT: Timer = Timer::operation(
     "seat_input.write_wait",
     secs(5),
@@ -308,6 +315,31 @@ pub static PREVIEW_STOP_WAIT: Timer = Timer::operation(
 );
 
 /// The ctl preview swap waits for the preview's seats to write their handoff.
+/// 重新登入: how long the login program has to print its sign-in address.
+pub static PROVIDER_LOGIN_URL_WAIT: Timer = Timer::operation(
+    "provider.login_url_wait",
+    ms(200),
+    secs(20),
+    "only while a page's provider_relogin starts the login program: look for the address it prints, kill its group at 20 s (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
+/// 重新登入: how long the person has to sign in in the browser.
+pub static PROVIDER_LOGIN_WAIT: Timer = Timer::operation(
+    "provider.login_wait",
+    ms(500),
+    // ten minutes written as a product: knives-09-wake.sh anchors on the plain 600 one
+    secs(10 * 60),
+    "only while a login round runs: look whether the login program ended, kill its group at 10 min (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
+/// 重新登入: the status asked after the login ended.
+pub static PROVIDER_LOGIN_STATUS_WAIT: Timer = Timer::operation(
+    "provider.login_status_wait",
+    ms(200),
+    secs(20),
+    "only after a login round's program ended: run its status once, kill it at 20 s (DESIGN-relogin-card r2, a9136 11-21)",
+);
+
 pub static PREVIEW_HANDOFF_WAIT: Timer = Timer::operation(
     "preview.handoff_wait",
     secs(5),
@@ -352,6 +384,31 @@ pub static RECEIPT_LINK_WAIT: Timer = Timer::operation(
     "only while aibd says one line to a pinned test machine (a receipt's bundle, a read, a cancel): re-check its ssh until it ends, stop it at the line's own limit (N-webonly 4, b4297 11-21)",
 );
 
+/// 「加一台測試機」(b4297 11-21): one fixed command through the owner's login, or one status
+/// through aibd's key.
+pub static TEST_HOST_WAIT: Timer = Timer::operation(
+    "test_host.wait",
+    ms(200),
+    secs(60),
+    "only while the page adds or takes away a test machine: re-check the one ssh (the fixed read / write / removal through the owner's login, or one status through aibd's key) until it ends, stop it at 60 s (DESIGN-add-test-host, b4297 11-21)",
+);
+
+/// D3 (7ebca 11-21, DESIGN-drive-d3-wake): an idle web seat's open message comes due.
+pub static MAIL_NUDGE_RECHECK: Timer = Timer::operation(
+    "mail.nudge_recheck",
+    secs(180),
+    secs(181),
+    "only while a seat has an open message not yet due: wait until the earliest comes due, then look at the seat once more (an idle seat has no turn end to do it; DESIGN-drive-d3-wake, 7ebca 11-21)",
+);
+
+/// F2: the plugin's `saved --json` for the page's time-saved boxes; at the limit it is ended.
+pub static TIME_SAVED_WAIT: Timer = Timer::operation(
+    "time_saved.wait",
+    ms(50),
+    secs(10),
+    "only during a page's time_saved act: re-check the one aib-skipstop read until it exits, end it at 10 s so a hung plugin cannot hold the answer (PLAN-skipstop-master F2, c5d88 11-23)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -366,6 +423,7 @@ pub static ALL: &[&Timer] = &[
     &DRIVE_REFRESH,
     &DRIVE_REFRESH_CHILD_WAIT,
     &DRIVE_ACT_CHILD_WAIT,
+    &DRIVE_ACT_OUT_WAIT,
     &SEAT_INPUT_WRITE_WAIT,
     &HOSTS_PROBE_WAIT,
     &GH_VIEW_WAIT,
@@ -373,11 +431,17 @@ pub static ALL: &[&Timer] = &[
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
     &PREVIEW_HANDOFF_WAIT,
+    &PROVIDER_LOGIN_URL_WAIT,
+    &PROVIDER_LOGIN_WAIT,
+    &PROVIDER_LOGIN_STATUS_WAIT,
     &DM_MIRROR,
     &SEAT_TICK,
     &RECEIPT_POLL,
     &RECEIPT_OWNER_WAIT,
     &RECEIPT_LINK_WAIT,
+    &TEST_HOST_WAIT,
+    &MAIL_NUDGE_RECHECK,
+    &TIME_SAVED_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

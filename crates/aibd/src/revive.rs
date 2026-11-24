@@ -688,6 +688,12 @@ async fn rejoin_with(
         .and_then(|d| d.to_str())
         .map(str::to_owned)
         .ok_or(Skip::Start)?;
+    // aibd §7 7b (c2f0b P9 / f163c REVIEW-papply M2): every start of a seat that was opened —
+    // a rejoin at aibd's start, 重開, 清對話, 換模型 — comes here, and here, before the brand's
+    // branch, a change waiting for it takes effect (not written: hold less). claude leaves out
+    // the tools of what it does not hold; codex has no tool list to cut, the act checks
+    // [`crate::perm_apply::holds`] on the row this wrote
+    let drop = crate::perm_apply::at_restart(st, &seat.seat_id).await;
     if meta.provider == "codex" {
         // N-ws-ask-codex: codex takes the server as settings; claude's --mcp-config is no
         // codex flag
@@ -705,22 +711,44 @@ async fn rejoin_with(
         .and_then(|p| p.to_str().map(str::to_owned))
         .ok_or(Skip::Start)?;
         argv.extend(crate::seats::talk_args(&cfg, &mode));
+        // an item the seat does not hold is not a tool (a seat opened without a template keeps
+        // its mode's own)
+        crate::perm_apply::drop_tools(&mut argv, &drop);
         if let Some(g) = work_gate.as_deref() {
             crate::seats::fold_gate_into_work_settings(&mut argv, g);
         }
     }
+    let mut file = None;
     if let Some(path) = card.text_path.clone() {
-        let sha = card.persona_sha.clone();
-        let file = tokio::task::spawn_blocking(move || {
-            let text = crate::personas::card_text(&path, &sha).ok()?;
-            crate::personas::keep_text(&private, &sha, &text).ok()
-        })
-        .await
-        .ok()
-        .flatten()
-        .and_then(|p| p.to_str().map(str::to_owned))
-        .ok_or(Skip::PersonaText)?;
-        if !aib_seatopen::add_persona_file(&meta.provider, &mut argv, &file) {
+        let (sha, dir) = (card.persona_sha.clone(), private.clone());
+        file = Some(
+            tokio::task::spawn_blocking(move || {
+                let text = crate::personas::card_text(&path, &sha).ok()?;
+                crate::personas::keep_text(&dir, &sha, &text).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|p| p.to_str().map(str::to_owned))
+            .ok_or(Skip::PersonaText)?,
+        );
+    }
+    // 519d0 11-21 M6: a restarted work seat is told its commands as an opened one is
+    if crate::seats::told_its_commands(&meta.provider, &mode) {
+        let persona = file.clone();
+        file = Some(
+            tokio::task::spawn_blocking(move || {
+                crate::seats::work_prompt_file(&private, persona.as_deref()).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|p| p.to_str().map(str::to_owned))
+            .ok_or(Skip::PersonaText)?,
+        );
+    }
+    if let Some(f) = file {
+        if !aib_seatopen::add_persona_file(&meta.provider, &mut argv, &f) {
             return Err(Skip::Provider);
         }
     }
@@ -756,6 +784,35 @@ fn start_skip(e: &serde_json::Value) -> Skip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// f163c REVIEW-papply M2 (c2f0b P9): every start of an opened seat goes through
+    /// rejoin_with — aibd's rejoin, the page's 重開 (and 換模型, which restarts), 清對話 — and
+    /// rejoin_with takes the waiting change before it splits by brand.
+    #[test]
+    fn every_start_takes_the_waiting_change() {
+        let me = include_str!("revive.rs");
+        let body = |name: &str| {
+            let at = me.find(name).unwrap();
+            let end = me[at..].find("\n}\n").unwrap();
+            &me[at..at + end]
+        };
+        assert!(body("async fn rejoin(st").contains("rejoin_with(st, seat, meta, None)"));
+        assert!(
+            body("pub async fn start_fresh(").contains("rejoin_with(st, &seat, meta, Some(conv))")
+        );
+        assert!(body("async fn restart_once(").contains("rejoin(st, &seat, meta)"));
+        let with = body("async fn rejoin_with(");
+        let took = with
+            .find("let drop = crate::perm_apply::at_restart(st, &seat.seat_id).await;")
+            .expect("reason: rejoin_with_skips_the_waiting_change");
+        let split = with.find("if meta.provider == \"codex\" {").unwrap();
+        assert!(
+            took < split,
+            "reason: waiting_change_taken_for_one_brand_only"
+        );
+        assert!(include_str!("seat_model.rs").contains("crate::revive::restart(&st, &seat_id, by)"));
+        assert!(include_str!("seat_clear.rs").contains("crate::revive::start_fresh(st, seat_id"));
+    }
 
     /// 519d0 11-20 L1: a restart refused for a codex reason says which; anything else stays
     /// start_failed, and only the code at the end counts (a folder path may hold any text).

@@ -242,21 +242,46 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// §7-4: each also says `usual_brain`, the uid of the second brain its seats are usually
 /// opened with ([`crate::registry::usual_brains`]), or null.
 pub async fn personas(State(st): State<AppState>) -> Response {
-    let (src, data, store) = (
+    let (src, data, store, db) = (
         st.personas.clone(),
         crate::registry::data_of(&st),
         st.store.clone(),
+        st.messages.clone(),
     );
-    let read = tokio::task::spawn_blocking(move || {
-        src.cards()
-            .map(|c| (c, crate::registry::usual_of(&data, &store)))
-    });
-    match read.await {
-        Ok(Ok((cards, usual))) => Json(personas_body(
-            cards.iter().map(|c| (c.uid.as_str(), c.name.as_str())),
-            &usual,
-        ))
-        .into_response(),
+    match tokio::task::spawn_blocking(move || {
+        src.cards().map(|c| {
+            (
+                c,
+                crate::registry::usual_of(&data, &store),
+                crate::persona_edit::archived_uids(&db, "persona"),
+            )
+        })
+    })
+    .await
+    {
+        // f163c regarch L3: the archived ones unread ⇒ no list, never one showing them live
+        Ok(Ok((_, _, None))) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"code": "internal", "reason": "archived_unreadable",
+            "message": "the archived personas cannot be read", "request_id": request_id()})),
+        )
+            .into_response(),
+        // A1: an archived card is listed apart (the page's 已封存 with ↺), not in the picker
+        Ok(Ok((cards, usual, Some(gone)))) => {
+            let mut body = personas_body(
+                cards
+                    .iter()
+                    .filter(|c| !gone.contains(&c.uid))
+                    .map(|c| (c.uid.as_str(), c.name.as_str())),
+                &usual,
+            );
+            body["archived"] = json!(cards
+                .iter()
+                .filter(|a| gone.contains(&a.uid))
+                .map(|a| json!({"uid": a.uid, "display_name": a.name}))
+                .collect::<Vec<_>>());
+            Json(body).into_response()
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "persona cards unreadable");
             crate::sessions::ApiError::new(

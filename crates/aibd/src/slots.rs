@@ -205,6 +205,9 @@ pub fn slot_of(kind: &str, payload: &Value, rules: Option<&aib_notify::Rules>) -
 
 /// What a card offers (SPEC §14): ① 照建議 / 其他選項 / 晚點 (both answers are
 /// `decision_answer`); ② 叫作者修 / 叫他交接 / 改派; ③ 叫他交接; ④ ⑤ 叫號 / 改派; ⑥ 晚點.
+/// A slot-3 card that ended for its login: 重新登入 first (DESIGN-relogin-card r2).
+pub const RELOGIN_ACTIONS: &[&str] = &["relogin", "handoff", "later"];
+
 pub fn actions(slot: u8) -> &'static [&'static str] {
     match slot {
         1 => &["follow_rec", "answer", "later"],
@@ -414,7 +417,12 @@ fn low_power_end(mut c: Card, ended: &BTreeMap<String, &'static str>) -> Card {
     };
     c.slot = 3;
     c.name = NAMES[2];
-    c.actions = actions(3);
+    // 重新登入 (DESIGN-relogin-card r2): a login end offers the page's login first
+    c.actions = if *r == "登入" {
+        RELOGIN_ACTIONS
+    } else {
+        actions(3)
+    };
     c.why = Some((*r).to_owned());
     c
 }
@@ -1932,6 +1940,13 @@ mod tests {
         assert_eq!(
             (by("s_a").slot, by("s_a").why.as_deref()),
             (3, Some("額度"))
+        );
+        // RL9 (DESIGN-relogin-card r2): 重新登入 only on a login end
+        assert_eq!(by("s_a").actions, actions(3), "reason: relogin_on_usage");
+        assert_eq!(
+            by("s_b").actions,
+            RELOGIN_ACTIONS,
+            "reason: no_relogin_on_login"
         );
         // 519d0 11-21 06:45 point 2: and when it comes back
         assert_eq!(by("s_a").view()["text"], "結束:額度用完,5pm 恢復");

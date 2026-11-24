@@ -20,8 +20,11 @@ wt '            if mode == "work" {' '            if mode == "work-not" { // kni
 # WT4 a Bash rule beyond reading slips onto the list
 wl '    "Bash(pwd)",' '    "Bash(rm *)", // knife' \
    a_work_seat_has_its_listed_tools_confined_and_asks_nobody
-# WT5 a free-argument git diff is listed again (5d33a M2 on ecf54f91d)
-wl '    "Bash(git diff --stat)",' '    "Bash(git diff *)", // knife' \
+# WT5 a free-argument rule is listed that WORK_FREE_ARGS does not name (5d33a M2 on ecf54f91d).
+# It used to cut in `Bash(git diff *)`, but G4a (fdd1d54ec9, DECISION-council-cutover-519d0-1121
+# §2) lists that rule on purpose, so that cut only added a duplicate and missed (CI #872 run
+# 44928976366); the rule M2 kept is "every free-argument rule is a named one", cut here.
+wl '    "Bash(git diff --stat)",' '    "Bash(git diff --stat *)", // knife' \
    a_work_seat_has_its_listed_tools_confined_and_asks_nobody
 # WT6 a work seat's commands run outside claude's sandbox (condition 5)
 wt '                    work_settings_for(crate::home_uid(), cfg!(unix))?,' '                    { let _ = work_settings_for; String::from("{}") }, // knife' \

@@ -100,6 +100,10 @@ pub enum Wake {
     TimedOut,
 }
 
+/// How long after an act round ends its stdout is still waited for (the reader keeps what it
+/// read up to then; a grandchild with the pipe open does not hold the round).
+pub const OUT_GRACE: Duration = Duration::from_secs(5);
+
 /// Run one wake, at most `limit` long (a program still running then is killed). Its output
 /// is dropped.
 pub fn wake_once(bin: &Path, limit: Duration) -> Wake {
@@ -116,14 +120,47 @@ pub fn refresh_once(bin: &Path, limit: Duration) -> Wake {
     )
 }
 
-/// Run one act round, at most `limit` long, waited on by its own registered timer.
+/// Run one act round, at most `limit` long, waited on by its own registered timer. With an
+/// executor installed (S79-rust 3b) the round is told the web seats and that aibd reads it,
+/// and its work orders for web seats ([`crate::drive_plan`]) go to the executor: also from a
+/// round that failed or was killed, since drive wrote each printed one as handed.
 pub fn act_once(bin: &Path, limit: Duration) -> Wake {
-    run_once(
+    let round = crate::drive_plan::web_now();
+    let (w, out) = run_out(
         bin,
         &act_args(),
         limit,
         &crate::timers::DRIVE_ACT_CHILD_WAIT,
-    )
+        round.as_ref(),
+    );
+    if let Some(round) = round {
+        // 5d33a REVIEW-driverust3 M1: the switch is aibd's own read, after the round, not the
+        // child's word for it (the program at bin is any same-account seat's to replace)
+        let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
+        let r = plans_if_on(&out, &round, switch);
+        if r.refused > 0 {
+            tracing::warn!(refused = r.refused, "drive act: plan lines refused");
+        }
+        if !r.plans.is_empty() && !crate::drive_plan::hand(r.plans) {
+            tracing::warn!("drive act: plans with no executor to take them");
+        }
+    }
+    w
+}
+
+/// The plans in a round's stdout, only while the dispatch switch is `on` (as aibd reads it):
+/// otherwise every plan line is refused, whatever the child printed.
+pub fn plans_if_on(
+    out: &[u8],
+    round: &crate::drive_plan::Round,
+    switch: &str,
+) -> crate::drive_plan::Read {
+    let mut r = crate::drive_plan::parse(out, round);
+    if switch != "on" {
+        r.refused += r.plans.len();
+        r.plans.clear();
+    }
+    r
 }
 
 /// One period of the wake thread: the wake, then one act round (an act round runs even
@@ -137,12 +174,37 @@ pub fn wake_round(bin: &Path) -> (Wake, Wake) {
 /// `bin args` with no input or output. On macOS the child leaves the background tier
 /// aibd's launchd job puts it in (aib-sys B1, 519d0 11-15 22:13): aib-slice's scan from a
 /// background refresh ran 3.3 times slower and was killed at aib-drive's 10-minute limit.
+#[cfg(all(test, target_os = "macos"))] // only the macOS priority probe calls it now
 fn child_command(bin: &Path, args: &[&str]) -> Command {
+    child_command_for(bin, args, None)
+}
+
+/// [`child_command`], and for an act round aibd reads (`web` given, S79-rust 3b): the web
+/// seats and [`crate::drive_plan::BY_AIBD_ENV`] set, stdout a pipe.
+fn child_command_for(
+    bin: &Path,
+    args: &[&str],
+    round: Option<&crate::drive_plan::Round>,
+) -> Command {
     let mut cmd = Command::new(bin);
+    // D7a: the dispatch switch as aibd reads it (aib-drive's act::AIBD_SWITCH_ENV)
+    let switch = crate::drive_switch::effective(crate::bridge_cfg::dir().as_deref());
     cmd.args(args)
+        .env(crate::drive_switch::ENV, switch)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(round) = round {
+        let list = round
+            .web
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
+        cmd.env(crate::drive_plan::BY_AIBD_ENV, &round.mark)
+            .env(crate::drive_plan::WEB_SEATS_ENV, list)
+            .stdout(Stdio::piped());
+    }
     #[cfg(target_os = "macos")]
     aib_sys::background::foreground_child(&mut cmd);
     cmd
@@ -155,9 +217,62 @@ fn run_once(
     limit: Duration,
     wait: &'static crate::timers::Timer,
 ) -> Wake {
-    let Ok(mut child) = child_command(bin, args).spawn() else {
-        return Wake::Failed;
+    run_out(bin, args, limit, wait, None).0
+}
+
+/// [`run_once`], and with a `round` given its stdout too (at most [`crate::drive_plan::OUT_MAX`]
+/// bytes kept; the rest is read and dropped, so a child never blocks on a full pipe).
+fn run_out(
+    bin: &Path,
+    args: &[&str],
+    limit: Duration,
+    wait: &'static crate::timers::Timer,
+    round: Option<&crate::drive_plan::Round>,
+) -> (Wake, Vec<u8>) {
+    let Ok(mut child) = child_command_for(bin, args, round).spawn() else {
+        return (Wake::Failed, Vec::new());
     };
+    let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let reader = child.stdout.take().map(|mut so| {
+        let kept = kept.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 8192];
+            // kept as it comes: a grandchild holding the pipe open past the child's end must
+            // not keep what the child printed from aibd
+            while let Ok(n) = so.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut k) = kept.lock() {
+                    let room = crate::drive_plan::OUT_MAX.saturating_sub(k.len());
+                    k.extend_from_slice(&buf[..n.min(room)]);
+                }
+            }
+            let _ = tx.send(());
+        })
+    });
+    let w = wait_child(&mut child, limit, wait);
+    // the child is gone: the rest of its output is in the pipe, read within the grace
+    if reader.is_some() {
+        let op = crate::timers::DRIVE_ACT_OUT_WAIT.begin(Some(Instant::now() + OUT_GRACE));
+        while !matches!(
+            rx.try_recv(),
+            Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ) && op.tick()
+        {}
+    }
+    let out = kept.lock().map(|k| k.clone()).unwrap_or_default();
+    (w, out)
+}
+
+/// Wait for `child` at most `limit` long, re-checked on `wait`; killed at the limit.
+fn wait_child(
+    child: &mut std::process::Child,
+    limit: Duration,
+    wait: &'static crate::timers::Timer,
+) -> Wake {
     let exited = |s: std::process::ExitStatus| {
         if s.success() {
             Wake::Ran
@@ -302,6 +417,28 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M1 (5d33a REVIEW-driverust3): a round's plan lines with the switch off or paused are
+    /// all refused; only `on` hands them on.
+    #[test]
+    fn plan_lines_are_dropped_unless_aibd_reads_the_switch_on() {
+        let web = crate::drive_plan::Round {
+            web: ["7ebca".to_owned()].into_iter().collect(),
+            mark: "0123456789abcdef0123456789abcdef".to_owned(),
+        };
+        let out = format!(
+            "{}{} {}\n",
+            crate::drive_plan::PREFIX,
+            web.mark,
+            serde_json::json!({"to": "7ebca", "text": "派工: N-1 → 7ebca", "send_key": "k:1", "action": "dispatch"})
+        );
+        for sw in ["off", "paused", ""] {
+            let r = plans_if_on(out.as_bytes(), &web, sw);
+            assert!(r.plans.is_empty(), "reason: sent_with_switch_{sw}");
+            assert_eq!(r.refused, 1, "reason: not_counted_{sw}");
+        }
+        assert_eq!(plans_if_on(out.as_bytes(), &web, "on").plans.len(), 1);
+    }
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -344,6 +481,49 @@ mod tests {
         assert_eq!(p.bin, want, "USERPROFILE when there is no HOME");
         assert_eq!(plan(env(&[(ENV_ON, "1")])), None, "no home, no path");
         assert_eq!(args(), ["event", "tick", "--by", "aibd"]);
+    }
+
+    /// S79-rust 3b: an act round aibd reads is told the web seats and that aibd reads it, and
+    /// its stdout comes back (also from a round that exits non-zero); a plain wake gets neither.
+    #[cfg(unix)]
+    #[test]
+    fn an_act_round_aibd_reads_is_told_the_web_seats_and_its_plan_lines_come_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("aibd-drive-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("act.sh");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nprintf 'x\\nAIBD-SEND %s|%s\\n' \"$AIB_DRIVE_BY_AIBD\" \"$AIB_DRIVE_WEB_SEATS\"\nexit 3\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let web = crate::drive_plan::Round {
+            web: ["7ebca", "abcde"].iter().map(|s| (*s).to_owned()).collect(),
+            mark: "0123456789abcdef0123456789abcdef".to_owned(),
+        };
+        let (w, out) = run_out(
+            &bin,
+            &act_args(),
+            ACT_LIMIT,
+            &crate::timers::DRIVE_ACT_CHILD_WAIT,
+            Some(&web),
+        );
+        assert_eq!(w, Wake::Failed);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "x\nAIBD-SEND 0123456789abcdef0123456789abcdef|7ebca,abcde\n",
+            "reason: plan_out_lost"
+        );
+        let (_, out) = run_out(
+            &bin,
+            &act_args(),
+            ACT_LIMIT,
+            &crate::timers::DRIVE_ACT_CHILD_WAIT,
+            None,
+        );
+        assert!(out.is_empty(), "reason: plain_round_read");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[cfg(unix)]

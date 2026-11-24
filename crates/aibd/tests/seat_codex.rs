@@ -24,15 +24,21 @@ async fn a_codex_seat_is_spoken_to_in_its_protocol() {
     let cwd = seat_dir(dir.path(), "cx");
     let (seat, _) = d.open_as("codex", "safe", &cwd).await;
 
-    // the opening: initialize, initialized, thread/start in the seat's folder
-    let got = log_with(&cwd, 3);
+    // the opening: initialize, initialized, thread/start in the seat's folder, then (A15) the
+    // account's limits asked
+    let got = log_with(&cwd, 4);
     let methods: Vec<String> = got
         .iter()
         .map(|(_, l)| json(l)["method"].as_str().unwrap_or_default().to_owned())
         .collect();
     assert_eq!(
         methods,
-        ["initialize", "initialized", "thread/start"],
+        [
+            "initialize",
+            "initialized",
+            "thread/start",
+            "account/rateLimits/read"
+        ],
         "reason: opening_wrong"
     );
     assert_eq!(json(&got[2].1)["params"]["cwd"], cwd.to_str().unwrap());
@@ -63,8 +69,8 @@ async fn a_codex_seat_is_spoken_to_in_its_protocol() {
         r = d.act(Some(&cred), &seat, "你好").await;
     }
     assert_eq!(r.code, 200, "{}", r.body);
-    let got = log_with(&cwd, 4);
-    let t = json(&got[3].1);
+    let got = log_with(&cwd, 5);
+    let t = json(&got[4].1);
     assert_eq!(t["method"], "turn/start", "reason: not_turn_start {t}");
     assert!(
         t["params"]["threadId"]
@@ -84,7 +90,7 @@ async fn a_codex_seat_is_spoken_to_in_its_protocol() {
     // codex asks aibd something: aibd says no, at once, on the same pipe
     let r = d.act(Some(&cred), &seat, "ask").await;
     assert_eq!(r.code, 200, "{}", r.body);
-    let got = log_with(&cwd, 6);
+    let got = log_with(&cwd, 7);
     let answer = got
         .iter()
         .map(|(_, l)| json(l))
@@ -189,7 +195,7 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
     .await;
     assert_eq!(r.code, 400, "{}", r.body);
     assert_eq!(r.json["reason"], "codex_work_own_folder", "{}", r.body);
-    let work = dir.path().join("data").join("seat-work");
+    let work = aibd::folders::folder(&dir.path().join("data"), "seat-work");
     let trees: Vec<String> = std::fs::read_dir(&work)
         .map(|it| {
             it.filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -208,14 +214,11 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
         .await;
     assert_eq!(r.code, 201, "{}", r.body);
     let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
-    let home = dir
-        .path()
-        .join("data")
-        .join("seat-work")
+    let home = aibd::folders::folder(&dir.path().join("data"), "seat-work")
         .join(&seat)
         .canonicalize()
         .unwrap();
-    let _ = log_with(&home, 3);
+    let _ = log_with(&home, 4);
     let line = std::fs::read_to_string(home.join("fake-provider-args.log")).unwrap_or_default();
     let args: Vec<String> = line
         .lines()

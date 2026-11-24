@@ -51,14 +51,14 @@ fn name_ok(s: &str) -> bool {
 }
 
 /// A host name or address: letters, digits, `.`, `-`, `:` (IPv6); never an option (`-…`).
-fn hostname_ok(s: &str) -> bool {
+pub(crate) fn hostname_ok(s: &str) -> bool {
     (1..=253).contains(&s.len())
         && s.as_bytes()[0] != b'-'
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b".-:".contains(&b))
 }
 
-fn user_ok(s: &str) -> bool {
+pub(crate) fn user_ok(s: &str) -> bool {
     (1..=32).contains(&s.len())
         && s.bytes()
             .next()
