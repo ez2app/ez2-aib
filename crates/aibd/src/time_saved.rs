@@ -124,7 +124,53 @@ pub fn shape(text: &str) -> Result<Value, String> {
         }
         Some(_) => return Err("since is not a time".into()),
     };
-    Ok(json!({ "v": FORMAT_V, "boxes": boxes, "since": since }))
+    let mut recent = Vec::new();
+    if let Some(arr) = o.get("recent") {
+        let items = arr.as_array().ok_or("recent is not an array")?;
+        for item in items.iter().take(20) {
+            let io = item.as_object().ok_or("recent item is not an object")?;
+            let at = io
+                .get("at")
+                .and_then(Value::as_str)
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 40
+                        && s.chars().all(|c| {
+                            c.is_ascii_alphanumeric() || matches!(c, '-' | ':' | '.' | '+')
+                        })
+                })
+                .ok_or("recent item bad at")?;
+            let system = match io.get("system").and_then(Value::as_str) {
+                Some("shadow") => "shadow",
+                Some("precheck") => "precheck",
+                _ => return Err("recent item bad system".into()),
+            };
+            let confirmed = io
+                .get("confirmed")
+                .and_then(Value::as_bool)
+                .ok_or("recent item bad confirmed")?;
+            let saved_ms = num(io, "saved_ms")?;
+            let avoided = io
+                .get("avoided")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("recent item bad avoided")?;
+            let basis = io
+                .get("basis")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("recent item bad basis")?;
+            recent.push(json!({
+                "at": at,
+                "system": system,
+                "confirmed": confirmed,
+                "saved_ms": saved_ms,
+                "avoided": avoided,
+                "basis": basis,
+            }));
+        }
+    }
+    Ok(json!({ "v": FORMAT_V, "boxes": boxes, "since": since, "recent": recent }))
 }
 
 fn command(exe: &Path, home: &Path, offset: i64) -> Command {
@@ -385,6 +431,25 @@ mod tests {
                 (Some("not_runnable"), Some("sum_differs")),
                 "{a}"
             );
+
+            // recent events are validated and passed through when present
+            let with_recent = json!({
+                "v": 1,
+                "today": {"clock_ms": 1000, "skip_clock_unknown_runs": 0, "skip_clock_ms": 1000, "total": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "skip": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "stop": {"confirmed_ms": 0, "estimated_ms": 0, "penalty_ms": 0, "count": 0}},
+                "week": {"clock_ms": 1000, "skip_clock_unknown_runs": 0, "skip_clock_ms": 1000, "total": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "skip": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "stop": {"confirmed_ms": 0, "estimated_ms": 0, "penalty_ms": 0, "count": 0}},
+                "month": {"clock_ms": 1000, "skip_clock_unknown_runs": 0, "skip_clock_ms": 1000, "total": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "skip": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "stop": {"confirmed_ms": 0, "estimated_ms": 0, "penalty_ms": 0, "count": 0}},
+                "year": {"clock_ms": 1000, "skip_clock_unknown_runs": 0, "skip_clock_ms": 1000, "total": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "skip": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "stop": {"confirmed_ms": 0, "estimated_ms": 0, "penalty_ms": 0, "count": 0}},
+                "all": {"clock_ms": 1000, "skip_clock_unknown_runs": 0, "skip_clock_ms": 1000, "total": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "skip": {"confirmed_ms": 1000, "estimated_ms": 0, "penalty_ms": 0, "count": 1}, "stop": {"confirmed_ms": 0, "estimated_ms": 0, "penalty_ms": 0, "count": 0}},
+                "since": "2026-11-23T00:00:00Z",
+                "recent": [{"at": "2026-11-23T06:00:00Z", "system": "precheck", "confirmed": true, "saved_ms": 4000, "avoided": "cargo test", "basis": "median"}]
+            });
+            let ok = super::shape(&with_recent.to_string()).expect("valid recent");
+            assert_eq!(ok["recent"][0]["system"], "precheck");
+            assert_eq!(ok["recent"][0]["saved_ms"], 4000);
+
+            let mut bad = with_recent.clone();
+            bad["recent"][0]["system"] = json!("unknown");
+            assert!(super::shape(&bad.to_string()).is_err());
             assert!(a.get("saved").is_none());
 
             // switched off by the user: not run, and said so

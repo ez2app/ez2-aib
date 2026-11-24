@@ -29,7 +29,7 @@ function world(acts, answers) {
     Date, Math, Number, String, Array, Object,
   };
   vm.createContext(ctx);
-  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, plgLoad, plgSet, pluginsHtml, tsDur };', ctx);
+  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, chatSavedHtml, plgLoad, plgSet, pluginsHtml, tsDur };', ctx);
   sent.api = ctx.api;
   return sent;
 }
@@ -107,6 +107,30 @@ const saved = { state: 'ok', saved: { v: 1, boxes: { today: box(103000), week: b
   await w.api.plgSet('other', true);
   h = w.api.pluginsHtml();
   ok(h.includes('只有這台 AIB 的內建頁能開關外掛') && h.includes('data-plgset="other"'), 'reason: a_refused_switch_is_silent_or_loses_the_list\n' + h);
+
+  // ── 對話 ⏱ 條與「節省時間」篩選 ──
+  const withRecent = {
+    state: 'ok',
+    saved: {
+      v: 1,
+      boxes: { today: box(103000), week: box(103000), month: box(0), year: box(0), all: box(0) },
+      since: null,
+      recent: [
+        { at: '2026-11-23T06:00:00Z', system: 'precheck', confirmed: true, saved_ms: 60000, avoided: 'cargo <script>test</script>', basis: 'median' },
+        { at: '2026-11-23T05:59:00Z', system: 'shadow', confirmed: false, saved_ms: 43000, avoided: 'aib-ledger', basis: 'est' },
+      ],
+    },
+  };
+  w = world(['time_saved'], { time_saved: withRecent });
+  await w.api.tsLoad();
+  ok(w.api.chatSavedHtml().includes('今天省 1 分 43 秒') && !w.api.chatSavedHtml().includes('tschrow'), 'reason: chat_saved_bar_closed_wrong\n' + w.api.chatSavedHtml());
+  w.S.tsChatOpen = true;
+  h = w.api.chatSavedHtml();
+  ok(h.includes('預檢省時 1') && h.includes('影子續跑 1') && h.includes('cargo &lt;script&gt;test&lt;/script&gt;') && !h.includes('<script>'), 'reason: chat_saved_open_or_escape\n' + h);
+  ok(h.includes('已確認') && h.includes('預估'), 'reason: chat_saved_tags\n' + h);
+  w.S.tsChatFilter = 'shadow';
+  h = w.api.chatSavedHtml();
+  ok(!h.includes('cargo &lt;script&gt;') && h.includes('aib-ledger'), 'reason: chat_saved_filter\n' + h);
 
   console.log('saved-blocks: ' + n + ' 項全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

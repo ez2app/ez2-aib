@@ -1028,6 +1028,29 @@
     }
     return h + '</div>';
   }
+  function chatSavedHtml() {
+    if (hasAct('time_saved') !== true) return '';
+    const T = S.ts;
+    if (!T || !T.r || T.r.state !== 'ok' || !T.r.saved) return '';
+    const rec = Array.isArray(T.r.saved.recent) ? T.r.saved.recent : [];
+    const B = T.r.saved.boxes || {};
+    const todayMs = B.today && typeof B.today.clock_ms === 'number' ? B.today.clock_ms : 0;
+    if (!rec.length && !todayMs) return '';
+    const open = !!S.tsChatOpen;
+    const f = S.tsChatFilter || 'all';
+    const preN = rec.filter((x) => x.system === 'precheck').length;
+    const shN = rec.filter((x) => x.system === 'shadow').length;
+    const shown = rec.filter((x) => f === 'all' || x.system === f).slice(0, 8);
+    const pill = todayMs ? `<span class="cpill csave">今天省 ${esc(tsDur(todayMs))}</span>` : '';
+    const chips = rec.length ? `<div class="tschchips"><button type="button" class="k${f === 'all' ? ' g' : ''}" data-tschatf="all">⏱ 節省時間 ${rec.length}</button>${preN ? `<button type="button" class="k${f === 'precheck' ? ' g' : ''}" data-tschatf="precheck">預檢省時 ${preN}</button>` : ''}${shN ? `<button type="button" class="k${f === 'shadow' ? ' g' : ''}" data-tschatf="shadow">影子續跑 ${shN}</button>` : ''}<a class="k" href="saved.html">看板</a></div>` : '';
+    const rows = shown.map((x) => {
+      const pre = x.system === 'precheck';
+      const title = `${pre ? '預檢省時' : '影子續跑'} · 省下約 ${tsDur(x.saved_ms || 0)}`;
+      const tag = x.confirmed ? '<span class="tschtag c">已確認</span>' : '<span class="tschtag p">預估</span>';
+      return `<div class="tschrow ${pre ? 'pre' : 'sh'}"><span class="ic">⏱</span><div class="tb"><b>${esc(title)}</b>${tag}<div class="ta">${esc(x.avoided || '')}</div><small>${esc(x.basis || '')}</small></div></div>`;
+    }).join('');
+    return `<div class="tschat${open ? ' open' : ''}"><button type="button" class="cbar" data-tschattog="1"><b>⏱ 節省時間</b>${pill}${rec.length ? `<span class="cpill">${rec.length} 筆</span>` : ''}<span class="cr">${open ? '收起 ▴' : '點開 ▾'}</span></button>${open ? `<div class="tschlist">${chips}${rows || '<div class="empty">這類還沒有紀錄</div>'}</div>` : ''}</div>`;
+  }
   // c5d88 PLAN-skipstop H1b:外掛區(~/.ez2-aib/plugins)。列出裝了哪些、開著還是關著、現在能不能跑;開關是使用者的,蓋過外掛自己的預設。
   // 這裡不安裝、不移除、不執行外掛
   const PLG_RUNS = {
@@ -2320,7 +2343,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${seatModeTag(s.mode)}${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${ptSeatBtn(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${ptSeatBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}${moveMineHtml(S.moveMsg)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      ${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
+      ${chatSavedHtml()}${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -6023,6 +6046,8 @@
     const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
     if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
     if (x.closest('[data-tsreload]')) { S.ts = null; return tsLoad(); }
+    if (x.closest('[data-tschattog]')) { S.tsChatOpen = !S.tsChatOpen; return render(); }
+    const tsf = x.closest('[data-tschatf]'); if (tsf) { S.tsChatFilter = tsf.dataset.tschatf; return render(); }
     if (x.closest('[data-plgreload]')) { S.plg = null; return plgLoad(); }
     const plgB = x.closest('[data-plgset]'); if (plgB) return plgSet(plgB.dataset.plgset, plgB.dataset.plgon === '1');
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
