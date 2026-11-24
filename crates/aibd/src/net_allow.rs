@@ -71,6 +71,19 @@ pub fn parse_always_params(raw: &[u8]) -> Option<(String, String, u64, u64)> {
     Some((uid.to_owned(), canon, issued_at, until))
 }
 
+/// Verify the owner signature on a [`NetAllowRow`] against `verify_fn`.
+pub fn row_sig_ok(row: &aib_store::NetAllowRow, verify_fn: &dyn Fn(&[u8], &[u8]) -> bool) -> bool {
+    let ask = Ask {
+        category: aib_approve::category::Category::WindowGrant,
+        operation: OP_ALWAYS,
+        resource: row.resource.clone(),
+        params: row.params.clone(),
+        by: row.by_key.clone(),
+    };
+    let msg = owner_ok::binding(&row.ticket, &ask);
+    verify_fn(&msg, &row.sig)
+}
+
 /// Verify and match an always-allow entry for `(persona_uid, addr, now)`.
 /// Classifies `addr.ip()` against `own` FIRST (only `Class::Private` may use the list),
 /// checks `persona_active`, revoked list, 30-day bound, and `owner_ok::verify`.
@@ -111,15 +124,7 @@ pub fn holds(
         {
             continue;
         }
-        let ask = Ask {
-            category: aib_approve::category::Category::WindowGrant,
-            operation: OP_ALWAYS,
-            resource: row.resource.clone(),
-            params: row.params.clone(),
-            by: row.by_key.clone(),
-        };
-        let msg = owner_ok::binding(&row.ticket, &ask);
-        if !verify_fn(&msg, &row.sig) {
+        if !row_sig_ok(&row, verify_fn) {
             continue;
         }
         return Some(row);

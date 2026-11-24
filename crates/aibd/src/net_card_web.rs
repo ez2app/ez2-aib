@@ -245,6 +245,7 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
             q.seat_id.as_deref(),
             want_uid.as_deref(),
             now() as i64,
+            &crate::owner_ok::verify,
         );
     }
     Json(json!({ "items": items })).into_response()
@@ -256,8 +257,12 @@ fn append_db_allow_rows(
     seat_id: Option<&str>,
     want_uid: Option<&str>,
     now_unix: i64,
+    verify_fn: &dyn Fn(&[u8], &[u8]) -> bool,
 ) {
     for r in db_rows {
+        if !crate::net_allow::row_sig_ok(r, verify_fn) {
+            continue;
+        }
         if let Some((uid, canon, _issued_at, until)) =
             crate::net_allow::parse_always_params(&r.params)
         {
@@ -429,15 +434,33 @@ mod tests {
             mk("tk_other", "p_2", "10.0.0.7:5432", 5000),
         ];
         let mut out = Vec::new();
-        append_db_allow_rows(&mut out, &rows, Some("a1b2c"), Some("p_1"), 2000);
+        append_db_allow_rows(
+            &mut out,
+            &rows,
+            Some("a1b2c"),
+            Some("p_1"),
+            2000,
+            &|_, sig| sig == [1],
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["ticket"], "tk_ok");
         assert_eq!(out[0]["ip"], "10.0.0.5");
         assert_eq!(out[0]["port"], 5432);
         assert_eq!(out[0]["seat_id"], "a1b2c");
 
+        let mut bad_sig = Vec::new();
+        append_db_allow_rows(
+            &mut bad_sig,
+            &rows,
+            Some("a1b2c"),
+            Some("p_1"),
+            2000,
+            &|_, _| false,
+        );
+        assert!(bad_sig.is_empty());
+
         let mut none = Vec::new();
-        append_db_allow_rows(&mut none, &rows, Some("a1b2c"), None, 2000);
+        append_db_allow_rows(&mut none, &rows, Some("a1b2c"), None, 2000, &|_, _| true);
         assert!(none.is_empty());
     }
 }

@@ -240,6 +240,14 @@ impl Card {
         }
     }
 
+    /// Choices filtered by whether owner-key signing is available (`always` requires it).
+    pub fn choices_with_owner(&self, owner_avail: bool) -> Vec<Choice> {
+        self.choices()
+            .into_iter()
+            .filter(|c| owner_avail || *c != Choice::Always)
+            .collect()
+    }
+
     /// Whether a choice of this card needs the owner (on the high-risk card every yes does).
     pub fn needs_owner(&self, c: Choice) -> bool {
         c != Choice::Deny && (self.high || c.needs_owner())
@@ -248,7 +256,7 @@ impl Card {
     /// What `net_card_list` says of it (IFACE-netcard §1).
     pub fn shown(&self) -> serde_json::Value {
         let choices: Vec<serde_json::Value> = self
-            .choices()
+            .choices_with_owner(crate::owner_ok::available())
             .into_iter()
             .map(|c| {
                 let words = CHOICES
@@ -871,5 +879,12 @@ mod tests {
         assert!(!l.has(ip.ip(), 22), "reason: still_listed");
         assert_eq!(l.revoke(ip, &open), None);
         assert_eq!(l.seat(), "a1b2c");
+    }
+
+    #[test]
+    fn choices_with_owner_hides_always_when_unavailable() {
+        let c = card("r_no_owner", false);
+        assert!(c.choices_with_owner(true).contains(&Choice::Always));
+        assert!(!c.choices_with_owner(false).contains(&Choice::Always));
     }
 }
