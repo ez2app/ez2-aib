@@ -205,8 +205,9 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         assert_eq!(r.code, 201, "{}", r.body);
         r
     };
-    let repo_seat = r.json["seat_id"].as_str().unwrap().to_owned();
-    let repo_tree = PathBuf::from(r.json["cwd"].as_str().unwrap());
+    let seat_obj = r.json.get("seat").unwrap_or(&r.json);
+    let repo_seat = seat_obj["seat_id"].as_str().unwrap().to_owned();
+    let repo_tree = PathBuf::from(seat_obj["cwd"].as_str().unwrap());
     std::fs::write(repo_tree.join("change.txt"), "new work\n").unwrap();
     g(&repo_tree, &["add", "change.txt"]);
     g(&repo_tree, &["commit", "-q", "-m", "seat work"]);
