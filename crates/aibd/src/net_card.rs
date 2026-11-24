@@ -489,7 +489,9 @@ impl Cards {
             // a ticket for another choice than the window's (f163c N1): not even looked up
             (Some(_), State::Asked(asked)) if asked != c => Step::NotApproved,
             (Some(t), State::Asked(_)) => {
-                let issued_at = asked_at.unwrap_or(now);
+                let Some(issued_at) = *asked_at else {
+                    return Step::NotApproved;
+                };
                 let ask = if c == Choice::Always {
                     card.ask_always(by, issued_at)
                 } else {
