@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+# B2 (PLAN-skipstop-master): weekly / manual refresh of crates/aib-knife/knife-secs.tsv
+# from the last 3 completed main-branch aibd.yml runs. Opens a PR; never pushes main directly.
+name: knife-secs-refresh
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: collect knife-secs from last 3 completed main runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/knife-secs-logs
+          runs=$(gh run list -R "${{ github.repository }}" --workflow aibd.yml --branch main --status completed --limit 3 --json databaseId -q '.[].databaseId')
+          n=0
+          for r in $runs; do
+            d="/tmp/knife-secs-logs/run-$r"
+            mkdir -p "$d"
+            if gh run download "$r" -R "${{ github.repository }}" -p "knife-secs-*" -D "$d" 2>/dev/null; then
+              n=$((n + 1))
+            fi
+          done
+          echo "downloaded_runs=$n"
+          if [ "$n" -eq 0 ]; then
+            echo "::notice::no knife-secs artifacts found on recent main runs"
+            exit 0
+          fi
+          find /tmp/knife-secs-logs -type f -name "cell-*.txt" > /tmp/knife-logs.txt
+          [ -s /tmp/knife-logs.txt ] || { echo "no cell logs found"; exit 0; }
+          head -n 2 crates/aib-knife/knife-secs.tsv > /tmp/knife-secs.new
+          cargo run -q --locked -p aib-xtask -- knife-shards secs $(cat /tmp/knife-logs.txt) >> /tmp/knife-secs.new
+          mv /tmp/knife-secs.new crates/aib-knife/knife-secs.tsv
+      - name: open PR if knife-secs.tsv changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- crates/aib-knife/knife-secs.tsv; then
+            echo "knife-secs.tsv unchanged"
+            exit 0
+          fi
+          br="chore/knife-secs-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$br"
+          git add crates/aib-knife/knife-secs.tsv
+          git commit -m "chore(knives): refresh knife-secs.tsv from recent main runs"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$br"
+          gh pr view "$br" -R "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh pr create -R "${{ github.repository }}" --base main --head "$br" \
+              --title "chore(knives): refresh knife-secs.tsv" \
+              --body "Automated weekly refresh of \`crates/aib-knife/knife-secs.tsv\` from the last 3 completed \`main\` runs (\`aib-xtask knife-shards secs\`)."
