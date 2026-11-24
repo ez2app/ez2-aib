@@ -126,6 +126,26 @@ fn two_processes_writing_at_once_never_interleave() {
     assert_eq!(ids.len(), 200, "ids repeat");
 }
 
+/// Repeatedly race two processes creating a fresh nested events folder (guards Windows
+/// `os error 183` in `create_dir_all`).
+#[test]
+fn two_processes_concurrent_mkdir_never_fails() {
+    let exe = std::env::current_exe().expect("exe");
+    for _ in 0..5 {
+        let d = tempfile::tempdir().expect("tmp");
+        let spawn = || {
+            Command::new(&exe)
+                .args(["--exact", "writer_child", "--test-threads", "1"])
+                .env("EVENTS_CHILD_ROOT", d.path())
+                .spawn()
+                .expect("spawn")
+        };
+        let (mut a, mut b) = (spawn(), spawn());
+        assert!(a.wait().expect("wait a").success());
+        assert!(b.wait().expect("wait b").success());
+    }
+}
+
 /// E8: a month file goes only once its whole month ended more than keep_days ago.
 #[test]
 fn old_months_go_whole_and_other_files_stay() {
