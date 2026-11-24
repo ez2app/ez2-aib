@@ -2,8 +2,7 @@
 //! IFACE-netallow-ticket r2). Every row stores the owner's signed `params` + `sig` + `ticket`;
 //! `persona_uid` / `addr` / `until` are never stored as separate trusted columns.
 
-use crate::MessageDb;
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use crate::{params, Connection, MessageDb, OptionalExtension, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetAllowRow {
@@ -29,7 +28,8 @@ pub(crate) fn add_tables(conn: &Connection) -> Result<()> {
             ticket TEXT PRIMARY KEY,
             revoked_at INTEGER NOT NULL
         );",
-    )
+    )?;
+    Ok(())
 }
 
 impl MessageDb {
@@ -62,25 +62,24 @@ impl MessageDb {
     }
 
     pub fn net_allow_list(&self) -> Result<Vec<NetAllowRow>> {
-        self.read(|c| {
-            let mut st = c.prepare(
-                "SELECT ticket, by_key, resource, params, sig, approved_at
-                 FROM net_allow_always ORDER BY approved_at DESC, ticket ASC",
-            )?;
-            let rows = st
-                .query_map([], |r| {
-                    Ok(NetAllowRow {
-                        ticket: r.get(0)?,
-                        by_key: r.get(1)?,
-                        resource: r.get(2)?,
-                        params: r.get(3)?,
-                        sig: r.get(4)?,
-                        approved_at: r.get(5)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>>>()?;
-            Ok(rows)
-        })
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT ticket, by_key, resource, params, sig, approved_at
+             FROM net_allow_always ORDER BY approved_at DESC, ticket ASC",
+        )?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(NetAllowRow {
+                    ticket: r.get(0)?,
+                    by_key: r.get(1)?,
+                    resource: r.get(2)?,
+                    params: r.get(3)?,
+                    sig: r.get(4)?,
+                    approved_at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn net_allow_revoke(&self, ticket: &str, revoked_at: i64) -> Result<bool> {
@@ -99,16 +98,14 @@ impl MessageDb {
     }
 
     pub fn net_allow_is_revoked(&self, ticket: &str) -> Result<bool> {
-        let t = ticket.to_owned();
-        self.read(move |c| {
-            let got: Option<i64> = c
-                .query_row(
-                    "SELECT revoked_at FROM net_allow_revoked WHERE ticket = ?1",
-                    params![t],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            Ok(got.is_some())
-        })
+        let c = self.read()?;
+        let got: Option<i64> = c
+            .query_row(
+                "SELECT revoked_at FROM net_allow_revoked WHERE ticket = ?1",
+                params![ticket],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(got.is_some())
     }
 }
