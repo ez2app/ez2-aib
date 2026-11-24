@@ -239,32 +239,51 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
         None => None,
     };
     if let Ok(db_rows) = st.messages.net_allow_list() {
-        for r in db_rows {
-            if let Some((uid, canon, _issued_at, until)) =
-                crate::net_allow::parse_always_params(&r.params)
-            {
-                if q.seat_id.is_some() && want_uid.as_deref() != Some(uid.as_str()) {
-                    continue;
-                }
-                let parsed_addr = canon.parse::<SocketAddr>().ok();
-                let mut obj = json!({
-                    "ticket": r.ticket,
-                    "persona_uid": uid,
-                    "addr": canon,
-                    "until": until,
-                });
-                if let Some(sa) = parsed_addr {
-                    obj["ip"] = json!(sa.ip().to_string());
-                    obj["port"] = json!(sa.port());
-                }
-                if let Some(ref sid) = q.seat_id {
-                    obj["seat_id"] = json!(sid);
-                }
-                items.push(obj);
-            }
-        }
+        append_db_allow_rows(
+            &mut items,
+            &db_rows,
+            q.seat_id.as_deref(),
+            want_uid.as_deref(),
+            now() as i64,
+        );
     }
     Json(json!({ "items": items })).into_response()
+}
+
+fn append_db_allow_rows(
+    items: &mut Vec<Value>,
+    db_rows: &[aib_store::NetAllowRow],
+    seat_id: Option<&str>,
+    want_uid: Option<&str>,
+    now_unix: i64,
+) {
+    for r in db_rows {
+        if let Some((uid, canon, _issued_at, until)) =
+            crate::net_allow::parse_always_params(&r.params)
+        {
+            if until <= now_unix {
+                continue;
+            }
+            if seat_id.is_some() && want_uid != Some(uid.as_str()) {
+                continue;
+            }
+            let parsed_addr = canon.parse::<SocketAddr>().ok();
+            let mut obj = json!({
+                "ticket": r.ticket,
+                "persona_uid": uid,
+                "addr": canon,
+                "until": until,
+            });
+            if let Some(sa) = parsed_addr {
+                obj["ip"] = json!(sa.ip().to_string());
+                obj["port"] = json!(sa.port());
+            }
+            if let Some(sid) = seat_id {
+                obj["seat_id"] = json!(sid);
+            }
+            items.push(obj);
+        }
+    }
 }
 
 /// The list's rows for the page, of one seat or of all.
@@ -392,5 +411,33 @@ mod tests {
         // IPv6 without brackets (IFACE r1)
         assert_eq!(all[1]["ip"], "fd00::7", "reason: ipv6_bracketed");
         assert!(rows(&a, Some("d3e4f")).is_empty());
+    }
+
+    #[test]
+    fn db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port() {
+        let mk = |ticket: &str, uid: &str, canon: &str, until: i64| aib_store::NetAllowRow {
+            ticket: ticket.into(),
+            by_key: "owner".into(),
+            resource: canon.into(),
+            params: format!("persona={uid}\taddr={canon}\tissued_at=1000\tuntil={until}"),
+            sig: vec![1],
+            approved_at: 1000,
+        };
+        let rows = vec![
+            mk("tk_ok", "p_1", "10.0.0.5:5432", 5000),
+            mk("tk_exp", "p_1", "10.0.0.6:5432", 1500),
+            mk("tk_other", "p_2", "10.0.0.7:5432", 5000),
+        ];
+        let mut out = Vec::new();
+        append_db_allow_rows(&mut out, &rows, Some("a1b2c"), Some("p_1"), 2000);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["ticket"], "tk_ok");
+        assert_eq!(out[0]["ip"], "10.0.0.5");
+        assert_eq!(out[0]["port"], 5432);
+        assert_eq!(out[0]["seat_id"], "a1b2c");
+
+        let mut none = Vec::new();
+        append_db_allow_rows(&mut none, &rows, Some("a1b2c"), None, 2000);
+        assert!(none.is_empty());
     }
 }

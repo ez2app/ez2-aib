@@ -46,3 +46,9 @@ python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   '    let _ = (db, ticket, now);' \
   --expect-fail net_allow::tests::proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive \
   -- cargo test -p aibd --locked --lib net_allow::tests::proxy_decide_uses_net_allow_holds_and_closes_tunnels_on_revoke_expire_and_inactive
+# na-list-expired
+python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
+  '            if until <= now_unix {' \
+  '            if false {' \
+  --expect-fail net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port \
+  -- cargo test -p aibd --locked --lib net_card_web::tests::db_allow_rows_filter_expired_and_other_persona_and_emit_ip_port
