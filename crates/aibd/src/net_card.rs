@@ -367,7 +367,7 @@ impl Cards {
 
     fn sweep(&mut self, now: u64) {
         self.rows
-            .retain(|(c, s)| *s != State::Finished && now < c.expires_at.saturating_add(CARD_SECS));
+            .retain(|(c, _)| now < c.expires_at.saturating_add(CARD_SECS));
     }
 
     /// The card of this request, as it is now.
@@ -396,7 +396,10 @@ impl Cards {
     /// Cards still waiting for the owner (`net_cards` on `GET /api/v1/seats`).
     pub fn waiting(&mut self, now: u64) -> usize {
         self.sweep(now);
-        self.rows.iter().filter(|(c, _)| now < c.expires_at).count()
+        self.rows
+            .iter()
+            .filter(|(c, s)| *s != State::Finished && now < c.expires_at)
+            .count()
     }
 
     /// `net_card_list`.
@@ -404,7 +407,7 @@ impl Cards {
         self.sweep(now);
         self.rows
             .iter()
-            .filter(|(c, _)| now < c.expires_at)
+            .filter(|(c, s)| *s != State::Finished && now < c.expires_at)
             .map(|(c, _)| c.shown())
             .collect()
     }
