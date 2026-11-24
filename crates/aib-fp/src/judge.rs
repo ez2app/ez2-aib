@@ -83,16 +83,30 @@ pub fn check_echo(body: &str, n: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
-    v["ok"] == 1 && v["n"].as_str() == Some(n) && n.len() >= 16
+    v["ok"] == 1 && v["n"].as_str() == Some(n) && echo_number_ok(n)
 }
 
-/// `/api/ai` read back (8b, PREREAD M3): switched on, Claude, a key. All three, or not
-/// ready.
+/// The number sent to `__ez2-check`: 16–64 hex digits; the engine answers `""` for
+/// anything else, so another number could never be judged (F1 review N1).
+pub fn echo_number_ok(n: &str) -> bool {
+    (16..=64).contains(&n.len()) && n.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+fn yes(v: &serde_json::Value) -> bool {
+    *v == 1 || *v == true
+}
+
+/// `GET /api/ai` read back (8b, PREREAD M3; the engine's answer, lib/ai/routes.js:
+/// `{ok, enabled, provider, providers: [{id, has_key, last4, …}]}`): switched on, Claude,
+/// and Claude's own entry in `providers` holding a key. All three, or not ready.
 pub fn ai_ready(body: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
-    v["enabled"] == 1 && v["provider"] == "claude" && v["claude_has_key"] == 1
+    let claude_key = v["providers"]
+        .as_array()
+        .is_some_and(|ps| ps.iter().any(|p| p["id"] == "claude" && yes(&p["has_key"])));
+    yes(&v["ok"]) && yes(&v["enabled"]) && v["provider"] == "claude" && claude_key
 }
 
 /// The question list of one article (8b c), by how many questions it has (the caller
@@ -114,8 +128,10 @@ pub fn questions(count: Option<usize>) -> State {
 /// engine, the script Cloudflare serves holds the AI loader, and an article gets its
 /// questions.
 pub fn ai_questions_state(article_html: &str, cdn_script: &str, count: Option<usize>) -> State {
+    // no engine on the article: what needs doing is step 4b (the page caches), not the
+    // AI key again (F1 review L4)
     if engine_tags(article_html) != 1 {
-        return State::Todo;
+        return State::Warn("page_without_engine_see_4b");
     }
     if !has_ai_loader(cdn_script) {
         return State::Todo;
@@ -148,8 +164,10 @@ pub fn cache_clear_state(code: i32) -> State {
 pub fn line_hook_state(code: Option<u16>) -> State {
     match code {
         Some(403) => State::Stop("line_webhook_blocked".into()),
-        Some(_) => State::Warn("press_verify_in_line_developers"),
-        None => State::Stop("line_webhook_unreadable".into()),
+        // the plugin's answer to an unsigned post (404 and the like); a server error or no
+        // answer means LINE gets nothing either (F1 review L5)
+        Some(c) if (200..500).contains(&c) => State::Warn("press_verify_in_line_developers"),
+        _ => State::Stop("line_webhook_unreadable".into()),
     }
 }
 
@@ -232,20 +250,28 @@ mod tests {
 
     #[test]
     fn the_ai_is_ready_only_with_all_three_read_back() {
-        assert!(ai_ready(
-            r#"{"enabled":1,"provider":"claude","claude_has_key":1}"#
-        ));
+        // the engine's own answer shape (f163c 11-24 19:0x, lib/ai/routes.js 102–123)
+        let real = |enabled: &str, provider: &str, claude_key: u8| {
+            format!(
+                r#"{{"ok":1,"enabled":{enabled},"provider":"{provider}","providers":[{{"id":"openai","has_key":0,"last4":""}},{{"id":"claude","has_key":{claude_key},"last4":"ab12"}}]}}"#
+            )
+        };
+        assert!(ai_ready(&real("1", "claude", 1)));
+        assert!(ai_ready(&real("true", "claude", 1)));
         assert!(
-            !ai_ready(r#"{"enabled":0,"provider":"claude","claude_has_key":1}"#),
+            !ai_ready(&real("0", "claude", 1)),
             "reason: enabled_not_read"
         );
         assert!(
-            !ai_ready(r#"{"enabled":1,"provider":"openai","claude_has_key":1}"#),
+            !ai_ready(&real("1", "openai", 1)),
             "reason: provider_not_read"
         );
+        assert!(!ai_ready(&real("1", "claude", 0)), "reason: key_not_read");
         assert!(
-            !ai_ready(r#"{"enabled":1,"provider":"claude","claude_has_key":0}"#),
-            "reason: key_not_read"
+            !ai_ready(
+                r#"{"ok":1,"enabled":1,"provider":"claude","claude_has_key":1,"providers":[{"id":"openai","has_key":1}]}"#
+            ),
+            "reason: top_level_or_other_providers_key_read"
         );
         assert!(!ai_ready("not json"));
     }
@@ -263,7 +289,11 @@ mod tests {
             State::Todo,
             "reason: cdn_script_without_loader_passed"
         );
-        assert_eq!(ai_questions_state("<p>", js, three), State::Todo);
+        assert_eq!(
+            ai_questions_state("<p>", js, three),
+            State::Warn("page_without_engine_see_4b"),
+            "reason: missing_engine_sends_to_the_key"
+        );
         assert_eq!(
             ai_questions_state(page, js, Some(1)),
             State::Wait("questions_being_made")
@@ -288,6 +318,10 @@ mod tests {
         assert!(
             !check_echo(r#"{"ok":1,"n":"short"}"#, "short"),
             "reason: short_number_taken"
+        );
+        assert!(
+            !check_echo(r#"{"ok":1,"n":"zzzzzzzzzzzzzzzz"}"#, "zzzzzzzzzzzzzzzz"),
+            "reason: non_hex_number_taken"
         );
     }
 
@@ -321,6 +355,11 @@ mod tests {
         assert_eq!(
             line_hook_state(None),
             State::Stop("line_webhook_unreadable".into())
+        );
+        assert_eq!(
+            line_hook_state(Some(502)),
+            State::Stop("line_webhook_unreadable".into()),
+            "reason: server_error_sent_to_verify_button"
         );
         assert!(revocation_unchecked("curl: (35) schannel: next InitializeSecurityContext failed: Unknown error (0x80092012) - CRYPT_E_NO_REVOCATION_CHECK"));
         assert!(!revocation_unchecked("curl: (6) Could not resolve host"));
