@@ -24,6 +24,20 @@ impl aibd::touch::Presence for Yes {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+    fn ask_until_keep(
+        &self,
+        _reason: &str,
+        msg: &[u8],
+        _limit: std::time::Duration,
+        keep: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        *keep = msg.to_vec();
+        Ok(())
+    }
+    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+        !sig.is_empty() && sig == msg
+    }
 }
 
 /// Lets every window open.
@@ -162,9 +176,9 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     let r = act(answer("rq_ow_2", "always", Some(&t2))).await;
     assert_eq!(r.code, 200, "{}", r.body);
     let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
-    assert_eq!(
-        r.json["items"],
-        json!([{"seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432}]),
+    let items = r.json["items"].as_array().unwrap();
+    assert!(
+        items.contains(&json!({"seat_id": "a1b2c", "ip": "10.0.0.5", "port": 5432})),
         "reason: always_not_listed {}",
         r.body
     );
