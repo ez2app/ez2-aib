@@ -34,6 +34,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub mod marketplace;
+
 pub const SCHEMA: &str = "aib-plugin/v1";
 
 /// JSON read with every object's keys required to be different: `{"demo": "off", "demo": "on"}`
