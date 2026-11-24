@@ -4006,6 +4006,11 @@ jobs:
             target
           key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      - name: knife timer
+        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: crate knives
         if: env.RUN == 'true'
         timeout-minutes: 140
@@ -4027,7 +4032,10 @@ jobs:
           sed -n 's/^KNIVES-ELIGIBLE //p' "$RUNNER_TEMP/knives-list.out" > "$RUNNER_TEMP/knives-list.txt"
           cargo run -q --locked -p aib-xtask -- knife-shards plan --shards "${AIB_KNIVES_SHARD#*/}" \
             --secs crates/aib-knife/knife-secs.tsv --list "$RUNNER_TEMP/knives-list.txt" > "$RUNNER_TEMP/knives-plan.tsv"
+          cargo run -q --locked -p aib-xtask -- knife-shards limits \
+            --secs crates/aib-knife/knife-secs.tsv > "$RUNNER_TEMP/knives-limits.tsv"
           export AIB_KNIVES_PLAN="$RUNNER_TEMP/knives-plan.tsv"
+          export AIB_KNIVES_LIMITS="$RUNNER_TEMP/knives-limits.tsv"
           # every script's seconds are kept (the artifact below): the table the plan is made from
           # is the median of several runs, and it is only as fresh as the runs it can read
           bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"
@@ -4049,6 +4057,35 @@ jobs:
           name: knife-secs-${{ strategy.job-index }}
           path: knife-secs/*.txt
           if-no-files-found: warn
+          retention-days: 30
+      - name: knife-affected (shadow)
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: bash
+        env:
+          AIB_SHADOW_SKIP_AFTER_S: "7500"
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          f="knife-secs/cell-${{ strategy.job-index }}.txt"
+          args=()
+          if [ -r "$f" ]; then
+            while IFS= read -r s; do
+              [ -n "$s" ] && args+=("--source=$s")
+            done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
+          fi
+          [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          name: cireuse-ledger-crate-knives-${{ strategy.job-index }}
+          path: reuse-ledger/*.jsonl
+          if-no-files-found: ignore
           retention-days: 30
 
   # The one required check for the cells above (S88-split; PLAN-s88-split r2 §1: GitHub reads a skipped cell

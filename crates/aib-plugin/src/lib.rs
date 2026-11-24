@@ -34,6 +34,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub mod marketplace;
+
 pub const SCHEMA: &str = "aib-plugin/v1";
 
 /// JSON read with every object's keys required to be different: `{"demo": "off", "demo": "on"}`
@@ -435,6 +437,9 @@ pub fn find(dir: &Path) -> Result<Vec<Found>, String> {
             continue;
         }
         let folder = e.file_name().to_string_lossy().into_owned();
+        if folder.starts_with('.') {
+            continue;
+        }
         let manifest = std::fs::read_to_string(e.path().join("aib-plugin.json"))
             .map_err(|e| match e.kind() {
                 // a folder of another kind (an older add-on has no such file)

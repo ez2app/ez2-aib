@@ -58,6 +58,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::time_saved::KIND,
     crate::plugins_page::LIST,
     crate::plugins_page::SET,
+    crate::plugins_page::MARKETPLACE_LIST,
+    crate::plugins_page::MARKETPLACE_INSTALL,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
@@ -470,6 +472,20 @@ pub async fn act(
                 );
             }
             return crate::plugins_page::set_act(body).await;
+        }
+        Some(crate::plugins_page::MARKETPLACE_LIST) => {
+            return crate::plugins_page::marketplace_list_act().await;
+        }
+        Some(crate::plugins_page::MARKETPLACE_INSTALL) => {
+            let cannot_install_here = held_as_user_page(&page).await || page.carried;
+            if cannot_install_here {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a plugin is installed from the built-in page in this pairing only",
+                );
+            }
+            return crate::plugins_page::marketplace_install_act(body).await;
         }
         // F2: the plugin's time-saved numbers; read only, nothing of the caller's is run
         Some(crate::time_saved::KIND) => {

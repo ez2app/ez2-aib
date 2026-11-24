@@ -29,7 +29,7 @@ function world(acts, answers) {
     Date, Math, Number, String, Array, Object,
   };
   vm.createContext(ctx);
-  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, plgLoad, plgSet, pluginsHtml, tsDur };', ctx);
+  vm.runInContext(section + '\n;this.api = { tsLoad, timeSavedHtml, chatSavedHtml, plgLoad, plgSet, pluginsHtml, mktLoad, mktInstall, marketplaceHtml, tsDur };', ctx);
   sent.api = ctx.api;
   return sent;
 }
@@ -107,6 +107,93 @@ const saved = { state: 'ok', saved: { v: 1, boxes: { today: box(103000), week: b
   await w.api.plgSet('other', true);
   h = w.api.pluginsHtml();
   ok(h.includes('只有這台 AIB 的內建頁能開關外掛') && h.includes('data-plgset="other"'), 'reason: a_refused_switch_is_silent_or_loses_the_list\n' + h);
+
+  // ── 對話 ⏱ 條與「節省時間」篩選 ──
+  w = world(['other'], {});
+  ok(w.api.chatSavedHtml() === '', 'reason: chat_saved_shown_without_act');
+  w = world(['time_saved'], { time_saved: { state: 'off' } });
+  await w.api.tsLoad();
+  ok(w.api.chatSavedHtml() === '', 'reason: chat_saved_shown_when_not_ok');
+
+  const withRecent = {
+    state: 'ok',
+    saved: {
+      v: 1,
+      boxes: { today: box(103000), week: box(103000), month: box(0), year: box(0), all: box(0) },
+      since: null,
+      recent: [
+        { at: '2026-11-23T06:00:00Z', system: 'precheck', confirmed: true, saved_ms: 60000, avoided: 'cargo <script>test</script>', basis: 'median<img>' },
+        { at: '2026-11-23T05:59:00Z', system: 'shadow', confirmed: false, saved_ms: 43000, avoided: 'aib-ledger', basis: 'est' },
+      ],
+    },
+  };
+  w = world(['time_saved'], { time_saved: withRecent });
+  await w.api.tsLoad();
+  ok(w.api.chatSavedHtml().includes('今天省 1 分 43 秒') && !w.api.chatSavedHtml().includes('tschrow'), 'reason: chat_saved_bar_closed_wrong\n' + w.api.chatSavedHtml());
+  w.S.tsChatOpen = true;
+  h = w.api.chatSavedHtml();
+  ok(h.includes('預檢省時 1') && h.includes('影子續跑 1') && h.includes('cargo &lt;script&gt;test&lt;/script&gt;') && h.includes('median&lt;img&gt;') && !h.includes('<script>') && !h.includes('<img>'), 'reason: chat_saved_open_or_escape\n' + h);
+  ok(h.includes('已確認') && h.includes('預估') && h.includes('省下 1 分 0 秒') && h.includes('省下約 43 秒'), 'reason: chat_saved_tags\n' + h);
+  w.S.tsChatFilter = 'shadow';
+  h = w.api.chatSavedHtml();
+  ok(!h.includes('cargo &lt;script&gt;') && h.includes('aib-ledger'), 'reason: chat_saved_filter_shadow\n' + h);
+  w.S.tsChatFilter = 'precheck';
+  h = w.api.chatSavedHtml();
+  ok(h.includes('cargo &lt;script&gt;') && !h.includes('aib-ledger'), 'reason: chat_saved_filter_precheck\n' + h);
+  w.S.tsChatFilter = 'all';
+  h = w.api.chatSavedHtml();
+  ok(h.includes('cargo &lt;script&gt;') && h.includes('aib-ledger'), 'reason: chat_saved_filter_all\n' + h);
+
+  // stale filter falls back to all; empty recent with todayMs > 0 keeps board link
+  const noPrecheck = JSON.parse(JSON.stringify(withRecent));
+  noPrecheck.saved.recent = [noPrecheck.saved.recent[1]];
+  w = world(['time_saved'], { time_saved: noPrecheck });
+  await w.api.tsLoad();
+  w.S.tsChatOpen = true;
+  w.S.tsChatFilter = 'precheck';
+  h = w.api.chatSavedHtml();
+  ok(h.includes('aib-ledger') && !h.includes('這類還沒有紀錄'), 'reason: stale_filter_not_reset\n' + h);
+
+  const manyRecent = JSON.parse(JSON.stringify(withRecent));
+  manyRecent.saved.recent = Array.from({ length: 12 }, (_, i) => ({
+    at: '2026-11-23T06:00:00Z', system: 'shadow', confirmed: true, saved_ms: 1000, avoided: 'unit-' + i, basis: 'b',
+  }));
+  w = world(['time_saved'], { time_saved: manyRecent });
+  await w.api.tsLoad();
+  w.S.tsChatOpen = true;
+  h = w.api.chatSavedHtml();
+  ok(h.includes('unit-7') && !h.includes('unit-8') && h.includes('12 筆'), 'reason: recent_slice_8_cap\n' + h);
+
+  const todayOnly = JSON.parse(JSON.stringify(withRecent));
+  todayOnly.saved.recent = [];
+  w = world(['time_saved'], { time_saved: todayOnly });
+  await w.api.tsLoad();
+  w.S.tsChatOpen = true;
+  h = w.api.chatSavedHtml();
+  ok(h.includes('href="saved.html"') && h.includes('暫無逐筆明細') && !h.includes('這類還沒有紀錄'), 'reason: empty_recent_with_today\n' + h);
+
+  // ── 可安裝外掛目錄 ──
+  w = world(['other'], {});
+  ok(w.api.marketplaceHtml() === '', 'reason: marketplace_shown_without_act');
+  const mktResp = {
+    state: 'ok',
+    plugins: [
+      { name: 'aib-skipstop', version: '0.4.1', summary: 'Skip + Stop', paid: false, supported: true },
+      { name: 'other-plg', version: '0.1.0', summary: 'Other', paid: false, supported: false },
+    ],
+  };
+  w = world(['plugin_list', 'marketplace_list', 'marketplace_install'], {
+    plugin_list: list({ plugins: [{ name: 'aib-skipstop', version: '0.4.0', summary: 'Skip + Stop', paid: false, on: true, runs: 'ok' }] }),
+    marketplace_list: mktResp,
+    marketplace_install: list({ plugins: [{ name: 'aib-skipstop', version: '0.4.1', summary: 'Skip + Stop', paid: false, on: true, runs: 'ok' }] }),
+  });
+  await w.api.plgLoad();
+  await w.api.mktLoad();
+  h = w.api.marketplaceHtml();
+  ok(h.includes('data-mktinst="aib-skipstop"') && h.includes('更新') && h.includes('此系統未支援'), 'reason: marketplace_list_render\n' + h);
+  await w.api.mktInstall('aib-skipstop');
+  h = w.api.marketplaceHtml();
+  ok(h.includes('已裝 0.4.1') && !h.includes('data-mktinst="aib-skipstop"'), 'reason: marketplace_install_refresh\n' + h);
 
   console.log('saved-blocks: ' + n + ' 項全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

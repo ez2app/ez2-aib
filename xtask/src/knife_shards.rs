@@ -198,7 +198,27 @@ pub fn grew(table: &BTreeMap<String, u64>, now: &BTreeMap<String, u64>) -> Vec<G
         .collect()
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...";
+const LIMIT_MIN_MINS: u64 = 5;
+const LIMIT_MAX_MINS: u64 = 240;
+
+/// Timeout limit in minutes from historical median seconds: 2x + 2m buffer, clamped to [5, 240].
+pub fn limit_mins(secs: u64) -> u64 {
+    secs.saturating_mul(2)
+        .saturating_add(120)
+        .div_ceil(60)
+        .clamp(LIMIT_MIN_MINS, LIMIT_MAX_MINS)
+}
+
+/// `<mins>\t<path>` timeout limits from `table`, in path order. Scripts absent from `table` are omitted
+/// so the runner keeps their header/default timeout.
+pub fn limits(table: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
+    table
+        .iter()
+        .map(|(file, &secs)| (file.clone(), limit_mins(secs)))
+        .collect()
+}
+
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -292,11 +312,26 @@ fn grew_cmd(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
+fn limits_cmd(args: &[String]) -> Result<String, String> {
+    let [flag, table] = args else {
+        return Err(USAGE.into());
+    };
+    if flag != "--secs" || table.starts_with("--") {
+        return Err(USAGE.into());
+    }
+    let table = parse_secs(&read(table)?).map_err(|e| format!("{table}: {e}"))?;
+    Ok(limits(&table)
+        .into_iter()
+        .map(|(f, m)| format!("{m}\t{f}\n"))
+        .collect())
+}
+
 pub fn run(args: &[String]) -> u8 {
     let r = match args {
         [cmd, rest @ ..] if cmd == "plan" => plan_cmd(rest),
         [cmd, rest @ ..] if cmd == "secs" => secs_cmd(rest),
         [cmd, rest @ ..] if cmd == "grew" => grew_cmd(rest),
+        [cmd, rest @ ..] if cmd == "limits" => limits_cmd(rest),
         _ => Err(USAGE.into()),
     };
     match r {
@@ -351,6 +386,20 @@ mod tests {
             ]
         );
         assert!(grew(&table, &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn limits_are_computed_from_history_and_clamped() {
+        assert_eq!(limit_mins(0), 5);
+        assert_eq!(limit_mins(60), 5);
+        assert_eq!(limit_mins(120), 6);
+        assert_eq!(limit_mins(600), 22);
+        assert_eq!(limit_mins(10_000), 240);
+        let t = table(&[("a.sh", 30), ("b.sh", 600)]);
+        assert_eq!(
+            limits(&t),
+            vec![("a.sh".to_string(), 5), ("b.sh".to_string(), 22)]
+        );
     }
 
     fn table(rows: &[(&str, u64)]) -> BTreeMap<String, u64> {
