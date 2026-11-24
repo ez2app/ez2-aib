@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # ORDER-autodrive-webdev 7ebca 3 knives RT1-RT2 (7ebca 11-20): the tool list steers review work
 # into the thread (seat_send is private; thread_send is where review goes, the person @s in).
 set -eo pipefail

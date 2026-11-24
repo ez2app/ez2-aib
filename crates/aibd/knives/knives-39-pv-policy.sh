@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PP1–PP11 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.

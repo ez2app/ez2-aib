@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a preview starts with stdio only (519d0 11-20, #867 macOS fd_inherited)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

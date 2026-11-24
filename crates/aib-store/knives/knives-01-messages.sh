@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-2a knives MS10–MS12 (a9136 11-18; DECISION-council-dmq-519d0-1118, MAP-tests-dmq-7b81e-1118 r1): a message
 # library file a newer aibd wrote is not read; the next page of a thread starts where the last one ended. Run from the repo root.
 # (split from crates/aibd/knives/knives-12-messages.sh: one crate per knives file)

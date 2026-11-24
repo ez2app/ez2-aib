@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S79-rust 3b (DECISION-council-driveweb r3): aibd reads an act round's work orders for web
 # seats from its stdout; each rule loosened turns its own test red. Run from the repo root.
 set -euo pipefail

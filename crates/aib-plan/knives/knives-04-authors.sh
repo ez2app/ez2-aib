@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan authors PA1–PA3 (a9136 11-17, DECISION-council-gaps-519d0-1117 R5 + 0eed7 N1 on e070fecf):
 # a 審 / 驗 / 疊 segment of the owner is not the author, a seat's role is read from its own segment, and an
 # author brought in by --branch in the same command cannot pass its own card. Each rule, broken, turns

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # G13 席的回答回到共同對話 (reply_back.rs; IFACE-reply-in-thread-a9136-1119)
 set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 cd "$(git rev-parse --show-toplevel)"

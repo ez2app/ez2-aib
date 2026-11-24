@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # BN-K (DESIGN-brainnote-08de5-1123 r1 §1; 8b09a preread r2): brain_note writes only from a work seat, new files only, inside the bound brain and away from protected paths, fences the seat's text as data, strips bad characters, and the seat gets the tool in work mode only. Each rule broken turns its test red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly-c23: 合回 refuses commits that change files an AI loads as settings (5d33a H1)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-userpage knives UP1–UP2 (a9136 11-18; 519d0 19:55 裁 from 5d33a PREREAD-search N1): a user
 # folder page reads a shared thread's posts without the text. Run from the repo root.
 set -eo pipefail

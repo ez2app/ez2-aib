@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 3 knives HO1–HO4 (7b81e 11-18, ORDER-workspace §第三波 7b81e 2; DESIGN-workspace-hosts r0,
 # a9136 12:03): a user folder page does not see the machines; one answer is kept a minute; every ssh connects
 # within 5 s; a holder's label is cut. Each rule, broken, turns its own test red. Run from the repo root.

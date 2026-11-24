@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # N-ws-codex-work knives CO1-CO4 (7ebca 11-20, COUNCIL-worktree-gitdir-7ebca-1120 Q3): aibd opens a
 # codex work seat in its own folder only and adds the folder half of its profile at start.
 set -eo pipefail

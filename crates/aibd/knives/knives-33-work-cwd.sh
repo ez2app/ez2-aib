@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a work seat's folder (a9136 11-19, 5d33a M1 on ecf54f91d, CHECK-preview-work-seat r2 §4):
 # under <data>/seat-work by its real path, never a link. Each rule, broken, turns its own test red.
 set -eo pipefail

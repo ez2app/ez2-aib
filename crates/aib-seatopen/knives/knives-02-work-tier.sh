@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-seatopen knives WT1–WT4 (a9136 11-19, N-ws-live-in W1, DESIGN-seat-work-tier-a9136-1119): a work claude seat
 # gets a fixed tool list, confined to its folder, asking nobody. Each rule, broken, turns its own test red.
 set -eu

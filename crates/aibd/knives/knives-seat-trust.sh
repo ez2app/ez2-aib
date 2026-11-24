@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # ST1–ST17 T1: the owner's fingerprint makes a seat trusted (DESIGN-trust-t1-7b81e-1120; 5d33a PREREAD-trust-t1 L1 L2): one knife a line of defence
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

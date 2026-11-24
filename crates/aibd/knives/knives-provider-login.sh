@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # RL1-RL12 重新登入 AI from the page (DESIGN-relogin-card-a9136-1121 r2; 5d33a PREREAD-relogin 0/0/2/3, r2 0/0/0/3)
 set -euo pipefail
 pl() { python3 -I scripts/knife.py crates/aibd/src/provider_login.rs "$1" "$2" --expect-fail "provider_login::tests::$3" \

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # OT1 (b4297 11-21; 0eed7 VERIFY-pv6 M3, 519d0 派工): the parent's AIBD_OWNER_TOUCH goes over to
 # the preview; dropped, the page's fingerprint asks in the preview say unavailable.
 set -eu

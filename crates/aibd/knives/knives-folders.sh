@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # NI1-NI4, NI6, NI7 shared folders and keeping indexers out (PREREAD-shared-folder-noindex-a9136-1121, 5d33a 0/0/2/2). NI5 (Windows attribute) is aib_sys::noindex's own test on the Windows cell.
 set -euo pipefail
 fo() { python3 -I scripts/knife.py crates/aibd/src/folders.rs "$1" "$2" --expect-fail "folders::tests::$3" \

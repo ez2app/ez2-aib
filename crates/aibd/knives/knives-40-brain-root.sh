@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # BR1–BR10 (7b81e 11-20; c12, Andy 11-19 22:2x「這個路徑 ~/Ez2/Vault-uid 也應該是 不寫死的」,
 # DECISION-brain-root-c12-7b81e-1120): the second-brain library is found in a fixed order with no
 # guessed folder, a bad setting stops there, the list comes from the library's own index, and a

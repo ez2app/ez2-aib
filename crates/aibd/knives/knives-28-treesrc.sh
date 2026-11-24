@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace-c4 C knives RC1–RC2 (7b81e 11-18; 519d0 20:07, Andy 20:0x「這應該是 rust 程式化的」): at start the
 # node table is checked against aib-plan's file id by id, and any difference keeps the file as the tree.
 set -eu

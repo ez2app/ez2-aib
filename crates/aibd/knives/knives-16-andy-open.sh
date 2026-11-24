@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace 第三波 1-2 + SPEC §14 knives AN1-AN10, NX1-NX5, GD1-GD4, RS3 (7ebca 11-18,
 # ORDER-workspace-519d0-1118): the open items of the 待人決策 list (aib-drive andy_open, #847)
 # are cards with the board's fields, 「知道」 sits with slot 6, a closed or unknown item is never

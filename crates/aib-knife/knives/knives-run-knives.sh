@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The one knife step's own knives (S66-loop, DESIGN-knives-loop-ebb36-1117 r0 "刀(本張自己的)"; 7b81e 11-17):
 # each knife takes one rule of crates/aib-knife/run-knives.sh away and must turn its own test in
 # xtask/src/run_knives.rs red. Run by the "crate knives" step like every crates/*/knives/*.sh.

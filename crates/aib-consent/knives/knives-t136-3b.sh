@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # T136-3b knives (CP6 SIGN copy re-checked against its sha; NC used-nonce ledger), from the aib-consent knife step.
 # Moved out of .github/workflows/aibd.yml word for word (519d0 11-16 23:5x: the workflow file is near
 # its 450,000-byte guard; new knives live in crates/<crate>/knives/). aib-xtask knife-anchors reads

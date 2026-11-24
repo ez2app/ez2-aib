@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # B1dm-S4 knives VS1–VS14 (7ebca 11-18, 519d0 08:06): reading a seat's mail translated from
 # dm_queue.py (tabs, waiting order, stale, expiry, list, show) keeps the old answers. Each rule,
 # broken, turns its own test red. Run from the repo root.

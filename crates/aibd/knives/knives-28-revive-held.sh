@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # RK2 (a9136 11-18, 0eed7 VERIFY 51ac92d9 M1): a held stop the next start turned `interrupted`
 # is still decided by its recorded stop, never taken up as a plain interrupted one.
 # Run from the repo root.

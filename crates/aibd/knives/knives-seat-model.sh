@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # SM1–SM6 (1a93b 11-21, 519d0 06:45 point 2): a usage card says when it comes back; a seat moves
 # to another model from the built-in page only, pinned, and goes on in its own conversation.
 # Run from the repo root.

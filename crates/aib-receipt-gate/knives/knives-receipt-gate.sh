@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The receipt gate's reading of SSH_ORIGINAL_COMMAND (DESIGN-receipt-gate-a9136-1120 slice 1)
 set -u
 rg() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/lib.rs "$1" "$2" --expect-fail "$3" \

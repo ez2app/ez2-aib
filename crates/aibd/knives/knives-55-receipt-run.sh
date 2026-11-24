@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly 第 4 件 knives RQ1–RQ31 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.

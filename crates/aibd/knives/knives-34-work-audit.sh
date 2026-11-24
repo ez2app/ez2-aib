@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # what a work seat does, journaled; each seat commits as itself (a9136 11-19, W1 condition 6,
 # 0eed7 VERIFY N2). Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail

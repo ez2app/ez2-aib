@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S79-rust slice 2: aib-drive reads the dm queue in process (StoreQueue), no `aib dm-queue list`.
 set -euo pipefail
 sq() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "source::store_queue_tests::$3" \

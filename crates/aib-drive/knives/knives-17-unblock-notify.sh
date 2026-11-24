@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "unblock_notify" knives of #803 (S79-u5, 043dd 11-15), moved out of aibd.yml when #803 took
 # main 1f9a749c (RULES §21; main had moved every aib-drive knife here, f7528547 / 3b307d36).
 # IDs are UN (not UB) so they do not collide with knives-12-unblock.sh, which is a9136's unblock.rs.

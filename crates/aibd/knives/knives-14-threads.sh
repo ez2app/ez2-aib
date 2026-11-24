@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace knives TH1–TH11c, TC1a–e, PK1–PK2 (a9136 11-18; SPEC-workspace-multiseat-519d0-1118 §1.3 / §7 / §8): a post calls only
 # members, seats stop without a person, a thread takes 20 posts a minute, a safe sender never reaches a dgrs seat,
 # a post is at most 32 KiB, the same key answers the first post. Each rule, broken, turns its own test red. Run from the repo root.

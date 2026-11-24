@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S101 no-PowerShell knives (PS1 aib-lease hosts.rs, PS2 aib-plan aib-hosts.rs); run by the crate knives step (run-knives.sh rust).
 # Moved out of .github/workflows/aibd.yml word for word (519d0 11-16 23:5x: the workflow file is near
 # its 450,000-byte guard; new knives live in crates/<crate>/knives/). aib-xtask knife-anchors reads

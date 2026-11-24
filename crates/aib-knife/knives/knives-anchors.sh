@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "knife anchors knives (macOS)" step of aibd.yml's rust job, moved here word for word
 # (519d0 11-16 23:5x: aibd.yml was 448,728 B of the 450,000 its line 44 allows; new knives go in
 # crates/<c>/knives/, the workflow keeps the call). These knives break aib-xtask knife-anchors

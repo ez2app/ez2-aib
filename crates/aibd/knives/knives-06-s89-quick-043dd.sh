@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89 quick-fix knives QK1–QK6 + AR1–AR10 (043dd 11-18, 519d0 04:0x dispatch: S89-live-3 policy file owner / mode,
 # S89-state seat list shows whether each seat is running). Each rule, broken, turns its own test red.
 # Run from the repo root.

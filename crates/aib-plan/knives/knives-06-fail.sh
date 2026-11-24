@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan fail FL1–FL4 (a9136 11-18, DECISION-council-gaps-519d0-1117 R2): the author cannot record its
 # own failed check, the fixer defaults to the author, a pass clears the flag, and the event carries the
 # key the drive dedupes on. Each rule, broken, turns its own test red. Run on macOS (the header default)

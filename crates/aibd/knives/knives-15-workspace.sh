@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace knives WS1–WS13 (7b81e 11-18, ORDER-workspace-519d0-1118): GET tree / host / version.
 # The tree keeps the first of a repeated id, a node parented to itself is a root, a parent loop is walked
 # once, depth and file order hold, the person's words go to the built-in page only, a large file is not read;

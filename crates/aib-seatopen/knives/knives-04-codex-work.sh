@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # N-ws-codex-work knives CW1-CW8 (7ebca 11-20, FEASIBILITY-codex-work-seat-7ebca-1120 C): a codex
 # work seat runs in the profile `seat` (no codex sandbox_mode), network off, its git reads no
 # user config, and the profile writes only the seat's folder and its .git.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # u-3 unblock knives (ebb36 11-15, DECISION-council-unblock-519d0-1115 §2; #809): each rule loosened
 # must turn its own test red. Moved from the inline aibd.yml step of feat/drive-u3b-ebb36-1115 word
 # for word (RULES §21 / 11-16: new knives live in crates/*/knives/*.sh; run by crates/aib-knife/run-knives.sh).

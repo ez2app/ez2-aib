@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PA1–PA11, PW1–PW3, PO11–PO13: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

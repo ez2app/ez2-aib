@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # H7 of the "aib-sys held knives (macOS)" step, moved here word for word (519d0 11-16 23:5x: new knives
 # live in crates/<crate>/knives/, aibd.yml keeps one call; 5d33a #794 0153e4f0 L1). The step calls this
 # file in place of the inline knife. aib-xtask knife-anchors reads crates/*/knives/*.sh. Run from the

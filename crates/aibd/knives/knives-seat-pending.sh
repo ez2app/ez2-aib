@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PR1-PR8, W1-W7 a web seat reads the pending folder read-only through aibd (PREREAD-seat-pending-read-a9136-1121; 519d0 11-21 11:21)
 set -euo pipefail
 pr() { python3 -I scripts/knife.py crates/aibd/src/seat_pending.rs "$1" "$2" --expect-fail "seat_pending::tests::$3" \

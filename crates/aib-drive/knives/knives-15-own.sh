@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-drive own knives (S79-own o-1 own.rs list, o-2 own_ledger.rs done / progress / none; 56cda,
 # DECISION-council-s79-own-519d0-1116 r1). Moved out of knives-08-next-local.sh so own's knives sit in one
 # place (a9136 / 7b81e 11-17 00:19; o-4 can add here). aibd.yml runs every crates/aib-drive/knives/*.sh in

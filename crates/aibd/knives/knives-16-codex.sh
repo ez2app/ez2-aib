@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-live-2 knives CX1–CX8 (b4297 11-18, DESIGN-s89live2-codex-pipe-b4297-1118 r3; 519d0 wave 2):
 # a codex seat starts safe only, with the user's codex set-up kept out, on the measured version;
 # aibd speaks app-server: opening, turn/start on codex's thread, turn/completed ends a turn,

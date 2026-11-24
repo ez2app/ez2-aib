@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # SC1–SC14 (1a93b 11-20, DESIGN-seat-clear-1a93b-1120 r1; 519d0 23:38): the page's 清空 (act
 # seat_clear) stops a seat that said its handoff is written and opens it on a new conversation
 # whose first line is aibd's. Each rule, broken, turns its own test red. Run from the repo root.

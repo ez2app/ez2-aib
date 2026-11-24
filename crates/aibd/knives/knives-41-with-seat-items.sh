@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # FINDING-andy-realrun-519d0-1120 1 knives JN1-JN3 (7ebca 11-20): a seat the page opens in
 # another work seat's folder is put on that seat's items as observer, said by with_seat, so it
 # is in their threads.

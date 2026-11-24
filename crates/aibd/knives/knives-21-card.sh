@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 4 knives WC1–WC4 (7b81e 11-18, ORDER-workspace §第四波 7b81e; SPEC §15): GET nodes/{id}
 # gives the card window's fields — records newest first, the items right under only, why / record words
 # to the built-in page only, and the handler really adds them. Each rule, broken, turns its own test red.

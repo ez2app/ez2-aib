@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace knives MS13–MS18 (a9136 11-18; SPEC-workspace-multiseat-519d0-1118 §1.3): one key writes one post
 # even when two arrive together, a seat lists only its threads, the timeline holds posts only. Run from the repo root.
 set -eo pipefail

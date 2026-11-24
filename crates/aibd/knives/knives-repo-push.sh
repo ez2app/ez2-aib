@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # RP21–RP37 G2: a registered repo's web/ branch is pushed from aibd's own repository, with the owner's fingerprint (DESIGN-repo-push-g2-7b81e-1120; 5d33a PREREAD-repopush-g2 L1 L2)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

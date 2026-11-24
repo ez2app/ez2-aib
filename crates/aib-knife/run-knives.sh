@@ -66,7 +66,8 @@ list_only=${AIB_KNIVES_LIST:-}
 plan_file=${AIB_KNIVES_PLAN:-}
 limits_file=${AIB_KNIVES_LIMITS:-}
 skip_files=${AIB_SKIP_FILES:-}
-unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS AIB_SKIP_FILES
+only_os=${AIB_KNIVES_ONLY_OS:-}
+unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS AIB_SKIP_FILES AIB_KNIVES_ONLY_OS
 plan_f=()
 plan_k=()
 if [ -n "$plan_file" ]; then
@@ -154,6 +155,9 @@ for f in "${scripts[@]}"; do
     unix) [ "$here" != windows ] && ok=1 || ok=0 ;;
     *) [ "$want_os" = "$here" ] && ok=1 || ok=0 ;;
   esac
+  if [ -n "$only_os" ] && [ "$want_os" != "$only_os" ]; then
+    ok=0
+  fi
   if [ "$ok" != 1 ]; then
     echo "KNIVES-SCRIPT $f: SKIPPED why=not_this_os os=$want_os"
     continue

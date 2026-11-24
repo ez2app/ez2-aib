@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # the seat folder held open (5d33a PREREAD-g5-bridge-7ebca-5d33a-1121 L1 / L2; G5 and G3 share it)
 set -euo pipefail
 umask 022

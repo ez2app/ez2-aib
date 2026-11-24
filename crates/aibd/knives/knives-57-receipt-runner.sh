@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR12, RL1–RL6 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.

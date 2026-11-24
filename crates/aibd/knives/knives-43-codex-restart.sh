@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # N-ws-ask-codex knife RV1 (7ebca 11-20): a codex seat started again gets the talk server as
 # codex settings, not claude's --mcp-config.
 set -eo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-cireuse reasons knives (macOS)" step of aibd.yml's rust job, moved here word for word (11-16 裁定:
 # 新刀放 crates/<套件>/knives/;IFACE-drive-shadow-519d0-1117 §5). The "aib-cireuse knives (macOS)" step
 # (#823) runs every crates/aib-cireuse/knives/*.sh in name order; aib-xtask knife-anchors reads them.

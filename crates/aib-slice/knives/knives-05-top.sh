@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-slice top folder SC1 (a9136 11-17, S73l-incr M1 from 0eed7 VERIFY-S73l-incr-0eed7-a7cfc605):
 # every git command runs at the repo's top folder, so a sweep from the aib/ subfolder sees a workflow
 # over the limit and leaves no empty answer in the cache. Broken, its test turns red. Run on macOS (the
