@@ -205,9 +205,10 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         assert_eq!(r.code, 201, "{}", r.body);
         r
     };
+    let db = aib_store::Store::open(&data.join("db.sqlite")).unwrap();
     let seat_obj = r.json.get("seat").unwrap_or(&r.json);
     let repo_seat = seat_obj["seat_id"].as_str().unwrap().to_owned();
-    let repo_tree = PathBuf::from(seat_obj["cwd"].as_str().unwrap());
+    let repo_tree = PathBuf::from(db.seat_meta(&repo_seat).unwrap().unwrap().cwd);
     std::fs::write(repo_tree.join("change.txt"), "new work\n").unwrap();
     g(&repo_tree, &["add", "change.txt"]);
     g(&repo_tree, &["commit", "-q", "-m", "seat work"]);
@@ -216,7 +217,6 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
     OPEN.store(false, Ordering::SeqCst);
     windows.store(0, Ordering::SeqCst);
 
-    let db = aib_store::Store::open(&data.join("db.sqlite")).unwrap();
     let before_tree = tree(dir.path());
     let before_db_events = db.events_after(0, 10_000).unwrap().len();
     let before_api_events = d
