@@ -24,6 +24,7 @@ mod deps;
 mod knife_affected;
 mod knife_anchors;
 mod knife_compile;
+mod knife_names;
 mod knife_precheck;
 mod knife_shards;
 mod knife_spec;
@@ -379,7 +380,7 @@ fn ci_scope_cmd(args: &[String]) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-compile <knife-tsv> [ROOT] \
+        "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-names [--list] [ROOT] | knife-compile <knife-tsv> [ROOT] \
          | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
          | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE] \
          | ci-scope [--json] [--root R] EVENT BASE HEAD \
@@ -441,6 +442,16 @@ fn main() -> ExitCode {
         [cmd, root] if cmd == "knife-anchors" => {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
+        [cmd, rest @ ..] if cmd == "knife-names" => match rest {
+            [] => ExitCode::from(knife_names::run(Path::new("."), false)),
+            [f] if f == "--list" => ExitCode::from(knife_names::run(Path::new("."), true)),
+            [root] => ExitCode::from(knife_names::run(Path::new(root), false)),
+            [f, root] if f == "--list" => ExitCode::from(knife_names::run(Path::new(root), true)),
+            _ => {
+                eprintln!("usage: aib-xtask knife-names [--list] [ROOT]");
+                ExitCode::from(2)
+            }
+        },
         [cmd, tsv] if cmd == "knife-compile" => {
             ExitCode::from(knife_compile::run(Path::new("."), Path::new(tsv)))
         }
