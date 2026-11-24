@@ -138,6 +138,7 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
     let state = root.join("import-state");
     std::fs::create_dir_all(state.join("dm-queue").join("7ebca")).unwrap();
     std::env::set_var("AIBD_IMPORT_STATE", &state);
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
 
     let mut d = Daemon::start(dir.path()).await;
     let cred = d.page(true).await;
