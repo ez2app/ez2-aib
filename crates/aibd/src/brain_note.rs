@@ -834,10 +834,24 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         // a note with no row could never be taken back: remove it again
         let (rel2, sha2) = (rel.clone(), sha.clone());
         let tmp = archive_path(&crate::registry::data_of(&st), &note_id);
-        let _ = tokio::task::spawn_blocking(move || {
+        let rolled = tokio::task::spawn_blocking(move || {
             library().and_then(|root| take_back(&root, &rel2, &sha2, &tmp))
         })
         .await;
+        if !matches!(rolled, Ok(Ok(()))) {
+            crate::seats::side_event(
+                &st,
+                "brain_note",
+                "brain.note.orphan",
+                json!({"seat_id": seat_id, "rel": rel, "sha256": sha}),
+            )
+            .await;
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("檔留在 {rel},請手動收"),
+            );
+        }
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",

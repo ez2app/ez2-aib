@@ -140,14 +140,17 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
     }
     assert_eq!(std::fs::read_to_string(&card).unwrap(), text);
 
-    // (d) its own ticket gets past the gate (asked no more, not refused as unapproved)
+    // (d) its own ticket gets past the gate and updates the card (N12)
     let asked = n.load(Ordering::SeqCst);
     let r = post(&cred, set("新的職責", Some(&t))).await;
-    assert!(
-        r.code != 202 && r.code != 403,
+    assert_eq!(
+        r.code, 200,
         "reason: approved_persona_set_refused {} {}",
-        r.code,
-        r.body
+        r.code, r.body
+    );
+    assert!(
+        std::fs::read_to_string(&card).unwrap().contains("新的職責"),
+        "reason: card_not_updated"
     );
     assert_eq!(n.load(Ordering::SeqCst), asked);
     d.shutdown().await;

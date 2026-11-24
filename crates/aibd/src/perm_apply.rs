@@ -417,9 +417,8 @@ fn fields(body: &Value) -> Option<(String, String, i64, Option<String>)> {
     Some((seat, tpl, rev, ticket))
 }
 
-/// The seat's mode and what it holds now (a seat with no row gets one: its mode's own, so a
-/// change has a `from`).
 /// The seat's mode, the items it runs with now, and the change waiting for its restart.
+/// P8: does not write an initial `seat_perm_open` row on read; computes mode defaults in memory.
 async fn now_of(
     st: &AppState,
     seat_id: &str,
@@ -451,26 +450,24 @@ async fn now_of(
             "no such seat",
         )));
     };
-    let (db, id, m) = (st.messages.clone(), seat_id.to_owned(), mode.clone());
-    let row = tokio::task::spawn_blocking(move || {
-        if db.seat_perm(&id)?.is_none() {
-            let s = aib_store::PermState {
-                tpl_uid: format!("mode.{m}"),
-                tpl_rev: 1,
-                base: m.clone(),
-                items_json: mode_items(&m).json(),
-            };
-            db.seat_perm_open(&id, &s, "aibd:mode", &crate::sessions::now_rfc3339())?;
-        }
-        db.seat_perm(&id)
-    })
-    .await;
-    let Ok(Ok(Some(p))) = row else {
+    let (db, id) = (st.messages.clone(), seat_id.to_owned());
+    let row = tokio::task::spawn_blocking(move || db.seat_perm(&id)).await;
+    let Ok(Ok(row)) = row else {
         return Err(Box::new(refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "seat permissions unreadable",
         )));
+    };
+    let Some(p) = row else {
+        let items = mode_items(&mode);
+        let def = aib_store::PermState {
+            tpl_uid: format!("mode.{mode}"),
+            tpl_rev: 1,
+            base: mode.clone(),
+            items_json: items.json(),
+        };
+        return Ok((mode, items, None, def, None));
     };
     let parse = |j: &str| {
         serde_json::from_str::<Value>(j)
@@ -556,7 +553,7 @@ async fn apply_to(
         (None, Change::Lower) => "lower",
         _ => "raise_pending",
     };
-    let (db, id, s, exp_now, exp_pend, act, who) = (
+    let (db, id, s, exp_now, exp_pend, act, who, open_def) = (
         st.messages.clone(),
         seat_id.to_owned(),
         e.state(),
@@ -564,6 +561,12 @@ async fn apply_to(
         pending_state,
         action.to_owned(),
         by.to_owned(),
+        aib_store::PermState {
+            tpl_uid: format!("mode.{mode}"),
+            tpl_rev: 1,
+            base: mode.clone(),
+            items_json: mode_items(&mode).json(),
+        },
     );
     let w = tokio::task::spawn_blocking(move || {
         let at = crate::sessions::now_rfc3339();
@@ -576,6 +579,7 @@ async fn apply_to(
             &who,
             &at,
             revoking,
+            Some(&open_def),
         )
     })
     .await;
@@ -748,6 +752,18 @@ pub async fn revoke(st: AppState, body: Value, by: String) -> Response {
     };
     if row.revoked_at.is_some() {
         return refuse(StatusCode::CONFLICT, "revoked_already", "這一筆已經收回了");
+    }
+    // P7: only the latest unrevoked change of this seat can be taken back
+    if log
+        .iter()
+        .find(|l| l.revoked_at.is_none() && l.action != "open")
+        .is_some_and(|latest| latest.log_id != log_id)
+    {
+        return refuse(
+            StatusCode::CONFLICT,
+            "not_latest",
+            "只能收回這一位最新一筆還沒收回的變更",
+        );
     }
     let from = row
         .from_json
