@@ -318,44 +318,38 @@ fn tiers_file(home: &Path) -> PathBuf {
 fn tier_defaults(tier: &str) -> Value {
     match tier {
         "strict" => json!({
-            "reuse": "main_exact", "spot_every": 5, "knives": "all", "platforms": "both",
-            "stop": "reject", "cell_max_min": 60, "script_max_knives": 100,
-            "script_max_min": 20, "overflow": "add_cell"
+            "reuse": "main_exact", "spot": 5, "knives": "changed_all", "retry_miss": "on",
+            "platforms": "all", "overflow": "add_cell", "cell_max_min": 90, "cells_max": 5
         }),
         "fast" => json!({
-            "reuse": "scope", "spot_every": 20, "knives": "changed", "platforms": "linux_only",
-            "stop": "warn", "cell_max_min": 60, "script_max_knives": 200,
-            "script_max_min": 30, "overflow": "trim"
+            "reuse": "scope", "spot": 20, "knives": "affected", "retry_miss": "off",
+            "platforms": "primary", "overflow": "defer", "cell_max_min": 60, "cells_max": 4
         }),
         _ => json!({
-            "reuse": "main_exact", "spot_every": 10, "knives": "affected", "platforms": "native",
-            "stop": "reject", "cell_max_min": 90, "script_max_knives": 140,
-            "script_max_min": 25, "overflow": "add_cell"
+            "reuse": "scope", "spot": 10, "knives": "affected", "retry_miss": "off",
+            "platforms": "primary", "overflow": "add_cell", "cell_max_min": 90, "cells_max": 5
         }),
     }
 }
 
 fn valid_tier_reuse(s: &str) -> bool {
-    matches!(
-        s,
-        "main_exact" | "any_exact" | "recent" | "scope" | "exact" | "off" | "observe"
-    )
+    matches!(s, "main_exact" | "exact" | "scope")
 }
 
 fn valid_tier_knives(s: &str) -> bool {
-    matches!(s, "all" | "affected" | "changed")
+    matches!(s, "changed_all" | "affected" | "touched_only")
+}
+
+fn valid_tier_retry_miss(s: &str) -> bool {
+    matches!(s, "on" | "off")
 }
 
 fn valid_tier_platforms(s: &str) -> bool {
-    matches!(s, "both" | "native" | "linux_only")
-}
-
-fn valid_tier_stop(s: &str) -> bool {
-    matches!(s, "reject" | "warn")
+    matches!(s, "all" | "primary")
 }
 
 fn valid_tier_overflow(s: &str) -> bool {
-    matches!(s, "fail" | "add_cell" | "trim")
+    matches!(s, "add_cell" | "defer")
 }
 
 fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
@@ -367,7 +361,7 @@ fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
         return true;
     };
     let Some(spot) = policy
-        .get("spot_every")
+        .get("spot")
         .and_then(Value::as_u64)
         .filter(|n| (2..=100).contains(n))
     else {
@@ -380,17 +374,17 @@ fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
     else {
         return true;
     };
+    let Some(retry_miss) = policy
+        .get("retry_miss")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_retry_miss(s))
+    else {
+        return true;
+    };
     let Some(platforms) = policy
         .get("platforms")
         .and_then(Value::as_str)
         .filter(|s| valid_tier_platforms(s))
-    else {
-        return true;
-    };
-    let Some(stop) = policy
-        .get("stop")
-        .and_then(Value::as_str)
-        .filter(|s| valid_tier_stop(s))
     else {
         return true;
     };
@@ -404,21 +398,14 @@ fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
     let Some(cell) = policy
         .get("cell_max_min")
         .and_then(Value::as_u64)
-        .filter(|n| (15..=90).contains(n))
+        .filter(|n| (10..=140).contains(n))
     else {
         return true;
     };
-    let Some(sk) = policy
-        .get("script_max_knives")
+    let Some(cells_max) = policy
+        .get("cells_max")
         .and_then(Value::as_u64)
-        .filter(|n| (20..=200).contains(n))
-    else {
-        return true;
-    };
-    let Some(sm) = policy
-        .get("script_max_min")
-        .and_then(Value::as_u64)
-        .filter(|n| (5..=60).contains(n))
+        .filter(|n| (1..=8).contains(n))
     else {
         return true;
     };
@@ -429,35 +416,41 @@ fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
     let Some(knife_length_check) = repo.get("knife_length_check").and_then(Value::as_str) else {
         return true;
     };
-    let repo_looser = linux_knives || knife_length_check != "reject";
+    let Some(sk) = repo
+        .get("script_max_knives")
+        .and_then(Value::as_u64)
+        .filter(|n| (20..=300).contains(n))
+    else {
+        return true;
+    };
+    let Some(sm) = repo
+        .get("script_max_min")
+        .and_then(Value::as_u64)
+        .filter(|n| (5..=30).contains(n))
+    else {
+        return true;
+    };
+    let repo_looser = linux_knives || knife_length_check != "reject" || sk > 140 || sm > 15;
     if repo_looser {
         return true;
     }
-    let reuse_looser = matches!(reuse, "exact" | "scope" | "any_exact" | "recent");
-    let stop_looser = stop == "warn";
-    let ov_looser = overflow == "trim";
 
     if requested == "strict" {
-        return reuse_looser
+        return reuse != "main_exact"
             || spot > 5
-            || knives != "all"
-            || platforms != "both"
-            || stop_looser
-            || ov_looser
-            || (ov_looser && cell < 60)
-            || sk > 100
-            || sm > 20;
+            || knives != "changed_all"
+            || retry_miss != "on"
+            || platforms != "all"
+            || overflow == "defer"
+            || (overflow == "defer" && cell < 90)
+            || cells_max > 5;
     }
 
-    reuse_looser
-        || (!matches!(reuse, "off" | "observe") && spot > 10)
-        || knives == "changed"
-        || platforms == "linux_only"
-        || stop_looser
-        || ov_looser
-        || (ov_looser && cell < 90)
-        || sk > 140
-        || sm > 25
+    spot > 10
+        || knives == "touched_only"
+        || overflow == "defer"
+        || (overflow == "defer" && cell < 90)
+        || cells_max > 5
 }
 
 fn expand_tier_state(raw: &Value) -> Value {
@@ -479,6 +472,8 @@ fn expand_tier_state(raw: &Value) -> Value {
     let mut repo = json!({
         "linux_knives": false,
         "knife_length_check": "reject",
+        "script_max_knives": 140,
+        "script_max_min": 15,
         "merge_batch_tz": "Asia/Taipei",
         "merge_batch_hours": [10, 16, 22]
     });
@@ -498,6 +493,8 @@ fn expand_tier_state(raw: &Value) -> Value {
         policy = tier_defaults("strict");
         repo["linux_knives"] = json!(false);
         repo["knife_length_check"] = json!("reject");
+        repo["script_max_knives"] = json!(140);
+        repo["script_max_min"] = json!(15);
     }
     let presets = raw
         .get("presets")
@@ -550,11 +547,11 @@ pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'stati
                     let c = v
                         .as_u64()
                         .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
-                    if !(15..=90).contains(&c) {
+                    if !(10..=140).contains(&c) {
                         return Err((StatusCode::BAD_REQUEST, "out_of_range"));
                     }
                 }
-                "spot_every" => {
+                "spot" => {
                     let s = v
                         .as_u64()
                         .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
@@ -562,19 +559,11 @@ pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'stati
                         return Err((StatusCode::BAD_REQUEST, "out_of_range"));
                     }
                 }
-                "script_max_knives" => {
-                    let k_val = v
+                "cells_max" => {
+                    let c = v
                         .as_u64()
                         .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
-                    if !(20..=200).contains(&k_val) {
-                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
-                    }
-                }
-                "script_max_min" => {
-                    let m = v
-                        .as_u64()
-                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
-                    if !(5..=60).contains(&m) {
+                    if !(1..=8).contains(&c) {
                         return Err((StatusCode::BAD_REQUEST, "out_of_range"));
                     }
                 }
@@ -588,13 +577,13 @@ pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'stati
                         return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
                     }
                 }
-                "platforms" => {
-                    if !v.as_str().is_some_and(valid_tier_platforms) {
+                "retry_miss" => {
+                    if !v.as_str().is_some_and(valid_tier_retry_miss) {
                         return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
                     }
                 }
-                "stop" => {
-                    if !v.as_str().is_some_and(valid_tier_stop) {
+                "platforms" => {
+                    if !v.as_str().is_some_and(valid_tier_platforms) {
                         return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
                     }
                 }
@@ -621,6 +610,22 @@ pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'stati
                 "knife_length_check" => {
                     if !v.as_str().is_some_and(|s| matches!(s, "reject" | "warn")) {
                         return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "script_max_knives" => {
+                    let k_val = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+                    if !(20..=300).contains(&k_val) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "script_max_min" => {
+                    let m = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+                    if !(5..=30).contains(&m) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
                     }
                 }
                 "merge_batch_tz" => {
@@ -1101,15 +1106,15 @@ mod tests {
             &json!({
                 "type": TIER_SET,
                 "tier": "strict",
-                "overrides": {"spot_every": 10, "knives": "affected", "platforms": "native", "cell_max_min": 90}
+                "overrides": {"spot": 10, "knives": "affected", "platforms": "primary", "cell_max_min": 90}
             }),
         )
         .expect("strict plus normal");
         assert_eq!(strict_plus_normal["fell_back_to_strict"], true);
         assert_eq!(strict_plus_normal["effective_tier"], "strict");
-        assert_eq!(strict_plus_normal["policy"]["spot_every"], 5);
+        assert_eq!(strict_plus_normal["policy"]["spot"], 5);
 
-        // M2: unknown string, string number, float, spot_every out-of-range all rejected
+        // M2: unknown string, string number, float, spot out-of-range all rejected
         assert_eq!(
             tier_set(
                 &h.0,
@@ -1122,7 +1127,7 @@ mod tests {
         assert_eq!(
             tier_set(
                 &h.0,
-                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": "50"}})
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot": "50"}})
             )
             .unwrap_err()
             .1,
@@ -1140,7 +1145,7 @@ mod tests {
         assert_eq!(
             tier_set(
                 &h.0,
-                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot_every": 0}})
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot": 0}})
             )
             .unwrap_err()
             .1,

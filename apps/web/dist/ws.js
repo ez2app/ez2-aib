@@ -1198,26 +1198,27 @@
     if (d.fell_back_to_strict) {
       h += '<div class="thm" role="status">未完成硬體簽章驗證，已自動退回嚴格。</div>';
     }
-    const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'off' ? '關閉' : p.reuse === 'observe' ? '觀察模式' : '放寬沿用';
-    const knivesLbl = p.knives === 'all' ? '全部刀' : p.knives === 'affected' ? '受影響刀' : '只跑改動刀';
-    const platLbl = p.platforms === 'both' ? '雙平台' : p.platforms === 'native' ? '本機平台' : '只跑 Linux';
-    const stopLbl = p.stop === 'reject' ? '失敗即擋' : '僅警告';
+    const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'exact' ? '同機完全相符' : '改動碰不到也沿用';
+    const knivesLbl = p.knives === 'changed_all' ? '有變的全跑' : p.knives === 'affected' ? '只跑受影響的' : '只跑改動刀';
+    const retryLbl = p.retry_miss === 'on' ? '當場重跑一次' : '不重跑';
+    const platLbl = p.platforms === 'all' ? 'Mac + Win' : '主要平台';
+    const ovLbl = p.overflow === 'add_cell' ? '加格全跑' : '照優先序延後';
     const fields = [
-      ['沿用規則', reuseLbl, p.reuse !== 'off' && p.reuse !== 'observe' ? '省' : '不省'],
-      ['抽查頻率', p.spot_every ? `每 ${p.spot_every} 次抽 1` : '不抽查', '省'],
-      ['刀範圍', knivesLbl, p.knives === 'all' ? '不省' : '省'],
-      ['執行平台', platLbl, p.platforms === 'both' ? '不省' : '省'],
-      ['預檢守門', stopLbl, p.stop === 'reject' ? '不省' : '省'],
-      ['每格上限', `${p.cell_max_min || 90} 分`, '不省'],
-      ['單支刀數上限', `${p.script_max_knives || 140} 把`, '不省'],
-      ['單支時間上限', `${p.script_max_min || 25} 分`, '不省'],
+      ['什麼時候沿用', reuseLbl, '省很多'],
+      ['沿用幾次抽查', p.spot ? `每 ${p.spot} 次抽 1` : '每 10 次抽 1', '省一點'],
+      ['刀跑哪些', knivesLbl, p.knives === 'changed_all' ? '不省' : '省很多'],
+      ['沒咬的刀', retryLbl, '不省'],
+      ['測試平台', platLbl, '不省'],
+      ['時間裝不下時', ovLbl, p.overflow === 'defer' ? '只是挪後' : '不省'],
+      ['每格最長分鐘', `${p.cell_max_min || 90} 分`, '不省'],
+      ['同時最多格數', `${p.cells_max || 5} 格`, '不省'],
     ];
     h += '<details class="thr"><summary class="hv">八欄明細與全倉設定（我的組合：' + (Array.isArray(d.presets) ? d.presets.length : 0) + ' 組）</summary>';
     for (const [k, v, s] of fields) {
       h += `<div class="thm">${esc(k)}：<b>${esc(String(v || ''))}</b> · <span class="hv">${s}</span></div>`;
     }
     const hrs = Array.isArray(rs.merge_batch_hours) ? rs.merge_batch_hours.join('/') : '10/16/22';
-    h += `<div class="thm">全倉三件：平台無關刀搬 Linux=${rs.linux_knives ? '開' : '關'} · 刀長度檢查=${esc(String(rs.knife_length_check || 'reject'))} · 合併批次=${esc(hrs)} (${esc(String(rs.merge_batch_tz || 'Asia/Taipei'))})</div></details>`;
+    h += `<div class="thm">全倉設定：平台無關刀搬 Linux=${rs.linux_knives ? '開' : '關'} · 刀長度檢查=${rs.knife_length_check === 'warn' ? '只提醒' : '開'}（單支 ≤ ${rs.script_max_knives || 140} 把、≤ ${rs.script_max_min || 15} 分）· 合併批次=${esc(hrs)} (${esc(String(rs.merge_batch_tz || 'Asia/Taipei'))})</div></details>`;
     if (T.msg) h += `<div class="thm bad" role="alert">${esc(T.msg)}</div>`;
     return h;
   }
