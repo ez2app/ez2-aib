@@ -47,7 +47,7 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
 # pa2-l4-changed (a template changed since is not said so)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),' \
+  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){}", cut_name(name)),' \
   '        Some((name, _rev)) => name.to_owned(),' \
   --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
@@ -59,8 +59,8 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
 # pa2-lb-order (L-b: the change warning back after a name the window cuts)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),' \
-  '        Some((name, rev)) => format!("{name}(已改到 rev {rev},收回到 rev {then})"),' \
+  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){}", cut_name(name)),' \
+  '        Some((name, rev)) => format!("{}(已改到 rev {rev},收回到 rev {then})", cut_name(name)),' \
   --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
 # pa2-lc-delete (L-c: the page's 收回 of a note moves a file its row's path does not let it)
@@ -77,8 +77,8 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   -- cargo test -p aibd --locked --test perm_revoke_window 'a_take_back_to_a_removed_template_says_so_in_the_window'
 # ow-cut (L-a, ebab8 11-25 13:37: the shared window helper does not cut the AI-writable name)
 python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
-  '    let mut n: String = name.chars().take(NAME_SHOWN).collect();' \
-  '    let mut n: String = name.chars().take(usize::MAX).collect();' \
+  '    let mut n: String = word.chars().take(shown).collect();' \
+  '    let mut n: String = word.chars().take(usize::MAX).collect();' \
   --expect-fail 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut' \
   -- cargo test -p aibd --locked --lib 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut'
 # ow-order (L-a: the shared window helper puts the name before aibd's fixed words)

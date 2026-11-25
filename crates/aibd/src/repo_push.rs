@@ -208,12 +208,19 @@ fn path_shown(remote: &str) -> String {
         None => remote.split_once(':').map_or(remote, |(_, x)| x),
     };
     let c: Vec<char> = p.chars().collect();
-    c[c.len().saturating_sub(30)..].iter().collect()
+    c[c.len().saturating_sub(PATH_SHOWN)..].iter().collect()
 }
 
-/// What the owner is asked. The window is aibd's words: the repo's name, the branch, the head's
-/// first 12, then where it goes — the host with its end kept and the path's end. The window
-/// keeps a text's last 80, so the remote is what is never cut.
+/// How much of the remote's path the window shows, its end kept.
+pub const PATH_SHOWN: usize = 20;
+/// How much of `{repo} {branch}` (the seat's and the registrant's words) the window shows:
+/// with the head, the host and the path it is never more than the window's 80.
+pub const BRANCH_SHOWN: usize = 14;
+
+/// What the owner is asked. The window: the head's first 12 and where it goes — the host
+/// with its end kept and the path's end — first, then the repo and the branch, a seat's
+/// words, cut (ebab8 11-25 14:01, SCAN-owner-window-words 5: a long branch pushed the head
+/// into the part the window cuts). The whole object fits the window's 80: nothing is cut there.
 pub fn push_ask(t: &Target, by: String) -> crate::owner_ok::Ask {
     let params = json!({
         "repo": t.repo, "remote": t.remote, "branch": t.branch, "sha": t.sha,
@@ -221,13 +228,17 @@ pub fn push_ask(t: &Target, by: String) -> crate::owner_ok::Ask {
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP,
-        resource: format!(
-            "{} {} {} → {} · {}",
-            t.repo,
-            t.branch,
-            &t.sha[..12.min(t.sha.len())],
-            crate::seat_trust::host_shown(&crate::repos::remote_host(&t.remote)),
-            path_shown(&t.remote),
+        resource: crate::owner_ok::fixed_then_cut(
+            &[
+                &format!(
+                    "{} → {}",
+                    &t.sha[..12.min(t.sha.len())],
+                    crate::seat_trust::host_shown(&crate::repos::remote_host(&t.remote))
+                ),
+                &path_shown(&t.remote),
+            ],
+            &format!("{} {}", t.repo, t.branch),
+            BRANCH_SHOWN,
         ),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
@@ -1003,6 +1014,36 @@ mod tests {
             .any(|(k, _)| k == "GIT_SSH_COMMAND" || k == "SSH_AUTH_SOCK"));
     }
 
+    /// ebab8 11-25 14:01 (SCAN-owner-window-words 5): the branch is the seat's word. However
+    /// long, or written to look like a head and a host, the window shows the real head and
+    /// host first and the branch after them, cut.
+    #[test]
+    fn a_branch_never_stands_before_the_head_or_the_host() {
+        let long = format!("web/{}", "b".repeat(200));
+        for branch in [long.as_str(), "ffffffffffff → evil.example"] {
+            let t = Target {
+                repo: "demo".into(),
+                path: PathBuf::from("/x"),
+                remote: "git@github.com:own/repo.git".into(),
+                branch: branch.into(),
+                sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            };
+            let r = push_ask(&t, "page:1".into()).resource;
+            assert!(
+                r.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+                "reason: window_cuts {r}"
+            );
+            let shown = crate::owner_ok::object_shown(&r);
+            crate::owner_ok::fixed_first(
+                &shown,
+                "0123456789ab → github.com · own/repo.git · ",
+                &["ffffffffffff", "evil.example"],
+            )
+            .unwrap();
+            assert!(r.ends_with('…'), "reason: branch_not_cut {r}");
+        }
+    }
+
     #[test]
     fn the_window_keeps_where_it_goes() {
         let t = Target {
@@ -1017,14 +1058,18 @@ mod tests {
         };
         let a = push_ask(&t, "page:1".into());
         assert_eq!(a.operation, OP);
-        let shown = crate::owner_ok::clean_resource(&a.resource);
+        let shown = crate::owner_ok::object_shown(&a.resource);
         assert!(
-            shown.ends_with("r-owned.example · own/er/repo-name.git"),
+            a.resource.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+            "reason: window_cuts {shown}"
+        );
+        assert!(
+            shown.contains("r-owned.example · own/er/repo-name.git · "),
             "reason: remote_cut {shown}"
         );
         assert!(
-            shown.contains("0123456789ab → "),
-            "reason: head_cut {shown}"
+            shown.starts_with("0123456789ab → "),
+            "reason: head_not_first {shown}"
         );
         // every part of the reading moves the ticket
         let p = |f: fn(&mut Target)| {

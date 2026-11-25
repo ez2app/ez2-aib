@@ -150,23 +150,30 @@ pub fn brings(
 /// How much of a machine's name the window shows (the whole name is in the binding).
 pub const HOST_SHOWN: usize = 16;
 
+/// How much of a run id the window shows (the whole id is in the binding).
+pub const RUN_ID_SHOWN: usize = 12;
+
 /// The few words the fingerprint window shows of one run, all of them inside the 80
 /// characters it keeps ([`crate::owner_ok::RESOURCE_MAX`]): a longer name or a larger count
-/// is cut here, never the front of the line. Only aibd's words, the run id and the machine's
-/// pinned name; no path or package name a seat chose.
+/// is cut here, never by the window. aibd's words first — the red warning, the machine's
+/// pinned name, the counts — and the run id, a word the sending seat chose, last and cut
+/// (ebab8 11-25 14:01, SCAN-owner-window-words 3: a long run id pushed the warning and the
+/// machine into the part the window cuts). No path or package name a seat chose.
 pub fn card_words(host: &str, run_id: &str, b: &Brings) -> String {
     let red = if b.runs_new_code_at_build() {
-        "會跑新程式:"
+        "會跑新程式"
     } else {
         ""
     };
     let host: String = host.chars().take(HOST_SHOWN).collect();
-    format!(
-        "收據 {run_id} 到 {host}·{red}build.rs {}·新套件 {}·新檔 {}",
+    let to = format!("收據到 {host}");
+    let counts = format!(
+        "build.rs {}·新套件 {}·新檔 {}",
         b.build_scripts.len().min(999),
         b.new_packages.len().min(999),
         b.new_code_files.min(9999),
-    )
+    );
+    crate::owner_ok::fixed_then_cut(&[red, &to, &counts], run_id, RUN_ID_SHOWN)
 }
 
 /// What one run is, for the owner's fingerprint: everything [`owner_ask`] binds.
@@ -1121,10 +1128,7 @@ mod tests {
             ..Brings::default()
         };
         let w = card_words("lin", "web-b4297-012345678", &quiet);
-        assert_eq!(
-            w,
-            "收據 web-b4297-012345678 到 lin·build.rs 0·新套件 0·新檔 1"
-        );
+        assert_eq!(w, "收據到 lin · build.rs 0·新套件 0·新檔 1 · web-b4297-0…");
         assert!(w.chars().count() <= crate::owner_ok::RESOURCE_MAX);
         let loud = Brings {
             build_scripts: vec!["a/build.rs".into(), "b/build.rs".into()],
@@ -1133,11 +1137,11 @@ mod tests {
         };
         let w = card_words("lin", "web-b4297-012345678-99", &loud);
         assert!(
-            w.contains("會跑新程式:build.rs 2·新套件 1"),
+            w.starts_with("會跑新程式 · 收據到 lin · build.rs 2·新套件 1"),
             "reason: quiet_card"
         );
-        // the longest name and the largest counts still fit the window whole: its front
-        // (the run id) is never what gets cut
+        // the longest name, run id and counts still fit the window whole: nothing is cut by
+        // the window, and the warning and the machine come first
         let most = Brings {
             build_scripts: vec!["b".into(); 2000],
             new_packages: vec!["p".into(); 2000],
@@ -1149,7 +1153,7 @@ mod tests {
             long.chars().count() <= crate::owner_ok::RESOURCE_MAX,
             "reason: window_cuts_the_front ({long})"
         );
-        assert!(long.starts_with("收據 web-b4297-012345678-99 到 mmmmmmmmmmmmmmmm·會跑新程式:"));
+        assert!(long.starts_with("會跑新程式 · 收據到 mmmmmmmmmmmmmmmm · build.rs 999"));
         assert_eq!(crate::owner_ok::clean_resource(&long), long);
         // no name a seat chose is in the window
         assert!(!w.contains("a/build.rs") && !w.contains("x 1.0.0"));
@@ -1169,7 +1173,31 @@ mod tests {
         assert_eq!(page["new_packages_n"], 40);
         // a new package alone is red: its build script and proc-macros run
         assert_eq!(page["red"], true, "reason: new_package_not_red");
-        assert!(card_words("lin", "web-b4297-012345678", &many).contains("會跑新程式:"));
+        assert!(card_words("lin", "web-b4297-012345678", &many).starts_with("會跑新程式 · "));
+    }
+
+    /// ebab8 11-25 14:01 (SCAN-owner-window-words 3): the run id is the sending seat's word.
+    /// However long, or written to look like aibd's words (another machine, a quiet count), it
+    /// comes after the warning, the machine and the counts, cut, and the window shows it all.
+    #[test]
+    fn a_run_id_never_stands_before_the_warning_or_the_machine() {
+        let loud = Brings {
+            build_scripts: vec!["a/build.rs".into()],
+            ..Brings::default()
+        };
+        let fixed = "會跑新程式 · 收據到 lin · build.rs 1·新套件 0·新檔 0 · ";
+        let long = format!("web-{}", "9".repeat(60));
+        let fake = "到 andymini·build.rs 0·新套件 0";
+        for id in [long.as_str(), fake] {
+            let w = card_words("lin", id, &loud);
+            assert!(
+                w.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+                "reason: window_cuts {w}"
+            );
+            let shown = crate::owner_ok::object_shown(&w);
+            crate::owner_ok::fixed_first(&shown, fixed, &["andymini", "build.rs 0"]).unwrap();
+            assert!(w.ends_with('…'), "reason: run_id_not_cut {w}");
+        }
     }
 
     #[test]
