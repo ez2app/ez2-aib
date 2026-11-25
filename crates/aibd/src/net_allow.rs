@@ -210,6 +210,26 @@ pub fn revoke_and_sweep(
     ))
 }
 
+/// A persona archived or merged away (AP23; 08de5 persona_archive, 6770f merge_run, both
+/// after their own step succeeded): every always-allow row whose signed params name
+/// `persona_uid` is taken back and its ticket kept as revoked, so the row put back later does
+/// not hold either. Rows whose params do not parse are nobody's here and stay (the list shows
+/// them as `bad_params`). The tunnels resting on them close on the proxy's next sweep. Returns
+/// how many rows were taken back; an error leaves the rest for the next call (a second call
+/// takes back what is left).
+pub fn revoke_persona(db: &MessageDb, persona_uid: &str, now: u64) -> aib_store::Result<usize> {
+    let mut n = 0;
+    for row in db.net_allow_list()? {
+        let Some((uid, ..)) = parse_always_params(&row.params) else {
+            continue;
+        };
+        if uid == persona_uid && db.net_allow_revoke(&row.ticket, now as i64)? {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,5 +698,48 @@ mod tests {
         };
         assert!(db.net_allow_add(row).unwrap());
         assert!(holds(&db, "un0eba", addr, &own, t2, true, &test_verify).is_some());
+    }
+
+    #[test]
+    fn revoke_persona_takes_back_only_that_personas_rows_for_good() {
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.db")).unwrap();
+        let now = 1_000_000;
+        let a1 = p_addr();
+        let a2 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 11), 443));
+        let r1 = sign_row("tk_p1", "un0eba", a1, now, now + 86_400, b":ok");
+        let r2 = sign_row("tk_p2", "un0eba", a2, now, now + 86_400, b":ok");
+        let other = sign_row("tk_o", "other1", a1, now, now + 86_400, b":ok");
+        // names the persona only outside the signed params: not its row here
+        let junk = sign_row_with_params("tk_j", "un0eba", a1, b"junk un0eba\n".to_vec(), b":ok");
+        for r in [r1.clone(), r2, other, junk] {
+            assert!(db.net_allow_add(r).unwrap());
+        }
+        assert!(holds(&db, "un0eba", a1, &own_ips(), now, true, &test_verify).is_some());
+
+        assert_eq!(
+            revoke_persona(&db, "un0eba", now + 5).unwrap(),
+            2,
+            "persona_rows_taken"
+        );
+        assert!(holds(&db, "un0eba", a1, &own_ips(), now, true, &test_verify).is_none());
+        assert!(holds(&db, "un0eba", a2, &own_ips(), now, true, &test_verify).is_none());
+        // another persona's row and a row that does not parse stay
+        assert!(holds(&db, "other1", a1, &own_ips(), now, true, &test_verify).is_some());
+        let left: Vec<String> = db
+            .net_allow_list()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.ticket)
+            .collect();
+        assert!(left.contains(&"tk_o".to_owned()) && left.contains(&"tk_j".to_owned()));
+        assert_eq!(left.len(), 2, "persona_rows_left");
+        // kept as revoked: the row put back does not come back
+        assert!(
+            db.net_allow_is_revoked("tk_p1").unwrap(),
+            "persona_ticket_not_kept_revoked"
+        );
+        assert!(!db.net_allow_add(r1).unwrap());
+        assert_eq!(revoke_persona(&db, "un0eba", now + 6).unwrap(), 0);
     }
 }
