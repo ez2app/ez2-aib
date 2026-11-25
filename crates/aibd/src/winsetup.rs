@@ -429,11 +429,19 @@ pub fn rollback(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) -> Result<
         ));
     }
     ops.remove(&p.new);
-    if ops.exists(&p.exe) {
+    let moved = ops.exists(&p.exe);
+    if moved {
         ops.rename(&p.exe, &p.new)?;
     }
     // 3e53b N1: a failed swap puts the current program back instead of leaving no aibd.exe
     if let Err(e) = ops.rename(&p.prev, &p.exe) {
+        // 3e53b Na (80d4c947): nothing was moved aside, so nothing is put back
+        if !moved {
+            return Err(format!(
+                "installer_rollback_failed: {e}; nothing changed (there was no {} before)",
+                p.exe.display()
+            ));
+        }
         let back = ops.rename(&p.new, &p.exe);
         return Err(match back {
             Ok(()) => format!("installer_rollback_failed: {e}; the current program is back in place"),
@@ -1031,6 +1039,25 @@ mod tests {
             "reason: {r:?}"
         );
         assert!(f.exists(&p.exe), "reason: no_exe {:?}", f.calls.borrow());
+    }
+
+    #[test]
+    fn a_rollback_with_no_program_before_does_not_point_at_a_missing_copy() {
+        let p = here();
+        let f = Fake {
+            files: RefCell::new(vec![p.prev.clone()]),
+            bad_rename: Some(p.prev.clone()),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        let r = rollback(&p, &f, &mut |l| lines.push(l.to_string()));
+        let new = p.new.display().to_string();
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("nothing changed") && !e.contains(&new)),
+            "reason: {r:?}"
+        );
+        assert!(f.exists(&p.prev), "reason: prev_lost");
     }
 
     #[test]
