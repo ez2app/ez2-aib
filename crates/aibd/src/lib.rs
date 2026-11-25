@@ -91,6 +91,7 @@ pub mod preview;
 pub mod preview_swap;
 pub mod preview_tree;
 pub mod preview_up;
+pub mod provider_fetch;
 pub mod provider_login;
 pub mod proxy;
 pub mod receipt_bundle;
