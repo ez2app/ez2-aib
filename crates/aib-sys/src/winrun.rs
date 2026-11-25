@@ -1,26 +1,35 @@
 //! The signed-in user's "run at sign-in" entry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
 //! `winreg.h`, public): the Windows half of "aibd starts by itself" (T97, IFACE-T97-1m r2 left it
-//! out; PLAN-win-customer-today-c2f0b-1126 rows 2 and 4). One string value per name, in
-//! **HKCU only** — never HKLM, so no administrator and no other account is touched. No
-//! PowerShell, no Task Scheduler (Andy 11-15 / 11-26).
+//! out; PLAN-win-customer-today-c2f0b-1126 rows 2 and 4), plus the one question the setup asks
+//! about its own token (is it elevated?). No PowerShell, reg.exe or Task Scheduler.
 //!
-//! What is written is one command line; the caller quotes the path ([`quoted`]) so a folder
-//! with spaces cannot be read as another program (the unquoted-path problem). Like the rest of
-//! aibd's install, this is a convenience against slips, not a defence: the same account can
-//! change its own Run key at any time.
+//! COND-win-installer-3e53b-1126 r1 (pre-read of `Win32_System_Registry`):
+//! - only `RegSetKeyValueW`, `RegGetValueW` (read back) and `RegDeleteKeyValueW`, all here;
+//! - the root is always the current user's and the key is always [`RUN_KEY`]: no function takes
+//!   a root or a key, so nothing here can touch another account or the machine;
+//! - only `REG_SZ` is written and only `REG_SZ` is read back (`RRF_RT_REG_SZ`);
+//! - a source guard (the tests below) keeps the machine-wide root and the other registry calls
+//!   out of every crate, and the current-user root out of every file but this one.
+//!
+//! Same account as the rest of aibd: the Run value is the user's own and any program of theirs
+//! can change it. It is a convenience, not a defence (the defence is pairing / Windows Hello).
 
-/// The key every value here lives under (below `HKEY_CURRENT_USER`).
+/// The key every value here lives under (below the current user's root).
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-/// `"<path>"` for a Run value: the whole path in double quotes. A path that itself holds a
-/// double quote, a NUL or a newline is refused (it could not be quoted back unambiguously).
+/// `"<path>"` for a Run value: the whole path in double quotes, nothing after it. A path that
+/// itself holds a double quote, a NUL or a line break is refused (it could not be quoted back
+/// unambiguously), and so is one that is not absolute (`X:\…` or `\\server\…`).
 pub fn quoted(path: &str) -> Result<String, String> {
-    if path.is_empty() {
-        return Err("empty path".into());
-    }
     if path.contains(['"', '\0', '\r', '\n']) {
         return Err(format!(
             "path has a quote or control character; not written: {path:?}"
+        ));
+    }
+    let drive = matches!(path.as_bytes(), [d, b':', b'\\', _, ..] if d.is_ascii_alphabetic());
+    if !drive && !path.starts_with(r"\\") {
+        return Err(format!(
+            "not an absolute Windows path; not written: {path:?}"
         ));
     }
     Ok(format!("\"{path}\""))
@@ -31,9 +40,14 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Write (or replace) the Run value `name` = `command`.
 #[cfg(windows)]
-pub fn set(name: &str, command: &str) -> Result<(), crate::SysError> {
+fn os_err(rc: u32) -> crate::SysError {
+    crate::SysError::Os(i32::try_from(rc).unwrap_or(i32::MAX))
+}
+
+/// Write (or replace) the Run value `name` = `command` (`REG_SZ`).
+#[cfg(windows)]
+pub fn run_set(name: &str, command: &str) -> Result<(), crate::SysError> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     let key = wide(RUN_KEY);
@@ -55,13 +69,14 @@ pub fn set(name: &str, command: &str) -> Result<(), crate::SysError> {
     if rc == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(crate::SysError::Os(i32::try_from(rc).unwrap_or(i32::MAX)))
+        Err(os_err(rc))
     }
 }
 
-/// Read the Run value `name`: `Ok(None)` when there is none.
+/// Read the Run value `name`: `Ok(None)` when there is none. A value of another type than
+/// `REG_SZ` is an error (it is not one we wrote).
 #[cfg(windows)]
-pub fn get(name: &str) -> Result<Option<String>, crate::SysError> {
+pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
     let key = wide(RUN_KEY);
@@ -84,7 +99,7 @@ pub fn get(name: &str) -> Result<Option<String>, crate::SysError> {
         return Ok(None);
     }
     if rc != ERROR_SUCCESS {
-        return Err(crate::SysError::Os(i32::try_from(rc).unwrap_or(i32::MAX)));
+        return Err(os_err(rc));
     }
     let units = (usize::try_from(bytes).unwrap_or(0) / 2).min(buf.len());
     let got = buf.get(..units).unwrap_or_default();
@@ -94,43 +109,94 @@ pub fn get(name: &str) -> Result<Option<String>, crate::SysError> {
     )))
 }
 
-/// Remove the Run value `name`; none there is fine.
+/// Remove the Run value `name` only when it reads exactly `expected`: `Ok(true)` removed,
+/// `Ok(false)` there was none or it was somebody else's (left as it is).
 #[cfg(windows)]
-pub fn remove(name: &str) -> Result<(), crate::SysError> {
+pub fn run_delete_if(name: &str, expected: &str) -> Result<bool, crate::SysError> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
+    if run_get(name)?.as_deref() != Some(expected) {
+        return Ok(false);
+    }
     let key = wide(RUN_KEY);
     let name_w = wide(name);
     // SAFETY: key and name are NUL-terminated UTF-16 buffers alive for the call.
     let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name_w.as_ptr()) };
-    if rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND {
-        Ok(())
+    if rc == ERROR_SUCCESS {
+        Ok(true)
+    } else if rc == ERROR_FILE_NOT_FOUND {
+        Ok(false)
     } else {
-        Err(crate::SysError::Os(i32::try_from(rc).unwrap_or(i32::MAX)))
+        Err(os_err(rc))
     }
 }
 
+/// Is this process running elevated ("Run as administrator")? The setup refuses then: it would
+/// write the wrong user's folder and Run key (COND r0 §1-4).
+#[cfg(windows)]
+pub fn elevated() -> Result<bool, crate::SysError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: no arguments; returns this process's pseudo handle, which needs no closing.
+    let me = unsafe { GetCurrentProcess() };
+    // SAFETY: `me` is this process's pseudo handle; `token` is a valid out pointer.
+    let ok = unsafe { OpenProcessToken(me, TOKEN_QUERY, &mut token) };
+    if ok == 0 {
+        return Err(crate::SysError::Unknown);
+    }
+    let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut got = 0u32;
+    let size = u32::try_from(std::mem::size_of::<TOKEN_ELEVATION>()).unwrap_or(4);
+    // SAFETY: `token` was opened with TOKEN_QUERY above; `e` is writable for `size` bytes.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            std::ptr::addr_of_mut!(e).cast(),
+            size,
+            &mut got,
+        )
+    };
+    // SAFETY: `token` is the handle OpenProcessToken gave and is closed once.
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return Err(crate::SysError::Unknown);
+    }
+    Ok(e.TokenIsElevated != 0)
+}
+
 /// No Run key off Windows.
 #[cfg(not(windows))]
-pub fn set(_: &str, _: &str) -> Result<(), crate::SysError> {
+pub fn run_set(_: &str, _: &str) -> Result<(), crate::SysError> {
     Err(crate::SysError::Unsupported)
 }
 
 /// No Run key off Windows.
 #[cfg(not(windows))]
-pub fn get(_: &str) -> Result<Option<String>, crate::SysError> {
+pub fn run_get(_: &str) -> Result<Option<String>, crate::SysError> {
     Err(crate::SysError::Unsupported)
 }
 
 /// No Run key off Windows.
 #[cfg(not(windows))]
-pub fn remove(_: &str) -> Result<(), crate::SysError> {
+pub fn run_delete_if(_: &str, _: &str) -> Result<bool, crate::SysError> {
+    Err(crate::SysError::Unsupported)
+}
+
+/// Not asked off Windows.
+#[cfg(not(windows))]
+pub fn elevated() -> Result<bool, crate::SysError> {
     Err(crate::SysError::Unsupported)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn a_run_command_is_the_whole_path_in_quotes() {
@@ -143,24 +209,118 @@ mod tests {
 
     #[test]
     fn a_path_that_cannot_be_quoted_is_refused() {
-        for bad in ["", "C:\\a\"b\\aibd.exe", "C:\\a\nb", "C:\\a\0b", "C:\\a\rb"] {
+        for bad in [
+            "",
+            "C:\\a\"b\\aibd.exe",
+            "C:\\a\nb",
+            "C:\\a\0b",
+            "C:\\a\rb",
+            r"AIB\aibd.exe",
+            "%LOCALAPPDATA%\\AIB\\aibd.exe",
+        ] {
             assert!(quoted(bad).is_err(), "reason: accepted {bad:?}");
         }
     }
 
+    // the source guard (COND r1, pre-read condition 3): the names are spelled in two halves so
+    // this file does not name what it looks for
+    fn banned() -> Vec<String> {
+        [
+            ("HKEY_LOCAL", "_MACHINE"),
+            ("RegCreate", "KeyEx"),
+            ("RegSet", "ValueEx"),
+            ("RegOpen", "KeyEx"),
+        ]
+        .iter()
+        .map(|(a, b)| format!("{a}{b}"))
+        .collect()
+    }
+
+    fn user_root() -> String {
+        format!("{}{}", "HKEY_CURRENT", "_USER")
+    }
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                rs_files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    fn is_winrun(p: &Path) -> bool {
+        p.ends_with(Path::new("aib-sys").join("src").join("winrun.rs"))
+    }
+
+    /// `"<file>: <name>"` for every banned registry name in any `.rs` under `root`, and for the
+    /// current-user root anywhere but winrun.rs.
+    fn registry_names(root: &Path) -> Vec<String> {
+        let mut files = Vec::new();
+        rs_files(root, &mut files);
+        let mut hits = Vec::new();
+        for f in files {
+            let Ok(text) = std::fs::read_to_string(&f) else {
+                continue;
+            };
+            for n in banned() {
+                if text.contains(n.as_str()) {
+                    hits.push(format!("{}: {n}", f.display()));
+                }
+            }
+            if !is_winrun(&f) && text.contains(user_root().as_str()) {
+                hits.push(format!("{}: {}", f.display(), user_root()));
+            }
+        }
+        hits
+    }
+
     #[test]
-    fn the_run_key_is_the_current_users() {
-        assert_eq!(
-            RUN_KEY, r"Software\Microsoft\Windows\CurrentVersion\Run",
-            "reason: run_key"
-        );
+    fn no_crate_names_the_machine_root_or_other_registry_calls_and_only_winrun_the_user_root() {
+        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let mut hits = registry_names(&ws.join("crates"));
+        hits.extend(registry_names(&ws.join("xtask")));
+        assert_eq!(hits, Vec::<String>::new(), "reason: registry_guard");
+    }
+
+    #[test]
+    fn the_registry_guard_sees_a_planted_name() {
+        let root = std::env::temp_dir().join(format!("aib-sys-regguard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("x").join("src");
+        let own = root.join("aib-sys").join("src");
+        std::fs::create_dir_all(&deep).unwrap_or_default();
+        std::fs::create_dir_all(&own).unwrap_or_default();
+        std::fs::write(own.join("winrun.rs"), user_root()).unwrap_or_default();
+        let clean = registry_names(&root);
+        std::fs::write(deep.join("a.rs"), format!("// {}", banned()[0])).unwrap_or_default();
+        std::fs::write(deep.join("b.rs"), format!("// {}", user_root())).unwrap_or_default();
+        let hits = registry_names(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(clean.is_empty(), "reason: winrun_allowed {clean:?}");
+        assert_eq!(hits.len(), 2, "reason: planted_found {hits:?}");
     }
 
     #[cfg(not(windows))]
     #[test]
     fn off_windows_there_is_no_run_key() {
-        assert!(matches!(set("x", "y"), Err(crate::SysError::Unsupported)));
-        assert!(matches!(get("x"), Err(crate::SysError::Unsupported)));
-        assert!(matches!(remove("x"), Err(crate::SysError::Unsupported)));
+        assert!(matches!(
+            run_set("x", "y"),
+            Err(crate::SysError::Unsupported)
+        ));
+        assert!(matches!(run_get("x"), Err(crate::SysError::Unsupported)));
+        assert!(matches!(
+            run_delete_if("x", "y"),
+            Err(crate::SysError::Unsupported)
+        ));
+        assert!(matches!(elevated(), Err(crate::SysError::Unsupported)));
     }
 }
