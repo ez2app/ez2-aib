@@ -37,6 +37,19 @@ async fn act(d: &Daemon, cred: &str, body: Value) -> Reply {
         .await
 }
 
+/// The window opens on its own thread after the 202 (owner_ok::ask): wait for it, as
+/// merge_notes_owner does, then a moment for the answer to be written.
+async fn answered(n: &AtomicUsize, want: usize) {
+    for _ in 0..100 {
+        if n.load(Ordering::SeqCst) >= want {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("reason: window_never_asked");
+}
+
 async fn state(d: &Daemon, cred: &str) -> Reply {
     let r = d
         .call("GET", "/api/v1/session-policy", Some(cred), None)
@@ -118,6 +131,7 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     let r = act(&d, &page, json!({"type": "session_policy_init"})).await;
     assert_eq!(r.code, 202, "reason: written_unasked {}", r.body);
     let ticket = r.json["ticket"].as_str().unwrap().to_owned();
+    answered(&windows, 1).await;
     assert_eq!(windows.load(Ordering::SeqCst), 1);
     assert!(!file.exists(), "reason: written_before_the_owner");
 
