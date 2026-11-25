@@ -30,6 +30,24 @@ pub fn nothing_loaded(listed: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(listed.trim())
         .map_err(|_| "its set-up listing could not be read".to_owned())?;
     let mut found = Vec::new();
+    // a key this listing did not have when it was read (1.0.70, 08de5 11-25) that is not
+    // empty: something grok loads now that nobody looked at (3e53b REVIEW-grok L2)
+    let top = v.as_object().ok_or("its set-up listing is not an object")?;
+    for (key, val) in top {
+        let empty = match val {
+            Value::Null | Value::Bool(false) => true,
+            Value::Array(a) => a.is_empty(),
+            Value::Object(o) => o.is_empty(),
+            Value::String(s) => s.is_empty(),
+            _ => false,
+        };
+        if !INSPECT_KEYS.contains(&key.as_str()) && !empty {
+            found.push(format!(
+                "{} (not known to aibd)",
+                key.chars().take(40).collect::<String>()
+            ));
+        }
+    }
     for key in ["mcpServers", "hooks", "lspServers"] {
         let n = v
             .get(key)
@@ -61,6 +79,30 @@ pub fn nothing_loaded(listed: &str) -> Result<(), String> {
 }
 
 pub use crate::turn_wire::{turn_prompt, user_text};
+
+/// The top-level keys `grok inspect --json` printed on 1.0.70 (08de5 11-25, this Mac signed in).
+pub const INSPECT_KEYS: &[&str] = &[
+    "grokVersion",
+    "channel",
+    "updateChannel",
+    "cwd",
+    "projectRoot",
+    "projectTrusted",
+    "projectInstructions",
+    "permissions",
+    "loginPolicy",
+    "hooks",
+    "skills",
+    "agents",
+    "plugins",
+    "marketplaces",
+    "mcpServers",
+    "lspServers",
+    "configSources",
+    "experiments",
+    "externalCompat",
+    "configWarnings",
+];
 
 /// Translate one `grok --output-format streaming-json` line into zero or one
 /// Claude-compatible `stream-json` JSON line (without trailing newline).
@@ -292,6 +334,21 @@ mod tests {
         assert!(
             nothing_loaded(&v.to_string()).is_err(),
             "reason: plugin_without_enabled_opened"
+        );
+        // 3e53b L2: a key the measured listing did not have, not empty: refused; empty: not
+        let mut v: Value = serde_json::from_str(empty).unwrap();
+        v["commands"] = json!([{"name": "run", "shell": "x"}]);
+        let e = nothing_loaded(&v.to_string()).unwrap_err();
+        assert!(
+            e.contains("commands (not known to aibd)"),
+            "reason: unknown_key_opened {e}"
+        );
+        v["commands"] = json!([]);
+        v["newFlag"] = Value::Null;
+        assert_eq!(
+            nothing_loaded(&v.to_string()),
+            Ok(()),
+            "reason: empty_unknown_refused"
         );
         for bad in ["", "not json", "[]"] {
             assert!(

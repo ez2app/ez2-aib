@@ -62,6 +62,10 @@ pub struct Turns {
     /// aibd's own folder for prompt files, owner only ([`crate::platform::create_private_dir`]),
     /// never the shared temp folder.
     pub prompt_dir: PathBuf,
+    /// The seat's gate run again on each turn's words before it starts: the program starts
+    /// anew and reads its set-up again every turn, so what was added after the seat opened (an
+    /// MCP server, a hook, a plugin, another version) is found before that turn (3e53b M1).
+    pub check: fn(&Spec) -> Result<(), String>,
 }
 
 /// Extract the plain user text from one Claude-style `stream-json` user line.
@@ -85,6 +89,19 @@ pub fn user_text(line: &[u8]) -> Option<String> {
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// The first line of every turn's prompt. grok 1.0.70 runs a prompt file whose first line is a
+/// slash command as that command, on this machine, without the model (`/hooks-list` listed
+/// the user's 22 hooks; measured signed in, EVIDENCE-brand-grok-08de5-1125 §M2), and its
+/// commands include `hooks-add` and `always-approve`; on a later line it is only text. copilot
+/// 1.0.115 reads a slash on stdin as text (EVIDENCE-brand-copilot §斜線) and gets the same
+/// line. The user's words, the persona card or a handoff note an AI wrote never come first.
+pub const PROMPT_OPENER: &str = "Message from the aibd seat:";
+
+/// What a turn's program is given: [`PROMPT_OPENER`], then the prompt.
+pub fn prompt_text(prompt: &str) -> String {
+    format!("{PROMPT_OPENER}\n{prompt}")
 }
 
 /// The turn's prompt: the persona card before the user's words on the first turn only.
@@ -293,6 +310,9 @@ fn run_turn(
         input: stdin_prompt.is_some(),
         ..spec.clone()
     };
+    if let Err(why) = (turns.check)(&turn_spec) {
+        return Err(format!("{} turn not started: {why}", brand.name()));
+    }
     let mut run = (turns.spawn)(&turn_spec, turns.lineage.clone())
         .map_err(|e| format!("{} spawn failed: {}", brand.name(), e.tag))?;
     let output = run.take_output();
@@ -406,7 +426,7 @@ pub fn spawn(
                 let Some(text) = user_text(&raw_in) else {
                     continue;
                 };
-                let prompt = turn_prompt(persona.as_deref(), &text, turn == 0);
+                let prompt = prompt_text(&turn_prompt(persona.as_deref(), &text, turn == 0));
                 let (args, file, stdin_prompt) = match brand.prompt_by() {
                     PromptBy::File => match write_prompt_file(&turns.prompt_dir, &prompt) {
                         Ok(path) => {
@@ -485,8 +505,31 @@ mod tests {
         assert_eq!(turn_prompt(Some("You are A."), &t, false), "hello");
     }
 
-    /// The specs every turn was started with, and what each turn's stdin got.
-    static STARTED: std::sync::Mutex<Vec<(Spec, String)>> = std::sync::Mutex::new(Vec::new());
+    /// The specs every turn was started with, what each turn's stdin got, and its prompt
+    /// file as it was when the turn started.
+    #[allow(clippy::type_complexity)]
+    static STARTED: std::sync::Mutex<Vec<(Spec, String, String)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// The seat's gate as a test has it: refused once a file `refuse` is in the seat's folder.
+    fn folder_check(spec: &Spec) -> Result<(), String> {
+        if spec.cwd.join("refuse").exists() {
+            Err("would load the user's own hooks 1 (grok_user_setup)".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The turns started for the seat in `cwd` (tests run side by side).
+    fn mine(cwd: &Path) -> Vec<(Spec, String, String)> {
+        STARTED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _, _)| s.cwd == cwd)
+            .cloned()
+            .collect()
+    }
 
     struct DoneWait;
     impl ExitWait for DoneWait {
@@ -543,7 +586,14 @@ mod tests {
 
     fn fake_spawn(spec: &Spec, _l: Option<Arc<Lineage>>) -> Result<Box<dyn Running>, SpawnFail> {
         let mut g = STARTED.lock().unwrap();
-        g.push((spec.clone(), String::new()));
+        let file = spec
+            .argv
+            .iter()
+            .position(|w| w == "--prompt-file")
+            .and_then(|i| spec.argv.get(i + 1))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        g.push((spec.clone(), String::new(), file));
         let at = g.len() - 1;
         drop(g);
         let out = "ANSWER OK\n";
@@ -584,7 +634,7 @@ mod tests {
         }
     }
 
-    fn one_turn(by: PromptBy, dir: &Path) -> (Box<dyn Running>, (Spec, String)) {
+    fn one_turn(by: PromptBy, dir: &Path) -> (Box<dyn Running>, (Spec, String, String)) {
         let spec = Spec {
             id: "s_0123456789abcdef".into(),
             argv: vec!["/bin/brand".into(), "--safe".into()],
@@ -597,15 +647,15 @@ mod tests {
             spawn: fake_spawn,
             lineage: None,
             prompt_dir: dir.join("turn-prompts"),
+            check: folder_check,
         };
-        let before = STARTED.lock().unwrap().len();
         let mut s = spawn(&spec, Some("CARD".into()), turns, Box::new(TestBrand(by))).unwrap();
         let mut input = s.take_input().unwrap();
         let mut out = BufReader::new(s.take_output().unwrap().stdout);
         writeln!(
             input,
             "{}",
-            json!({"type":"user","message":{"role":"user","content":"hi"}})
+            json!({"type":"user","message":{"role":"user","content":"/hooks-add rm"}})
         )
         .unwrap();
         let mut seen = String::new();
@@ -618,12 +668,7 @@ mod tests {
             seen.push_str(&l);
         }
         assert!(seen.contains("OK"), "{seen}");
-        let g = STARTED.lock().unwrap();
-        let mine: Vec<_> = g[before..]
-            .iter()
-            .filter(|(sp, _)| sp.cwd == dir)
-            .cloned()
-            .collect();
+        let mine = mine(dir);
         assert_eq!(mine.len(), 1, "reason: turn_not_through_spawn");
         (s, mine[0].clone())
     }
@@ -635,7 +680,13 @@ mod tests {
     #[test]
     fn every_turn_goes_through_aibds_spawn_and_its_stop_is_reported() {
         let d = tempfile::tempdir().unwrap();
-        let (mut s, (started, stdin)) = one_turn(PromptBy::File, d.path());
+        let (mut s, (started, stdin, file)) = one_turn(PromptBy::File, d.path());
+        // 3e53b M2: the first line is aibd's, never the user's (a `/` there runs as a command)
+        assert_eq!(
+            file,
+            format!("{PROMPT_OPENER}\nCARD\n\n/hooks-add rm"),
+            "reason: prompt_file_starts_with_user_words"
+        );
         let a = &started.argv;
         assert_eq!(
             &a[..2],
@@ -668,17 +719,72 @@ mod tests {
         assert_eq!(stop.survivors, vec![4243]);
     }
 
+    /// 3e53b M1: the gate runs again before every turn; a turn after something was added to
+    /// the user's set-up is refused with the reason and never started.
+    #[test]
+    fn a_turn_after_the_set_up_changed_is_refused_and_not_started() {
+        let d = tempfile::tempdir().unwrap();
+        let spec = Spec {
+            id: "s_0123456789abcdee".into(),
+            argv: vec!["/bin/brand".into(), "--safe".into()],
+            cwd: d.path().into(),
+            env: Vec::new(),
+            pass: Vec::new(),
+            input: true,
+        };
+        let turns = Turns {
+            spawn: fake_spawn,
+            lineage: None,
+            prompt_dir: d.path().join("turn-prompts"),
+            check: folder_check,
+        };
+        let brand = Box::new(TestBrand(PromptBy::Stdin));
+        let mut s = spawn(&spec, None, turns, brand).unwrap();
+        let mut input = s.take_input().unwrap();
+        let mut out = BufReader::new(s.take_output().unwrap().stdout);
+        let mut turn = |text: &str| {
+            writeln!(
+                input,
+                "{}",
+                json!({"type":"user","message":{"role":"user","content":text}})
+            )
+            .unwrap();
+            loop {
+                let mut l = String::new();
+                assert!(out.read_line(&mut l).unwrap() > 0, "reason: no_result");
+                if l.contains("\"result\"") {
+                    return l;
+                }
+            }
+        };
+        assert!(
+            !turn("one").contains("is_error\":true"),
+            "reason: first_turn_refused"
+        );
+        std::fs::write(d.path().join("refuse"), "").unwrap();
+        let r = turn("two");
+        assert!(
+            r.contains("test turn not started") && r.contains("grok_user_setup"),
+            "reason: changed_set_up_started {r}"
+        );
+        assert_eq!(mine(d.path()).len(), 1, "reason: refused_turn_started");
+    }
+
     /// Condition 4: a brand that takes its prompt on stdin gets the card and the words there,
     /// and none of it is in the turn's argv.
     #[test]
     fn a_stdin_prompt_never_goes_in_argv() {
         let d = tempfile::tempdir().unwrap();
-        let (_s, (started, stdin)) = one_turn(PromptBy::Stdin, d.path());
+        let (_s, (started, stdin, _)) = one_turn(PromptBy::Stdin, d.path());
         assert!(started.input, "reason: stdin_not_asked");
-        assert_eq!(stdin, "CARD\n\nhi", "reason: prompt_not_on_stdin");
+        assert_eq!(
+            stdin,
+            format!("{PROMPT_OPENER}\nCARD\n\n/hooks-add rm"),
+            "reason: prompt_not_on_stdin"
+        );
         for w in &started.argv {
             assert!(
-                !w.contains("CARD") && !w.contains("hi"),
+                !w.contains("CARD") && !w.contains("hooks-add"),
                 "reason: prompt_in_argv {w}"
             );
         }

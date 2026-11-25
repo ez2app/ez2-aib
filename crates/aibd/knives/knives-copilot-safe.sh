@@ -23,26 +23,26 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
   -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::only_the_read_copilot_version_starts'
 # c-gate-flags (the gate does not check the safe flags)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        if let Some(why) = aib_seatopen::copilot_safe_refusal(&req.argv) {' \
-  '        if let Some(why) = aib_seatopen::copilot_safe_refusal(&req.argv).filter(|_| false) {' \
+  '    if let Some(why) = aib_seatopen::copilot_safe_refusal(argv) {' \
+  '    if let Some(why) = aib_seatopen::copilot_safe_refusal(argv).filter(|_| false) {' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-gate-version (the gate takes a version not read)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        if !aib_seatopen::copilot_version_ok(&printed) {' \
-  '        if !aib_seatopen::copilot_version_ok(&printed) && printed.is_empty() {' \
+  '    if !aib_seatopen::copilot_version_ok(&printed) {' \
+  '    if !aib_seatopen::copilot_version_ok(&printed) && printed.is_empty() {' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-gate-mcp (the listed MCP servers are not turned off)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '            Ok(off_words) => req.argv.extend(off_words),' \
-  '            Ok(off_words) => req.argv.extend(off_words.into_iter().take(0)),' \
+  '        req.argv.extend(off_words);' \
+  '        req.argv.extend(off_words.into_iter().take(0));' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-gate-mcp-unread (an MCP list not read starts the seat)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        match crate::copilot_wire::mcp_off(&listed) {' \
-  '        match crate::copilot_wire::mcp_off(&listed).or_else(|_| Ok::<_, String>(Vec::new())) {' \
+  '    crate::copilot_wire::mcp_off(&listed).map_err(|why| format!("{why} (copilot_mcp)"))' \
+  '    crate::copilot_wire::mcp_off(&listed).or_else(|_| Ok(Vec::new()))' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-mcp-each (one listed MCP server left on)
@@ -93,3 +93,9 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
   '                model.unwrap_or("grok-4.6").to_owned(),' \
   --expect-fail 'pipe::tests::copilot_safe_has_all_safety_flags_and_refuses_other_modes' \
   -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::copilot_safe_has_all_safety_flags_and_refuses_other_modes'
+# c-turn-mcp (an MCP server added after the seat opened is loaded on the next turn; 3e53b M1)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '        if !spec.argv.windows(2).any(|w| w == pair) {' \
+  '        if !spec.argv.windows(2).any(|w| w == pair) && pair.is_empty() {' \
+  --expect-fail 'sessions::tests::a_copilot_turn_is_checked_again_before_it_starts' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_turn_is_checked_again_before_it_starts'
