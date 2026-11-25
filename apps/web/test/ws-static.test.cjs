@@ -1646,19 +1646,19 @@ const hsChecks = (async () => {
 {
   const a = ws.indexOf('  const OWNER_WHY = {'), b = ws.indexOf('\n  const FP_NO = {', a);
   const src = a >= 0 && b > a ? ws.slice(a, b) : '';
-  const mk = (platform) => { const c = vm.createContext({ globalThis: null, navigator: { platform } }); c.globalThis = c; vm.runInContext(src + '\nthis.W = OWNER_WHY; this.f = ownerWhy;', c); return c; };
+  const mk = (platform, lang) => { const c = vm.createContext({ globalThis: null, navigator: { platform }, askLang: () => lang || 'zh-TW' }); c.globalThis = c; vm.runInContext(src + '\nthis.W = OWNER_WHY; this.WL = OWNER_WHY_L; this.f = ownerWhy;', c); return c; };
   const win = mk('Win32'), mac = mk('MacIntel');
   const want = {
-    owner_check_unmeasured: '這台的 Windows Hello 還沒做過實機檢查,高風險動作先不開放。',
-    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認窗。請在這台電腦前登入後再按。',
+    owner_check_unmeasured: 'Windows Hello 還沒在這台電腦上實測過,高風險動作先不開放。',
+    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後再按。',
     no_biometry: '這台沒有設定 Windows Hello。',
-    cancel: '你按了取消,這次沒做。',
-    pair_touch_timeout: '確認窗等太久沒有回應,這次沒做。可以再按一次。',
-    auth_failed: '驗證沒通過,這次沒做。',
-    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重新配對。',
-    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    pair_key_missing: '這台還沒配對。請先配對。',
+    cancel: '你按了取消,沒有動任何東西。',
+    pair_touch_timeout: '確認視窗等太久沒有回應,沒有動任何東西。可以再按一次。',
+    auth_failed: '驗證沒通過,沒有動任何東西。',
+    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重建配對金鑰。',
+    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    pair_key_missing: '這台還沒有配對金鑰。請先建配對金鑰。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
   };
   ok(src.length > 500 && Object.keys(win.W).length === 18, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
@@ -1668,7 +1668,7 @@ const hsChecks = (async () => {
   const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
   ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
   ok(weakM.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && !weakM.includes('PIN') && /這一版 AIB 還沒有/.test(weakM), 'reason: ap26_too_weak_no_class_says_not_yet ' + weakM);
-  ok(win.f('passphrase_locked', { retry_hms: '16:40:05' }) === '密語打錯太多次,暫時鎖住。16:40:05 後可以再試。' && win.f('passphrase_locked', { retry_hms: '<b>明天</b>' }) === '密語打錯太多次,暫時鎖住。解鎖時間:這一版 AIB 還沒給。', 'reason: ap26_passphrase_locked_time_shape_only');
+  ok(win.f('passphrase_locked', { retry_hms: '16:40:05' }) === '密語打錯太多次,暫時鎖住。16:40:05 後可以再試。' && win.f('passphrase_locked', { retry_hms: '<b>明天</b>' }) === '密語打錯太多次,暫時鎖住。解鎖時間:這一版 AIB 還沒有。', 'reason: ap26_passphrase_locked_time_shape_only');
   ok(win.f('toString') === '' && win.f({ toString: () => 'cancel' }) === '' && win.f('請按允許') === '' && win.f(undefined) === '', 'reason: ap26_only_known_codes_no_request_words');
   // 接點:票 unavailable 帶 aibd 的 why 出那一句;denied 有 reason 也照碼;卡片狀態先用那一句;errText 不讓別的 act 的 unavailable / cancel 被蓋掉
   ok(/st === 'unavailable'\) \{ const why = String\(t\.reason \|\| 'owner_check_unavailable'\); throw Object\.assign\(new Error\(why\), \{ [^}]*pageMsg: ownerWhy\(why, t\) \|\| undefined \}\)/.test(ws), 'reason: ap26_ticket_unavailable_says_why');
@@ -1676,6 +1676,97 @@ const hsChecks = (async () => {
   ok(ws.includes('fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || '), 'reason: ap26_card_status_uses_the_sentence');
   const et = ws.slice(ws.indexOf('  function errText(e) {'), ws.indexOf('  function errText(e) {') + 900);
   ok(/if \(rc !== 'unavailable' && rc !== 'cancel'\) \{ const ow = ownerWhy\(rc, e\); if \(ow\) return ow; \}/.test(et) && et.indexOf('ownerWhy(rc, e)') < et.indexOf("if (e.status === 0) return '連不上 AIB';"), 'reason: ap26_errtext_owner_codes_not_generic_unavailable');
+  // 四語(ebab8 11-26 00:35;Andy 定「本人驗證」「配對金鑰」,其餘照 RETRO-fc7f9-1126 §0.2):每語每條逐字核;少一語、少一條或多一條都紅。
+  // ja / ko 是提案字(未核);Windows / Apple 介面原名(unavailable、finger_not_now、pin)ja / ko 不給 ⇒ 退英文,不猜
+  const WANT_L = {
+    en: {
+      owner_check_too_weak: "This computer's owner check is not strong enough, so this action is not available.",
+      owner_check_unmeasured: "Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.",
+      unavailable: "AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.",
+      no_biometry: "Windows Hello is not set up on this computer.",
+      cancel: "You pressed Cancel. Nothing was changed.",
+      pair_touch_timeout: "The confirmation window got no answer for too long. Nothing was changed. You can press again.",
+      auth_failed: "The check did not pass. Nothing was changed.",
+      pair_key_weak: "This computer's pairing key can sign without the owner, so it may have been replaced. Make a new pairing key.",
+      pair_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      owner_check_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      pair_key_missing: "This computer has no pairing key yet. Make a pairing key first.",
+      pair_touch_not_on_this_system: "This computer's system does not support the owner check yet.",
+      passphrase_locked: "The passphrase was wrong too many times, so it is locked for now.",
+      owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
+      policy_no_native: "No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).",
+      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_write_failed: "AIB could not write the seat-opening setup file. Nothing was changed. You can press again.",
+      policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
+      pin: "If this computer has a Windows sign-in password but Windows Hello is not set up yet: open Settings → Accounts → Sign-in options → PIN (Windows Hello), press Set up, then press again.",
+      class_na: "Which kind of owner check this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      lock_at: "You can try again after {t}.",
+      lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
+    },
+    ja: {
+      owner_check_too_weak: "このパソコンの本人確認の方式が十分に強くないため、この操作は使えません。",
+      owner_check_unmeasured: "Windows Hello はまだこのパソコンで実測していないため、高リスクの操作は今は使えません。",
+      no_biometry: "このパソコンには Windows Hello が設定されていません。",
+      cancel: "キャンセルを押しました。何も変更していません。",
+      pair_touch_timeout: "確認ウィンドウが長いあいだ応答しませんでした。何も変更していません。もう一度押せます。",
+      auth_failed: "認証が通りませんでした。何も変更していません。",
+      pair_key_weak: "このパソコンのペアリングキーは本人なしで署名できるため、差し替えられた可能性があります。ペアリングキーを作り直してください。",
+      pair_key_mismatch: "このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。",
+      owner_check_key_mismatch: "このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。",
+      pair_key_missing: "このパソコンにはまだペアリングキーがありません。先にペアリングキーを作ってください。",
+      pair_touch_not_on_this_system: "このパソコンのシステムはまだ本人確認に対応していません。",
+      passphrase_locked: "パスフレーズを何度も間違えたため、一時的にロックされています。",
+      policy_no_native: "このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」を押してください。",
+      policy_exists: "このパソコンにはすでに席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」を押してください。",
+      policy_write_failed: "AIB は席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。",
+      policy_bad_request: "ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。",
+      class_na: "このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。",
+      lock_at: "{t} 以降にもう一度試せます。",
+      lock_na: "ロック解除の時刻:この AIB のバージョンにはまだありません。",
+    },
+    ko: {
+      owner_check_too_weak: "이 컴퓨터의 본인 확인 방식이 충분히 강하지 않아 이 작업은 사용할 수 없습니다.",
+      owner_check_unmeasured: "Windows Hello를 아직 이 컴퓨터에서 실측하지 않아 고위험 작업은 지금 사용할 수 없습니다.",
+      no_biometry: "이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다.",
+      cancel: "취소를 눌렀습니다. 아무것도 바꾸지 않았습니다.",
+      pair_touch_timeout: "확인 창이 너무 오래 응답하지 않았습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
+      auth_failed: "인증을 통과하지 못했습니다. 아무것도 바꾸지 않았습니다.",
+      pair_key_weak: "이 컴퓨터의 페어링 키는 본인 없이도 서명할 수 있어 바뀌었을 수 있습니다. 페어링 키를 다시 만드세요.",
+      pair_key_mismatch: "이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.",
+      owner_check_key_mismatch: "이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.",
+      pair_key_missing: "이 컴퓨터에는 아직 페어링 키가 없습니다. 먼저 페어링 키를 만드세요.",
+      pair_touch_not_on_this_system: "이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.",
+      passphrase_locked: "암호 문구를 너무 많이 틀려 잠시 잠겼습니다.",
+      policy_no_native: "이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」를 누르세요.",
+      policy_exists: "이 컴퓨터에는 이미 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」를 누르세요.",
+      policy_write_failed: "AIB가 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
+      policy_bad_request: "페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
+      class_na: "이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.",
+      lock_at: "{t} 이후에 다시 시도할 수 있습니다.",
+      lock_na: "잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.",
+    },
+  };
+  const CODES = Object.keys(win.W);
+  ok(['en', 'ja', 'ko'].every((l) => win.WL[l] && Object.keys(win.WL[l]).join() === Object.keys(WANT_L[l]).join()) && Object.keys(win.WL).join() === 'en,ja,ko', 'reason: ap26_4lang_tables_same_keys ' + Object.keys(win.WL || {}).map((l) => l + ':' + Object.keys(win.WL[l]).length).join(' '));
+  ok(CODES.every((k) => Object.prototype.hasOwnProperty.call(WANT_L.en, k)) && Object.keys(WANT_L.en).length === CODES.length + 4, 'reason: ap26_4lang_en_has_every_code');
+  for (const l of ['en', 'ja', 'ko']) for (const [k, v] of Object.entries(WANT_L[l])) ok(win.WL[l][k] === v, 'reason: ap26_4lang_word ' + l + ' ' + k + ' ' + win.WL[l][k]);
+  const NO_GUESS = ['unavailable', 'owner_check_finger_not_now', 'pin'];
+  ok(['ja', 'ko'].every((l) => NO_GUESS.every((k) => !Object.prototype.hasOwnProperty.call(WANT_L[l], k) && !Object.prototype.hasOwnProperty.call(win.WL[l], k))), 'reason: ap26_4lang_no_guessed_ui_names');
+  for (const l of ['en', 'ja', 'ko']) {
+    const lw = mk('Win32', l), lm = mk('MacIntel', l), T = WANT_L[l], E = WANT_L.en, sp = l === 'ja' ? '' : ' ';
+    for (const k of CODES) {
+      if (k === 'owner_check_too_weak' || k === 'passphrase_locked') continue;
+      const want1 = Object.prototype.hasOwnProperty.call(T, k) ? T[k] : E[k];
+      ok(lw.f(k) === want1 && lm.f(k) === want1, 'reason: ap26_4lang_said ' + l + ' ' + k + ' ' + lw.f(k));
+    }
+    ok(lw.f('owner_check_too_weak') === T.owner_check_too_weak + sp + E.pin, 'reason: ap26_4lang_too_weak_windows ' + l + ' ' + lw.f('owner_check_too_weak'));
+    ok(lm.f('owner_check_too_weak') === T.owner_check_too_weak + sp + T.class_na, 'reason: ap26_4lang_too_weak_no_class ' + l + ' ' + lm.f('owner_check_too_weak'));
+    ok(lw.f('passphrase_locked', { retry_hms: '16:40:05' }) === T.passphrase_locked + sp + T.lock_at.replace('{t}', '16:40:05') && lw.f('passphrase_locked', { body: { retry_hms: '$&<b>' } }) === T.passphrase_locked + sp + T.lock_na, 'reason: ap26_4lang_passphrase_tail ' + l + ' ' + lw.f('passphrase_locked', { retry_hms: '16:40:05' }));
+    ok(lw.f('toString') === '' && lw.f('constructor') === '' && lw.f('pin') === '' && lw.f('class_na') === '', 'reason: ap26_4lang_only_known_codes ' + l);
+  }
+  // 中文頁(瀏覽器中文或不認得的語言)維持中文
+  ok(mk('Win32', 'zh-TW').f('cancel') === '你按了取消,沒有動任何東西。' && mk('MacIntel').f('pair_key_missing') === '這台還沒有配對金鑰。請先建配對金鑰。', 'reason: ap26_4lang_zh_stays_zh');
+  ok(ws.includes("const L = typeof askLang === 'function' ? askLang() : 'zh-TW'"), 'reason: ap26_4lang_same_lang_as_ask');
 }
 // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
 {
@@ -1727,6 +1818,6 @@ const hsChecks = (async () => {
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
   ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
-  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
+  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

@@ -4835,36 +4835,110 @@
   // §1 機器分類頂端那一行、§3 密語窗:等 3e53b W-3 / W-5 給欄位名再接(見 OWNER_CLASS_NA)。
   const OWNER_WHY = {
     owner_check_too_weak: '這台的本人驗證方式不夠強,這個動作不開放。',
-    owner_check_unmeasured: '這台的 Windows Hello 還沒做過實機檢查,高風險動作先不開放。',
-    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認窗。請在這台電腦前登入後再按。',
+    owner_check_unmeasured: 'Windows Hello 還沒在這台電腦上實測過,高風險動作先不開放。',
+    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後再按。',
     no_biometry: '這台沒有設定 Windows Hello。',
-    cancel: '你按了取消,這次沒做。',
-    pair_touch_timeout: '確認窗等太久沒有回應,這次沒做。可以再按一次。',
-    auth_failed: '驗證沒通過,這次沒做。',
-    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重新配對。',
-    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    pair_key_missing: '這台還沒配對。請先配對。',
+    cancel: '你按了取消,沒有動任何東西。',
+    pair_touch_timeout: '確認視窗等太久沒有回應,沒有動任何東西。可以再按一次。',
+    auth_failed: '驗證沒通過,沒有動任何東西。',
+    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重建配對金鑰。',
+    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    pair_key_missing: '這台還沒有配對金鑰。請先建配對金鑰。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
     passphrase_locked: '密語打錯太多次,暫時鎖住。',
     // c2f0b 18:00(Pro 16 實機單 2 r7):蓋上蓋子會讀成這個,打開就恢復
     owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
-    // W-10(c2f0b IFACE r3 核字):寫開席設定的拒絕原因
+    // W-10(c2f0b IFACE r3 核字;11-26 後半句照用字第 11 列改成「沒有動任何東西」,待 c2f0b 再核):寫開席設定的拒絕原因
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
     policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。',
-    policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。',
-    policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。',
+    policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。',
+    policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。',
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
   const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
   const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
+  const OWNER_LOCK_NA = '解鎖時間:這一版 AIB 還沒有。';
+  // 拒絕原因四語(ebab8 11-26 00:35;Andy 00:4x 定「本人驗證」「配對金鑰」,其餘照 RETRO-fc7f9-1126 §0.2):語言跟 askLang 同一條。
+  // ja / ko 是提案字(未核);Windows / Apple 介面原名(unavailable、finger_not_now、PIN 路徑)沒對過該語系截圖 ⇒ ja / ko 不給,退英文、不猜
+  const OWNER_WHY_L = {
+    en: {
+      owner_check_too_weak: "This computer's owner check is not strong enough, so this action is not available.",
+      owner_check_unmeasured: 'Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.',
+      unavailable: 'AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.',
+      no_biometry: 'Windows Hello is not set up on this computer.',
+      cancel: 'You pressed Cancel. Nothing was changed.',
+      pair_touch_timeout: 'The confirmation window got no answer for too long. Nothing was changed. You can press again.',
+      auth_failed: 'The check did not pass. Nothing was changed.',
+      pair_key_weak: "This computer's pairing key can sign without the owner, so it may have been replaced. Make a new pairing key.",
+      pair_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      owner_check_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      pair_key_missing: 'This computer has no pairing key yet. Make a pairing key first.',
+      pair_touch_not_on_this_system: "This computer's system does not support the owner check yet.",
+      passphrase_locked: 'The passphrase was wrong too many times, so it is locked for now.',
+      owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
+      policy_no_native: 'No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).',
+      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_write_failed: 'AIB could not write the seat-opening setup file. Nothing was changed. You can press again.',
+      policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
+      pin: 'If this computer has a Windows sign-in password but Windows Hello is not set up yet: open Settings → Accounts → Sign-in options → PIN (Windows Hello), press Set up, then press again.',
+      class_na: "Which kind of owner check this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      lock_at: 'You can try again after {t}.',
+      lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
+    },
+    ja: {
+      owner_check_too_weak: 'このパソコンの本人確認の方式が十分に強くないため、この操作は使えません。',
+      owner_check_unmeasured: 'Windows Hello はまだこのパソコンで実測していないため、高リスクの操作は今は使えません。',
+      no_biometry: 'このパソコンには Windows Hello が設定されていません。',
+      cancel: 'キャンセルを押しました。何も変更していません。',
+      pair_touch_timeout: '確認ウィンドウが長いあいだ応答しませんでした。何も変更していません。もう一度押せます。',
+      auth_failed: '認証が通りませんでした。何も変更していません。',
+      pair_key_weak: 'このパソコンのペアリングキーは本人なしで署名できるため、差し替えられた可能性があります。ペアリングキーを作り直してください。',
+      pair_key_mismatch: 'このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。',
+      owner_check_key_mismatch: 'このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。',
+      pair_key_missing: 'このパソコンにはまだペアリングキーがありません。先にペアリングキーを作ってください。',
+      pair_touch_not_on_this_system: 'このパソコンのシステムはまだ本人確認に対応していません。',
+      passphrase_locked: 'パスフレーズを何度も間違えたため、一時的にロックされています。',
+      policy_no_native: 'このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」を押してください。',
+      policy_exists: 'このパソコンにはすでに席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」を押してください。',
+      policy_write_failed: 'AIB は席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
+      policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
+      class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
+      lock_at: '{t} 以降にもう一度試せます。',
+      lock_na: 'ロック解除の時刻:この AIB のバージョンにはまだありません。',
+    },
+    ko: {
+      owner_check_too_weak: '이 컴퓨터의 본인 확인 방식이 충분히 강하지 않아 이 작업은 사용할 수 없습니다.',
+      owner_check_unmeasured: 'Windows Hello를 아직 이 컴퓨터에서 실측하지 않아 고위험 작업은 지금 사용할 수 없습니다.',
+      no_biometry: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다.',
+      cancel: '취소를 눌렀습니다. 아무것도 바꾸지 않았습니다.',
+      pair_touch_timeout: '확인 창이 너무 오래 응답하지 않았습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
+      auth_failed: '인증을 통과하지 못했습니다. 아무것도 바꾸지 않았습니다.',
+      pair_key_weak: '이 컴퓨터의 페어링 키는 본인 없이도 서명할 수 있어 바뀌었을 수 있습니다. 페어링 키를 다시 만드세요.',
+      pair_key_mismatch: '이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.',
+      owner_check_key_mismatch: '이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.',
+      pair_key_missing: '이 컴퓨터에는 아직 페어링 키가 없습니다. 먼저 페어링 키를 만드세요.',
+      pair_touch_not_on_this_system: '이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.',
+      passphrase_locked: '암호 문구를 너무 많이 틀려 잠시 잠겼습니다.',
+      policy_no_native: '이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」를 누르세요.',
+      policy_exists: '이 컴퓨터에는 이미 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」를 누르세요.',
+      policy_write_failed: 'AIB가 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
+      policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
+      class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
+      lock_at: '{t} 이후에 다시 시도할 수 있습니다.',
+      lock_na: '잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.',
+    },
+  };
   // 只認 aibd 的碼(字串、表裡有的);不讀 message / words 等任何帶字的欄位
   function ownerWhy(code, e) {
     const c = typeof code === 'string' ? code : '';
     if (!Object.prototype.hasOwnProperty.call(OWNER_WHY, c)) return '';
-    const w = OWNER_WHY[c];
-    if (c === 'owner_check_too_weak') return w + (/Win/.test(String((globalThis.navigator && navigator.platform) || '')) ? OWNER_PIN_HOW : OWNER_CLASS_NA);
-    if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + (/^\d\d:\d\d:\d\d$/.test(t) ? t + ' 後可以再試。' : '解鎖時間:這一版 AIB 還沒給。'); }
+    const L = typeof askLang === 'function' ? askLang() : 'zh-TW', has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+    // 中文照中文表;其他語先找該語,沒有就英文(ja / ko 不猜介面原名)
+    const word = (k, zh) => (L === 'zh-TW' ? zh : has(OWNER_WHY_L[L], k) ? OWNER_WHY_L[L][k] : OWNER_WHY_L.en[k]);
+    const w = word(c, OWNER_WHY[c]), sp = L === 'zh-TW' || L === 'ja' ? '' : ' ';
+    if (c === 'owner_check_too_weak') return w + sp + (/Win/.test(String((globalThis.navigator && navigator.platform) || '')) ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + sp + (/^\d\d:\d\d:\d\d$/.test(t) ? word('lock_at', '{t} 後可以再試。').replace('{t}', () => t) : word('lock_na', OWNER_LOCK_NA)); }
     return w;
   }
   const FP_NO = { finger_cancel: '你按了取消這次', finger_denied: '系統視窗按了拒絕', finger_expired: '時間到了', finger_timeout: '時間到了', owner_check_unavailable: '這台現在叫不出驗證視窗' };
