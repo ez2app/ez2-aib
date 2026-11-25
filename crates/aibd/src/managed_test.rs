@@ -14,7 +14,7 @@
 //! - The page is told a name, the OS, whether it is already handed over and why not, never the
 //!   address, the user or a key path (13.3, HM14); those are shown only in the verification window.
 //! - An add names a machine of that list (`from: "trusted"`); a name that is not on it, a server's
-//!   (EU01 …) included, is `host_not_in_list` (HM15).
+//!   (a production server …) included, is `host_not_in_list` (HM15).
 
 use crate::host_addr::{classify, Class};
 use crate::trusted_hosts::TrustedHost;
@@ -404,7 +404,7 @@ mod tests {
             "192.168.1.20"
         );
         // a server's name, or anything not on aibd's own list (HM15)
-        for n in ["EU01", "SIN02", "andymini ", "", "lin-macmini\n"] {
+        for n in ["prod-1", "prod-2", "andymini ", "", "lin-macmini\n"] {
             assert_eq!(
                 from_trusted(&l, &own, n).unwrap_err(),
                 "host_not_in_list",
