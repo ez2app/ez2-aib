@@ -39,6 +39,11 @@ pub const EXE_NAME: &str = "aibd.exe";
 /// A program whose file name starts with this (any case) runs the setup when started with no
 /// arguments: `AIB-Setup.exe`, and what a browser makes of a second download, `AIB-Setup (1).exe`.
 pub const SETUP_STEM: &str = "aib-setup";
+/// What to do when the pairing key could not be made (no PIN, cancelled).
+const NO_KEY_HOW: &str = "set up a Windows Hello PIN (Settings > Accounts > Sign-in options), \
+     then double-click AIB-Setup again";
+/// What to do when the key there would be refused by aibd.
+const KEY_BAD_HOW: &str = "delete that folder, then double-click AIB-Setup again";
 /// How long the setup waits for the new aibd to answer.
 pub const HEALTH_WAIT: Duration = Duration::from_secs(20);
 /// One wait step.
@@ -62,7 +67,8 @@ pub struct Places {
 }
 
 /// `<local app data>\AIB\aibd.exe` (+ `.new` / `.prev` beside it); the folder must be given and
-/// absolute.
+/// absolute. It comes from the `LOCALAPPDATA` environment variable (3e53b N3): the user's own
+/// setting, like everything else here; a folder that is a link is refused in step 0.
 pub fn places(local_app_data: Option<&OsStr>) -> Result<Places, String> {
     let base = local_app_data
         .filter(|v| !v.is_empty())
@@ -108,8 +114,8 @@ pub trait Ops {
     fn remove(&self, p: &Path);
     /// Move `from` to `to`, replacing `to`.
     fn rename(&self, from: &Path, to: &Path) -> Result<(), String>;
-    /// Is there a pairing key already?
-    fn pair_key_exists(&self) -> bool;
+    /// The pairing key already there, checked the way aibd checks it at start.
+    fn pair_key(&self) -> PairKey;
     /// `aibd ctl pair-key init`.
     fn pair_key_init(&self) -> Result<(), String>;
     /// The Run value `name`, if any.
@@ -126,6 +132,18 @@ pub trait Ops {
     fn pace(&self, d: Duration);
     /// Open the page (`aibd ctl web`).
     fn open_page(&self) -> Result<(), String>;
+}
+
+/// The pairing key the setup finds (3e53b REVIEW-winsetup L1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairKey {
+    /// No key file at all: make one.
+    None,
+    /// Both files there and they pass aibd's own start-up check (load + Hello check): keep it.
+    Good,
+    /// Something is there but aibd would refuse it (a PIN reset voids the Hello key, one file
+    /// missing, …): the reason, naming the folder. The setup stops and does not delete it.
+    Bad(String),
 }
 
 /// How the setup ended, for the last lines it prints.
@@ -242,13 +260,17 @@ fn run_with(
         done.sha256 = Some(sha);
     }
     // 2. the pairing key
-    if ops.pair_key_exists() {
-        say("2/5 pairing key: the one already made is kept");
-    } else {
-        ops.pair_key_init().map_err(|e| {
-            format!("pairing key not made ({e}); set up a Windows Hello PIN (Settings > Accounts > Sign-in options), then double-click AIB-Setup again")
-        })?;
-        say("2/5 pairing key made (Windows Hello)");
+    match ops.pair_key() {
+        PairKey::Good => say("2/5 pairing key: the one already made is kept"),
+        PairKey::Bad(why) => {
+            return Err(format!("installer_pair_key_bad: {why}; {KEY_BAD_HOW}"));
+        }
+        PairKey::None => {
+            if let Err(e) = ops.pair_key_init() {
+                return Err(format!("pairing key not made ({e}); {NO_KEY_HOW}"));
+            }
+            say("2/5 pairing key made (Windows Hello)");
+        }
     }
     // 3. start at sign-in
     sign_in_entry(command, ops)?;
@@ -322,7 +344,7 @@ mod tests {
         links: Vec<PathBuf>,
         files: RefCell<Vec<PathBuf>>,
         same: bool,
-        key: bool,
+        key: Option<PairKey>,
         key_err: Option<String>,
         copy_sha: Option<String>,
         disk_sha: Option<String>,
@@ -380,8 +402,8 @@ mod tests {
             f.push(to.to_path_buf());
             Ok(())
         }
-        fn pair_key_exists(&self) -> bool {
-            self.key
+        fn pair_key(&self) -> PairKey {
+            self.key.clone().unwrap_or(PairKey::None)
         }
         fn pair_key_init(&self) -> Result<(), String> {
             self.log("pair".into());
@@ -549,7 +571,7 @@ mod tests {
     fn started_from_the_installed_copy_it_only_fills_in_and_does_not_start_twice() {
         let f = Fake {
             same: true,
-            key: true,
+            key: Some(PairKey::Good),
             healthy_after: Some(0),
             ..Fake::default()
         };
@@ -577,13 +599,33 @@ mod tests {
     #[test]
     fn a_key_already_made_is_kept() {
         let f = Fake {
-            key: true,
+            key: Some(PairKey::Good),
             healthy_after: Some(1),
             ..Fake::default()
         };
         let (r, _) = go(&f);
         assert!(r.is_ok(), "reason: {r:?}");
         assert!(!f.has("pair"), "reason: remade {:?}", f.calls.borrow());
+    }
+
+    #[test]
+    fn a_key_aibd_would_refuse_stops_the_setup_without_deleting_it() {
+        let f = Fake {
+            key: Some(PairKey::Bad("pair_key_mismatch in C:\\x\\pair-key".into())),
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.starts_with("installer_pair_key_bad") && e.contains("pair-key")),
+            "reason: {r:?}"
+        );
+        assert!(
+            !f.has("pair") && !f.has("run ") && !f.has("start") && !f.has("open"),
+            "reason: went_on {:?}",
+            f.calls.borrow()
+        );
     }
 
     #[test]

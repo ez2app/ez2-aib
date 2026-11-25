@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS12, WR1–WR5: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS13, WR1–WR5: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -17,13 +17,17 @@ ws '    if ops.exists(&p.exe) && ops.healthy() {' \
    '    if ops.exists(&p.exe) && ops.healthy() && false {' \
    a_running_installed_aibd_is_not_overwritten
 # WS3 (COND 12) no pairing key, and the Run value is written and aibd started anyway
-ws '        ops.pair_key_init().map_err(|e| {' \
-   '        ops.pair_key_init().or_else(|_| Ok::<(), String>(())).map_err(|e| {' \
+ws '            if let Err(e) = ops.pair_key_init() {' \
+   '            if let Err(e) = ops.pair_key_init().or(Ok::<(), String>(())) {' \
    no_pairing_key_means_no_run_value_and_nothing_started
 # WS4 (COND 7) a pairing key already made is made again
-ws '    if ops.pair_key_exists() {' \
-   '    if ops.pair_key_exists() && false {' \
+ws '    match ops.pair_key() {' \
+   '    match Some(ops.pair_key()).filter(|_| false).unwrap_or(PairKey::None) {' \
    a_key_already_made_is_kept
+# WS13 (3e53b L1) a key aibd would refuse is kept and the setup goes on
+ws '        PairKey::Bad(why) => {' \
+   '        PairKey::Bad(why) if why.is_empty() => {' \
+   a_key_aibd_would_refuse_stops_the_setup_without_deleting_it
 # WS5 (COND 5) an elevated setup goes on
 ws '    if ops.elevated()? {' \
    '    if ops.elevated()? && false {' \
