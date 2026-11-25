@@ -207,7 +207,7 @@ fn check(p: &Places, ops: &dyn Ops) -> Result<(), String> {
     if ops.elevated()? {
         return Err("installer_elevated: started as administrator; double-click it as yourself (not \"Run as administrator\")".into());
     }
-    for layer in [&p.base, &p.dir, &p.exe, &p.prev] {
+    for layer in [&p.base, &p.dir, &p.exe, &p.prev, &p.new] {
         if ops.is_link(layer) {
             return Err(format!(
                 "installer_path_redirected: {} is a link or junction; not installing there",
@@ -389,8 +389,23 @@ fn uninstall_with(
         for f in [&p.exe, &p.prev, &p.new] {
             ops.remove(f);
         }
-        ops.remove_dir_if_empty(&p.dir);
-        say(&format!("removed the program from {}", p.dir.display()));
+        // 3e53b REVIEW-winsetup-w2 L1: Windows does not delete a running program (Settings runs
+        // this very aibd.exe), so what is left is looked at again and said as it is
+        let left: Vec<String> = [&p.exe, &p.prev, &p.new]
+            .into_iter()
+            .filter(|f| ops.exists(f))
+            .map(|f| f.display().to_string())
+            .collect();
+        if left.is_empty() {
+            ops.remove_dir_if_empty(&p.dir);
+            say(&format!("removed the program from {}", p.dir.display()));
+        } else {
+            say(&format!(
+                "could not remove {}; close this window, then delete the folder {}",
+                left.join(", "),
+                p.dir.display()
+            ));
+        }
     }
     say("kept: your data (pairing key, seats, settings)");
     Ok(())
@@ -417,9 +432,25 @@ pub fn rollback(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) -> Result<
     if ops.exists(&p.exe) {
         ops.rename(&p.exe, &p.new)?;
     }
-    ops.rename(&p.prev, &p.exe)?;
+    // 3e53b N1: a failed swap puts the current program back instead of leaving no aibd.exe
+    if let Err(e) = ops.rename(&p.prev, &p.exe) {
+        let back = ops.rename(&p.new, &p.exe);
+        return Err(match back {
+            Ok(()) => format!("installer_rollback_failed: {e}; the current program is back in place"),
+            Err(b) => format!(
+                "installer_rollback_failed: {e}; the current program is now {} ({b}); rename it to {}",
+                p.new.display(),
+                p.exe.display()
+            ),
+        });
+    }
     if ops.exists(&p.new) {
-        ops.rename(&p.new, &p.prev)?;
+        ops.rename(&p.new, &p.prev).map_err(|e| {
+            format!(
+                "installer_rollback_partial: the earlier program is in place; the newer one is {} ({e})",
+                p.new.display()
+            )
+        })?;
     }
     say(&format!(
         "went back to the earlier program in {}; the newer one is kept as {}",
@@ -450,6 +481,8 @@ mod tests {
         run: RefCell<BTreeMap<String, String>>,
         run_mangle: bool,
         settings: RefCell<BTreeMap<String, String>>,
+        stuck: Vec<PathBuf>,
+        bad_rename: Option<PathBuf>,
         healthy_after: Option<usize>,
         calls: RefCell<Vec<String>>,
         health_asks: RefCell<usize>,
@@ -493,10 +526,15 @@ mod tests {
                 .unwrap_or_else(|| "aa".into()))
         }
         fn remove(&self, p: &Path) {
-            self.files.borrow_mut().retain(|f| f != p);
+            if !self.stuck.iter().any(|s| s == p) {
+                self.files.borrow_mut().retain(|f| f != p);
+            }
         }
         fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
             self.log(format!("rename {} {}", from.display(), to.display()));
+            if self.bad_rename.as_deref() == Some(from) {
+                return Err("in use".into());
+            }
             let mut f = self.files.borrow_mut();
             f.retain(|x| x != from && x != to);
             f.push(to.to_path_buf());
@@ -951,6 +989,48 @@ mod tests {
             busy.exists(&p.exe) && !busy.has("rmdir"),
             "reason: removed_running"
         );
+    }
+
+    #[test]
+    fn uninstall_does_not_say_removed_when_the_running_program_stays() {
+        let p = here();
+        let f = Fake {
+            files: RefCell::new(vec![p.exe.clone(), p.prev.clone()]),
+            stuck: vec![p.exe.clone()],
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &f, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(
+            !lines.iter().any(|l| l.starts_with("removed the program")),
+            "reason: said_removed {lines:?}"
+        );
+        let exe = p.exe.display().to_string();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("could not remove") && l.contains(&exe)),
+            "reason: no_path {lines:?}"
+        );
+        assert!(!f.has("rmdir"), "reason: rmdir");
+    }
+
+    #[test]
+    fn a_rollback_that_fails_half_way_puts_the_current_program_back() {
+        let p = here();
+        let f = Fake {
+            files: RefCell::new(vec![p.exe.clone(), p.prev.clone()]),
+            bad_rename: Some(p.prev.clone()),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        let r = rollback(&p, &f, &mut |l| lines.push(l.to_string()));
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.starts_with("installer_rollback_failed")),
+            "reason: {r:?}"
+        );
+        assert!(f.exists(&p.exe), "reason: no_exe {:?}", f.calls.borrow());
     }
 
     #[test]
