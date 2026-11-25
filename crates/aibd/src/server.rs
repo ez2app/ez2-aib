@@ -342,6 +342,11 @@ pub async fn run(
     crate::workspace::set_data_dir(dirs.data_dir());
     let sessions_dir = dirs.data_dir().join("sessions");
     platform::create_private_dir(&sessions_dir)?;
+    // 3e53b REVIEW-copilot e3d07aff N3: copilot seat homes an earlier aibd left, before any seat
+    let left = crate::copilot_wire::clear_homes(&dirs.data_dir().join(crate::copilot_wire::HOMES));
+    if left > 0 {
+        tracing::info!(left, "copilot seat homes left by an earlier aibd removed");
+    }
     let sessions = crate::sessions::Sessions::new(
         store.clone(),
         Some(lineage.clone()),

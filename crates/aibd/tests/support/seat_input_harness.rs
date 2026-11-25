@@ -56,6 +56,16 @@ impl Daemon {
     /// `start` with room for `max` running sessions (a test that opens more seats than four and
     /// needs the later ones running, not queued).
     pub async fn start_max(dir: &Path, max: usize) -> Daemon {
+        Self::start_inner(dir, max, false).await
+    }
+
+    /// `start` with `copilot` listed too: the same fake under the file name `copilot` (it acts
+    /// like copilot 1.0.115 for aibd's checks, 3e53b REVIEW-copilot e3d07aff L1).
+    pub async fn start_copilot(dir: &Path) -> Daemon {
+        Self::start_inner(dir, 4, true).await
+    }
+
+    async fn start_inner(dir: &Path, max: usize, with_copilot: bool) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
         let cards = dir.join("cards.json");
@@ -70,19 +80,29 @@ impl Daemon {
             .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
         std::fs::copy(FAKE, &codex).unwrap();
+        let mut programs = vec![
+            aibd::allowlist::Program {
+                name: "claude".into(),
+                path: FAKE.into(),
+                signer: None,
+            },
+            aibd::allowlist::Program {
+                name: "codex".into(),
+                path: codex.clone(),
+                signer: None,
+            },
+        ];
+        if with_copilot {
+            let copilot = dir.join("bin").join("copilot");
+            std::fs::copy(FAKE, &copilot).unwrap();
+            programs.push(aibd::allowlist::Program {
+                name: "copilot".into(),
+                path: copilot,
+                signer: None,
+            });
+        }
         let policy = aibd::allowlist::SessionPolicy {
-            programs: vec![
-                aibd::allowlist::Program {
-                    name: "claude".into(),
-                    path: FAKE.into(),
-                    signer: None,
-                },
-                aibd::allowlist::Program {
-                    name: "codex".into(),
-                    path: codex.clone(),
-                    signer: None,
-                },
-            ],
+            programs,
             env: vec![],
             interpreters_ok: false,
         };
