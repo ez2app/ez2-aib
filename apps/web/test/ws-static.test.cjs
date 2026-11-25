@@ -2026,6 +2026,31 @@ const hsChecks = (async () => {
   ok(!/終端機打 (copilot|codex|claude)/.test(ws) && /grok: 'Grok', copilot: 'Copilot' \}/.test(ws), 'reason: copilot_key_wording_in_login');
   ok(!/COPILOT_GITHUB_TOKEN|GITHUB_COPILOT_TOKEN|api-key-copilot/.test(ws), 'reason: page_asks_copilot_key');
 }
+// c2f0b IFACE-provider-lifecycle §5b:開席被拒三個碼 = 這是什麼 + 怎麼辦 + 鈕(verify_failed / unmeasured 接 provider_install、path_linked 只說明),四語、沒有「略過照開」
+lateChecks.push((async () => {
+  const a = ws.indexOf('  const OPEN_RF = {'), b = ws.indexOf('  function addErr(e) {', a), src = a >= 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: { add: null }, esc: E, render: () => {}, lang: 'zh-TW', has: true, lcName: (k) => 'N:' + k, lcWhy: (code, n) => 'LW:' + code + ':' + n, lcLoad: async () => null,
+    rgCode: (e) => String((e && (e.reason || e.code)) || ''), fingerAct: async (t, body) => { sent.push([t, JSON.stringify(body)]); if (c.fail) throw { reason: 'lifecycle_offline' }; return { ok: true }; } });
+  vm.runInContext('const askLang = () => lang; const lcHas = (k) => has && k === "provider_install";\n' + src + '\nthis.F = { rfHtml, rfFix, rfOwn, OPEN_RF };', c);
+  const F = c.F, A = (code) => (c.S.add = { refuse: { code, provider: 'claude' } });
+  ok(src.length > 2000, 'reason: rf_block_found');
+  let h = F.rfHtml(A('lifecycle_verify_failed'));
+  ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
+  h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('>安裝驗過的版本</button>'), 'reason: rf_unmeasured_zh');
+  h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了捷徑') && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
+  ok(!/略過|照開|Skip|skip|スキップ|건너/.test(src), 'reason: rf_no_skip_button');
+  for (const x of ['constructor', 'done', 'busy', 'zz', null]) ok(F.rfHtml(A(x)) === '', 'reason: rf_unknown_code_nothing ' + x);
+  c.has = false; ok(!F.rfHtml(A('lifecycle_verify_failed')).includes('<button'), 'reason: rf_no_button_without_act'); c.has = true;
+  for (const [l, w] of [['en', '>Reinstall</button>'], ['ja', '>再インストール</button>'], ['ko', '>다시 설치</button>']]) { c.lang = l; const x = F.rfHtml(A('lifecycle_verify_failed')); ok(x.includes(w) && !/[一-鿿]{4}/.test(x.replace(/<[^>]+>/g, '').replace(/[ぁ-んァ-ヶー]/g, '')) === (l !== 'ja'), 'reason: rf_4lang ' + l + ' ' + x); }
+  c.lang = 'zh-TW';
+  ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OPEN_RF[l]).join() === Object.keys(F.OPEN_RF['zh-TW']).join()), 'reason: rf_4lang_same_keys');
+  A('provider_unmeasured'); await F.rfFix(); ok(sent.length === 1 && sent[0][0] === 'provider_install' && sent[0][1] === '{"provider":"claude"}' && c.S.add.refuse.done === true && F.rfHtml(c.S.add).includes('裝好了,再按一次「開」。') && !F.rfHtml(c.S.add).includes('<button'), 'reason: rf_fix_installs_provider_only ' + JSON.stringify(sent));
+  A('provider_path_linked'); await F.rfFix(); ok(sent.length === 1, 'reason: rf_path_linked_no_fix');
+  c.fail = true; A('lifecycle_verify_failed'); await F.rfFix(); ok(c.S.add.refuse.err === 'LW:lifecycle_offline:N:claude' && !c.S.add.refuse.done, 'reason: rf_fix_error_said ' + JSON.stringify(c.S.add.refuse));
+  ok(ws.includes("      else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }") && ws.includes("A.grp = null; A.refuse = null; render();") && ws.includes('${rfHtml(A)}') && ws.includes("if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }"), 'reason: rf_wired');
+})());
+
 // c2f0b 03:31:開席設定卡頂端照 GET /api/v1/owner-check 的 class 寫這台是哪一種;頁面照 class 選字、不印 words;no_hello / unknown 出設 PIN 三步 + 重新檢查(再 GET 一次)
 lateChecks.push((async () => {
   const a = ws.indexOf('  const OC_CLASSES = ['), b = ws.indexOf('  async function spLoad() {', a), src = a >= 0 && b > a ? ws.slice(a, b) : '';
