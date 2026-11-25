@@ -4581,7 +4581,7 @@
   const relogAuto = (R) => !!(R && R.dcode && String(R.url || '').includes(R.dcode));
   const relogKey = () => (/Mac/.test(String((globalThis.navigator && navigator.platform) || '')) ? '⌘V' : 'Ctrl+V');
   // Andy 01:2x「需要大字碼卡的全照 grok 設計」:照 08de5 LOGIN-CARD-08de5-1126 同一份樣式(家別色頂條 + 字母圖示、大字碼框、綠字已複製、兩顆大鈕、編號步驟、底條)
-  const RELOG_BRAND = ['claude', 'codex', 'grok', 'copilot'], RELOG_MARK = { grok: 'X', copilot: 'C' };
+  const RELOG_BRAND = ['claude', 'codex', 'grok', 'copilot'], RELOG_MARK = { grok: 'X', copilot: 'C', codex: 'O' };
   function relogCard(R, N, msg) {
     const auto = relogAuto(R), key = relogKey(), b = RELOG_BRAND.includes(R.provider) ? R.provider : 'other';
     const said = R.copied === true ? `<div class="rlcok" role="status">✓ 已複製,到登入網頁按 ${key} 貼上</div>` : R.copied === false ? '<div class="rlcno" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</div>' : '';
