@@ -2037,7 +2037,7 @@ lateChecks.push((async () => {
   ok(src.length > 2000, 'reason: rf_block_found');
   let h = F.rfHtml(A('lifecycle_verify_failed'));
   ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好;若重裝後仍是這個錯,是開席設定指錯了,請聯絡我們協助重設。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
-  h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('>安裝驗過的版本</button>'), 'reason: rf_unmeasured_zh');
+  h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('請聯絡我們協助') && !h.includes('<button'), 'reason: rf_unmeasured_no_button_until_reset ' + h);
   h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了連結(symlink / junction)') && !/捷徑|shortcut|ショートカット|바로 가기/.test(src) && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
   ok(!/略過|照開|Skip|skip|スキップ|건너/.test(src), 'reason: rf_no_skip_button');
   for (const x of ['constructor', 'done', 'busy', 'zz', null]) ok(F.rfHtml(A(x)) === '', 'reason: rf_unknown_code_nothing ' + x);
@@ -2045,7 +2045,8 @@ lateChecks.push((async () => {
   for (const [l, w] of [['en', '>Reinstall</button>'], ['ja', '>再インストール</button>'], ['ko', '>다시 설치</button>']]) { c.lang = l; const x = F.rfHtml(A('lifecycle_verify_failed')); ok(x.includes(w) && !/[一-鿿]{4}/.test(x.replace(/<[^>]+>/g, '').replace(/[ぁ-んァ-ヶー]/g, '')) === (l !== 'ja'), 'reason: rf_4lang ' + l + ' ' + x); }
   c.lang = 'zh-TW';
   ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OPEN_RF[l]).join() === Object.keys(F.OPEN_RF['zh-TW']).join()), 'reason: rf_4lang_same_keys');
-  A('provider_unmeasured'); await F.rfFix(); ok(sent.length === 1 && sent[0][0] === 'provider_install' && sent[0][1] === '{"provider":"claude"}' && c.S.add.refuse.done === true && F.rfHtml(c.S.add).includes('裝好了,再按一次「開」。') && !F.rfHtml(c.S.add).includes('<button'), 'reason: rf_fix_installs_provider_only ' + JSON.stringify(sent));
+  A('provider_unmeasured'); await F.rfFix(); ok(sent.length === 0, 'reason: rf_unmeasured_no_fix ' + JSON.stringify(sent));
+  A('lifecycle_verify_failed'); await F.rfFix(); ok(sent.length === 1 && sent[0][0] === 'provider_install' && sent[0][1] === '{"provider":"claude"}' && c.S.add.refuse.done === true && F.rfHtml(c.S.add).includes('裝好了,再按一次「開」。') && !F.rfHtml(c.S.add).includes('<button'), 'reason: rf_fix_installs_provider_only ' + JSON.stringify(sent));
   A('provider_path_linked'); await F.rfFix(); ok(sent.length === 1, 'reason: rf_path_linked_no_fix');
   c.fail = true; A('lifecycle_verify_failed'); await F.rfFix(); ok(c.S.add.refuse.err === 'LW:lifecycle_offline:N:claude' && !c.S.add.refuse.done, 'reason: rf_fix_error_said ' + JSON.stringify(c.S.add.refuse));
   ok(ws.includes("      else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }") && ws.includes("A.grp = null; A.refuse = null; render();") && ws.includes('${rfHtml(A)}') && ws.includes("if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }"), 'reason: rf_wired');
