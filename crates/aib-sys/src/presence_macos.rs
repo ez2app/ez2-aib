@@ -994,6 +994,18 @@ fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
 mod tests {
     use super::*;
 
+    /// S10-3b-1: the fixed vector the Windows BCrypt check uses verifies here too (so the
+    /// vector itself is right), and a changed message does not. No Secure Enclave needed.
+    #[test]
+    fn the_shared_fixed_vector_verifies_on_macos_too() {
+        use crate::hello::vector::{MESSAGE, PUBLIC, SIGNATURE};
+        assert_eq!(verify(&PUBLIC, MESSAGE, &SIGNATURE), Ok(true));
+        assert_eq!(
+            verify(&PUBLIC, b"aibd/hello-verify/test-vector/v2", &SIGNATURE),
+            Ok(false)
+        );
+    }
+
     /// No item of this name exists on any machine: both calls say "none" and raise nothing.
     #[test]
     fn a_password_nobody_stored_is_not_there() {

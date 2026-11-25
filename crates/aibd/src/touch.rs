@@ -471,6 +471,45 @@ impl KeyDevice for MacSe {
     }
 }
 
+/// This Windows machine's Hello key (Microsoft Passport key storage provider, aib-sys
+/// `hello_ncrypt`). S10-3b-1: **unverified on a real Hello machine** until the W sheet
+/// (PLAN-ap26-windows-first-c2f0b-1125 §3); only [`KeyDevice::verify`] runs in CI. The window
+/// time limit (`sign_until`) comes in S10-3b-2; until then a window waits as long as Windows
+/// keeps it.
+#[cfg(windows)]
+pub struct WinHello;
+
+#[cfg(windows)]
+impl KeyDevice for WinHello {
+    fn probe(&self, blob: &[u8]) -> Result<(), &'static str> {
+        aib_sys::hello_ncrypt::probe(blob).map_err(|e| e.code())
+    }
+    fn public_key(&self, blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+        aib_sys::hello_ncrypt::public_key(blob).map_err(|e| e.code())
+    }
+    fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
+        aib_sys::hello_ncrypt::sign(blob, reason, msg).map_err(|e| e.code())
+    }
+    fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
+        aib_sys::hello_ncrypt::verify(public, msg, sig)
+    }
+}
+
+/// Windows (3e53b READ-winhello-wiring W5): the desktop-session gate comes before anything is
+/// read, so aibd outside the signed-in user's console session (session 0, ssh, another
+/// session) refuses at once — no key read, no Hello window it could never show. Then the
+/// stored key and the start-up [`check`], as on macOS. Written for every platform so its order
+/// is tested everywhere; only Windows calls it with [`WinHello`].
+pub fn presence_after_session(
+    session: Result<(), &'static str>,
+    data: &Path,
+    dev: Box<dyn KeyDevice>,
+) -> Result<SharedPresence, &'static str> {
+    session?;
+    let key = load(&key_dir(data))?;
+    Ok(Arc::new(KeyPresence::new(dev, key)?))
+}
+
 /// The presence aibd uses at this start: the stored key on macOS when every check passes;
 /// otherwise why not (pairing is then refused, never the y / tick).
 pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
@@ -481,7 +520,15 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
         let _ = class_now();
         Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        presence_after_session(
+            aib_sys::hello::interactive_session().map_err(|e| e.code()),
+            data,
+            Box::new(WinHello),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = data;
         Err("pair_touch_not_on_this_system")
@@ -680,6 +727,41 @@ pub mod tests {
         .unwrap();
         std::fs::write(d.path().join("key.pub"), [4; 64]).unwrap();
         assert_eq!(load(d.path()).unwrap_err(), "pair_key_mismatch");
+    }
+
+    /// S10-3b-1 (3e53b READ-winhello-wiring W5): outside the desktop session nothing is read
+    /// and nothing is asked, even with good key files; inside it the key is checked as usual.
+    #[cfg(unix)]
+    #[test]
+    fn outside_the_desktop_session_the_key_is_never_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = key_dir(d.path());
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("key.blob"), [1, 2, 3]).unwrap();
+        std::fs::write(dir.join("key.pub"), [4; PUBLIC_KEY_LEN]).unwrap();
+        for f in ["key.blob", "key.pub"] {
+            std::fs::set_permissions(dir.join(f), std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let refused = presence_after_session(
+            Err("unavailable"),
+            d.path(),
+            Box::new(dev(true, true, true)),
+        );
+        assert_eq!(refused.err(), Some("unavailable"), "reason: session_first");
+        let ok = presence_after_session(Ok(()), d.path(), Box::new(dev(true, true, true)));
+        assert!(ok.is_ok(), "reason: good_key_in_session");
+        let weak = presence_after_session(Ok(()), d.path(), Box::new(dev(false, true, true)));
+        assert_eq!(weak.err(), Some("pair_key_weak"), "reason: still_checked");
+    }
+
+    /// S10-3b-1: on any machine whose aibd runs outside a desktop session (CI's Windows cell,
+    /// an ssh start) the Windows path refuses before reading; elsewhere, with no key files,
+    /// it refuses too. Never a presence from an empty data folder.
+    #[test]
+    fn an_empty_data_folder_gives_no_presence_here() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(presence_here(d.path()).is_err());
     }
 
     /// N-webonly-c45: the limit reaches the device, a window nobody answered reads as

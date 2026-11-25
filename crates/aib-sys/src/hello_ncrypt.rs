@@ -15,14 +15,16 @@
 //! Enclave gives.
 
 use crate::hello::{
-    classify, ecc_blob_to_x963, probe_outcome, raw_to_der, reason_wide, HelloError,
+    classify, der_to_raw, ecc_blob_to_x963, probe_outcome, raw_to_der, reason_wide,
+    x963_to_ecc_blob, HelloError,
 };
 use windows_sys::Win32::Security::Cryptography::{
-    BCryptHash, NCryptCreatePersistedKey, NCryptDeleteKey, NCryptExportKey, NCryptFinalizeKey,
+    BCryptDestroyKey, BCryptHash, BCryptImportKeyPair, BCryptVerifySignature,
+    NCryptCreatePersistedKey, NCryptDeleteKey, NCryptExportKey, NCryptFinalizeKey,
     NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty, NCryptSignHash,
-    BCRYPT_ECCPUBLIC_BLOB, BCRYPT_SHA256_ALG_HANDLE, MS_NGC_KEY_STORAGE_PROVIDER,
-    NCRYPT_ECDSA_P256_ALGORITHM, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
-    NCRYPT_USE_CONTEXT_PROPERTY,
+    BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALG_HANDLE, BCRYPT_KEY_HANDLE,
+    BCRYPT_SHA256_ALG_HANDLE, MS_NGC_KEY_STORAGE_PROVIDER, NCRYPT_ECDSA_P256_ALGORITHM,
+    NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG, NCRYPT_USE_CONTEXT_PROPERTY,
 };
 
 /// The longest message signed (same bound as the macOS key).
@@ -234,6 +236,53 @@ pub fn sign(blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, HelloError
     raw_to_der(&raw)
 }
 
+/// S10-3b-1 (3e53b READ-winhello-wiring W3): whether `sig` (DER) is `public`'s (X9.63) ECDSA
+/// P-256 signature over SHA-256 of `msg`. BCrypt only: no Hello, no key store, no window, so it
+/// runs on any Windows and in CI. Anything malformed, or any BCrypt failure, is `false`.
+pub fn verify(public: &[u8; 65], msg: &[u8], sig: &[u8]) -> bool {
+    let (Ok(blob), Ok(raw)) = (x963_to_ecc_blob(public), der_to_raw(sig)) else {
+        return false;
+    };
+    if msg.is_empty() || msg.len() > SIGN_MAX {
+        return false;
+    }
+    let Ok(digest) = sha256(msg) else {
+        return false;
+    };
+    let mut k: BCRYPT_KEY_HANDLE = std::ptr::null_mut();
+    // SAFETY: the ECDSA P-256 pseudo-handle, no import key, a static blob type, an out handle,
+    // and the 72-byte public blob as sized
+    let st = unsafe {
+        BCryptImportKeyPair(
+            BCRYPT_ECDSA_P256_ALG_HANDLE,
+            std::ptr::null_mut(),
+            BCRYPT_ECCPUBLIC_BLOB,
+            &mut k,
+            blob.as_ptr(),
+            blob.len() as u32,
+            0,
+        )
+    };
+    if st != 0 || k.is_null() {
+        return false;
+    }
+    // SAFETY: the key just imported; no padding info (ECDSA); digest and r‖s as sized
+    let st = unsafe {
+        BCryptVerifySignature(
+            k,
+            std::ptr::null(),
+            digest.as_ptr(),
+            digest.len() as u32,
+            raw.as_ptr(),
+            raw.len() as u32,
+            0,
+        )
+    };
+    // SAFETY: the key imported above, destroyed once
+    unsafe { BCryptDestroyKey(k) };
+    st == 0
+}
+
 /// Delete the key named `blob`.
 pub fn delete(blob: &[u8]) -> Result<(), HelloError> {
     let p = provider()?;
@@ -242,6 +291,35 @@ pub fn delete(blob: &[u8]) -> Result<(), HelloError> {
     ok(unsafe { NCryptDeleteKey(k.0, 0) })?;
     k.0 = 0;
     Ok(())
+}
+
+/// S10-3b-1: the BCrypt check against the fixed vector; needs no Hello, so it runs in CI's
+/// Windows cell.
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+    use crate::hello::vector::{MESSAGE, PUBLIC, SIGNATURE};
+
+    #[test]
+    fn the_fixed_vector_verifies_and_any_change_does_not() {
+        assert!(verify(&PUBLIC, MESSAGE, &SIGNATURE), "reason: good_vector");
+        assert!(
+            !verify(&PUBLIC, b"aibd/hello-verify/test-vector/v2", &SIGNATURE),
+            "reason: other_message"
+        );
+        let mut s = SIGNATURE;
+        let last = s.len() - 1;
+        s[last] ^= 1;
+        assert!(!verify(&PUBLIC, MESSAGE, &s), "reason: changed_signature");
+        let mut p = PUBLIC;
+        p[64] ^= 1;
+        assert!(!verify(&p, MESSAGE, &SIGNATURE), "reason: other_key");
+        assert!(
+            !verify(&PUBLIC, MESSAGE, &SIGNATURE[..70]),
+            "reason: cut_der"
+        );
+        assert!(!verify(&PUBLIC, b"", &SIGNATURE), "reason: empty_message");
+    }
 }
 
 /// W0: run on the Windows laptop, signed in at its desktop, with the owner there:
