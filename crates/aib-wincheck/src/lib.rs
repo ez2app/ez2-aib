@@ -194,7 +194,7 @@ pub const STEPS: &[Step] = &[
         filter: Some("hello_ncrypt::w0::w0_2_the_window_shows_the_reason"),
         ignored: true,
         ask: Some("剛剛的 Windows Hello 窗裡,有沒有看到『W0-2 測試』那行字?"),
-        say: None,
+        say: Some("等一下 Hello 窗會跳兩次:第一次照常通過,第二次請按取消。"),
     },
     Step {
         name: "W0-3",
