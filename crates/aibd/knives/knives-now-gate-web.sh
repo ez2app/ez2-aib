@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # NG1–NG5 (7b81e 11-20; N-webonly-c19, ORDER-webonly-today 11「回合結束的狀態閘」): with
 # AIBD_SEAT_NOW_GATE=1 a claude seat (not a work seat) gets a settings file whose Stop and
 # SessionStart hooks run `aibd ctl now-gate`; off by default; the switch reaches the preview.

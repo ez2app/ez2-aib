@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # D3 閒著的網頁席收到信要被叫醒 (DESIGN-drive-d3-wake-7ebca-1121; DEV-drive-web-519d0-1121 D3)
 set -euo pipefail
 umask 022

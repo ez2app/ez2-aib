@@ -99,3 +99,15 @@ wl '        self.red.is_empty() && !self.skipped.is_empty()' \
 wl '        if self.needs > 0 {' \
    '        if self.needs > 9999 { // knife' \
    tests_that_need_a_missing_tool_are_counted_above_the_verdict
+# WCK24 System32's bash.exe (the WSL launcher) counts as having bash (ebab8 19:50)
+wl '    d.ends_with("\\windows\\system32") || d.ends_with("\\windowsapps")' \
+   '    d.ends_with("\\windows\\system32-knife") || d.ends_with("\\windowsapps")' \
+   the_wsl_launcher_folders_do_not_count_as_having_bash
+# WCK25 the separator is not unified, so C:/Windows/System32 is not seen (f163c f05a L1: anchor after rustfmt)
+wl '        .replace('"'"'/'"'"', "\\")' \
+   '        .replace('"'"'\\'"'"', "\\") // knife' \
+   the_wsl_launcher_folders_do_not_count_as_having_bash
+# WCK26 bash is probed with --version (WSL launcher may answer it) instead of running a command
+wl '        "bash" => &["-c", "exit 0"],' \
+   '        "bash" => &["--version"], // knife' \
+   the_wsl_launcher_folders_do_not_count_as_having_bash

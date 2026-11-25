@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # PP1–PP11 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.
@@ -17,8 +18,8 @@ au() { python3 -I scripts/knife.py crates/aibd/src/allowlist.rs "$1" "$2" --expe
 ps_() { python3 -I scripts/knife.py crates/aibd/src/personas.rs "$1" "$2" --expect-fail "personas::tests::$3" \
   -- cargo test -p aibd --locked --lib "personas::tests::$3"; }
 # PP1 the preview is started without the policy
-pe '    hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;' \
-   '    hand_policy(&data, None)?; // knife' \
+pe '    hand_policy(&data, parent_policy().as_deref())?;' \
+   '    hand_policy(&data, parent_policy().filter(|_| false).as_deref())?; // knife' \
    the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and_data
 # PP2 aibd never says which policy it runs under
 se '    crate::preview::set_parent_policy(session_policy.clone());' \

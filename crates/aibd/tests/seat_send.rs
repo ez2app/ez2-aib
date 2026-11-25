@@ -320,8 +320,25 @@ async fn a_message_to_a_seat_in_a_turn_waits_for_its_end() {
     assert_eq!(text(2), "接手這片", "reason: order_lost");
     assert_eq!(text(3), "第二則", "reason: order_lost");
 
+    // 08de5 11-26 (ebab8 q_bcfb648d, f163c): aibd writes a line, then settles its row (the row
+    // says delivered only once the write went through), so the log has the line a moment before
+    // the row says so; read the inbox until both rows have settled (at most 10 s), then check
     let tb = aibd::seat_token::tokens().issue(&b).unwrap();
-    let r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
+    let status_of = |r: &harness::Reply, id: &str| {
+        r.json["messages"]
+            .as_array()
+            .and_then(|l| l.iter().find(|m| m["message_id"] == id))
+            .map(|m| m["status"].clone())
+            .unwrap_or_default()
+    };
+    let mut r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
+    for _ in 0..200 {
+        if ids.iter().all(|id| status_of(&r, id) != "queued") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        r = act(&mut d, &tb, serde_json::json!({"type": "message_inbox"})).await;
+    }
     for id in &ids {
         let m = r.json["messages"]
             .as_array()

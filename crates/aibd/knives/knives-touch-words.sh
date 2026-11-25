@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TW1–TW7: the fingerprint window says in plain words what is done, to what and until when, above what it always said; no object and no parameter can say it instead (DESIGN-touch-words-7b81e-1121 r1; Andy 11-21 01:23, 01:44; 5d33a PREREAD-touchwords L1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

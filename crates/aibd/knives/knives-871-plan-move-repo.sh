@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # #871 the handoff's repo line is absolute on this platform (b4297 11-21, 519d0 NOTE-871-win-fix-519d0-1121):
 # the test fixtures are this platform's shape, and the other platform's shape is not taken. Run from the repo root.
 set -euo pipefail

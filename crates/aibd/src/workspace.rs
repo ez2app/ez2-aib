@@ -177,6 +177,25 @@ pub fn note_login_home(v: &mut Value, note: &Value) {
     }
 }
 
+/// `capabilities.net`: `{provider: {mode: state}}` for every brand and mode a seat may be opened
+/// in ([`crate::egress::net_state`]).
+pub fn net_caps(os: &str, proxy: bool) -> Value {
+    let mut by = serde_json::Map::new();
+    for p in aib_seatopen::AIB2_BRANDS {
+        let modes: serde_json::Map<String, Value> = aib_seatopen::SEAT_MODES
+            .iter()
+            .map(|m| {
+                (
+                    m.to_string(),
+                    json!(crate::egress::net_state(os, p, m, proxy)),
+                )
+            })
+            .collect();
+        by.insert(p.to_string(), Value::Object(modes));
+    }
+    Value::Object(by)
+}
+
 pub fn version_body_with(
     dgrs_input: bool,
     policy: &crate::allowlist::SessionPolicy,
@@ -212,6 +231,10 @@ pub fn version_body_with(
             "routes": crate::guard::ROUTES,
             // 1a93b GAP §8: the act types a confirmed page may send (crate::seat_input::PAGE_ACTS)
             "acts": crate::seat_input::PAGE_ACTS,
+            // DESIGN-sandboxnet 16.2: per provider and mode, enforced / hint / off; the page
+            // picks its network words from this, not from the platform
+            "net": net_caps(std::env::consts::OS, crate::egress::PROXY_READY),
+            "net_enforced": crate::egress::net_state(std::env::consts::OS, "claude", "work", crate::egress::PROXY_READY) == "enforced",
         },
         // 519d0 11-21 06:45 point 1: what an open that names no model runs on, per brand
         "default_models": crate::default_model::now(),
@@ -221,7 +244,7 @@ pub fn version_body_with(
 }
 
 pub async fn version(State(st): State<AppState>) -> Response {
-    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.session_policy);
+    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.policy());
     // N-web-worktree: the registered repos a dgrs seat may be opened with, names only
     let p = st.sessions.private_dir();
     body["repos"] = Value::Array(crate::repos::names(p.parent().unwrap_or(p)));
@@ -259,35 +282,49 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// display_name}]}` in the cards file's order (043dd: the add-a-seat picker had only the
 /// uids of seats already open). The name only: never where the card text is, nor its hash.
 /// Cards that cannot be read: 503 `persona_source_unavailable`, as when a seat is opened.
+/// §7-4: each also says `usual_brain`, the uid of the second brain its seats are usually
+/// opened with ([`crate::registry::usual_brains`]), or null.
 pub async fn personas(State(st): State<AppState>) -> Response {
-    let (src, db) = (st.personas.clone(), st.messages.clone());
+    let (src, data, store, db) = (
+        st.personas.clone(),
+        crate::registry::data_of(&st),
+        st.store.clone(),
+        st.messages.clone(),
+    );
     match tokio::task::spawn_blocking(move || {
-        src.cards()
-            .map(|c| (c, crate::persona_edit::archived_uids(&db, "persona")))
+        src.cards().map(|c| {
+            (
+                c,
+                crate::registry::usual_of(&data, &store),
+                crate::persona_edit::archived_uids(&db, "persona"),
+            )
+        })
     })
     .await
     {
         // f163c regarch L3: the archived ones unread ⇒ no list, never one showing them live
-        Ok(Ok((_, None))) => (
+        Ok(Ok((_, _, None))) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"code": "internal", "reason": "archived_unreadable",
             "message": "the archived personas cannot be read", "request_id": request_id()})),
         )
             .into_response(),
         // A1: an archived card is listed apart (the page's 已封存 with ↺), not in the picker
-        Ok(Ok((cards, Some(gone)))) => Json(json!({
-            "personas": cards
-                .iter()
-                .filter(|c| !gone.contains(&c.uid))
-                .map(|c| json!({"uid": c.uid, "display_name": c.name}))
-                .collect::<Vec<_>>(),
-            "archived": cards
+        Ok(Ok((cards, usual, Some(gone)))) => {
+            let mut body = personas_body(
+                cards
+                    .iter()
+                    .filter(|c| !gone.contains(&c.uid))
+                    .map(|c| (c.uid.as_str(), c.name.as_str())),
+                &usual,
+            );
+            body["archived"] = json!(cards
                 .iter()
                 .filter(|a| gone.contains(&a.uid))
                 .map(|a| json!({"uid": a.uid, "display_name": a.name}))
-                .collect::<Vec<_>>(),
-        }))
-        .into_response(),
+                .collect::<Vec<_>>());
+            Json(body).into_response()
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "persona cards unreadable");
             crate::sessions::ApiError::new(
@@ -303,6 +340,19 @@ pub async fn personas(State(st): State<AppState>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// `GET /api/v1/personas`'s body from `(uid, name)` in the cards' order.
+pub fn personas_body<'a>(
+    cards: impl Iterator<Item = (&'a str, &'a str)>,
+    usual: &std::collections::BTreeMap<String, crate::registry::Usual>,
+) -> Value {
+    json!({
+        "personas": cards
+            .map(|(uid, name)| json!({"uid": uid, "display_name": name,
+                "usual_brain": usual.get(uid).map(|u| u.brain.as_str())}))
+            .collect::<Vec<_>>(),
+    })
 }
 
 // ---------------------------------------------------------------- host
@@ -1385,6 +1435,25 @@ mod tests {
             "reason: version_names_a_path"
         );
         assert_eq!(v["capabilities"]["input_modes"], json!(["safe", "work"]));
+        // DESIGN-sandboxnet 16.2: the page's network words come from here
+        assert_eq!(
+            v["capabilities"]["net"],
+            net_caps(std::env::consts::OS, crate::egress::PROXY_READY),
+            "reason: version_has_no_net"
+        );
+        assert_eq!(
+            v["capabilities"]["net_enforced"],
+            json!(false),
+            "reason: enforced_before_proxy"
+        );
+        let w = net_caps("windows", true);
+        assert_eq!(
+            w["claude"]["work"], "hint",
+            "reason: windows_work_not_a_hint"
+        );
+        assert_eq!(w["claude"]["safe"], "off");
+        assert_eq!(net_caps("macos", true)["claude"]["work"], "enforced");
+        assert_eq!(w["codex"]["work"], "off", "reason: codex_given_network");
         let acts = v["capabilities"]["acts"]
             .as_array()
             .expect("reason: version_has_no_acts");

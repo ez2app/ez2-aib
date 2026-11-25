@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a row the seat read or closed while it was being written is not settled over (b4297 st2 41fcd024b)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

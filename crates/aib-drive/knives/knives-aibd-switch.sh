@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # D7a: aibd's dispatch switch over act.json (DECISION-council-driveweb r1 §2).
 set -euo pipefail
 as() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "act::tests::$3" \

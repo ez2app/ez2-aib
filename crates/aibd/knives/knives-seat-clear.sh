@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # SC1–SC14 (1a93b 11-20, DESIGN-seat-clear-1a93b-1120 r1; 519d0 23:38): the page's 清空 (act
 # seat_clear) stops a seat that said its handoff is written and opens it on a new conversation
 # whose first line is aibd's. Each rule, broken, turns its own test red. Run from the repo root.

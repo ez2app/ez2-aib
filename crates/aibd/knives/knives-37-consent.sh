@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 要你決定卡 + 真人未審清單卡 knives CA1-CA11 (7ebca 11-19, 519d0 09:11; DECISION-council-ideas-2
 # §2 §3): a press without the owner's fingerprint answers nothing and sees nothing, also after a
 # restart; only an idea or a line waiting now is taken; a user folder page sees no words; the

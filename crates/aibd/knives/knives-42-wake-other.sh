@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 0eed7 11-20 01:2x: aibd ctl web naming another folder / address never asks launchd to start
 # the resident aibd. Knives WK1-WK2.
 set -eo pipefail

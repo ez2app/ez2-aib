@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # A1 (DESIGN-a1-edit-archive-08de5-1123 r0, f163c REVIEW-a1 r0 + pre): persona sections changed with the owner, brains and roles renamed, archived and restored
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

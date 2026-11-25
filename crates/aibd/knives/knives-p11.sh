@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S79-p11 knives (aibd lifecycle J0 switch, session timeout_s, thermal answer), from the shared aibd knife step.
 # Moved out of .github/workflows/aibd.yml word for word (519d0 11-16 23:5x: the workflow file is near
 # its 450,000-byte guard; new knives live in crates/<crate>/knives/). aib-xtask knife-anchors reads

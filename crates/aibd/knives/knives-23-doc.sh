@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-doc-link knives DL1–DL7 (7b81e 11-18; SPEC §17 point 4; 5d33a CHECKLIST-doc-link D1–D3): only a file in
 # the pending folder, never a secret kind or one over the limit, never by a path the request names, never to a user
 # folder page, never a document a post registered itself. Each rule, broken, turns its own test red.

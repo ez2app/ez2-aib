@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP14, PD1–PD2, PA1–PA6, PA8–PA14: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
+# PP1–PP14, PD1–PD2, PA1–PA6, PA8–PA15: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pp() { python3 -I scripts/knife.py crates/aibd/src/persona_propose.rs "$1" "$2" --expect-fail "persona_propose::tests::$3" \
@@ -85,8 +85,12 @@ pp '    if !matches!(p.stand, Stand::Waiting) {' \
    '    if false {' \
    only_a_waiting_proposal_is_written
 # PA4 the window carries the seat's reason
-pp '        "{} · +{} −{} 行 · 對照碼 {}",' \
-   '        "{} · +{} −{} 行 · 對照碼 {} {}", p.why,' \
+pp '    let code = format!("對照碼 {}", p.diff_sha.get(..12).unwrap_or_default());' \
+   '    let code = format!("對照碼 {} {}", p.diff_sha.get(..12).unwrap_or_default(), p.why);' \
+   the_window_says_name_counts_and_code_only
+# PA15 (f163c REVIEW-restack 527b3c87 L1) the persona's name stands before the counts and the code
+pp '        &[counts.as_str(), code.as_str(), p.persona_uid.as_str()],' \
+   '        &[p.persona_name.as_str(), counts.as_str(), code.as_str(), p.persona_uid.as_str()],' \
    the_window_says_name_counts_and_code_only
 # PA5 an approved proposal stays waiting (it can be approved, withdrawn or denied again)
 pp '        p.stand = Stand::Writing;' \

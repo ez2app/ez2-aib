@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # RK1 (a9136 11-18, 0eed7 VERIFY 51ac92d9 M1): the next start frees a held stop's slot but keeps
 # who ended it. Run from the repo root.
 set -eo pipefail

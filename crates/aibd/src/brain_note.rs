@@ -121,6 +121,63 @@ pub fn file_name(stamp: &str, code: &str, tail: &str) -> String {
     format!("{stamp}-{code}-{tail}.md")
 }
 
+/// pa2 L1 (f163c REVIEW-pa2-postmerge L1): whether a note row's path is a place aibd writes a
+/// note of that row's seat — `<folder>/AIB-notes/<YYYY-MM>/<YYYYMMDD-HHMMSS>-<seat code>-<six
+/// of a-z 0-9>.md`, the month the stamp's. The row is in the message library, which an AI of
+/// the same account can write: a take-back moves only a file shaped as aibd's own note, never
+/// another file of the library on the owner's one press.
+pub fn note_rel_ok(rel: &str, code: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let [folder @ .., dir, month, name] = parts.as_slice() else {
+        return false;
+    };
+    let Some(stem) = name.strip_suffix(".md") else {
+        return false;
+    };
+    let Some((head, tail)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    let Some(stamp) = head.strip_suffix(code).and_then(|h| h.strip_suffix('-')) else {
+        return false;
+    };
+    let digits = |b: &[u8]| b.iter().all(u8::is_ascii_digit);
+    let (m, t) = (month.as_bytes(), stamp.as_bytes());
+    !folder.is_empty()
+        && aib_store::brain_notes::rel_path_ok(&folder.join("/"))
+        && *dir == FOLDER
+        && !code.is_empty()
+        && aib_store::ranks::key_ok(code)
+        && m.len() == 7
+        && m[4] == b'-'
+        && digits(&m[..4])
+        && digits(&m[5..])
+        && t.len() == 15
+        && t[8] == b'-'
+        && digits(&t[..8])
+        && digits(&t[9..])
+        && t[..4] == m[..4]
+        && t[4..6] == m[5..]
+        && tail.len() == 6
+        && tail
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// One row of a take-back: its path must be one of aibd's notes of its seat ([`note_rel_ok`])
+/// before anything is moved (pa2 L1); then [`take_back`].
+pub fn take_back_row(
+    root: &Path,
+    rel: &str,
+    code: &str,
+    sha: &str,
+    keep: &Path,
+) -> Result<Took, &'static str> {
+    if !note_rel_ok(rel, code) {
+        return Err("note_path_not_aibs");
+    }
+    take_back(root, rel, sha, keep)
+}
+
 /// A value for the head: only `A-Za-z0-9_.:-`, at most 64, else `-`.
 fn head_value(v: &str) -> String {
     if aib_store::ranks::key_ok(v) {
@@ -324,23 +381,34 @@ mod fsops {
     }
 }
 
+/// Whether the Windows walk refuses an entry as a link: what std calls a symlink (on Windows
+/// a symbolic link or a junction, the name-surrogate reparse points). The reparse-point
+/// attribute (0x400) alone is not one: OneDrive files that are downloaded or pinned, and
+/// OneDrive folders, carry it with no redirection, and a brain under OneDrive's Documents was
+/// refused whole (ebab8 11-25 19:25; the same as f163c REVIEW-macts a2c64199 L1). Pure, so
+/// the rule is tested on every platform.
+#[cfg(any(not(unix), test))]
+fn refused_as_link(symlink: bool, attrs: u32) -> bool {
+    let _ = attrs;
+    symlink // not attrs & 0x400 alone
+}
+
 #[cfg(not(unix))]
 mod fsops {
     use super::{pieces, Took};
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
 
-    /// A link or a reparse point (a junction too) on Windows; a link elsewhere.
+    /// A link or a junction ([`super::refused_as_link`]).
     fn is_link(m: &std::fs::Metadata) -> bool {
         #[cfg(windows)]
-        {
+        let attrs = {
             use std::os::windows::fs::MetadataExt;
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-            if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return true;
-            }
-        }
-        m.file_type().is_symlink()
+            m.file_attributes()
+        };
+        #[cfg(not(windows))]
+        let attrs = 0;
+        super::refused_as_link(m.file_type().is_symlink(), attrs)
     }
 
     /// A new file at `p`, never over one; on Windows opened with
@@ -484,24 +552,33 @@ fn keep_copy(keep: &Path, bytes: &[u8]) -> Result<(), &'static str> {
         .and_then(|s| s.to_str())
         .ok_or("note_archive_failed")?;
     let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
-    let write_res = (|| -> std::io::Result<()> {
+    let link_res = (|| -> std::io::Result<bool> {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, keep)?;
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
+        match std::fs::hard_link(&tmp, keep) {
+            Ok(()) => {
+                if let Ok(d) = std::fs::File::open(dir) {
+                    let _ = d.sync_all();
+                }
+                Ok(false)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),
+            Err(e) => Err(e),
         }
-        Ok(())
     })();
-    if write_res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err("note_archive_failed");
+    let _ = std::fs::remove_file(&tmp);
+    match link_res {
+        Ok(false) => Ok(()),
+        Ok(true) => match std::fs::read(keep) {
+            Ok(b) if b == bytes => Ok(()),
+            _ => Err("note_archive_failed"),
+        },
+        Err(_) => Err("note_archive_failed"),
     }
-    Ok(())
 }
 
 /// Where aibd keeps the notes it took back: `<data>/archive/brain-notes/<note id>.md`.
@@ -615,7 +692,7 @@ fn protected_paths(st: &AppState) -> Result<Vec<PathBuf>, &'static str> {
 }
 
 /// The second-brain library this aibd reads (the same place the brain list comes from).
-fn library() -> Result<PathBuf, &'static str> {
+pub(crate) fn library() -> Result<PathBuf, &'static str> {
     match crate::registry::brain_root(|k| std::env::var(k).ok()) {
         crate::registry::BrainRoot::At(_, p) => Ok(p),
         _ => Err("brain_root_missing"),
@@ -758,6 +835,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "this seat was opened with no second brain",
         );
     };
+    let _one = LOCK.lock().await;
     let (data, db, r_check) = (
         crate::registry::data_of(&st),
         st.messages.clone(),
@@ -774,8 +852,6 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             )
         }
     }
-
-    let _one = LOCK.lock().await;
     let now_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -1029,13 +1105,15 @@ pub async fn delete(st: AppState, body: Value, by: String) -> Response {
     let data = crate::registry::data_of(&st);
     let mut out = Vec::new();
     for n in rows.into_iter().take(DELETE_MAX) {
-        let (rel, sha, keep) = (
+        let (rel, sha, keep, code) = (
             n.rel_path.clone(),
             n.sha256.clone(),
             archive_path(&data, &n.note_id),
+            crate::seats::seat_code(&n.seat_id),
         );
         let took = tokio::task::spawn_blocking(move || {
-            library().and_then(|root| take_back(&root, &rel, &sha, &keep))
+            // pa2 L1: a row whose path is not one of aibd's notes of its seat moves nothing
+            library().and_then(|root| take_back_row(&root, &rel, &code, &sha, &keep))
         })
         .await
         .unwrap_or(Err("internal"));
@@ -1305,6 +1383,54 @@ mod tests {
         );
     }
 
+    /// ebab8 11-25 19:25: a link or a junction is refused, a pinned / downloaded OneDrive
+    /// entry (reparse point, archive, pinned; not a link) is not.
+    #[test]
+    fn only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point() {
+        const REPARSE: u32 = 0x400;
+        assert!(refused_as_link(true, 0), "reason: link_followed");
+        assert!(refused_as_link(true, REPARSE), "reason: junction_followed");
+        assert!(
+            !refused_as_link(false, 0x0008_0000 | 0x20 | REPARSE),
+            "reason: onedrive_note_refused"
+        );
+        assert!(
+            !refused_as_link(false, 0x10 | REPARSE),
+            "reason: onedrive_folder_refused"
+        );
+        assert!(!refused_as_link(false, 0));
+    }
+
+    /// BN7 on Windows: a junction on the way (made with cmd's built-in mklink /J, no
+    /// privilege; test only) is not followed.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_on_the_way_is_not_followed() {
+        let (d, root) = brain();
+        let away = d.path().join("away");
+        std::fs::create_dir_all(&away).unwrap();
+        let j = root.join("fld_a").join(FOLDER);
+        let ok = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&j)
+            .arg(&away)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "mklink /J failed");
+        assert_eq!(
+            write_new(&root, "fld_a", "2026-11", "n.md", b"x"),
+            Err("brain_path_unsafe")
+        );
+        assert_eq!(
+            std::fs::read_dir(&away).unwrap().count(),
+            0,
+            "reason: wrote_through_junction"
+        );
+    }
+
     /// BN8: a take-back keeps the note in the archive and removes it; a note someone changed is
     /// left alone; one already gone is gone.
     #[test]
@@ -1334,6 +1460,102 @@ mod tests {
         assert_eq!(
             take_back(&root, &rel, &sha_hex(b"one"), &keep),
             Ok(Took::Gone)
+        );
+    }
+
+    /// pa2 L1 (f163c REVIEW-pa2-postmerge L1): a take-back moves only a file at the place aibd
+    /// writes a note of the row's seat; a row pointing at any other file of the library (the
+    /// message library is a file an AI of the same account can write) moves nothing.
+    #[test]
+    fn a_take_back_moves_only_a_path_aibd_writes() {
+        let ok = |r: &str| note_rel_ok(r, "08de5");
+        assert!(ok(
+            "fld_a/AIB-notes/2026-11/20261125-121500-08de5-a1b2c3.md"
+        ));
+        assert!(ok("a/b/AIB-notes/2026-01/20260131-235959-08de5-zzzzzz.md"));
+        for (bad, why) in [
+            ("fld_a/重要筆記.md", "not_in_notes"),
+            (
+                "AIB-notes/2026-11/20261125-121500-08de5-a1b2c3.md",
+                "no_brain_folder",
+            ),
+            (
+                "fld_a/notes/2026-11/20261125-121500-08de5-a1b2c3.md",
+                "other_folder",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/sub/20261125-121500-08de5-a1b2c3.md",
+                "deeper",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/20261125-121500-x1234-a1b2c3.md",
+                "other_seat",
+            ),
+            (
+                "fld_a/AIB-notes/2026-10/20261125-121500-08de5-a1b2c3.md",
+                "month_not_stamp",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/2026112-1215001-08de5-a1b2c3.md",
+                "stamp_shape",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/20261125-121500-08de5-A1B2C3.md",
+                "tail_case",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/20261125-121500-08de5-a1b2c.md",
+                "tail_len",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/20261125-121500-08de5-a1b2c3.txt",
+                "not_md",
+            ),
+            (
+                "../fld_a/AIB-notes/2026-11/20261125-121500-08de5-a1b2c3.md",
+                "dotdot",
+            ),
+            (
+                "fld_a/AIB-notes/2026-11/20261125-121500-08de5-a1b2c３.md",
+                "not_ascii",
+            ),
+        ] {
+            assert!(!ok(bad), "reason: {why} {bad}");
+        }
+        assert!(!note_rel_ok(
+            "fld_a/AIB-notes/2026-11/20261125-121500--a1b2c3.md",
+            ""
+        ));
+
+        // a row naming another file of the library, with that file's own SHA-256: left alone
+        let (d, root) = brain();
+        let other = root.join("fld_a").join("重要筆記.md");
+        std::fs::write(&other, b"mine").unwrap();
+        let keep = archive_path(&d.path().join("data"), "bn_x");
+        assert_eq!(
+            take_back_row(
+                &root,
+                "fld_a/重要筆記.md",
+                "08de5",
+                &sha_hex(b"mine"),
+                &keep
+            ),
+            Err("note_path_not_aibs"),
+            "reason: other_file_taken_back"
+        );
+        assert!(other.exists(), "reason: other_file_moved");
+        assert!(!keep.exists());
+
+        // aibd's own note of that seat: taken back
+        let name = file_name("20261125-121500", "08de5", "a1b2c3");
+        assert_eq!(
+            write_new(&root, "fld_a", "2026-11", &name, b"one"),
+            Ok(true)
+        );
+        let rel = format!("fld_a/{FOLDER}/2026-11/{name}");
+        assert_eq!(
+            take_back_row(&root, &rel, "08de5", &sha_hex(b"one"), &keep),
+            Ok(Took::Archived)
         );
     }
 

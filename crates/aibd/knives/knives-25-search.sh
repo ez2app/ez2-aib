@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # §18 search knives SR1–SR6 (a9136 11-18, IFACE-search-a9136-1118; Andy 「要有一個 搜尋框 搜尋出來 要分類」):
 # grouped by kind with counts, threads by category, a post's text only to the built-in page.
 # Each rule, broken, turns its own test red. Run from the repo root.

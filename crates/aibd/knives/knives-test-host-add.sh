@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TA1-TA6 (b4297 11-21; DESIGN-add-test-host-b4297-1121): the machines offered, the read of a
 # machine, the pinned list, and the two fixed scripts. Every mutant keeps its names used.
 set -eu

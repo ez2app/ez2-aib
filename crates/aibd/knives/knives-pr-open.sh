@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PO1–PO8 G3: a draft pull request into main, asked by the built-in page with the owner's fingerprint (DESIGN-pr-open-g3-7b81e-1120; 5d33a PREREAD-propen-g3 L2; 519d0 11-20 22:30)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

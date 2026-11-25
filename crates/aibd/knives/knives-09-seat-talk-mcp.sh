@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-1 knives TK1–TK5 (b4297 11-18, DECISION-council-seat-talk-519d0-1118 §驗收刀): a seat
 # gets aibd's one MCP server and its two tools only, and `aibd mcp` sends as seat_send.
 # Each rule, broken, turns its own test red. Run from the repo root.

@@ -6,9 +6,9 @@
 
 use aib_wincheck::{
     check_pack, decode_saved, failed_names, failure_output, icacls_lock_args, icacls_owner_args,
-    kept_env, may_run, needs_missing_tool, parse_results, parse_sums, parse_tests, place_tree,
-    sddl_only, sha256_hex, step_args, suite_name, whoami_user, Counts, Guard, Report, TestExe,
-    SCREEN_ASKS, STEPS, TESTS_LIST, USAGE, WINDOWS_ROOT,
+    is_launcher_only_dir, kept_env, may_run, needs_missing_tool, parse_results, parse_sums,
+    parse_tests, place_tree, run_probe, sddl_only, sha256_hex, step_args, suite_name, whoami_user,
+    Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, USAGE, WINDOWS_ROOT,
 };
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -341,9 +341,9 @@ fn main() -> ExitCode {
             for n in failed_names(&out) {
                 // ebab8 11-25 19:04: red only because this machine has no cargo / bash ⇒ listed,
                 // not red, so the reds left are real; each red test's own output is kept
-                if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &on_path) {
+                if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &tool_runs) {
                     r.needs_toolchain(format!(
-                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} is not on PATH)"
+                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} does not run here)"
                     ));
                     for l in failure_output(&out, &n, 8) {
                         r.line(format!("| {l}"));
@@ -473,17 +473,41 @@ fn main() -> ExitCode {
     }
 }
 
-/// Is `tool` (or `tool.exe`) in a folder of this process's `PATH`? The children get the same
-/// `PATH` (it is one of the kept variables).
-fn on_path(tool: &str) -> bool {
+/// Does `tool` (or `tool.exe`) in a folder of this process's `PATH` really run? The first one
+/// found outside the WSL launcher folders ([`is_launcher_only_dir`]) is started with
+/// [`run_probe`] and must exit 0 (ebab8 19:50: found is not enough, System32's bash.exe is only
+/// the WSL launcher). The children get the same `PATH` (it is one of the kept variables).
+fn tool_runs(tool: &str) -> bool {
     let Some(p) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&p).any(|d| {
-        d.join(tool).is_file()
-            || d.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
-                .is_file()
-    })
+    let exe = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+    let Some(found) = std::env::split_paths(&p)
+        .filter(|d| !is_launcher_only_dir(&d.to_string_lossy()))
+        .flat_map(|d| [d.join(tool), d.join(&exe)])
+        .find(|f| f.is_file())
+    else {
+        return false;
+    };
+    let Ok(mut child) = std::process::Command::new(found)
+        .args(run_probe(tool))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    // f163c f05a1623a3 N1: a probe that hangs must not stop wincheck: 20 s and it does not run
+    // (the probe is left behind then; stdin / out / err are null). A named exception to ADR 0005:
+    // wincheck is a one-shot tool on the laptop, not aibd, and has no timer registry.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait().is_ok_and(|s| s.success()));
+    });
+    #[allow(clippy::disallowed_methods)]
+    let ran = rx.recv_timeout(std::time::Duration::from_secs(20));
+    ran.unwrap_or(false)
 }
 
 /// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red. With nobody at

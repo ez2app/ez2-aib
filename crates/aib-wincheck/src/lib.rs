@@ -429,6 +429,26 @@ pub const NEEDS_TOOLCHAIN: &[Needs] = &[
     },
 ];
 
+/// A folder whose `bash.exe` is only Windows' launcher for WSL, not a bash that runs a script:
+/// `C:\Windows\System32` and any `…\WindowsApps` (ebab8 19:50, the laptop's second run: the
+/// aib-public-leak test was red, not NEEDS-TOOLCHAIN, because those two were on `PATH`).
+/// Either separator, any case.
+pub fn is_launcher_only_dir(dir: &str) -> bool {
+    let d = dir
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase();
+    d.ends_with("\\windows\\system32") || d.ends_with("\\windowsapps")
+}
+
+/// What a tool is asked to do to show it really runs: `bash -c "exit 0"`, `cargo --version`.
+pub fn run_probe(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "bash" => &["-c", "exit 0"],
+        _ => &["--version"],
+    }
+}
+
 /// `Some(tool)` when the red test `test` of `suite` in `package` is one of [`NEEDS_TOOLCHAIN`]
 /// and `has(tool)` says this machine does not have it.
 pub fn needs_missing_tool(
@@ -506,8 +526,6 @@ impl Report {
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
-    /// The whole file: `WINCHECK-RED <n>`, else `WINCHECK-INCOMPLETE <n>` (parts that need a
-    /// person were skipped), else `WINCHECK-OK`; then `WINCHECK-SHA256 <sum of the text above>`.
     /// A red test that only this machine's missing cargo / bash made red: listed, not red, and
     /// counted on its own line above the verdict (f163c 3cfd7eb29e N1: an OK with such tests
     /// in it did not check them).
@@ -515,6 +533,8 @@ impl Report {
         self.needs += 1;
         self.lines.push(l.into());
     }
+    /// The whole file: `WINCHECK-RED <n>`, else `WINCHECK-INCOMPLETE <n>` (parts that need a
+    /// person were skipped), else `WINCHECK-OK`; then `WINCHECK-SHA256 <sum of the text above>`.
     pub fn finish(&self) -> String {
         let mut t = String::new();
         for l in &self.lines {
@@ -1216,11 +1236,33 @@ mod tests {
     }
 
     #[test]
+    fn the_wsl_launcher_folders_do_not_count_as_having_bash() {
+        for d in [
+            r"C:\Windows\System32",
+            r"c:\windows\system32\",
+            "C:/Windows/System32",
+            r"C:\Users\a\AppData\Local\Microsoft\WindowsApps",
+        ] {
+            assert!(is_launcher_only_dir(d), "{d}");
+        }
+        for d in [
+            r"C:\Program Files\Git\usr\bin",
+            r"C:\Windows",
+            "/usr/bin",
+            r"C:\Windows\System32\OpenSSH",
+        ] {
+            assert!(!is_launcher_only_dir(d), "{d}");
+        }
+        assert_eq!(run_probe("bash"), ["-c", "exit 0"]);
+        assert_eq!(run_probe("cargo"), ["--version"]);
+    }
+
+    #[test]
     fn tests_that_need_a_missing_tool_are_counted_above_the_verdict() {
         let mut r = Report::default();
         assert!(!r.finish().contains("NEEDS-TOOLCHAIN-COUNT"));
-        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo is not on PATH)");
-        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash is not on PATH)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo does not run here)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash does not run here)");
         let t = r.finish();
         assert!(!r.is_red());
         assert!(

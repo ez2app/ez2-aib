@@ -20,7 +20,7 @@ python3 -I scripts/knife.py crates/aibd/src/touch.rs \
 # WHP1 a key that failed the start-up check is not deleted
 python3 -I scripts/knife.py crates/aibd/src/touch.rs \
   '        delete(&blob);' \
-  '        let _ = blob.len(); // knife: key kept' \
+  '        delete(&blob[..0]); // knife: the wrong key deleted, the made one kept' \
   --expect-fail a_pair_key_that_fails_leaves_nothing \
   -- cargo test -p aibd --locked --lib a_pair_key_that_fails_leaves_nothing
 # WHP2 a failed run keeps the key file it wrote

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TL1–TL6: a window held back by the 3 in 10 minutes / 6 an hour says so and says when one fits again, not "cannot be asked on this machine" (0eed7 pv7 L; 519d0 11-21 07:46)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

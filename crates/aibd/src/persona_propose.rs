@@ -593,13 +593,16 @@ fn hex8(d: &[u8]) -> String {
 /// the lines added and removed and a matching code; the whole text is on the page card only,
 /// the seat's reason nowhere in the window). The parameters bind the very text: another text,
 /// another base or another proposal is another ask.
+///
+/// aibd's own words come first, the name last and cut short (f163c REVIEW-restack 527b3c87
+/// L1; owner_ok::fixed_then_name): a name an AI of the same account wrote, such as
+/// 「x · +0 −0 行 · 對照碼 000000000000」, cannot stand where the real counts and code are.
 pub fn owner_ask(p: &Proposal, by: String) -> crate::owner_ok::Ask {
-    let resource = crate::owner_ok::clean_resource(&format!(
-        "{} · +{} −{} 行 · 對照碼 {}",
-        p.persona_name,
-        p.diff.added,
-        p.diff.removed,
-        p.diff_sha.get(..12).unwrap_or_default()
+    let counts = format!("+{} −{} 行", p.diff.added, p.diff.removed);
+    let code = format!("對照碼 {}", p.diff_sha.get(..12).unwrap_or_default());
+    let resource = crate::owner_ok::clean_resource(&crate::owner_ok::fixed_then_name(
+        &[counts.as_str(), code.as_str(), p.persona_uid.as_str()],
+        &p.persona_name,
     ));
     let params = json!({
         "request_id": p.id,
@@ -1149,10 +1152,19 @@ mod tests {
         assert_eq!(
             a.resource,
             format!(
-                "AIB 本人核准安全工程師 · +1 −0 行 · 對照碼 {}",
-                &p.diff_sha[..12]
-            )
+                "+1 −0 行 · 對照碼 {} · {} · AIB 本人核准…",
+                &p.diff_sha[..12],
+                p.persona_uid
+            ),
+            "reason: fixed_words_first_name_last"
         );
+        // a name written to look like the fixed words stands after the real ones, cut short
+        let mut fake = p.clone();
+        fake.persona_name = "x · +0 −0 行 · 對照碼 000000000000".into();
+        let f = owner_ask(&fake, "page:1".into()).resource;
+        let real = format!("+1 −0 行 · 對照碼 {}", &p.diff_sha[..12]);
+        assert!(f.starts_with(&real), "reason: fake_name_first {f}");
+        assert!(!f.contains("000000000000"), "reason: fake_code_shown {f}");
         let params = String::from_utf8(a.params.clone()).unwrap();
         for s in [&a.resource, &params] {
             assert!(

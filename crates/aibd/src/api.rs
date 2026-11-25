@@ -36,6 +36,16 @@ pub struct AppState {
     pub messages: Arc<aib_store::MessageDb>,
 }
 
+impl AppState {
+    /// The session policy in force now: the one the page wrote while aibd runs (W-10, kept by
+    /// [`crate::sessions::Sessions::set_policy`]), else the one read at start.
+    pub fn policy(&self) -> Arc<crate::config::SessionPolicy> {
+        self.sessions
+            .policy()
+            .unwrap_or_else(|| self.session_policy.clone())
+    }
+}
+
 /// Facts about this aibd process for `GET /api/v1/health` (043dd S3, PLAN A5): `aib web`
 /// and the page tell a restarted aibd apart by `instance_id` / `started_at`. Health is
 /// public, so nothing here names a path (the data directory stays behind the token).
@@ -100,7 +110,7 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         PAIR_PREVIEW, PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS,
         PREVIEW, PREVIEW_HANDOFF, PREVIEW_SWAP, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN,
         SEAT_SESSIONS, SEAT_TREE, SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS, SESSION_OUTPUT,
-        SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
+        SESSION_POLICY, SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -167,6 +177,7 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         PAIR_NEXT => post(pair_api::next).fallback(nope),
         PAIR_PREVIEW => post(pair_api::preview_pass).fallback(nope),
         OWNER_TICKET => get(crate::owner_ok::ticket_state).fallback(nope),
+        SESSION_POLICY => get(crate::session_policy_setup::state).fallback(nope),
         _ => return None,
     })
 }

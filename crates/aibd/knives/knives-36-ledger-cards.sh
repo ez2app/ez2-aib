@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-evcards-rest + N-ws-slot-sources knives LC1-LC10 (7ebca 11-19, 519d0 06:31 / 07:22 / 07:39;
 # 0eed7 VERIFY-evcards r1-r4): a failed review / red receipt / untaken 交件單 / merge is a card only
 # while open; a review without its author is closed both ways; a file is read by name only when an

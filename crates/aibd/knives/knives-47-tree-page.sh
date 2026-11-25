@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TP1–TP5 (b4297 11-20 第二輪):一席自己那一份給真人看(apps/web/dist/tree.js + ws.js 兩個入口)。
 # 每把弄壞一處,the_page_shows_a_seats_tree_read_only(跑 apps/web/test/tree.test.cjs)要紅。
 set -eu

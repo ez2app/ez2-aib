@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 頁面開席 with_seat knives SW1-SW5 (7ebca 11-19, 0eed7 STUCK-live-in 15:23, webdev-8h demo;
 # 5d33a CHECK-preview-work-seat r2): a new work seat opens in a running work seat's own folder,
 # only the folder aibd made for it and not a link; a safe seat cannot name one.

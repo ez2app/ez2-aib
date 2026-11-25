@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # GT1–GT7: a GitHub token pasted on the page is kept only when GitHub says it may push to that very repository, under that repository's own item, with the owner's fingerprint over its hash (DESIGN-gh-token-card-7b81e-1121 r1; 5d33a PREREAD-ghtokencard L2)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace-c3 knives RK1–RK3 (7b81e 11-18; 519d0 r16 ruling 2: a record's kinds are aibd's, one rule set): a
 # request is not a plain yes, a quoted yes is yes, and the card really carries the kinds. Each rule, broken, turns
 # its own test red.

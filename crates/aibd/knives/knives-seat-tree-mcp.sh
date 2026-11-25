@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The reviewer's seat_tree tool (0eed7 RETRACT-T4 M1, a9136 11-20): reads another seat's tree
 # through aibd's tree read with the seat's own token. Run from the repo root.
 set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)

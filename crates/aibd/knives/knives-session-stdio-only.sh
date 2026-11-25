@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # a seat's program gets only stdio (5d33a PREREAD-stdioonly L1)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

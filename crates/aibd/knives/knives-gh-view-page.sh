@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # GP1-GP7 the built-in page reads a pull request through aibd's own gh (a9136 11-21, ORDER-today
 # fourth item; 7b81e's points 11-21 00:37): its own switch, never under a user page, the one
 # rate for the machine, the page-only door, its own event.

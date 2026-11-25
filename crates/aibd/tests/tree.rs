@@ -3,6 +3,9 @@
 //! `aib-fixture-tree` (not a provider). Unix only until the Windows Job Object
 //! path exists.
 #![cfg(unix)]
+// The helpers below that only macOS tests call are unused on Linux, where the E3 knife cells build
+// with -D warnings.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use aib_core::outcome::{decide, Observed};
 use aib_core::state::SessionState;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly-c44 knives TO1–TO13 (7ebca 11-20): GET /api/v1/usage says each seat's turn under way
 # (when it began, when its model last put anything out), so a page can tell "the text arrived
 # and the model never answered" from "it is working". A provider's own lines at the start of a

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan judge knives JD1–JD4 (a9136 11-17, S107-judge: written / judged station side by side):
 # each rule broken on purpose must turn its own test red. Run by the "aib-plan knives (macOS)" step in
 # aibd.yml (one loop over crates/aib-plan/knives/*.sh). Run from the repo root.

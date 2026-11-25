@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S68d gh escape sequences (043dd 11-17, 5d33a CHECK-s68d-round1-5d33a-1f9a749c.md): a newer gh refuses a
 # job log with terminal escape sequences; GhCli reads it once more with --allow-escape-sequences and
 # strips the escapes. Each rule, broken, turns its own test red. The "aib-cireuse knives (macOS)" step

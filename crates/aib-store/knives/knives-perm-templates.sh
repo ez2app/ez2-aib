@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PT-S (DESIGN-brainnote-08de5-1123 §2b): a template name is unique among live templates. Broken, its test turns red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

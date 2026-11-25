@@ -255,6 +255,10 @@ pub fn sign(blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, HelloError
     let text = reason_wide(reason)?;
     let p = provider()?;
     let k = open(&p, blob)?;
+    // 3e53b REVIEW fc543b4b L1: read the gesture flag again before every signature, not only
+    // at start-up; a key turned to 0 after it was made is refused here, not at the next restart
+    let gesture = read_u32(&k, NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY);
+    gesture_required(gesture)?;
     // SAFETY: the key is open; the text is NUL-terminated UTF-16, its size in bytes
     ok(unsafe {
         NCryptSetProperty(
@@ -406,6 +410,27 @@ mod w0 {
             "W0-1 hardware (impl type has the hardware flag; false = software Hello key, A only): {}",
             hardware_backed(NAME)
         );
+        // 3e53b REVIEW fc543b4b L1: can the same user turn the gesture flag off after the key
+        // is made? Record it; if it can, the key must then be refused, then turn it back on.
+        let p = provider().unwrap();
+        let k = open(&p, NAME).unwrap();
+        let flag = NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY;
+        let zero: u32 = 0;
+        // SAFETY: the key is open; a static property name and a 4-byte value, its size given
+        let off = ok(unsafe { NCryptSetProperty(k.0, flag, (&raw const zero).cast(), 4, 0) });
+        println!("W0-1 turn the gesture flag off after making (want Err): {off:?}");
+        if off.is_ok() {
+            let refused = probe(NAME);
+            let one: u32 = 1;
+            // SAFETY: as above
+            let back = ok(unsafe { NCryptSetProperty(k.0, flag, (&raw const one).cast(), 4, 0) });
+            println!("W0-1 with the flag off, probe: {refused:?}; turned back on: {back:?}");
+            assert_eq!(
+                refused,
+                Err(HelloError::WeakKey),
+                "reason: flag_off_not_refused"
+            );
+        }
     }
 
     /// W0-2: the Hello window shows the use-context text. Answer it with your finger / PIN.

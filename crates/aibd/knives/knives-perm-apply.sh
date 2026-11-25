@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # 7b (DESIGN-brainnote-08de5-1123 §7, SPEC r2 §3.7 U8): a seat never holds more than its template; changes, restarts and the log
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

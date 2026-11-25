@@ -432,3 +432,77 @@ fn a_seats_model_is_changed_pinned_and_journaled() {
         "reason: empty_model_set"
     );
 }
+
+#[test]
+fn mg17_a_seat_switches_its_persona_and_brain_at_open_and_says_so() {
+    // §8 8b-2 (6770f): what a merge set for the seat's next open is written when it opens
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(
+        &s,
+        "seat_a",
+        "2026-11-13T00:00:01.000Z",
+        meta("seat_a", Some("r1")),
+    )
+    .unwrap();
+    assert!(s
+        .switch_identity("seat_a", Some("persona-2"), None, "mb_1", "ev_i1", "t2")
+        .unwrap());
+    let m = s.seat_meta("seat_a").unwrap().unwrap();
+    assert_eq!(
+        m.persona_uid.as_deref(),
+        Some("persona-2"),
+        "reason: persona_not_switched"
+    );
+    assert_eq!(
+        m.brain_route.as_deref(),
+        Some("route/a"),
+        "reason: brain_changed_unasked"
+    );
+    assert_eq!(
+        m.resume_id.as_deref(),
+        Some("r1"),
+        "reason: conversation_lost"
+    );
+    assert!(s
+        .switch_identity("seat_a", None, Some("route/b"), "mb_2", "ev_i2", "t3")
+        .unwrap());
+    let m = s.seat_meta("seat_a").unwrap().unwrap();
+    assert_eq!(
+        m.persona_uid.as_deref(),
+        Some("persona-2"),
+        "reason: persona_lost"
+    );
+    assert_eq!(
+        m.brain_route.as_deref(),
+        Some("route/b"),
+        "reason: brain_not_switched"
+    );
+    let evs = s.events_of("seat_a", 0, 10).unwrap();
+    let sw: Vec<_> = evs
+        .iter()
+        .filter(|e| e.event_type == "seat.identity_switched")
+        .collect();
+    assert_eq!(sw.len(), 2, "reason: not_journaled");
+    assert_eq!(sw[0].payload["persona_from"], "persona-1");
+    assert_eq!(sw[0].payload["persona_to"], "persona-2");
+    assert_eq!(sw[1].payload["brain_switched"], true);
+    assert!(
+        !sw[1].payload.to_string().contains("route/b"),
+        "reason: route_in_event"
+    );
+    assert!(
+        !s.switch_identity("nope", Some("p"), None, "mb_3", "ev_i3", "t")
+            .unwrap(),
+        "reason: unknown_seat_switched"
+    );
+    for (p, b) in [(None, None), (Some(""), None), (None, Some(""))] {
+        assert!(
+            matches!(
+                s.switch_identity("seat_a", p, b, "mb_4", "ev_i4", "t"),
+                Err(StoreError::Invalid(_))
+            ),
+            "reason: empty_switch {p:?} {b:?}"
+        );
+    }
+}

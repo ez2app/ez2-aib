@@ -228,6 +228,83 @@ impl Store {
         })
     }
 
+    /// §8 8b-2 (6770f, DESIGN-merge r1 §4a-3 / §4b-1): a seat opened or revived takes the
+    /// persona / brain a merge set for its next open. A field given `None` keeps the seat's
+    /// own. One `seat.identity_switched {persona_from, persona_to, brain_switched, batch_id}`
+    /// event in the same transaction (the brain's route is not written into the event).
+    /// Answers whether the seat had a row.
+    pub fn switch_identity(
+        &self,
+        seat_id: &str,
+        persona: Option<&str>,
+        brain_route: Option<&str>,
+        batch_id: &str,
+        event_id: &str,
+        occurred_at: &str,
+    ) -> Result<bool> {
+        if persona.is_none() && brain_route.is_none() {
+            return Err(StoreError::Invalid("a persona or a brain to switch to"));
+        }
+        if persona.is_some_and(str::is_empty) || brain_route.is_some_and(str::is_empty) {
+            return Err(StoreError::Invalid(
+                "an empty persona or brain is not a value",
+            ));
+        }
+        let (seat_id, persona, brain) = (
+            seat_id.to_string(),
+            persona.map(str::to_string),
+            brain_route.map(str::to_string),
+        );
+        let (batch_id, event_id, occurred_at) = (
+            batch_id.to_string(),
+            event_id.to_string(),
+            occurred_at.to_string(),
+        );
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let from: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT persona_uid FROM seat_meta WHERE seat_id = ?1",
+                    params![seat_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(from) = from else {
+                return Ok(false);
+            };
+            tx.execute(
+                "UPDATE seat_meta SET persona_uid = COALESCE(?2, persona_uid), \
+                 brain_route = COALESCE(?3, brain_route), updated_at = ?4 WHERE seat_id = ?1",
+                params![seat_id, persona, brain, occurred_at],
+            )?;
+            let last: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
+                params![seat_id],
+                |r| r.get(0),
+            )?;
+            insert_event(
+                &tx,
+                &NewEvent {
+                    event_id,
+                    aggregate_type: "seat".into(),
+                    aggregate_id: seat_id.clone(),
+                    sequence: last + 1,
+                    event_type: "seat.identity_switched".into(),
+                    correlation_id: None,
+                    occurred_at,
+                    payload: serde_json::json!({
+                        "persona_from": from,
+                        "persona_to": persona,
+                        "brain_switched": brain.is_some(),
+                        "batch_id": batch_id,
+                    }),
+                },
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// seat_clear (1a93b DESIGN-seat-clear r1 §5 step 4): put `new` in place of `old` (the id
     /// read before the clear; `None` = none was kept), with a `seat.resume_id_swapped` event
     /// that does not carry either id. `false` (nothing written) when the seat has no revive row

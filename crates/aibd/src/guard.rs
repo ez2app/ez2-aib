@@ -102,6 +102,8 @@ pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
 /// GAP-repo-register G2 (043dd): a fingerprint ticket's state, so the page tells "not pressed
 /// yet" from "refused" without resending the act.
 pub const OWNER_TICKET: &str = "/api/v1/owner/tickets/{id}";
+/// W-10 (IFACE-w10-session-policy r5): the policy file's state and what a look finds (page token).
+pub const SESSION_POLICY: &str = "/api/v1/session-policy";
 
 /// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
 /// `api::handlers` has no route of its own). The guard skips the bearer check for paths
@@ -163,6 +165,7 @@ pub const ROUTES: &[&str] = &[
     PAIR_NEXT,
     PAIR_PREVIEW,
     OWNER_TICKET,
+    SESSION_POLICY,
 ];
 
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is

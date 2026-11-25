@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # B1dm-S3c knife MI1 (b4297 11-18): a seat's inbox holds what is still open to it, not what it closed.
 # Run from the repo root.
 set -eo pipefail

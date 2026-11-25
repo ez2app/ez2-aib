@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly-c3 (a9136 11-20): the new import's sender, threads and undo, after 0eed7
 # REVIEW-integ2-ui daaafb770 H1 M1-M5 L2-L7. Each rule, broken, turns its own test red.
 # Run from the repo root.

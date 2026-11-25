@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-knives: timeout=120m
 # S89-input knives SI1–SI17, PT1–PT3, MC1 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.

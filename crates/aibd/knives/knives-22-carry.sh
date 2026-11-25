@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace knives CY2 (CY1 retired: b4297 eb0bf164c holds the assignment half, knife PO11) (7b81e 11-18; 519d0 r16 ruling 3, MATRIX P2 r4, 043dd 12:49): a pairing carried
 # over an update neither changes assignments nor writes the tree. Each rule, broken, turns its own test red.
 set -eo pipefail

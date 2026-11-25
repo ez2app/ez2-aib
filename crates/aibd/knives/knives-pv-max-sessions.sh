@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # MS1 (7b81e 11-20; ORDER-webonly-today 3「同時開九席」): the seats run in the preview, so the
 # parent's AIBD_MAX_SESSIONS goes over to it; dropped, the preview stays at the memory default (4).
 set -eu

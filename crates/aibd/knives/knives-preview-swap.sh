@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PW1-PW12 aibd ctl preview swap (Andy 11-21 06:1x; PREREAD-preview-swap-ctl-a9136-1121, 5d33a PREREAD-previewswap 0/0/2/2)
 set -euo pipefail
 ps() { python3 -I scripts/knife.py crates/aibd/src/preview_swap.rs "$1" "$2" --expect-fail "preview_swap::tests::$3" \

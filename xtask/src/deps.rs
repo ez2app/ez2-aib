@@ -67,6 +67,8 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_RemoteDesktop",
             // W-5: aibd's own desktop (CreateDesktopW / SwitchDesktop / SetThreadDesktop)
             "Win32_System_StationsAndDesktops",
+            // sysdir: GetSystemDirectoryW for aibd host_ssh (3e53b DEEP2 T1, DESIGN-hostmode §3-4)
+            "Win32_System_SystemInformation",
             "Win32_System_Threading",
             // W-5 SetFocus; SendInput comes with it and is kept out of non-test code by
             // aib-sys `test_only_os_calls` (3e53b condition 2)

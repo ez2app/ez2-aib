@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # WD1-WD2 every operation an owner ask names as a constant is on owner_ok::WIRED (519d0 11-21;
 # 0eed7 a82: repo.send_back was merged without its line, every send back was unavailable)
 set -euo pipefail
@@ -17,3 +18,10 @@ wn crates/aibd/src/owner_ok.rs '                    dirs.push(path);' '         
 wn crates/aibd/src/owner_ok.rs "                if name.starts_with('\"') || name.contains(\"::\") {" "                if name.is_empty() && name.contains(\"::\") { // knife"
 # WN3 a path to another file's constant is passed over
 wn crates/aibd/src/owner_ok.rs "                if name.starts_with('\"') || name.contains(\"::\") {" "                if name.starts_with('\"') { // knife"
+# WW1-WW2 every wired operation has its words on top, and a merge's undo says it is an undo (stack10, 6770f: the top line said merge.brain)
+ww() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "owner_ok::tests::$4" \
+        -- cargo test -p aibd --locked --lib "owner_ok::tests::$4"; }
+# WW1 merge.brain has no words (its row names merge.persona twice)
+ww crates/aibd/src/owner_ok.rs '    (crate::merge_acts::OP_BRAIN, "合併相似的第二大腦"),' '    (crate::merge_acts::OP_PERSONA, "合併相似的第二大腦"), // knife' every_wired_operation_has_words
+# WW2 an undo reads as a run
+ww crates/aibd/src/owner_ok.rs '            if v.get("batch_id").is_some() {' '            if v.get("batch_id").is_some() && what.is_empty() { // knife' a_merge_and_its_undo_say_which_on_top

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # SW-N1–N4 (7b81e 11-20; ORDER-webonly-today 6「席能寫進度樹與狀態列」): a seat notes the progress
 # tree (nodes/plan, op note) and sets its own line (act seat_now) through aibd's MCP server, with its
 # own token and no seat named in the body. Each, broken, turns its own test red.

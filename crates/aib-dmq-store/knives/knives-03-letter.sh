@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S79-rust slice 1 (5d33a REVIEW-driverust1 L1): the shared 1.x letter writer, each rule loosened
 # turns its own test red. Run from the repo root.
 set -euo pipefail
