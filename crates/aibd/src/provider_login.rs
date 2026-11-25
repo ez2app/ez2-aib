@@ -41,13 +41,20 @@ pub const OP: &str = "provider.login";
 /// The providers with a login aibd can run, and the one host each one's sign-in address may
 /// have (P0 on Pro 13, DESIGN r2: claude 2.1.311 prints claude.com, codex 0.144.1
 /// auth.openai.com).
-pub const PROVIDERS: [(&str, &str); 2] = [("claude", "claude.com"), ("codex", "auth.openai.com")];
+pub const PROVIDERS: [(&str, &str); 4] = [
+    ("claude", "claude.com"),
+    ("codex", "auth.openai.com"),
+    ("grok", "accounts.x.ai"),
+    ("copilot", "github.com"),
+];
 
 /// The words the program is run with: fixed, nothing from the caller.
 pub fn args_of(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "claude" => Some(&["auth", "login", "--claudeai"]),
         "codex" => Some(&["login", "--device-auth"]),
+        "grok" => Some(&["login", "--device-auth"]),
+        "copilot" => Some(&["login", "--device-code"]),
         _ => None,
     }
 }
@@ -353,7 +360,7 @@ pub fn start(
                 .split_once(a.as_str())
                 .is_some_and(|(_, after)| after.starts_with(char::is_whitespace));
             let code = device_code(&text);
-            if whole && (provider != "codex" || code.is_some()) {
+            if whole && (!matches!(provider, "codex" | "grok" | "copilot") || code.is_some()) {
                 let Some(url) = url_ok(&a, provider) else {
                     kill_all(&mut child);
                     return Err("url_host_refused");
@@ -383,6 +390,14 @@ pub fn logged_in(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> bool {
     let Some(args) = status_args_of(provider) else {
+        if matches!(provider, "grok" | "copilot") {
+            let home = env
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("HOME"))
+                .map(|(_, v)| std::path::PathBuf::from(v))
+                .or_else(crate::workspace::seat_login_home);
+            return home.is_some_and(|h| crate::workspace::logged_in(provider, &h, None));
+        }
         return false;
     };
     let (code, out) = crate::gh_view::run_timed(
@@ -766,6 +781,8 @@ mod tests {
             Some(&["auth", "login", "--claudeai"][..])
         );
         assert_eq!(args_of("codex"), Some(&["login", "--device-auth"][..]));
+        assert_eq!(args_of("grok"), Some(&["login", "--device-auth"][..]));
+        assert_eq!(args_of("copilot"), Some(&["login", "--device-code"][..]));
         assert_eq!(args_of("bash"), None);
         let bad = json!({"type": RELOGIN, "provider": "claude", "args": ["--email", "x"]});
         assert!(
