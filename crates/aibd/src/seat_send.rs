@@ -1841,7 +1841,10 @@ mod tests {
 
     /// 08de5 11-26 (ebab8 q_6f1076bb): another writer moves the row on between the settle's read
     /// and its write. Still queued: it is read again and settled at the new revision, not left
-    /// queued for good. Read by the seat meanwhile: what the seat did stands.
+    /// queued for good (and typed to the seat again at its next turn end, f163c N1: the
+    /// turn-end redeliver takes exactly the rows [`waits_to_be_written`] says). The other
+    /// writers on main: message_read, message_done, mail_nudge. Read by the seat meanwhile:
+    /// what the seat did stands.
     #[test]
     fn a_settle_that_meets_a_newer_revision_reads_again() {
         let d = tempfile::tempdir().unwrap();
@@ -1868,10 +1871,13 @@ mod tests {
                     assert!(got.is_some(), "reason: stale_settle_dropped");
                     assert_eq!(row.item["status"], status, "reason: stale_settle_dropped");
                     assert_eq!(row.item["touched_by"], "other", "reason: other_write_lost");
+                    // f163c N1: a row left queued is typed to the seat again at its next turn end
+                    assert!(!waits_to_be_written(&row), "reason: written_twice");
                 }
                 None => {
                     assert_eq!(got, None, "reason: settled_over_read");
                     assert_eq!(row.item["status"], "read", "reason: settled_over_read");
+                    assert!(!waits_to_be_written(&row), "reason: written_twice");
                 }
             }
         }
