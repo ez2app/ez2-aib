@@ -5071,6 +5071,7 @@
   const NET_HINT = '這只是提示,夥伴也可能不經過這裡直接連';
   // 3e53b(f163c REVIEW-sandboxnet19 N2):允許綁「位址 + 埠」;換位址的網站(CDN)會一直出卡,一直允許也只記這一個位址
   const NET_BIND = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡,選「一直允許」也只記這一個位址';
+  const NET_BIND_NA = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡'; // 卡上沒有一直允許時不提它
   // ebab8 DECISION-council-netallow-store r1:一直允許綁人格 + 這台、每筆最長 30 天(aibd 給 always_days 就用它的);頁面字照實寫
   const netAlwaysDays = (c) => { const n = Number(c && c.always_days); return Number.isInteger(n) && n > 0 && n <= 3650 ? n : 30; };
   const netPersonaSeats = (uid) => (uid ? (S.seats || []).filter((x) => x && x.persona_uid === uid && String(x.state || '').toLowerCase() !== 'archived').length : 0);
@@ -5115,7 +5116,7 @@
     // f163c r5km L1:驗證窗開過(沒過)⇒ aibd 那張卡只剩拒絕(別的選項回 net_card_used),只畫拒絕
     const asked = !!(N.asked && N.asked[c.request_id]);
     const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(netAlwaysWords(o, c))}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
-    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}${c.risk === 'high' ? `<div class="apn apwarn">連到這台電腦自己的服務(在聽的程式:${esc(String(c.listener || '查不到'))});每個允許都要驗證,沒有「一直允許」</div>` : ''}${!asked && c.risk !== 'high' && c.category !== 'local_self' && Array.isArray(c.choices) && c.choices.length && !c.choices.some((o) => o && o.id === 'always') ? `<div class="apn">${esc(NET_NO_ALWAYS)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
+    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}${c.risk === 'high' ? `<div class="apn apwarn">連到這台電腦自己的服務(在聽的程式:${esc(String(c.listener || '查不到'))});每個允許都要驗證,沒有「一直允許」</div>` : ''}${!asked && c.risk !== 'high' && c.category !== 'local_self' && Array.isArray(c.choices) && c.choices.length && !c.choices.some((o) => o && o.id === 'always') ? `<div class="apn">${esc(NET_NO_ALWAYS)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc((c.choices || []).some((o) => o && o.id === 'always') ? NET_BIND : NET_BIND_NA)}</div>` : ''}</div>`;
   }
   function netAskHtml() {
     if (!netHas('list')) return `<div class="apn">${esc(AP_ASK_NO)}</div>`;

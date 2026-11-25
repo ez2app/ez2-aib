@@ -63,13 +63,13 @@ k ''\''綁人格「'\'' + String(c.persona_name || c.persona_uid || '\''這個�
 k '\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]' '\u034f]'
 # PGUS2 (aibd 人格卡段落放行全形空白 U+3000:頁面預檢也要放行)
 k 'test(t.replace(/[\p{Cc}\u3000]/gu, '\'''\'')))' 'test(t.replace(/[\p{Cc}]/gu, '\'''\'')))'
-# PGNC1 (ae921 post-b4 網路卡:卡照 aibd 寫)
+# PGNF1 (ae921 post-b4 網路卡:卡照 aibd 寫)
 k 'exp = netMs(c.expires_at), left =' 'exp = Date.parse(String(c.expires_at || '\'''\'')), left ='
-# PGNC2 (ae921 post-b4 網路卡:卡照 aibd 寫)
+# PGNF2 (ae921 post-b4 網路卡:卡照 aibd 寫)
 k '${c.risk === '\''high'\'' ? `<div class="apn apwarn">連到這台電腦自己的服務' '${false ? `<div class="apn apwarn">連到這台電腦自己的服務'
-# PGNC3 (ae921 post-b4 網路卡:卡照 aibd 寫)
+# PGNF3 (ae921 post-b4 網路卡:卡照 aibd 寫)
 k '&& !c.choices.some((o) => o && o.id === '\''always'\'') ?' '&& false ?'
-# PGNC4 (ae921 post-b4 網路卡:卡照 aibd 寫)
+# PGNF4 (ae921 post-b4 網路卡:卡照 aibd 寫)
 k '${!asked && c.risk !== '\''high'\'' && c.category !== '\''local_self'\'' && Array.isArray(c.choices)' '${!asked && Array.isArray(c.choices)'
 # PGNA1 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
 k 'un = x.until !== undefined ? x.until : x.expires_at,' 'un = x.expires_at,'
@@ -95,3 +95,5 @@ k 'data-annundo="1" disabled>${annKeyName('\''⌘Z'\'')}</button>' 'data-annundo
 k 'data-annredo="1" disabled>${annKeyName('\''⇧⌘Z'\'')}</button>' 'data-annredo="1" disabled>⇧⌘Z</button>'
 # PGWK4 (標註窗復原鍵名照平台:Windows 寫 Ctrl)
 k '· ${annKeyName('\''⌘Z'\'')} 復原`' '· ⌘Z 復原`'
+# PGNF5 (ae921 post-b4 網路卡:卡照 aibd 寫)
+k '(c.choices || []).some((o) => o && o.id === '\''always'\'') ? NET_BIND : NET_BIND_NA' 'true ? NET_BIND : NET_BIND_NA'

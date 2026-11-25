@@ -148,6 +148,6 @@ k '(m > 0 ? '\''(約 '\'' + m + '\'' 分)'\'' : '\'''\'')' ''\'''\'''
 # PGPW12 (c2f0b IFACE-passphrase r2 密語備援狀態一行)
 k 'if (W.err) return `<div class="trm bad">密語狀態讀不到:${esc(W.err)}</div>`;' ' '
 # PGNC20 (3e53b 例外卡綁位址 + 埠說明(f163c sandboxnet19 N2))
-k '${!asked && (c.choices || []).some((o) => o && o.id !== '\''deny'\'' && o.id !== '\''once'\'') ? `<div class="apn">${esc(NET_BIND)}</div>` : '\'''\''}' ' '
+k '${!asked && (c.choices || []).some((o) => o && o.id !== '\''deny'\'' && o.id !== '\''once'\'') ? `<div class="apn">${esc((c.choices || []).some((o) => o && o.id === '\''always'\'') ? NET_BIND : NET_BIND_NA)}</div>` : '\'''\''}' ' '
 # PGNC21 (3e53b 例外卡綁位址 + 埠說明(f163c sandboxnet19 N2))
 k '${!asked && (c.choices || []).some(' '${(c.choices || []).some('
