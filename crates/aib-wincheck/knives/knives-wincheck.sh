@@ -45,3 +45,19 @@ k '        (Some(b), Some(w)) => *w == sha256_hex(b),' \
 k '                && !sums.contains_key(&format!("{TREE}{f}"))' \
   '                && false' \
   a_file_in_the_root_the_pack_did_not_bring_is_found
+# WC11 placing the tree ignores whose the root is: a folder someone else made is emptied (f163c REVIEW L1)
+k '    match may_clear(root.exists(), root.join(MARK).is_file()) {' \
+  '    match may_clear(root.exists(), true) {' \
+  a_root_someone_else_made_is_left_as_it_was
+# WC12 a placed executable changed after the check is run (f163c REVIEW L1)
+k '    if !still_same(&root.join(exe), &format!("{TREE}{exe}"), sums) {' \
+  '    if false {' \
+  a_placed_executable_changed_or_given_a_neighbour_is_not_run
+# WC13 the root's rights are not checked again before a run (f163c REVIEW L2)
+k '    if let Err(e) = (g.check)(root) {' \
+  '    if let Err(e) = Ok::<(), String>(()) {' \
+  a_folder_that_cannot_be_made_ours_stops_everything
+# WC14 another account's entry in the icacls listing is let through (f163c REVIEW L2)
+k '        if !who.eq_ignore_ascii_case(me) {' \
+  '        if false {' \
+  whoami_and_icacls_are_read_strictly

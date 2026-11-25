@@ -264,73 +264,8 @@ jobs:
       - name: aibd static files without the web feature
         if: env.RUN == 'true'
         run: cargo test -p aibd --locked --no-default-features --test static_files
-      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
-      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
-      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
-      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
-      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
-      - name: release exes for Windows hands-on checks (main push / ready-merge)
-        id: winexe
-        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
-        shell: bash
-        env:
-          CARGO_TARGET_DIR: target-winexe
-          # a PR run checks out the merge commit; name the artifact after the head that was labelled
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          pkgs=(-p aibd -p aib-wincheck); bins=(aibd aib-wincheck)
-          for p in aib-idea aib-slice aib-drive; do
-            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
-            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
-          done
-          cargo build --release --locked "${pkgs[@]}"
-          mkdir -p winexe
-          for b in "${bins[@]}"; do
-            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
-            cp "target-winexe/release/$b.exe" winexe/
-          done
-          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
-          #   executables built here. A test executable holds absolute paths of where it was built
-          #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
-          #   C:\aibw\ez2-aib and the laptop puts the tree back at the same place. The pack keeps
-          #   the tree's layout: the source (git archive), target/debug/*.exe, the test
-          #   executables, and wincheck-tests.tsv (<exe>\t<package folder>) at the pack root (not in the
-          #   tree: Windows ignores case and the tree has tests/). Every file is in SHA256SUMS.
-          W=/c/aibw/ez2-aib
-          rm -rf /c/aibw && mkdir -p "$W"
-          git archive HEAD | tar -x -C "$W"
-          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo test --workspace --locked --no-run --message-format=json 2>/dev/null) \
-            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
-            | sort -u > winexe-tests.raw
-          [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
-          : > winexe-tests.tsv
-          while IFS=$'\t' read -r e m; do
-            e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
-            case "$e$m" in "$W"/*"$W"/*) ;; *) echo "::error::$e or $m is not under $W"; exit 1 ;; esac
-            pkg=$(dirname "${m#"$W"/}"); [ "$pkg" = . ] && pkg=
-            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> winexe-tests.tsv
-          done < winexe-tests.raw
-          P=winexe/aibw/ez2-aib
-          mkdir -p "$P"
-          git archive HEAD | tar -x -C "$P"
-          cp winexe-tests.tsv winexe/wincheck-tests.tsv
-          mkdir -p "$P/target/debug/deps"
-          cp "$W"/target/debug/*.exe "$P/target/debug/"
-          cut -f1 winexe-tests.tsv | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
-          printf '%s\n' "$HEAD_SHA" > winexe/HEAD
-          (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
-          echo "::notice title=wincheck pack::$(wc -l < winexe-tests.tsv) test executables, $(du -sh winexe | cut -f1)"
-          # c2f0b REVIEW-wincheck L2: the result file's SUMS-FILE-SHA256 must be this value
-          echo "::notice title=wincheck SUMS-FILE-SHA256::$(sha256sum winexe/SHA256SUMS | cut -c1-64)"
-          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
-        with:
-          name: ${{ steps.winexe.outputs.name }}
-          path: winexe/
-          if-no-files-found: error
-          retention-days: 7
+      # The Windows hands-on pack (release exes + test pack) is its own job, winpack, below
+      #   (f163c REVIEW-wincheck L3): a packing error never turns this required cell red.
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
@@ -3878,6 +3813,94 @@ jobs:
           esac
           git status --porcelain | head -5
           git checkout -q -- . || true
+
+  # 90856 (f163c REVIEW-wincheck L3, ebab8 11-25 16:44): the Windows hands-on pack is its own job, not a
+  #   step of the required rust (windows-latest) cell, so a packing error or a slow pack never blocks a
+  #   merge. Not a required check (not in the ruleset's list). Only on a main push or a PR labelled
+  #   ready-merge, and only when a Rust path changed; waits for the rust cells so it never races them.
+  winpack:
+    name: Windows hands-on pack (not required)
+    needs: [changes, rust]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge')) }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          cargo --version
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd -p aib-wincheck); bins=(aibd aib-wincheck)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
+          #   executables built here. A test executable holds absolute paths of where it was built
+          #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
+          #   C:\aibw\ez2-aib and the laptop puts the tree back at the same place. The pack keeps
+          #   the tree's layout: the source (git archive), target/debug/*.exe, the test
+          #   executables, and wincheck-tests.tsv (<exe>\t<package folder>) at the pack root (not in the
+          #   tree: Windows ignores case and the tree has tests/). Every file is in SHA256SUMS.
+          W=/c/aibw/ez2-aib
+          rm -rf /c/aibw && mkdir -p "$W"
+          git archive HEAD | tar -x -C "$W"
+          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo test --workspace --locked --no-run --message-format=json 2>/dev/null) \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
+            | sort -u > winexe-tests.raw
+          [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
+          : > winexe-tests.tsv
+          while IFS=$'\t' read -r e m; do
+            e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
+            case "$e$m" in "$W"/*"$W"/*) ;; *) echo "::error::$e or $m is not under $W"; exit 1 ;; esac
+            pkg=$(dirname "${m#"$W"/}"); [ "$pkg" = . ] && pkg=
+            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> winexe-tests.tsv
+          done < winexe-tests.raw
+          P=winexe/aibw/ez2-aib
+          mkdir -p "$P"
+          git archive HEAD | tar -x -C "$P"
+          cp winexe-tests.tsv winexe/wincheck-tests.tsv
+          mkdir -p "$P/target/debug/deps"
+          cp "$W"/target/debug/*.exe "$P/target/debug/"
+          cut -f1 winexe-tests.tsv | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
+          printf '%s\n' "$HEAD_SHA" > winexe/HEAD
+          (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
+          echo "::notice title=wincheck pack::$(wc -l < winexe-tests.tsv) test executables, $(du -sh winexe | cut -f1)"
+          # c2f0b REVIEW-wincheck L2: the result file's SUMS-FILE-SHA256 must be this value
+          echo "::notice title=wincheck SUMS-FILE-SHA256::$(sha256sum winexe/SHA256SUMS | cut -c1-64)"
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          if-no-files-found: error
+          retention-days: 7
 
   cloud-knives:
     name: cloud decision knives (macOS)

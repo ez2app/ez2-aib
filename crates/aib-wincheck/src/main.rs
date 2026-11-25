@@ -5,11 +5,10 @@
 //! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    check_pack, extras, failed_names, kept_env, may_clear, parse_results, parse_sums, parse_tests,
-    run_allowed, sha256_hex, step_args, suite_name, Counts, Report, TestExe, MARK, SCREEN_ASKS,
-    STEPS, TESTS_LIST, TREE, WINDOWS_ROOT,
+    acl_only, check_pack, failed_names, icacls_lock_args, kept_env, may_run, parse_results,
+    parse_sums, parse_tests, place_tree, sha256_hex, step_args, suite_name, whoami_user, Counts,
+    Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, WINDOWS_ROOT,
 };
-use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -105,92 +104,33 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
     }
 }
 
-/// `rel` of the pack is still the file its sum names, read again right before it is run: the
-/// folder may be one other accounts of the machine can write (c2f0b 16:19 L), so the check at
-/// the start is not enough.
-fn still_same(file: &Path, name: &str, sums: &BTreeMap<String, String>) -> bool {
-    run_allowed(std::fs::read(file).ok().as_deref(), name, sums)
-}
-
-/// The files under `dir` (all levels when `deep`), relative to `root` with `/`.
-fn files_in(root: &Path, dir: &Path, deep: bool, out: &mut Vec<String>) -> std::io::Result<()> {
-    for e in std::fs::read_dir(dir)? {
-        let e = e?;
-        let ft = e.file_type()?;
-        if ft.is_dir() {
-            if deep {
-                files_in(root, &e.path(), deep, out)?;
-            }
-        } else if let Ok(rel) = e.path().strip_prefix(root) {
-            out.push(rel.to_string_lossy().replace('\\', "/"));
-        }
-    }
-    Ok(())
-}
-
-/// Files the pack did not bring in the folder of `exe` (relative to `root`), where Windows looks
-/// for a DLL first (c2f0b REVIEW L1). A folder that cannot be listed counts as one.
-fn extras_beside(root: &Path, exe: &str, sums: &BTreeMap<String, String>) -> Vec<String> {
-    let dir = root.join(exe).parent().map(Path::to_path_buf);
-    let mut found = Vec::new();
-    match dir.map(|d| files_in(root, &d, false, &mut found)) {
-        Some(Ok(())) => extras(&found, sums),
-        _ => vec![format!("{exe} (its folder cannot be listed)")],
+/// A Windows system program by its full path (never found through PATH), run with the cleared
+/// environment; stdout as text, or why it failed.
+fn system_tool(exe: &str, args: &[String]) -> Result<String, String> {
+    let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is not set")?;
+    let path = PathBuf::from(root).join("System32").join(exe);
+    let o = Command::new(&path)
+        .args(args)
+        .env_clear()
+        .envs(kept_env(std::env::vars()))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    if o.status.success() {
+        Ok(out)
+    } else {
+        Err(format!("{exe} rc={:?}: {}", o.status.code(), out.trim()))
     }
 }
 
-/// Put the pack's tree at `root` (emptied first only when it is this program's own) and check
-/// every file written against its sum. Returns the problems; empty = the tree is in place.
-fn place_tree(pack: &Path, root: &Path, sums: &BTreeMap<String, String>) -> Vec<String> {
-    match may_clear(root.exists(), root.join(MARK).is_file()) {
-        Err(why) => {
-            return vec![format!(
-                "{why} {} is there and was not made by aib-wincheck; nothing is written",
-                root.display()
-            )]
-        }
-        Ok(true) => {
-            if let Err(e) = std::fs::remove_dir_all(root) {
-                return vec![format!("ROOT-CLEAR {}: {e}", root.display())];
-            }
-        }
-        Ok(false) => {}
-    }
-    if let Err(e) = std::fs::create_dir_all(root).and_then(|()| std::fs::write(root.join(MARK), ""))
-    {
-        return vec![format!("ROOT-MAKE {}: {e}", root.display())];
-    }
-    let mut problems = Vec::new();
-    for name in sums.keys() {
-        let Some(rel) = name.strip_prefix(TREE) else {
-            continue;
-        };
-        let to = root.join(rel);
-        let copied = to
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::copy(pack.join(name), &to));
-        if let Err(e) = copied {
-            problems.push(format!("ROOT-COPY {rel}: {e}"));
-        } else if !still_same(&to, name, sums) {
-            problems.push(format!("SUMS-CHANGED {rel} (differs once copied)"));
-        }
-    }
-    // env!("CARGO_TARGET_TMPDIR") of integration tests
-    if let Err(e) = std::fs::create_dir_all(root.join("target").join("tmp")) {
-        problems.push(format!("ROOT-MAKE target/tmp: {e}"));
-    }
-    // nothing else got in while the tree was written (c2f0b REVIEW L1)
-    let mut found = Vec::new();
-    match files_in(root, root, true, &mut found) {
-        Ok(()) => problems.extend(
-            extras(&found, sums)
-                .into_iter()
-                .map(|f| format!("ROOT-EXTRA {f}")),
-        ),
-        Err(e) => problems.push(format!("ROOT-LIST {}: {e}", root.display())),
-    }
-    problems
+/// This account, from `whoami /user`: (name, SID).
+fn me() -> Result<(String, String), String> {
+    let out = system_tool(
+        "whoami.exe",
+        &["/user", "/fo", "csv", "/nh"].map(String::from),
+    )?;
+    whoami_user(&out).ok_or_else(|| format!("whoami: cannot read {:?}", out.trim()))
 }
 
 /// y / n from the person; anything else asks again. `None` when there is no one to ask.
@@ -285,9 +225,42 @@ fn main() -> ExitCode {
             Vec::new()
         }
     };
+    // f163c REVIEW L2 (ebab8 11-25 16:44): on Windows the folders are made this account's alone
+    // with icacls (no PowerShell) and checked again before every run; elsewhere (a Mac try) there
+    // is no such check and the result says so.
+    let who = if cfg!(windows) { Some(me()) } else { None };
+    if let Some(Err(e)) = &who {
+        r.red(format!("ROOT-ACL {e}"));
+    }
+    let lock = |d: &Path| -> Result<(), String> {
+        match &who {
+            Some(Ok((_, sid))) => {
+                system_tool("icacls.exe", &icacls_lock_args(&d.to_string_lossy(), sid)).map(|_| ())
+            }
+            Some(Err(e)) => Err(e.clone()),
+            None => Ok(()),
+        }
+    };
+    let check = |d: &Path| -> Result<(), String> {
+        match &who {
+            Some(Ok((name, _))) => {
+                let p = d.to_string_lossy().into_owned();
+                acl_only(&system_tool("icacls.exe", &[p.clone()])?, &p, name)
+            }
+            Some(Err(e)) => Err(e.clone()),
+            None => Ok(()),
+        }
+    };
+    let guard = Guard {
+        lock: &lock,
+        check: &check,
+    };
+    if who.is_none() {
+        r.line("ROOT-ACL not-windows (no folder rights are set or checked)");
+    }
     let placed = match (&a.root, &sums, trusted) {
         (Some(root), Ok(s), true) => {
-            let problems = place_tree(&a.pack, root, s);
+            let problems = place_tree(&a.pack, root, s, &guard);
             for p in &problems {
                 r.red(p.clone());
             }
@@ -314,19 +287,10 @@ fn main() -> ExitCode {
             print!("{suite} …");
             let _ = std::io::stdout().flush();
             let exe = root.join(&t.exe);
-            if !still_same(&exe, &format!("{TREE}{}", t.exe), sums) {
+            if let Err(why) = may_run(root, &t.exe, sums, &guard) {
                 suite_red = true;
-                r.red(format!(
-                    "SUMS-CHANGED {} (changed after the check; not run)",
-                    t.exe
-                ));
-                continue;
-            }
-            let beside = extras_beside(root, &t.exe, sums);
-            if !beside.is_empty() {
-                suite_red = true;
-                for f in beside {
-                    r.red(format!("ROOT-EXTRA {f} (beside {}; not run)", t.exe));
+                for w in why {
+                    r.red(format!("{w} (not run)"));
                 }
                 continue;
             }
@@ -371,20 +335,9 @@ fn main() -> ExitCode {
                 continue;
             };
             let exe = root.join(&t.exe);
-            if !still_same(&exe, &format!("{TREE}{}", t.exe), sums) {
-                r.red(format!(
-                    "SUMS-CHANGED {} (changed after the check; step {} not run)",
-                    t.exe, s.name
-                ));
-                continue;
-            }
-            let beside = extras_beside(root, &t.exe, sums);
-            if !beside.is_empty() {
-                for f in beside {
-                    r.red(format!(
-                        "ROOT-EXTRA {f} (beside {}; step {} not run)",
-                        t.exe, s.name
-                    ));
+            if let Err(why) = may_run(root, &t.exe, sums, &guard) {
+                for w in why {
+                    r.red(format!("{w} (step {} not run)", s.name));
                 }
                 continue;
             }

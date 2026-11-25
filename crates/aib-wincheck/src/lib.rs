@@ -24,6 +24,7 @@
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Where the pack keeps the source tree and the build, relative to the pack: the same layout
 /// as on the CI machine, which built them at [`WINDOWS_ROOT`].
@@ -429,6 +430,211 @@ impl Report {
     }
 }
 
+/// How the folders the tree goes into are made one account's alone: `lock` right after a folder
+/// is made (Windows: icacls, inheritance off, only this account), `check` on a folder that is
+/// already there and before every run (Windows: icacls lists only this account). Both are no-ops
+/// where there is nothing to set (a Mac try). f163c REVIEW-wincheck L2.
+pub struct Guard<'a> {
+    pub lock: &'a dyn Fn(&Path) -> Result<(), String>,
+    pub check: &'a dyn Fn(&Path) -> Result<(), String>,
+}
+
+/// `file` is still the one its sum names, read again right before it is used.
+pub fn still_same(file: &Path, name: &str, sums: &BTreeMap<String, String>) -> bool {
+    run_allowed(std::fs::read(file).ok().as_deref(), name, sums)
+}
+
+/// The files under `dir` (all levels when `deep`), relative to `root` with `/`.
+pub fn files_in(root: &Path, dir: &Path, deep: bool, out: &mut Vec<String>) -> std::io::Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        if e.file_type()?.is_dir() {
+            if deep {
+                files_in(root, &e.path(), deep, out)?;
+            }
+        } else if let Ok(rel) = e.path().strip_prefix(root) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
+/// Put the pack's tree at `root` and check every file written against its sum. The folder above
+/// the root is made this account's (or, when it is there, must already be); the root is emptied
+/// only when it holds [`MARK`], then made anew (never one someone else made in between) and
+/// locked before anything is written; afterwards nothing the pack did not bring may be in it.
+/// Returns the problems; empty = the tree is in place.
+pub fn place_tree(
+    pack: &Path,
+    root: &Path,
+    sums: &BTreeMap<String, String>,
+    g: &Guard,
+) -> Vec<String> {
+    if let Some(base) = root.parent() {
+        let made = if base.exists() {
+            (g.check)(base).map_err(|e| format!("ROOT-NOT-OURS {}: {e}", base.display()))
+        } else {
+            std::fs::create_dir_all(base)
+                .map_err(|e| format!("ROOT-MAKE {}: {e}", base.display()))
+                .and_then(|()| {
+                    (g.lock)(base).map_err(|e| format!("ROOT-ACL {}: {e}", base.display()))
+                })
+        };
+        if let Err(e) = made {
+            return vec![e];
+        }
+    }
+    match may_clear(root.exists(), root.join(MARK).is_file()) {
+        Err(why) => {
+            return vec![format!(
+                "{why} {} is there and was not made by aib-wincheck; nothing is written",
+                root.display()
+            )]
+        }
+        Ok(true) => {
+            if let Err(e) = std::fs::remove_dir_all(root) {
+                return vec![format!("ROOT-CLEAR {}: {e}", root.display())];
+            }
+        }
+        Ok(false) => {}
+    }
+    // create_dir, not create_dir_all: a root someone made after the clear is refused
+    if let Err(e) = std::fs::create_dir(root) {
+        return vec![format!("ROOT-MAKE {}: {e}", root.display())];
+    }
+    if let Err(e) = (g.lock)(root) {
+        return vec![format!("ROOT-ACL {}: {e}", root.display())];
+    }
+    if let Err(e) = std::fs::write(root.join(MARK), "") {
+        return vec![format!("ROOT-MAKE {}: {e}", root.join(MARK).display())];
+    }
+    let mut problems = Vec::new();
+    for name in sums.keys() {
+        let Some(rel) = name.strip_prefix(TREE) else {
+            continue;
+        };
+        let to = root.join(rel);
+        let copied = to
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(pack.join(name), &to));
+        if let Err(e) = copied {
+            problems.push(format!("ROOT-COPY {rel}: {e}"));
+        } else if !still_same(&to, name, sums) {
+            problems.push(format!("SUMS-CHANGED {rel} (differs once copied)"));
+        }
+    }
+    // env!("CARGO_TARGET_TMPDIR") of integration tests
+    if let Err(e) = std::fs::create_dir_all(root.join("target").join("tmp")) {
+        problems.push(format!("ROOT-MAKE target/tmp: {e}"));
+    }
+    // nothing else got in while the tree was written (c2f0b REVIEW L1)
+    let mut found = Vec::new();
+    match files_in(root, root, true, &mut found) {
+        Ok(()) => problems.extend(
+            extras(&found, sums)
+                .into_iter()
+                .map(|f| format!("ROOT-EXTRA {f}")),
+        ),
+        Err(e) => problems.push(format!("ROOT-LIST {}: {e}", root.display())),
+    }
+    problems
+}
+
+/// Whether the test executable `exe` (relative to `root`) may run now: the root is still this
+/// account's alone, the executable is still the one in the sums, and its folder (where Windows
+/// looks for a DLL first) holds nothing the pack did not bring. `Err` = why not.
+pub fn may_run(
+    root: &Path,
+    exe: &str,
+    sums: &BTreeMap<String, String>,
+    g: &Guard,
+) -> Result<(), Vec<String>> {
+    if let Err(e) = (g.check)(root) {
+        return Err(vec![format!("ROOT-ACL {}: {e}", root.display())]);
+    }
+    if !still_same(&root.join(exe), &format!("{TREE}{exe}"), sums) {
+        return Err(vec![format!(
+            "SUMS-CHANGED {exe} (changed after the check)"
+        )]);
+    }
+    let mut found = Vec::new();
+    let listed = root
+        .join(exe)
+        .parent()
+        .map(|d| files_in(root, d, false, &mut found));
+    if !matches!(listed, Some(Ok(()))) {
+        return Err(vec![format!(
+            "ROOT-EXTRA {exe} (its folder cannot be listed)"
+        )]);
+    }
+    let beside = extras(&found, sums);
+    if beside.is_empty() {
+        Ok(())
+    } else {
+        Err(beside
+            .into_iter()
+            .map(|f| format!("ROOT-EXTRA {f} (beside {exe})"))
+            .collect())
+    }
+}
+
+/// `whoami /user /fo csv /nh`: `"<domain>\<name>","<SID>"` ⇒ (name, SID).
+pub fn whoami_user(out: &str) -> Option<(String, String)> {
+    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let (name, sid) = line
+        .strip_prefix('"')?
+        .strip_suffix('"')?
+        .split_once("\",\"")?;
+    (!name.is_empty() && sid.starts_with("S-1-") && !sid.contains('"'))
+        .then(|| (name.to_string(), sid.to_string()))
+}
+
+/// icacls arguments that make `path` this account's alone: inherited entries removed, every
+/// explicit entry replaced by full control for the SID, passed down to what is inside.
+pub fn icacls_lock_args(path: &str, sid: &str) -> Vec<String> {
+    vec![
+        path.to_string(),
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(),
+        format!("*{sid}:(OI)(CI)F"),
+    ]
+}
+
+/// `icacls <path>`'s listing grants only `me` (compared without case, as Windows does) and
+/// nothing else: the first entry follows the path on its first line, more entries follow on
+/// indented lines, a blank line ends them.
+pub fn acl_only(listing: &str, path: &str, me: &str) -> Result<(), String> {
+    let mut lines = listing.lines().map(|l| l.trim_end_matches('\r'));
+    let first = lines
+        .find(|l| !l.trim().is_empty())
+        .ok_or("icacls listed nothing")?;
+    let first = first
+        .strip_prefix(path)
+        .ok_or_else(|| format!("icacls listed another path: {first:?}"))?;
+    let mut entries = vec![first.trim().to_string()];
+    for l in lines {
+        if l.trim().is_empty() {
+            break;
+        }
+        entries.push(l.trim().to_string());
+    }
+    let mut others = Vec::new();
+    for e in &entries {
+        let who = e.split_once(":(").map_or(e.as_str(), |(w, _)| w);
+        if !who.eq_ignore_ascii_case(me) {
+            others.push(e.clone());
+        }
+    }
+    if !others.is_empty() {
+        return Err(format!("others have rights: {}", others.join("; ")));
+    }
+    if !entries.iter().any(|e| e.contains("(F)")) {
+        return Err(format!("{me} has no full control: {}", entries.join("; ")));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +686,141 @@ mod tests {
             ..s
         };
         assert_eq!(step_args(&all), ["--nocapture", "--test-threads=1"]);
+    }
+
+    /// A folder of its own under the temp folder, emptied when the test ends.
+    struct Tmp(std::path::PathBuf);
+    impl Tmp {
+        fn new(name: &str) -> Tmp {
+            let d =
+                std::env::temp_dir().join(format!("aib-wincheck-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            Tmp(d)
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const OPEN: Guard = Guard {
+        lock: &|_| Ok(()),
+        check: &|_| Ok(()),
+    };
+
+    /// A pack with one test executable, and its sums.
+    fn pack(t: &Tmp) -> (std::path::PathBuf, BTreeMap<String, String>) {
+        let p = t.0.join("pack");
+        let exe = "target/debug/deps/title-0123456789abcdef";
+        std::fs::create_dir_all(p.join(TREE).join("target/debug/deps")).unwrap();
+        std::fs::write(p.join(TREE).join(exe), b"MZ test").unwrap();
+        let sums = BTreeMap::from([(format!("{TREE}{exe}"), sha256_hex(b"MZ test"))]);
+        (p, sums)
+    }
+
+    #[test]
+    fn a_root_someone_else_made_is_left_as_it_was() {
+        let t = Tmp::new("notours");
+        let (p, sums) = pack(&t);
+        let root = t.0.join("aibw").join("ez2-aib");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("theirs.txt"), b"keep").unwrap();
+        let problems = place_tree(&p, &root, &sums, &OPEN);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("ROOT-NOT-OURS"), "{problems:?}");
+        let mut left = Vec::new();
+        files_in(&root, &root, true, &mut left).unwrap();
+        assert_eq!(left, ["theirs.txt"]);
+    }
+
+    #[test]
+    fn a_placed_executable_changed_or_given_a_neighbour_is_not_run() {
+        let t = Tmp::new("placed");
+        let (p, sums) = pack(&t);
+        let root = t.0.join("aibw").join("ez2-aib");
+        assert!(place_tree(&p, &root, &sums, &OPEN).is_empty());
+        let exe = "target/debug/deps/title-0123456789abcdef";
+        assert_eq!(may_run(&root, exe, &sums, &OPEN), Ok(()));
+        // a second run empties its own root and places it again
+        assert!(place_tree(&p, &root, &sums, &OPEN).is_empty());
+        std::fs::write(root.join("target/debug/deps/version.dll"), b"x").unwrap();
+        let why = may_run(&root, exe, &sums, &OPEN).unwrap_err();
+        assert!(
+            why[0].starts_with("ROOT-EXTRA target/debug/deps/version.dll"),
+            "{why:?}"
+        );
+        std::fs::remove_file(root.join("target/debug/deps/version.dll")).unwrap();
+        std::fs::write(root.join(exe), b"MZ tesT").unwrap();
+        let why = may_run(&root, exe, &sums, &OPEN).unwrap_err();
+        assert!(why[0].starts_with("SUMS-CHANGED"), "{why:?}");
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_made_ours_stops_everything() {
+        let t = Tmp::new("acl");
+        let (p, sums) = pack(&t);
+        let root = t.0.join("aibw").join("ez2-aib");
+        let refused = Guard {
+            lock: &|_| Err("icacls rc=Some(5)".into()),
+            check: &|_| Err("others have rights".into()),
+        };
+        let problems = place_tree(&p, &root, &sums, &refused);
+        assert!(problems[0].starts_with("ROOT-ACL"), "{problems:?}");
+        assert!(!root.exists());
+        // the folder above is there now but not ours
+        let problems = place_tree(&p, &root, &sums, &refused);
+        assert!(problems[0].starts_with("ROOT-NOT-OURS"), "{problems:?}");
+        assert!(place_tree(&p, &root, &sums, &OPEN).is_empty());
+        let why = may_run(
+            &root,
+            "target/debug/deps/title-0123456789abcdef",
+            &sums,
+            &refused,
+        );
+        assert!(why.unwrap_err()[0].starts_with("ROOT-ACL"));
+    }
+
+    #[test]
+    fn whoami_and_icacls_are_read_strictly() {
+        assert_eq!(
+            whoami_user("\"desktop-7q\\andy\",\"S-1-5-21-1-2-3-1001\"\r\n"),
+            Some(("desktop-7q\\andy".into(), "S-1-5-21-1-2-3-1001".into()))
+        );
+        for bad in [
+            "",
+            "desktop\\andy S-1-5",
+            "\"a\",\"x\"",
+            "\"\",\"S-1-5-21\"",
+        ] {
+            assert_eq!(whoami_user(bad), None, "{bad:?}");
+        }
+        assert_eq!(
+            icacls_lock_args(r"C:\aibw", "S-1-5-21-9"),
+            [
+                r"C:\aibw",
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-21-9:(OI)(CI)F"
+            ]
+        );
+        let p = r"C:\aibw";
+        let only = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(F)\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n";
+        assert_eq!(acl_only(only, p, "desktop-7q\\andy"), Ok(()));
+        let child = "C:\\aibw\\ez2-aib DESKTOP-7Q\\Andy:(I)(OI)(CI)(F)\n\n";
+        assert_eq!(
+            acl_only(child, r"C:\aibw\ez2-aib", "desktop-7q\\andy"),
+            Ok(())
+        );
+        let shared = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(F)\n        NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n\n";
+        assert!(acl_only(shared, p, "desktop-7q\\andy")
+            .unwrap_err()
+            .contains("Authenticated Users"));
+        let read_only = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(RX)\n\n";
+        assert!(acl_only(read_only, p, "desktop-7q\\andy").is_err());
+        assert!(acl_only("C:\\other X:(F)\n", p, "x").is_err());
+        assert!(acl_only("", p, "x").is_err());
     }
 
     #[test]
