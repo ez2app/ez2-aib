@@ -94,6 +94,19 @@ pub fn batch_from(state: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
+
+/// R3 (stack10 84bdef21b1: merge_undo ended `partial_undo` with every step "還原時寫入失敗",
+/// because a `done` batch's steps could not become `undone`): in which batch states a step
+/// may move to `step_state`. `done` only while the batch runs; `undone` while it runs, once
+/// it is `done` or after a `partial_undo`, never once it `failed` (already put back, N4).
+pub fn step_moves_in(step_state: &str, batch_state: &str) -> bool {
+    match step_state {
+        "done" => batch_state == "run",
+        "undone" => matches!(batch_state, "run" | "done" | "partial_undo"),
+        _ => false,
+    }
+}
+
 /// A step's states.
 pub const STEP_STATES: [&str; 3] = ["pending", "done", "undone"];
 /// How many alias hops a lookup follows before it gives up (a loop or a long chain).
@@ -597,7 +610,10 @@ impl MessageDb {
     }
 
     /// Move a step: `pending` → `done`, or `pending` / `done` → `undone`. `false` = the
-    /// step is not in a state that moves there. R3: only a `running` batch can move steps.
+    /// step is not in a state that moves there. R3: a step becomes `done` only in a running
+    /// batch; it becomes `undone` while the batch runs (put back midway), once it is `done`
+    /// (merge_undo) or `partial_undo` (undo tried again), never in a `failed` one (N4: that
+    /// batch was already put back). See [`step_moves_in`].
     pub fn merge_step_state(&self, batch_id: &str, seq: i64, state: &str) -> Result<bool> {
         let from: &[&str] = match state {
             "done" => &["pending"],
@@ -619,8 +635,10 @@ impl MessageDb {
                 )
                 .optional()?;
             need(
-                batch_state.as_deref() == Some("run"),
-                "batch is not running",
+                batch_state
+                    .as_deref()
+                    .is_some_and(|bs| step_moves_in(&s, bs)),
+                "batch is not in a state whose steps move there",
             )?;
             let n = tx.execute(
                 "UPDATE merge_steps SET state = ?3 WHERE batch_id = ?1 AND seq = ?2 \
@@ -1031,11 +1049,63 @@ mod tests {
         assert_eq!(s[0].planned_after_json, r#""aaaaa1""#);
         // a finished batch takes no more steps (R3: merge_step_state also refuses)
         assert!(m.merge_batch_state("mb_1", "failed").unwrap());
+        assert!(
+            m.merge_step_state("mb_1", 0, "undone").is_err(),
+            "N4: a failed batch was already put back"
+        );
         assert!(m.merge_step_pending(step("mb_1", 2)).is_err());
         assert!(
             m.merge_step_state("mb_1", 0, "done").is_err(),
             "R3: non-running batch"
         );
+    }
+
+    #[test]
+    fn a_done_batch_s_steps_can_be_undone_but_not_done_again() {
+        // stack10 84bdef21b1: merge_undo runs on a `done` batch; R3 refused every step
+        let (_d, m) = db();
+        m.merge_batch_begin(batch("mb_1")).unwrap();
+        m.merge_step_pending(step("mb_1", 0)).unwrap();
+        m.merge_step_pending(step("mb_1", 1)).unwrap();
+        assert!(m.merge_step_state("mb_1", 0, "done").unwrap());
+        assert!(m.merge_step_state("mb_1", 1, "done").unwrap());
+        assert!(m.merge_batch_state("mb_1", "done").unwrap());
+        assert!(
+            m.merge_step_state("mb_1", 1, "done").is_err(),
+            "R3: a done batch takes no new done step"
+        );
+        assert!(
+            m.merge_step_state("mb_1", 1, "undone").unwrap(),
+            "reason: undo_refused_on_done_batch"
+        );
+        assert!(m.merge_batch_state("mb_1", "partial_undo").unwrap());
+        assert!(
+            m.merge_step_state("mb_1", 0, "undone").unwrap(),
+            "reason: retry_refused_on_partial_undo"
+        );
+        let s = m.merge_steps("mb_1").unwrap();
+        assert_eq!(
+            s.iter().map(|x| x.state.as_str()).collect::<Vec<_>>(),
+            ["undone", "undone"]
+        );
+    }
+
+    #[test]
+    fn which_batch_states_let_a_step_move() {
+        for (step, batch, ok) in [
+            ("done", "run", true),
+            ("done", "done", false),
+            ("done", "partial_undo", false),
+            ("done", "failed", false),
+            ("undone", "run", true),
+            ("undone", "done", true),
+            ("undone", "partial_undo", true),
+            ("undone", "failed", false),
+            ("undone", "undone", false),
+            ("pending", "run", false),
+        ] {
+            assert_eq!(step_moves_in(step, batch), ok, "{step} in a {batch} batch");
+        }
     }
 
     #[test]

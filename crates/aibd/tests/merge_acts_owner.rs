@@ -236,6 +236,19 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
         !steps.is_empty() && steps.iter().all(|(_, st)| st == "undone"),
         "reason: steps_not_undone {steps:?}"
     );
+    // 08de5 01:08 N: a second undo is refused before any step is touched
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "merge_undo", "batch_id": batch_id}),
+    )
+    .await;
+    assert_eq!(r.code, 409, "reason: undone_twice {}", r.body);
+    assert_eq!(
+        steps_of(&d, &page, &batch_id).await,
+        steps,
+        "reason: steps_moved_by_second_undo"
+    );
 
     d.shutdown().await;
 }

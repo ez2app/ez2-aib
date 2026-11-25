@@ -106,3 +106,9 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   '                            kind: format!("{kind}-not-archived"),' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
+# ma-undo-once (08de5 11-26 01:08 N: a second merge_undo is 409 and moves no step)
+python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
+  '    if batch.state != "done" {' \
+  '    if batch.state != "done" && false {' \
+  --expect-fail merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo \
+  -- cargo test -p aibd --locked --test merge_acts_owner merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo
