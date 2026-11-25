@@ -753,7 +753,7 @@ mod tests {
             "GitHub Copilot CLI 1.0.115.",
             "GitHub Copilot CLI 1.0.117.",
             "GitHub Copilot CLI 1.0.1160.",
-            "GitHub Copilot CLI 1.0.116.1",
+            "GitHub Copilot CLI 1.0.116.1", // a four-part version, not an address; ip-literal-ok
             "GitHub Copilot CLI 1.0.103.",
             "",
         ] {
