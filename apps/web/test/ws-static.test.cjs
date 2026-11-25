@@ -1606,8 +1606,10 @@ const hsChecks = (async () => {
     pair_key_missing: '這台還沒配對。請先配對。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
   };
-  ok(src.length > 500 && Object.keys(win.W).length === 13, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
+  ok(src.length > 500 && Object.keys(win.W).length === 18, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
   for (const [k, v] of Object.entries(want)) ok(win.f(k) === v && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
+  // c2f0b 18:03:這個碼只有 macOS 的本人驗證會發(Windows 讀不到指紋時系統自己退到 PIN),所以只核 Mac
+  ok(mac.f('owner_check_finger_not_now') === '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。', 'reason: ap26_finger_not_now_mac_only ' + mac.f('owner_check_finger_not_now'));
   const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
   ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
   ok(weakM.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && !weakM.includes('PIN') && /這一版 AIB 還沒有/.test(weakM), 'reason: ap26_too_weak_no_class_says_not_yet ' + weakM);
@@ -1619,5 +1621,57 @@ const hsChecks = (async () => {
   ok(ws.includes('fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || '), 'reason: ap26_card_status_uses_the_sentence');
   const et = ws.slice(ws.indexOf('  function errText(e) {'), ws.indexOf('  function errText(e) {') + 900);
   ok(/if \(rc !== 'unavailable' && rc !== 'cancel'\) \{ const ow = ownerWhy\(rc, e\); if \(ow\) return ow; \}/.test(et) && et.indexOf('ownerWhy(rc, e)') < et.indexOf("if (e.status === 0) return '連不上 AIB';"), 'reason: ap26_errtext_owner_codes_not_generic_unavailable');
+}
+// W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
+{
+  const a = ws.indexOf('  const SP_INIT = '), b = ws.indexOf('  async function spLoad() {', a);
+  const src = a >= 0 && b > a ? ws.slice(a, b) : '';
+  const c = vm.createContext({ S: { sp: null }, esc: (x) => String(x).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])) });
+  vm.runInContext(src + '\nthis.card = spCard; this.need = spNeed; this.found = spFound; this.path = spPath; this.NA = SP_INSTALL_NA; this.npm = spNpm;', c);
+  const win = 'C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\codex\\codex.cmd';
+  const d = { policy: 'missing', programs: [], can_write: true, found: [
+    { name: 'claude', kind: 'native', path: 'C:\\Users\\x\\.local\\bin\\claude.exe' },
+    { name: 'codex', kind: 'npm', path: win },
+    { name: 'gemini', kind: 'not_found', path: '' },
+    { name: 'sh', kind: 'interpreter', path: '/bin/sh' },
+  ] };
+  const h = src ? c.card({ d }) : '';
+  ok(/✅ Claude:找到了\(<span class="sppath" title="C:\\Users\\x\\\.local\\bin\\claude\.exe">/.test(h), 'reason: w10_native_row_found_with_path');
+  ok(h.includes('⚠️ Codex:這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 Codex。請改用官方安裝程式(下面的連結),裝好後按「重新找」。'), 'reason: w10_npm_row_says_why_and_what_to_do');
+  ok(h.includes('<li>gemini:沒找到</li>') && h.includes('⚠️ sh:找到的不是程式本體(<span class="sppath" title="/bin/sh">/bin/sh</span>),請用官方安裝程式重裝'), 'reason: w10_not_found_and_not_the_program_rows');
+  ok(h.indexOf('<h4>還沒設定這台能開哪些 AI</h4>') >= 0 && h.indexOf('AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。') > h.indexOf('<h4>'), 'reason: w10_card_title_then_what_aib_opens');
+  ok(h.includes('data-spok="1"') && h.includes('>核准並啟用</button>') && h.includes('data-spre="1"'), 'reason: w10_approve_shown_with_a_native');
+  const h2 = src ? c.card({ d: Object.assign({}, d, { can_write: false }) }) : 'data-spok';
+  const h3 = src ? c.card({ d: Object.assign({}, d, { found: d.found.filter((f) => f.kind !== 'native') }) }) : 'data-spok';
+  ok(!h2.includes('data-spok') && !h3.includes('data-spok') && h2.includes('data-spre="1"'), 'reason: w10_no_approve_without_can_write_and_native');
+  // c2f0b IFACE r3:讀不懂的設定檔 aibd 不覆蓋 ⇒ 不出核准鈕、叫人刪檔,路徑用 policy_path
+  const pth = 'C:\\ProgramData\\aib\\config\\seats\\v2\\session-policy.json';
+  const hi = src ? c.card({ d: Object.assign({}, d, { policy: 'invalid', policy_path: pth }) }) : 'data-spok';
+  ok(!hi.includes('data-spok') && hi.includes('data-spre="1"') && hi.includes('這台的開席設定檔讀不懂(<span class="sppath" title="' + pth + '">C:\\ProgramData\\aib\\…\\session-policy.json</span>)。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。'), 'reason: w10_invalid_no_approve_says_delete_file');
+  // f163c L1:檔讀得懂但沒有程式 ⇒ 一樣不出鈕,叫人刪檔
+  const hl = src ? c.card({ d: Object.assign({}, d, { policy: 'loaded', programs: [], policy_path: '/Users/x/.aib/session-policy.json' }) }) : 'data-spok';
+  ok(!hl.includes('data-spok') && hl.includes('這台已經有開席設定(<span class="sppath" title="/Users/x/.aib/session-policy.json">/Users/x/.aib/session-policy.json</span>),但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。'), 'reason: w10_loaded_empty_no_approve_says_delete_file');
+  ok(src && c.card({ d: Object.assign({}, d, { policy: 'whatever' }) }).indexOf('data-spok') < 0, 'reason: w10_approve_only_when_missing');
+  vm.runInContext('this.nm = spName;', c);
+  ok(src && c.nm('toString') === 'toString' && c.nm('claude') === 'Claude' && c.nm('constructor') === 'constructor', 'reason: w10_name_own_keys_only');
+  const hn = src ? c.card({ d: { policy: 'invalid', can_write: true, policy_path: 7, found: [] } }) : '(';
+  ok(hn.includes('這台的開席設定檔讀不懂。AIB 不會自己蓋掉它') && !hn.includes('data-spok'), 'reason: w10_invalid_without_path');
+  ok(c.NA === '官方安裝說明的連結:這一版 AIB 還沒有' && h.includes(c.NA) && !/https?:/.test(h), 'reason: w10_install_link_not_faked');
+  const odd = src ? c.found({ found: [{ name: 'x', kind: 'weird', path: '' }, { name: 7, kind: 'native' }, null, { name: '<b>z', kind: 'native', path: '' }] }) : [];
+  const ho = src ? c.card({ d: { policy: 'missing', can_write: true, found: [{ name: '<b>z', kind: 'native', path: '' }] } }) : '<b>';
+  ok(odd.length === 1 && odd[0].name === '<b>z' && !ho.includes('<b>z') && ho.includes('&lt;b&gt;z'), 'reason: w10_only_iface_shapes_and_escaped');
+  ok(src && c.need({ policy: 'missing', programs: ['claude'] }) && c.need({ policy: 'invalid', programs: ['claude'] }) && c.need({ policy: 'loaded', programs: [] }) && !c.need({ policy: 'loaded', programs: ['claude'] }) && !c.need(null), 'reason: w10_card_only_when_missing_invalid_or_empty');
+  ok(src && c.path(win) === 'C:\\Users\\x\\…\\codex.cmd' && c.path('/usr/local/bin/claude') === '/usr/local/bin/claude', 'reason: w10_long_path_head_and_file ' + (src && c.path(win)));
+  // c2f0b r2 第 5 點:設定載入了、某家是 npm ⇒ 加席選單那家灰掉,原因就是 npm 那句
+  if (src) c.S.sp = { d: { policy: 'loaded', programs: ['claude'], found: d.found } };
+  ok(src && c.npm('codex') === '這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 Codex。請改用官方安裝程式(下面的連結),裝好後按「重新找」。' && c.npm('claude') === '', 'reason: w10_npm_brand_reason');
+  ok(ws.includes("const npm = !(p && p.open) && typeof spNpm === 'function' && typeof S !== 'undefined' ? spNpm(k) : '';") && ws.includes('const why = (held && held.block) || npm || (!p ?'), 'reason: w10_npm_brand_greyed_in_menu');
+  // c2f0b r2 第 3 點:窗字「允許 AIB 在這台開:Claude(完整路徑)」,兩家用、分隔
+  ok(ws.includes("session_policy_init: () => ['允許 AIB 在這台開', [['程式', typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name) + '(' + f.path + ')').join('、') : '', true]"), 'reason: w10_fp_card_same_order_as_window');
+  ok(ws.includes("${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `<div class=\"aerr\" role=\"alert\">這台現在開不了任何 AI,所以不能加席。</div>"), 'reason: w10_card_replaces_cannot_open_line');
+  ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
+  ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
+  const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
+  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });
