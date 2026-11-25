@@ -43,6 +43,8 @@ k '<a class="rlcgo" href="${esc(R.url)}" target="_blank" rel="noopener noreferre
 # RLC18 Codex 標誌改一個位元組(不是官方檔)
 k '    codex: '\''data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzE2IiBo' '    codex: '\''data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzE2IiBA'
 # RLC19 標誌不放在中性方塊(少 rlclogo)
-k '`<span class="rlcmark rlclogo"><img src=' '`<span class="rlcmark"><img src='
+k '`<span class="rlcmark rlclogo${b === ' '`<span class="rlcmark${b === '
 # RLC20 不放標誌、一律字母
 k '${RELOG_LOGO[b] ? `' '${false ? `'
+# RLC21 Grok 不放白方塊(原檔黑標放在深色方塊上看不見)
+k 'b === '\''grok'\'' ? '\'' rlclogo-light'\'' : '\'''\''' 'b === '\''grok'\'' ? '\'''\'' : '\'''\'''
