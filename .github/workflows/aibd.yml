@@ -290,19 +290,36 @@ jobs:
             [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
             cp "target-winexe/release/$b.exe" winexe/
           done
-          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so the test executables the
-          #   test step above already built are packed for aib-wincheck.exe to run there (no
-          #   rebuild: --no-run in the default target only lists them). Every file is in SHA256SUMS; wincheck runs
-          #   nothing unless all of them match.
-          mkdir -p winexe/tests
-          env -u CARGO_TARGET_DIR cargo test --workspace --locked --no-run --message-format=json 2>/dev/null \
-            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | .executable' \
-            | sort -u > winexe-tests.txt
-          [ -s winexe-tests.txt ] || { echo "::error::no test executables were listed"; exit 1; }
-          while IFS= read -r e; do cp "$(cygpath -u "$e")" winexe/tests/; done < winexe-tests.txt
+          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
+          #   executables built here. A test executable holds absolute paths of where it was built
+          #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
+          #   C:\aibw\ez2-aib and the laptop puts the tree back at the same place. The pack keeps
+          #   the tree's layout: the source (git archive), target/debug/*.exe, the test
+          #   executables, and TESTS (<exe>\t<package folder>). Every file is in SHA256SUMS.
+          W=/c/aibw/ez2-aib
+          rm -rf /c/aibw && mkdir -p "$W"
+          git archive HEAD | tar -x -C "$W"
+          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo test --workspace --locked --no-run --message-format=json 2>/dev/null) \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
+            | sort -u > winexe-tests.raw
+          [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
+          : > "$W/TESTS"
+          while IFS=$'\t' read -r e m; do
+            e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
+            case "$e$m" in "$W"/*"$W"/*) ;; *) echo "::error::$e or $m is not under $W"; exit 1 ;; esac
+            pkg=$(dirname "${m#"$W"/}"); [ "$pkg" = . ] && pkg=
+            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> "$W/TESTS"
+          done < winexe-tests.raw
+          P=winexe/aibw/ez2-aib
+          mkdir -p "$P"
+          git archive HEAD | tar -x -C "$P"
+          cp "$W/TESTS" "$P/TESTS"
+          mkdir -p "$P/target/debug/deps"
+          cp "$W"/target/debug/*.exe "$P/target/debug/"
+          cut -f1 "$W/TESTS" | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
           printf '%s\n' "$HEAD_SHA" > winexe/HEAD
-          (cd winexe && sha256sum -- *.exe HEAD tests/*.exe > SHA256SUMS && wc -l < SHA256SUMS)
-          echo "::notice title=wincheck pack::$(ls winexe/tests | wc -l) test executables, $(du -sh winexe | cut -f1)"
+          (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
+          echo "::notice title=wincheck pack::$(wc -l < "$W/TESTS") test executables, $(du -sh winexe | cut -f1)"
           echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && steps.winexe.outcome == 'success'

@@ -1,11 +1,14 @@
-//! `aib-wincheck [--pack <folder>] [--out <file>] [--no-ask]`: the Windows hands-on check.
-//! See the crate's lib.rs. Double-clicked, it uses the folder it is in as the pack and writes
-//! `<home>\.ez2-aib\pending\WINCHECK-<machine>-<time>.txt`.
+//! `aib-wincheck [--pack <folder>] [--root <folder>] [--out <file>] [--no-ask]`: the Windows
+//! hands-on check. See the crate's lib.rs. Double-clicked, it uses the folder it is in as the
+//! pack, puts the tree back at `C:\aibw\ez2-aib` (where CI built it) and writes
+//! `<home>\.ez2-aib\pending\WINCHECK-<machine>-<time>.txt`. `--root` is for trying it
+//! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    check_pack, failed_names, kept_env, parse_results, parse_sums, sha256_hex, step_args,
-    suite_name, Counts, Report, SCREEN_ASKS, STEPS,
+    check_pack, failed_names, kept_env, parse_results, parse_sums, parse_tests, sha256_hex,
+    step_args, suite_name, Counts, Report, TestExe, SCREEN_ASKS, STEPS, TREE, WINDOWS_ROOT,
 };
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -13,6 +16,7 @@ use std::time::Instant;
 
 struct Args {
     pack: PathBuf,
+    root: Option<PathBuf>,
     out: Option<PathBuf>,
     ask: bool,
 }
@@ -24,6 +28,7 @@ fn args() -> Result<Args, String> {
         .ok_or("cannot tell where this program is")?;
     let mut a = Args {
         pack: exe_dir,
+        root: cfg!(windows).then(|| PathBuf::from(WINDOWS_ROOT)),
         out: None,
         ask: true,
     };
@@ -31,6 +36,7 @@ fn args() -> Result<Args, String> {
     while let Some(w) = it.next() {
         match w.as_str() {
             "--pack" => a.pack = PathBuf::from(it.next().ok_or("--pack needs a folder")?),
+            "--root" => a.root = Some(PathBuf::from(it.next().ok_or("--root needs a folder")?)),
             "--out" => a.out = Some(PathBuf::from(it.next().ok_or("--out needs a file")?)),
             "--no-ask" => a.ask = false,
             other => return Err(format!("unknown argument {other:?}")),
@@ -75,12 +81,16 @@ fn pack_files(dir: &Path) -> Result<Vec<(String, String)>, String> {
 /// Run `exe` with `args`, a cleared environment with only the kept variables, and the
 /// working folder `cwd`; stdout and stderr together, and the exit code.
 fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
+    // cargo runs a test in its package's folder with CARGO_MANIFEST_DIR set to it; some
+    // tests read it at run time
+    let manifest = cwd.to_string_lossy().into_owned();
     let t = Instant::now();
     let o = Command::new(exe)
         .args(args)
         .current_dir(cwd)
         .env_clear()
         .envs(kept_env(std::env::vars()))
+        .env("CARGO_MANIFEST_DIR", manifest)
         .stdin(Stdio::null())
         .output();
     let ms = t.elapsed().as_millis();
@@ -97,10 +107,55 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
 /// `rel` of the pack is still the file its sum names, read again right before it is run: the
 /// folder may be one other accounts of the machine can write (c2f0b 16:19 L), so the check at
 /// the start is not enough.
-fn still_same(pack: &Path, rel: &str, sums: &std::collections::BTreeMap<String, String>) -> bool {
-    std::fs::read(pack.join(rel))
+fn still_same(file: &Path, name: &str, sums: &BTreeMap<String, String>) -> bool {
+    std::fs::read(file)
         .ok()
-        .is_some_and(|b| sums.get(rel).is_some_and(|w| *w == sha256_hex(&b)))
+        .is_some_and(|b| sums.get(name).is_some_and(|w| *w == sha256_hex(&b)))
+}
+
+/// The marker that says a root folder is this program's own: a folder without it is never
+/// emptied.
+const MARK: &str = ".aib-wincheck";
+
+/// Put the pack's tree at `root` (emptied first only when it is this program's own) and check
+/// every file written against its sum. Returns the problems; empty = the tree is in place.
+fn place_tree(pack: &Path, root: &Path, sums: &BTreeMap<String, String>) -> Vec<String> {
+    if root.exists() {
+        if !root.join(MARK).is_file() {
+            return vec![format!(
+                "ROOT-NOT-OURS {} is there and was not made by aib-wincheck; nothing is written",
+                root.display()
+            )];
+        }
+        if let Err(e) = std::fs::remove_dir_all(root) {
+            return vec![format!("ROOT-CLEAR {}: {e}", root.display())];
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(root).and_then(|()| std::fs::write(root.join(MARK), ""))
+    {
+        return vec![format!("ROOT-MAKE {}: {e}", root.display())];
+    }
+    let mut problems = Vec::new();
+    for name in sums.keys() {
+        let Some(rel) = name.strip_prefix(TREE) else {
+            continue;
+        };
+        let to = root.join(rel);
+        let copied = to
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(pack.join(name), &to));
+        if let Err(e) = copied {
+            problems.push(format!("ROOT-COPY {rel}: {e}"));
+        } else if !still_same(&to, name, sums) {
+            problems.push(format!("SUMS-CHANGED {rel} (differs once copied)"));
+        }
+    }
+    // env!("CARGO_TARGET_TMPDIR") of integration tests
+    if let Err(e) = std::fs::create_dir_all(root.join("target").join("tmp")) {
+        problems.push(format!("ROOT-MAKE target/tmp: {e}"));
+    }
+    problems
 }
 
 /// y / n from the person; anything else asks again. `None` when there is no one to ask.
@@ -179,47 +234,62 @@ fn main() -> ExitCode {
         }
     };
 
-    // a folder of its own to run in, never a project folder of the person's (c2f0b L1)
-    let work = home().join(".ez2-aib").join("wincheck").join("work");
-    if let Err(e) = std::fs::create_dir_all(&work) {
-        r.red(format!("WORK-DIR {}: {e}", work.display()));
-    }
+    // the tree back where CI built it: a folder of this program's own, never a project
+    // folder of the person's (c2f0b L1)
+    let tests: Vec<TestExe> = match std::fs::read_to_string(a.pack.join(TREE).join("TESTS"))
+        .map_err(|e| format!("TESTS: {e}"))
+        .and_then(|t| parse_tests(&t))
+    {
+        Ok(t) => t,
+        Err(e) => {
+            r.red(format!("TESTS-BAD {e}"));
+            Vec::new()
+        }
+    };
+    let placed = match (&a.root, &sums, trusted) {
+        (Some(root), Ok(s), true) => {
+            let problems = place_tree(&a.pack, root, s);
+            for p in &problems {
+                r.red(p.clone());
+            }
+            if problems.is_empty() {
+                r.line(format!("ROOT-OK {}", root.display()));
+            }
+            problems.is_empty()
+        }
+        (None, _, _) => {
+            r.red("ROOT-NONE outside Windows give --root (where the tests were built)");
+            false
+        }
+        _ => false,
+    };
 
-    if trusted {
+    if let (true, Some(root), Ok(sums)) = (placed, &a.root, &sums) {
         // 2. every test executable, as cargo test would run it
-        let tests: Vec<String> = files
-            .as_ref()
-            .map(|f| {
-                f.iter()
-                    .map(|(n, _)| n.clone())
-                    .filter(|n| {
-                        n.starts_with("tests/") && n.ends_with(std::env::consts::EXE_SUFFIX)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let mut total = Counts::default();
         let mut suites = 0u32;
         let mut suite_red = false;
         for t in &tests {
-            let file = t.trim_start_matches("tests/");
-            print!("{} …", suite_name(file));
+            let file = t.exe.rsplit('/').next().unwrap_or(&t.exe);
+            let suite = suite_name(file);
+            print!("{suite} …");
             let _ = std::io::stdout().flush();
-            if !sums.as_ref().is_ok_and(|s| still_same(&a.pack, t, s)) {
+            let exe = root.join(&t.exe);
+            if !still_same(&exe, &format!("{TREE}{}", t.exe), sums) {
                 suite_red = true;
                 r.red(format!(
-                    "SUMS-CHANGED {t} (changed after the check; not run)"
+                    "SUMS-CHANGED {} (changed after the check; not run)",
+                    t.exe
                 ));
                 continue;
             }
-            let (rc, out, ms) = run(&a.pack.join(t), &[], &work);
+            let (rc, out, ms) = run(&exe, &[], &root.join(&t.package));
             let c = parse_results(&out);
             println!(" {} 過 / {} 紅", c.passed, c.failed);
             suites += 1;
             total.add(c);
             r.line(format!(
-                "SUITE {} rc={} passed={} failed={} ignored={} ms={ms}",
-                suite_name(file),
+                "SUITE {suite} rc={} passed={} failed={} ignored={} ms={ms}",
                 rc.map_or("none".into(), |c| c.to_string()),
                 c.passed,
                 c.failed,
@@ -227,14 +297,11 @@ fn main() -> ExitCode {
             ));
             for n in failed_names(&out) {
                 suite_red = true;
-                r.red(format!("TEST-RED {} {n}", suite_name(file)));
+                r.red(format!("TEST-RED {suite} {n}"));
             }
             if rc != Some(0) && c.failed == 0 {
                 suite_red = true;
-                r.red(format!(
-                    "SUITE-RED {} rc={rc:?} without a failed test",
-                    suite_name(file)
-                ));
+                r.red(format!("SUITE-RED {suite} rc={rc:?} without a failed test"));
             }
         }
         r.line(format!(
@@ -249,28 +316,23 @@ fn main() -> ExitCode {
 
         // 3. the named steps (c2f0b W-8), output kept whole
         for s in STEPS {
-            let exe = files.as_ref().ok().and_then(|f| {
-                f.iter()
-                    .map(|(n, _)| n.as_str())
-                    .find(|n| {
-                        n.strip_prefix("tests/")
-                            .is_some_and(|x| suite_name(x) == s.exe)
-                    })
-                    .map(str::to_owned)
-            });
-            let Some(exe) = exe else {
+            let Some(t) = tests
+                .iter()
+                .find(|t| suite_name(t.exe.rsplit('/').next().unwrap_or(&t.exe)) == s.exe)
+            else {
                 r.red(format!("STEP-MISSING {} {}", s.name, s.exe));
                 continue;
             };
-            if !sums.as_ref().is_ok_and(|x| still_same(&a.pack, &exe, x)) {
+            let exe = root.join(&t.exe);
+            if !still_same(&exe, &format!("{TREE}{}", t.exe), sums) {
                 r.red(format!(
-                    "SUMS-CHANGED {exe} (changed after the check; step {} not run)",
-                    s.name
+                    "SUMS-CHANGED {} (changed after the check; step {} not run)",
+                    t.exe, s.name
                 ));
                 continue;
             }
             r.line(format!("STEP-BEGIN {}", s.name));
-            let (rc, out, ms) = run(&a.pack.join(&exe), &step_args(s), &work);
+            let (rc, out, ms) = run(&exe, &step_args(s), &root.join(&t.package));
             for l in out.lines() {
                 r.line(format!("| {l}"));
             }

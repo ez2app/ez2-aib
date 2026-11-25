@@ -25,6 +25,64 @@
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+/// Where the pack keeps the source tree and the build, relative to the pack: the same layout
+/// as on the CI machine, which built them at [`WINDOWS_ROOT`].
+pub const TREE: &str = "aibw/ez2-aib/";
+
+/// Where CI built the test executables, and where they must sit to run: a test executable
+/// holds absolute paths of the machine that built it (`CARGO_BIN_EXE_*`, `CARGO_MANIFEST_DIR`
+/// fixtures), so it is not moved; the tree is put back where it was built.
+pub const WINDOWS_ROOT: &str = r"C:\aibw\ez2-aib";
+
+/// One test executable of the pack's `TESTS` list: the executable and the package folder it
+/// runs in (cargo runs a test in its package's folder, with `CARGO_MANIFEST_DIR` set to it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestExe {
+    /// relative to the tree, with `/`
+    pub exe: String,
+    /// relative to the tree, with `/` (`""` = the tree's root)
+    pub package: String,
+}
+
+/// A path inside the tree: relative, `/`, no `..`, no drive, no empty part.
+fn inside(p: &str) -> bool {
+    !(p.starts_with('/')
+        || p.starts_with('\\')
+        || p.contains(':')
+        || p.contains('\\')
+        || p.split('/').any(|x| x == ".." || x.is_empty()))
+}
+
+/// The pack's `TESTS` file: one `<exe>\t<package folder>` line per test executable, both
+/// relative to the tree. Anything else, a path that leaves the tree, or an executable listed
+/// twice is refused.
+pub fn parse_tests(text: &str) -> Result<Vec<TestExe>, String> {
+    let mut v: Vec<TestExe> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (exe, package) = line
+            .split_once('\t')
+            .ok_or(format!("TESTS line {}: not '<exe>\\t<package>'", n + 1))?;
+        if !inside(exe) || !(package.is_empty() || inside(package)) {
+            return Err(format!("TESTS line {}: a path outside the tree", n + 1));
+        }
+        if v.iter().any(|t| t.exe == exe) {
+            return Err(format!("TESTS line {}: {exe} twice", n + 1));
+        }
+        v.push(TestExe {
+            exe: exe.to_string(),
+            package: package.to_string(),
+        });
+    }
+    if v.is_empty() {
+        return Err("TESTS is empty".into());
+    }
+    Ok(v)
+}
+
 /// The variables a child keeps; everything else is cleared. Windows needs `SystemRoot` to
 /// load system DLLs and `TEMP` / `TMP` for temporary files; `USERPROFILE` / `HOME` say whose
 /// folders a test may use; `PATH` lets a test find system programs.
@@ -395,6 +453,33 @@ mod tests {
         );
         assert_eq!(failed_names(out), ["a::two"]);
         assert_eq!(parse_results("no tests here"), Counts::default());
+    }
+
+    #[test]
+    fn the_tests_list_names_executables_and_package_folders_inside_the_tree() {
+        let t = parse_tests(
+            "target/debug/deps/tree-0123456789abcdef.exe\tcrates/aibd\r\n\
+             target/debug/deps/aib_xtask-0123456789abcdef.exe\txtask\n",
+        )
+        .unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].package, "crates/aibd");
+        assert_eq!(
+            parse_tests("target/debug/deps/a.exe\t").unwrap()[0].package,
+            ""
+        );
+        for bad in [
+            "",
+            "target/debug/deps/a.exe",
+            "../a.exe\tcrates/x",
+            "target/a.exe\t../x",
+            "C:/a.exe\tcrates/x",
+            "target\\a.exe\tcrates/x",
+            "/a.exe\tx",
+            "a.exe\tx\na.exe\ty",
+        ] {
+            assert!(parse_tests(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
