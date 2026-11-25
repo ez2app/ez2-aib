@@ -2395,7 +2395,7 @@ fn pair_key_init() -> Result<(), String> {
     };
     println!(
         "Pairing key made in {} (Windows Hello asks for you; the key is kept {where_kept}). \
-         Start aibd with AIBD_PAIRING=touchid to confirm pairings with it.",
+         aibd confirms pairings with it.",
         dir.display()
     );
     Ok(())
@@ -2404,6 +2404,263 @@ fn pair_key_init() -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn pair_key_init() -> Result<(), String> {
     Err("an owner pairing key is macOS and Windows only".into())
+}
+
+/// The machine side of `aibd setup` ([`aibd::winsetup`], COND-win-installer-3e53b-1126 r1).
+struct SetupOps;
+
+/// Open `p` for reading while letting others only read it (Windows `FILE_SHARE_READ`): nobody
+/// can rewrite it under the hash.
+fn open_share_read(p: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.share_mode(0x0000_0001);
+    }
+    o.open(p)
+}
+
+/// Read `r` to the end, writing every chunk to `w` when given; the SHA-256 in hex.
+fn sha256_copy(r: &mut dyn Read, mut w: Option<&mut dyn Write>) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = r.read(&mut buf)?;
+        let Some(chunk) = buf.get(..n) else { break };
+        if chunk.is_empty() {
+            break;
+        }
+        h.update(chunk);
+        if let Some(w) = w.as_mut() {
+            w.write_all(chunk)?;
+        }
+    }
+    if let Some(w) = w.as_mut() {
+        w.flush()?;
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+impl aibd::winsetup::Ops for SetupOps {
+    fn elevated(&self) -> Result<bool, String> {
+        aib_sys::winrun::elevated().map_err(|e| format!("could not read this program's token: {e}"))
+    }
+    fn exists(&self, p: &Path) -> bool {
+        std::fs::symlink_metadata(p).is_ok()
+    }
+    fn is_link(&self, p: &Path) -> bool {
+        let Ok(m) = std::fs::symlink_metadata(p) else {
+            return false;
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            // FILE_ATTRIBUTE_REPARSE_POINT: symbolic links, junctions, mount points
+            if m.file_attributes() & 0x0000_0400 != 0 {
+                return true;
+            }
+        }
+        m.file_type().is_symlink()
+    }
+    fn same_file(&self, a: &Path, b: &Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
+    fn make_dir(&self, dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
+    }
+    fn copy_new(&self, from: &Path, to: &Path) -> Result<String, String> {
+        let mut r = open_share_read(from).map_err(|e| format!("{}: {e}", from.display()))?;
+        let mut w = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to)
+            .map_err(|e| format!("{}: {e}", to.display()))?;
+        sha256_copy(&mut r, Some(&mut w as &mut dyn Write))
+            .map_err(|e| format!("{}: {e}", to.display()))
+    }
+    fn hash(&self, p: &Path) -> Result<String, String> {
+        let mut r = open_share_read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        sha256_copy(&mut r, None).map_err(|e| format!("{}: {e}", p.display()))
+    }
+    fn remove(&self, p: &Path) {
+        let _ = std::fs::remove_file(p);
+    }
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+        std::fs::rename(from, to).map_err(|e| e.to_string())
+    }
+    fn pair_key(&self) -> aibd::winsetup::PairKey {
+        use aibd::winsetup::PairKey;
+        let dir = match data_dir() {
+            Ok(d) => aibd::touch::key_dir(&d),
+            Err(e) => return PairKey::Bad(e),
+        };
+        let there = |n: &str| std::fs::symlink_metadata(dir.join(n)).is_ok();
+        if !there("key.blob") && !there("key.pub") {
+            return PairKey::None;
+        }
+        // the same check aibd runs at start: both plain files of this account, then the
+        // Hello key behind them still answers with the same public key
+        let ok = aibd::touch::load(&dir).and_then(|k| {
+            #[cfg(windows)]
+            {
+                aibd::touch::check(&aibd::touch::WinHello, &k)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = k;
+                Err("not_windows")
+            }
+        });
+        match ok {
+            Ok(()) => PairKey::Good,
+            Err(why) => PairKey::Bad(format!("{why} in {}", dir.display())),
+        }
+    }
+    fn pair_key_init(&self) -> Result<(), String> {
+        pair_key_init()
+    }
+    fn run_get(&self, name: &str) -> Result<Option<String>, String> {
+        aib_sys::winrun::run_get(name).map_err(|e| e.to_string())
+    }
+    fn run_set(&self, name: &str, command: &str) -> Result<(), String> {
+        aib_sys::winrun::run_set(name, command).map_err(|e| e.to_string())
+    }
+    fn run_delete_if(&self, name: &str, expected: &str) -> Result<bool, String> {
+        aib_sys::winrun::run_delete_if(name, expected).map_err(|e| e.to_string())
+    }
+    fn healthy(&self) -> bool {
+        Client::from_runtime()
+            .and_then(|c| c.request("GET", "/api/v1/health", None))
+            .is_ok_and(|h| h.get("status").and_then(Value::as_str) == Some("ok"))
+    }
+    fn start(&self, exe: &Path) -> Result<(), String> {
+        let mut c = std::process::Command::new(exe);
+        c.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: no console window, and closing the
+            // setup's window does not end it (COND r0 §2-6: this one of the two)
+            c.creation_flags(0x0800_0000 | 0x0000_0200);
+        }
+        c.spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+    // a short-lived one-shot command, not a recurring daemon timer (ADR 0005), the same as
+    // `wake_if_down` here; the CLI pace in install.rs is for main.rs / install.rs only
+    #[allow(clippy::disallowed_methods)]
+    fn pace(&self, d: Duration) {
+        std::thread::sleep(d);
+    }
+    fn open_page(&self) -> Result<(), String> {
+        run(&["web"])
+    }
+    fn settings_get(&self, name: &str) -> Result<Option<String>, String> {
+        aib_sys::winrun::uninstall_get(name).map_err(|e| e.to_string())
+    }
+    fn settings_set(&self, name: &str, value: &str) -> Result<(), String> {
+        aib_sys::winrun::uninstall_set(name, value).map_err(|e| e.to_string())
+    }
+    fn settings_delete_if(&self, name: &str, expected: &str) -> Result<bool, String> {
+        aib_sys::winrun::uninstall_delete_if(name, expected).map_err(|e| e.to_string())
+    }
+    fn remove_dir_if_empty(&self, dir: &Path) {
+        // remove_dir refuses a folder with anything in it
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// What `aibd setup` was asked to do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SetupMode {
+    Install,
+    Uninstall,
+    Rollback,
+}
+
+/// The setup's log: `%LOCALAPPDATA%\AIB-setup.log`, beside the AIB folder and not in it, so
+/// removing AIB can remove its folder (3e53b REVIEW-winsetup-w2 L1).
+pub const SETUP_LOG: &str = "AIB-setup.log";
+
+/// Append `line` to [`SETUP_LOG`] in `base` (steps and error codes only, never keys or codes).
+/// Written only to a plain file or where nothing is (3e53b N3: appending follows a link); a
+/// write that fails is skipped.
+fn setup_log(base: &Path, line: &str) {
+    let path = base.join(SETUP_LOG);
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) if m.file_type().is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return,
+    }
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{at} {line}");
+    }
+}
+
+/// `aibd setup [--uninstall | --rollback]` (and `AIB-Setup.exe` with no arguments): Windows
+/// only. `pause` keeps the window open at the end when it was double-clicked, so the last lines
+/// can be read. Every line also goes to `setup.log` in the AIB folder.
+pub fn setup(pause: bool, mode: SetupMode) -> Result<(), String> {
+    let dir = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())
+        .map(|p| p.base)
+        .ok();
+    let mut say = |l: &str| {
+        println!("{l}");
+        if let Some(d) = &dir {
+            setup_log(d, l);
+        }
+    };
+    let r = setup_inner(mode, &mut say);
+    if let Err(e) = &r {
+        eprintln!("aibd setup: {e}");
+        if let Some(d) = &dir {
+            setup_log(d, &format!("failed: {e}"));
+        }
+    }
+    if pause {
+        println!("Press Enter to close this window.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+    r
+}
+
+fn setup_inner(mode: SetupMode, say: &mut dyn FnMut(&str)) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("aibd setup is the Windows installer; on a Mac use `aibd install`".into());
+    }
+    let p = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())?;
+    match mode {
+        SetupMode::Uninstall => return aibd::winsetup::uninstall(&p, &SetupOps, say),
+        SetupMode::Rollback => return aibd::winsetup::rollback(&p, &SetupOps, say),
+        SetupMode::Install => {}
+    }
+    let here = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
+    let done = aibd::winsetup::run(&p, &here, &SetupOps, say)?;
+    if let Some(sha) = done.sha256 {
+        say(&format!(
+            "Installed program SHA-256: {sha} (compare with SHA256SUMS on the release page)"
+        ));
+    }
+    if done.already_running {
+        say("AIB was already running.");
+    }
+    Ok(())
 }
 
 /// `aibd ctl owner-check probe`: one JSON line of what this Mac's owner check would be

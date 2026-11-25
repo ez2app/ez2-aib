@@ -15,6 +15,7 @@
 //! | P1–P5 | Secure Enclave owner keys (`presence_macos`, macOS only): `SecKeyCreateRandomKey`, `SecKeyCreateWithData`, `SecKeyCreateSignature`, `LAContext` | public, except P2 restores a key by its token object id (`"toid"`), a **private attribute** — callers verify every signature under the registered public key (a matching reported key alone proves nothing) |
 //! | H1 | `ProcessIdToSessionId`, `WTSGetActiveConsoleSessionId` ([`hello`], Windows only): is this process in the active console session; the rest of `hello` (code mapping, DER / ECCPUBLICBLOB, prompt text) is plain Rust on every platform. The NCrypt Passport key calls come in W1b (S102, DESIGN-S102-windows-hello-56cda-1115 r1) | **public** (`processthreadsapi.h`, `winbase.h`) |
 //! | H2 | `NCryptOpenStorageProvider(MS_NGC_KEY_STORAGE_PROVIDER)`, `NCryptCreatePersistedKey(ECDSA_P256)`, `NCryptFinalizeKey`, `NCryptOpenKey`, `NCryptExportKey(ECCPUBLICBLOB)`, `NCryptSetProperty(Use Context)`, `NCryptSignHash`, `NCryptDeleteKey`, `NCryptFreeObject`, `BCryptHash(SHA256)` ([`hello_ncrypt`], Windows only, W1b): the Windows Hello owner key; **unverified until W0** on a Hello laptop. `BCryptImportKeyPair(ECCPUBLICBLOB)`, `BCryptVerifySignature`, `BCryptDestroyKey` ([`hello_ncrypt::verify`], S10-3b-1): checks a signature with the stored public key, no Hello, runs in CI | **public** (`ncrypt.h`, `bcrypt.h`) |
+//! | R1 | `RegSetKeyValueW`, `RegGetValueW`, `RegDeleteKeyValueW` on the current user's `Software\Microsoft\Windows\CurrentVersion\Run` only, plus `OpenProcessToken` / `GetTokenInformation(TokenElevation)` ([`winrun`], Windows only): `aibd setup` (COND-win-installer-3e53b r1) | **public** (`winreg.h`, `securitybaseapi.h`) |
 //! | B1 | `setpriority(PRIO_DARWIN_PROCESS, 0, 0)` in a child before `exec` (`background`, macOS only): the child leaves the background tier aibd's launchd job puts it in | **public** (`sys/resource.h`) |
 //!
 //! T1 / T2 feed thermal protection (R1); their rules are in [`thermal`]. Unlike M1, a wrong
@@ -90,6 +91,7 @@ mod test_only_calls;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;
+pub mod winrun;
 #[cfg(windows)]
 pub mod wintrust;
 
