@@ -143,6 +143,17 @@ impl ConfirmChannel {
         }
     }
 
+    /// What this aibd pairs with (Andy 11-26 03:1x, PLAN-win-customer-today-c2f0b-1126): with
+    /// `AIBD_PAIRING` unset, a Windows aibd pairs through Windows Hello, so a customer starts it
+    /// with no `set`; a value given still decides (`off`, `0`, anything unknown: off). Elsewhere
+    /// unset stays off.
+    pub fn from_env_here(v: Option<&str>, windows: bool) -> ConfirmChannel {
+        match v {
+            None if windows => ConfirmChannel::TouchId,
+            _ => ConfirmChannel::from_env_value(v),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ConfirmChannel::Off => "off",
@@ -1562,6 +1573,36 @@ mod tests {
             Some("terminal_y")
         );
         assert_eq!(ConfirmChannel::Off.method(), None);
+    }
+
+    #[test]
+    fn a_windows_aibd_pairs_through_hello_unless_told_otherwise() {
+        // Andy 11-26 03:1x: a customer starts aibd.exe with no `set`
+        assert_eq!(
+            ConfirmChannel::from_env_here(None, true),
+            ConfirmChannel::TouchId,
+            "reason: windows_unset_not_hello"
+        );
+        assert_eq!(
+            ConfirmChannel::from_env_here(None, false),
+            ConfirmChannel::Off,
+            "reason: other_platform_unset_turned_on"
+        );
+        for (v, want) in [
+            ("off", ConfirmChannel::Off),
+            ("0", ConfirmChannel::Off),
+            ("", ConfirmChannel::Off),
+            ("terminal-unverified", ConfirmChannel::TerminalUnverified),
+            ("touchid", ConfirmChannel::TouchId),
+        ] {
+            for windows in [true, false] {
+                assert_eq!(
+                    ConfirmChannel::from_env_here(Some(v), windows),
+                    want,
+                    "reason: given_value_not_decisive {v:?} {windows}"
+                );
+            }
+        }
     }
 
     /// Timing cannot be measured reliably in a unit test, so the rule is checked on the

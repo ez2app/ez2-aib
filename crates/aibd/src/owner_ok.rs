@@ -527,6 +527,16 @@ pub fn switch_on(v: Option<String>) -> bool {
     v.as_deref() == Some("1")
 }
 
+/// [`SWITCH`] as this aibd reads it (Andy 11-26 03:1x): unset on Windows is on, so the page
+/// can ask Windows Hello with no `set`; a value given still decides (only `1` is on). Elsewhere
+/// unset stays off. The key check at start still has to pass either way.
+pub fn switch_on_here(v: Option<String>, windows: bool) -> bool {
+    match v {
+        None => windows,
+        v => switch_on(v),
+    }
+}
+
 /// What a preview's window starts with (5d33a PREREAD-pvtouch-rrmerge L1): with the switch
 /// handed to the preview its windows look like the real one's, yet pushing a branch or opening
 /// a pull request there acts on GitHub all the same; the owner is told which aibd asks.
@@ -1840,6 +1850,21 @@ mod tests {
             Some(" 1".into()),
         ] {
             assert!(!switch_on(off.clone()), "reason: switch_on {off:?}");
+        }
+        // Andy 11-26 03:1x: unset is on only on Windows; a value given still decides
+        assert!(switch_on_here(None, true), "reason: windows_unset_off");
+        assert!(
+            !switch_on_here(None, false),
+            "reason: other_platform_unset_on"
+        );
+        for windows in [true, false] {
+            assert!(switch_on_here(Some("1".into()), windows));
+            for off in ["0", "", "true", " 1"] {
+                assert!(
+                    !switch_on_here(Some(off.into()), windows),
+                    "reason: given_off_not_decisive {off:?} {windows}"
+                );
+            }
         }
         assert!(
             WIRED.contains(&crate::repos::OP_REGISTER) && WIRED.contains(&crate::repos::OP_OPEN)
