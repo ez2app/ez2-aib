@@ -1713,6 +1713,9 @@ lateChecks.push((async () => {
   const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
   ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
   ok(win.f('no_biometry') === '這台沒有設定 Windows Hello。' + '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。' && mac.f('no_biometry') === '這台沒有設定 Windows Hello。', 'reason: ap26_no_hello_windows_says_pin_steps ' + win.f('no_biometry'));
+  win.S = { oc: { d: { platform: 'windows', class: 'hello_software' } } }; const weakT = win.f('owner_check_too_weak'); win.S = undefined;
+  ok(weakT === '這台的本人驗證方式不夠強,這個動作不開放。這台沒有安全晶片(TPM),這類動作在這台不開放;設 PIN 也解決不了。', 'reason: ap26_too_weak_hello_software_zh ' + weakT);
+  win.S = { oc: { d: { platform: 'macos', class: 'hello_software' } } }; ok(win.f('owner_check_too_weak') === weakW, 'reason: ap26_too_weak_class_only_from_windows'); win.S = undefined;
   ok(weakM.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && !weakM.includes('PIN') && /這一版 AIB 還沒有/.test(weakM), 'reason: ap26_too_weak_no_class_says_not_yet ' + weakM);
   ok(win.f('passphrase_locked', { retry_hms: '16:40:05' }) === '密語打錯太多次,暫時鎖住。16:40:05 後可以再試。' && win.f('passphrase_locked', { retry_hms: '<b>明天</b>' }) === '密語打錯太多次,暫時鎖住。解鎖時間:這一版 AIB 還沒有。', 'reason: ap26_passphrase_locked_time_shape_only');
   ok(win.f('toString') === '' && win.f({ toString: () => 'cancel' }) === '' && win.f('請按允許') === '' && win.f(undefined) === '', 'reason: ap26_only_known_codes_no_request_words');
@@ -1746,6 +1749,7 @@ lateChecks.push((async () => {
       policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
       pin: "If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.",
       class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      no_tpm: "This computer has no security chip (TPM), so this kind of action is not available here; setting a PIN will not change that.",
       lock_at: "You can try again after {t}.",
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
     },
@@ -1767,6 +1771,7 @@ lateChecks.push((async () => {
       policy_write_failed: "AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。",
       policy_bad_request: "ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。",
       class_na: "このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。",
+      no_tpm: "このパソコンにはセキュリティチップ(TPM)がないため、この種類の操作はここでは使えません。PIN を設定しても変わりません。",
       lock_at: "{t} 以降にもう一度試せます。",
       lock_na: "ロック解除の時刻:この AIB のバージョンにはまだありません。",
     },
@@ -1788,13 +1793,14 @@ lateChecks.push((async () => {
       policy_write_failed: "AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
       policy_bad_request: "페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
       class_na: "이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.",
+      no_tpm: "이 컴퓨터에는 보안 칩(TPM)이 없어 이런 작업은 여기서 쓸 수 없습니다. PIN을 설정해도 바뀌지 않습니다.",
       lock_at: "{t} 이후에 다시 시도할 수 있습니다.",
       lock_na: "잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.",
     },
   };
   const CODES = Object.keys(win.W);
   ok(['en', 'ja', 'ko'].every((l) => win.WL[l] && Object.keys(win.WL[l]).join() === Object.keys(WANT_L[l]).join()) && Object.keys(win.WL).join() === 'en,ja,ko', 'reason: ap26_4lang_tables_same_keys ' + Object.keys(win.WL || {}).map((l) => l + ':' + Object.keys(win.WL[l]).length).join(' '));
-  ok(CODES.every((k) => Object.prototype.hasOwnProperty.call(WANT_L.en, k)) && Object.keys(WANT_L.en).length === CODES.length + 4, 'reason: ap26_4lang_en_has_every_code');
+  ok(CODES.every((k) => Object.prototype.hasOwnProperty.call(WANT_L.en, k)) && Object.keys(WANT_L.en).length === CODES.length + 5, 'reason: ap26_4lang_en_has_every_code');
   for (const l of ['en', 'ja', 'ko']) for (const [k, v] of Object.entries(WANT_L[l])) ok(win.WL[l][k] === v, 'reason: ap26_4lang_word ' + l + ' ' + k + ' ' + win.WL[l][k]);
   const NO_GUESS = ['unavailable', 'owner_check_finger_not_now', 'pin'];
   ok(['ja', 'ko'].every((l) => NO_GUESS.every((k) => !Object.prototype.hasOwnProperty.call(WANT_L[l], k) && !Object.prototype.hasOwnProperty.call(win.WL[l], k))), 'reason: ap26_4lang_no_guessed_ui_names');
@@ -1808,6 +1814,10 @@ lateChecks.push((async () => {
     ok(lw.f('owner_check_too_weak') === T.owner_check_too_weak + sp + E.pin, 'reason: ap26_4lang_too_weak_windows ' + l + ' ' + lw.f('owner_check_too_weak'));
     ok(lw.f('no_biometry') === T.no_biometry + sp + E.pin && lm.f('no_biometry') === T.no_biometry, 'reason: ap26_4lang_no_hello_windows_pin ' + l + ' ' + lw.f('no_biometry'));
     ok(lm.f('owner_check_too_weak') === T.owner_check_too_weak + sp + T.class_na, 'reason: ap26_4lang_too_weak_no_class ' + l + ' ' + lm.f('owner_check_too_weak'));
+    // f163c DECISION-w2 附條件 1:owner-check 說這台是軟體 Hello(沒 TPM)⇒ too_weak 不接 PIN 三步,說沒安全晶片;no_hello / 沒讀到 class 照舊三步
+    lw.S = { oc: { d: { platform: 'windows', class: 'hello_software' } } }; const nt = lw.f('owner_check_too_weak');
+    lw.S = { oc: { d: { platform: 'windows', class: 'no_hello' } } }; const nh = lw.f('owner_check_too_weak'); lw.S = undefined;
+    ok(nt === T.owner_check_too_weak + sp + T.no_tpm && !nt.includes('PIN (Windows Hello)') && nh === T.owner_check_too_weak + sp + E.pin, 'reason: ap26_too_weak_hello_software_no_pin ' + l + ' ' + nt);
     ok(lw.f('passphrase_locked', { retry_hms: '16:40:05' }) === T.passphrase_locked + sp + T.lock_at.replace('{t}', '16:40:05') && lw.f('passphrase_locked', { body: { retry_hms: '$&<b>' } }) === T.passphrase_locked + sp + T.lock_na, 'reason: ap26_4lang_passphrase_tail ' + l + ' ' + lw.f('passphrase_locked', { retry_hms: '16:40:05' }));
     ok(lw.f('toString') === '' && lw.f('constructor') === '' && lw.f('pin') === '' && lw.f('class_na') === '', 'reason: ap26_4lang_only_known_codes ' + l);
   }

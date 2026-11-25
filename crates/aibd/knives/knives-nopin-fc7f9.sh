@@ -16,3 +16,11 @@ k '2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。' ''
 k '3. Come back to this page and press again. ' ''
 # NP5 (沒寫要先設密碼)
 k '設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。' '設好回到這頁再按一次。'
+# NP6 (軟體 Hello 仍接 PIN 三步;f163c DECISION-w2 附條件 1)
+k '(ocCls === '\''hello_software'\'' ? word('\''no_tpm'\'', OWNER_NO_TPM) : word('\''pin'\'', OWNER_PIN_HOW))' '(word('\''pin'\'', OWNER_PIN_HOW))'
+# NP7 (class 不看平台(mac 的 class 也算);f163c DECISION-w2 附條件 1)
+k 'S.oc.d.platform === '\''windows'\'' ? String(S.oc.d.class || '\'''\'') : '\'''\''' 'S.oc.d.platform ? String(S.oc.d.class || '\'''\'') : '\'''\'''
+# NP8 (沒說設 PIN 解決不了;f163c DECISION-w2 附條件 1)
+k ';設 PIN 也解決不了。'\'';' '。'\'';'
+# NP9 (英文表少 no_tpm、退回中文;f163c DECISION-w2 附條件 1)
+k '      no_tpm: '\''This computer has no security chip' '      no_tpm0: '\''This computer has no security chip'

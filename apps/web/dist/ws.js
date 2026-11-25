@@ -5103,6 +5103,8 @@
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
   // c2f0b PAGE-WORDS-ap26 §1 (b)「怎麼設 PIN」三步照抄;第 3 步的「重新檢查」要 W-3 分類上 API 才有那顆鈕 ⇒ 先寫「再按一次」(ebab8 03:10:沒 PIN 時頁面要引導,Windows 今天上線)
+  // f163c DECISION-w2 驗收面附條件 1:沒 TPM 的軟體 Hello 已經有 PIN,回的也是 too_weak ⇒ 照 owner-check class 分,hello_software 不接 PIN 三步
+  const OWNER_NO_TPM = '這台沒有安全晶片(TPM),這類動作在這台不開放;設 PIN 也解決不了。';
   const OWNER_PIN_HOW = '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。';
   const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
   const OWNER_LOCK_NA = '解鎖時間:這一版 AIB 還沒有。';
@@ -5130,6 +5132,7 @@
       policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
       pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
       class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      no_tpm: 'This computer has no security chip (TPM), so this kind of action is not available here; setting a PIN will not change that.',
       lock_at: 'You can try again after {t}.',
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
     },
@@ -5151,6 +5154,7 @@
       policy_write_failed: 'AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
       policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
       class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
+      no_tpm: 'このパソコンにはセキュリティチップ(TPM)がないため、この種類の操作はここでは使えません。PIN を設定しても変わりません。',
       lock_at: '{t} 以降にもう一度試せます。',
       lock_na: 'ロック解除の時刻:この AIB のバージョンにはまだありません。',
     },
@@ -5172,6 +5176,7 @@
       policy_write_failed: 'AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
       policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
       class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
+      no_tpm: '이 컴퓨터에는 보안 칩(TPM)이 없어 이런 작업은 여기서 쓸 수 없습니다. PIN을 설정해도 바뀌지 않습니다.',
       lock_at: '{t} 이후에 다시 시도할 수 있습니다.',
       lock_na: '잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.',
     },
@@ -5185,7 +5190,8 @@
     const word = (k, zh) => (L === 'zh-TW' ? zh : has(OWNER_WHY_L[L], k) ? OWNER_WHY_L[L][k] : OWNER_WHY_L.en[k]);
     const w = word(c, OWNER_WHY[c]), sp = L === 'zh-TW' || L === 'ja' ? '' : ' ';
     const isWin = /Win/.test(String((globalThis.navigator && navigator.platform) || ''));
-    if (c === 'owner_check_too_weak') return w + sp + (isWin ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    const ocCls = typeof S === 'object' && S && S.oc && S.oc.d && S.oc.d.platform === 'windows' ? String(S.oc.d.class || '') : '';
+    if (c === 'owner_check_too_weak') return w + sp + (isWin ? (ocCls === 'hello_software' ? word('no_tpm', OWNER_NO_TPM) : word('pin', OWNER_PIN_HOW)) : word('class_na', OWNER_CLASS_NA));
     if (c === 'no_biometry' && isWin) return w + sp + word('pin', OWNER_PIN_HOW); // 沒設 Hello:不能只說沒有,要說怎麼設
     if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + sp + (/^\d\d:\d\d:\d\d$/.test(t) ? word('lock_at', '{t} 後可以再試。').replace('{t}', () => t) : word('lock_na', OWNER_LOCK_NA)); }
     return w;
