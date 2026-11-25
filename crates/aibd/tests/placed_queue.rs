@@ -78,7 +78,7 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
     let sessions_dir = data.join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
     let store = Arc::new(Store::open(&data.join("db.sqlite")).unwrap());
-    let s = aibd::sessions::Sessions::new(store, None, quiet_spawn, 1, sessions_dir);
+    let s = aibd::sessions::Sessions::new(store.clone(), None, quiet_spawn, 1, sessions_dir);
 
     // the one slot is taken (an absolute path of this platform; the fake runs nothing)
     let holder = data.join("holder").display().to_string();
@@ -114,6 +114,26 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
     assert!(
         !STARTED_PLACED.load(Ordering::SeqCst),
         "reason: changed_program_started"
+    );
+    // refused by the placed check itself, with its own word (3e53b r13), not some other failure
+    let ev = store
+        .events_of_types(&["session.spawn_failed"], 50)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.aggregate_id == b.id)
+        .expect("reason: no_spawn_failed_event");
+    // a platform the measured table lists: the file is not the measured one; any other
+    // (Linux CI) has no row at all
+    let want = if aibd::provider_fetch::this_platform().is_some() {
+        "lifecycle_verify_failed"
+    } else {
+        "provider_unmeasured"
+    };
+    assert_eq!(
+        ev.payload["code"].as_str(),
+        Some(want),
+        "reason: refused_for_another_reason {}",
+        ev.payload
     );
     s.shutdown_all();
 }
