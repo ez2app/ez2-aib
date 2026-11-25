@@ -25,8 +25,8 @@ ws '    match ops.pair_key() {' \
    '    match Some(ops.pair_key()).filter(|_| false).unwrap_or(PairKey::None) {' \
    a_key_already_made_is_kept
 # WS13 (3e53b L1) a key aibd would refuse is kept and the setup goes on
-ws '        PairKey::Bad(why) => {' \
-   '        PairKey::Bad(why) if why.is_empty() => {' \
+ws '            return Err(format!("installer_pair_key_bad: {why}; {KEY_BAD_HOW}"));' \
+   '            let _ = (&why, KEY_BAD_HOW);' \
    a_key_aibd_would_refuse_stops_the_setup_without_deleting_it
 # WS5 (COND 5) an elevated setup goes on
 ws '    if ops.elevated()? {' \
