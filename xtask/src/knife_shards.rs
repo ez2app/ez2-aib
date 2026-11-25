@@ -18,8 +18,11 @@
 //! - Every cell works the plan out for itself from the same two inputs, so the rule has no
 //!   choice left in it: scripts are taken heaviest first (same seconds: path byte order) and
 //!   each goes to the cell with the fewest seconds so far (same: the lowest cell number). A
-//!   script the table does not know weighs the table's median (the lower one of two; an empty
-//!   table: 1), so a new script needs no line here to run. A line of the table for a script
+//!   script the table does not know weighs its estimate (`est_script_secs`: measured seconds
+//!   per knife of the scripts with the same test target, else the same crate, else the repo,
+//!   times its knives; 90856 11-25), and the table's median (the lower one of two; an empty
+//!   table: 1) only when the tree's knives cannot be read, so a new script needs no line here
+//!   to run. `check` refuses a script so estimated over 900s, with the source and a split. A line of the table for a script
 //!   that is not listed gets no cell; it still counts in that median (the median is the
 //!   table's, whatever is listed).
 //! - Each listed script gets exactly one cell. Nothing is skipped by this command and the
@@ -95,10 +98,204 @@ fn unknown_secs(secs: &BTreeMap<String, u64>) -> u64 {
     median(&secs.values().copied().collect::<Vec<_>>())
 }
 
+/// A knife script's path the same way whichever separator it came with (Windows `\\`).
+pub fn norm_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// The crate a script belongs to: `crates/<name>/…` ⇒ `<name>`, else its first folder
+/// (`xtask/knives/x.sh` ⇒ `xtask`).
+pub fn crate_of(path: &str) -> String {
+    let p = norm_path(path);
+    let mut parts = p.split('/');
+    match (parts.next(), parts.next()) {
+        (Some("crates"), Some(name)) => name.to_string(),
+        (Some(first), _) => first.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// What a knife runs, without the test-name filter: `cargo test -p aibd --locked --test
+/// page_static the_page_is…` ⇒ `cargo -p aibd --test page_static`; cargo without `--test` ⇒
+/// `cargo -p <pkg>`; anything else ⇒ its first two words. No command after `--` ⇒ none.
+pub fn target_of(argv: &[String]) -> Option<String> {
+    let at = argv.iter().position(|w| w == "--")?;
+    let cmd = &argv[at + 1..];
+    let first = cmd.first()?;
+    let after = |flag: &str| {
+        cmd.iter()
+            .position(|w| w == flag)
+            .and_then(|i| cmd.get(i + 1))
+            .cloned()
+    };
+    if first == "cargo" {
+        let pkg = after("-p")
+            .or_else(|| after("--package"))
+            .unwrap_or_default();
+        return Some(match after("--test") {
+            Some(t) => format!("cargo -p {pkg} --test {t}"),
+            None => format!("cargo -p {pkg}"),
+        });
+    }
+    Some(
+        cmd.iter()
+            .take(2)
+            .map(|w| norm_path(w))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// Per knife script found in the tree: how many knives it has and what most of them run.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScriptInfo {
+    pub count: usize,
+    pub target: Option<String>,
+}
+
+/// Every `.sh` knife script in `knives`, by normalised path.
+pub fn script_infos(knives: &[crate::knife_anchors::Knife]) -> BTreeMap<String, ScriptInfo> {
+    let mut targets: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut out: BTreeMap<String, ScriptInfo> = BTreeMap::new();
+    for k in knives {
+        let file = norm_path(crate::knife_precheck::written_in(&k.at));
+        if !file.ends_with(".sh") {
+            continue;
+        }
+        out.entry(file.clone()).or_default().count += 1;
+        if let Some(t) = k.argv.as_ref().ok().and_then(|a| target_of(a)) {
+            *targets.entry(file).or_default().entry(t).or_default() += 1;
+        }
+    }
+    for (file, ts) in targets {
+        // the target most knives run; a tie goes to the first in byte order
+        let best = ts
+            .iter()
+            .fold(None::<(&String, usize)>, |acc, (t, &n)| match acc {
+                Some((_, m)) if m >= n => acc,
+                _ => Some((t, n)),
+            });
+        if let (Some(info), Some((t, _))) = (out.get_mut(&file), best) {
+            info.target = Some(t.clone());
+        }
+    }
+    out
+}
+
+/// Samples the same test target needs before its median is used; the same crate; the repo.
+pub const EST_MIN_TARGET: usize = 2;
+pub const EST_MIN_CRATE: usize = 3;
+
+/// How a script's seconds were estimated (DECISION-knife-size-objective-08b0e-1125 §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Estimate {
+    pub secs: u64,
+    /// `target` / `crate` / `repo` (measured scripts' seconds per knife) or `median` (no
+    /// measured script with knives at all: the table's median, as before).
+    pub source: &'static str,
+    /// The target or crate the samples share; empty for `repo` and `median`.
+    pub key: String,
+    pub samples: usize,
+    /// Median seconds per knife × 1000.
+    pub per_knife_ms: u64,
+}
+
+/// Seconds a script the table does not know will take: the measured scripts' seconds per knife
+/// (table seconds / knives found now; scripts with no knife left out), the median of those with
+/// the same test target (at least [`EST_MIN_TARGET`]), else the same crate (at least
+/// [`EST_MIN_CRATE`]), else the whole table, times this script's knives, rounded up. Pure: no
+/// knife is run, nothing is written back to the table.
+pub fn est_script_secs(
+    file: &str,
+    knives_n: usize,
+    secs: &BTreeMap<String, u64>,
+    infos: &BTreeMap<String, ScriptInfo>,
+) -> Estimate {
+    let file = norm_path(file);
+    let target = infos.get(&file).and_then(|i| i.target.clone());
+    let krate = crate_of(&file);
+    let mut by_target = Vec::new();
+    let mut by_crate = Vec::new();
+    let mut all = Vec::new();
+    for (path, &s) in secs {
+        let path = norm_path(path);
+        if path == file {
+            continue;
+        }
+        let Some(info) = infos.get(&path).filter(|i| i.count > 0) else {
+            continue;
+        };
+        let per = s.saturating_mul(1000) / info.count as u64;
+        all.push(per);
+        if crate_of(&path) == krate {
+            by_crate.push(per);
+        }
+        if target.is_some() && info.target == target {
+            by_target.push(per);
+        }
+    }
+    let (source, key, samples) = if by_target.len() >= EST_MIN_TARGET {
+        ("target", target.clone().unwrap_or_default(), by_target)
+    } else if by_crate.len() >= EST_MIN_CRATE {
+        ("crate", krate, by_crate)
+    } else if !all.is_empty() {
+        ("repo", String::new(), all)
+    } else {
+        let m = unknown_secs(secs);
+        return Estimate {
+            secs: m,
+            source: "median",
+            key: String::new(),
+            samples: 0,
+            per_knife_ms: 0,
+        };
+    };
+    let per_knife_ms = median(&samples);
+    let total_ms = per_knife_ms.saturating_mul(knives_n as u64);
+    Estimate {
+        secs: total_ms.div_ceil(1000),
+        source,
+        key,
+        samples: samples.len(),
+        per_knife_ms,
+    }
+}
+
+/// Estimated seconds for every script in `infos` the table has no line for.
+pub fn estimates(
+    secs: &BTreeMap<String, u64>,
+    infos: &BTreeMap<String, ScriptInfo>,
+) -> BTreeMap<String, u64> {
+    infos
+        .iter()
+        .filter(|(f, _)| !secs.contains_key(*f))
+        .map(|(f, i)| (f.clone(), est_script_secs(f, i.count, secs, infos).secs))
+        .collect()
+}
+
 /// Cell (1..=shards) of every listed script, in path byte order. See the module text for the rule.
 pub fn plan(
     list: &[String],
     secs: &BTreeMap<String, u64>,
+    shards: u32,
+) -> Result<Vec<(String, u32)>, String> {
+    plan_with(list, secs, &BTreeMap::new(), shards)
+}
+
+/// What a listed script weighs: its table line, else its estimate, else the table's median.
+fn weight(p: &str, secs: &BTreeMap<String, u64>, est: &BTreeMap<String, u64>, unknown: u64) -> u64 {
+    secs.get(p)
+        .or_else(|| est.get(&norm_path(p)))
+        .copied()
+        .unwrap_or(unknown)
+}
+
+/// [`plan`] with `est` ([`estimates`]) weighing the scripts the table does not know, so a heavy
+/// new script is not placed as a median one (the same number `check_size` judges by).
+pub fn plan_with(
+    list: &[String],
+    secs: &BTreeMap<String, u64>,
+    est: &BTreeMap<String, u64>,
     shards: u32,
 ) -> Result<Vec<(String, u32)>, String> {
     if shards == 0 {
@@ -107,7 +304,7 @@ pub fn plan(
     let unknown = unknown_secs(secs);
     let mut order: Vec<(u64, &str)> = list
         .iter()
-        .map(|p| (secs.get(p).copied().unwrap_or(unknown), p.as_str()))
+        .map(|p| (weight(p, secs, est, unknown), p.as_str()))
         .collect();
     // heaviest first; the same seconds in path byte order
     order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.as_bytes().cmp(b.1.as_bytes())));
@@ -129,11 +326,21 @@ pub fn plan(
 
 /// Seconds every cell gets under `plan` (for the line printed beside the plan).
 pub fn loads(plan: &[(String, u32)], secs: &BTreeMap<String, u64>, shards: u32) -> Vec<u64> {
+    loads_with(plan, secs, &BTreeMap::new(), shards)
+}
+
+/// [`loads`] with the same estimates [`plan_with`] placed by.
+pub fn loads_with(
+    plan: &[(String, u32)],
+    secs: &BTreeMap<String, u64>,
+    est: &BTreeMap<String, u64>,
+    shards: u32,
+) -> Vec<u64> {
     let unknown = unknown_secs(secs);
     let mut load = vec![0u64; shards as usize];
     for (p, k) in plan {
         let l = &mut load[*k as usize - 1];
-        *l = l.saturating_add(secs.get(p).copied().unwrap_or(unknown));
+        *l = l.saturating_add(weight(p, secs, est, unknown));
     }
     load
 }
@@ -245,17 +452,16 @@ pub fn check_size(
     max_shard_secs: u64,
     only: Option<&BTreeSet<String>>,
 ) -> Result<SizeSummary, String> {
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let infos = script_infos(knives);
+    let counts: BTreeMap<String, usize> = infos.iter().map(|(f, i)| (f.clone(), i.count)).collect();
     let mut non_crate_job: BTreeSet<String> = BTreeSet::new();
     for k in knives {
-        let file = crate::knife_precheck::written_in(&k.at);
-        if file.ends_with(".sh") {
-            *counts.entry(file.to_string()).or_default() += 1;
-            if k.job == "cloud-knives" || k.job == "cloud-host-knives" {
-                non_crate_job.insert(file.to_string());
-            }
+        let file = norm_path(crate::knife_precheck::written_in(&k.at));
+        if file.ends_with(".sh") && (k.job == "cloud-knives" || k.job == "cloud-host-knives") {
+            non_crate_job.insert(file);
         }
     }
+    let est = estimates(secs, &infos);
     let mut summary = SizeSummary {
         scripts: counts.len(),
         ..SizeSummary::default()
@@ -278,7 +484,32 @@ pub fn check_size(
                     max_secs / 60
                 ));
             }
-        } else if only.is_some()
+        } else if non_crate_job.contains(file) {
+            // cloud jobs are not crate-knives cells: no estimate is judged here (as before)
+        } else {
+            let e = est_script_secs(file, count, secs, &infos);
+            if e.secs > max_secs {
+                let parts = e.secs.div_ceil(max_secs.max(1)).max(2);
+                let per = (count as u64).div_ceil(parts);
+                let from = match e.source {
+                    "median" => "the table's median (no measured script has knives)".to_string(),
+                    "repo" => format!("p50 of {} measured scripts in the repo", e.samples),
+                    s => format!(
+                        "p50 of {} measured scripts with the same {s} {}",
+                        e.samples, e.key
+                    ),
+                };
+                summary.violations.push(format!(
+                    "{file}: ~{}s estimated = {count} knives x {}.{:03}s/knife, {from} (max {max_secs}s / {}m; split into {parts} scripts of at most {per} knives)",
+                    e.secs,
+                    e.per_knife_ms / 1000,
+                    e.per_knife_ms % 1000,
+                    max_secs / 60
+                ));
+            }
+        }
+        if !secs.contains_key(file)
+            && only.is_some()
             && !secs.is_empty()
             && file.starts_with("crates/")
             && !non_crate_job.contains(file)
@@ -290,8 +521,8 @@ pub fn check_size(
     }
     let list: Vec<String> = counts.keys().cloned().collect();
     if !list.is_empty() {
-        let p = plan(&list, secs, shards)?;
-        let l = loads(&p, secs, shards);
+        let p = plan_with(&list, secs, &est, shards)?;
+        let l = loads_with(&p, secs, &est, shards);
         for (i, &load) in l.iter().enumerate() {
             summary.max_shard_secs = summary.max_shard_secs.max(load);
             if load > max_shard_secs {
@@ -339,11 +570,23 @@ fn plan_cmd(args: &[String]) -> Result<String, String> {
     };
     let table = parse_secs(&read(secs)?).map_err(|e| format!("{secs}: {e}"))?;
     let scripts = parse_list(&read(list)?).map_err(|e| format!("{list}: {e}"))?;
-    let p = plan(&scripts, &table, n)?;
+    // the scripts the table does not know weigh their estimate (same as `check`); a tree whose
+    // knives cannot be read gives no estimate and they weigh the median, as before.
+    let (_, knives, errs) = crate::knife_anchors::collect(Path::new("."));
+    let est = if errs.is_empty() {
+        estimates(&table, &script_infos(&knives))
+    } else {
+        BTreeMap::new()
+    };
+    let p = plan_with(&scripts, &table, &est, n)?;
     let known = scripts.iter().filter(|s| table.contains_key(*s)).count();
-    let l = loads(&p, &table, n);
+    let estimated = scripts
+        .iter()
+        .filter(|s| !table.contains_key(*s) && est.contains_key(&norm_path(s)))
+        .count();
+    let l = loads_with(&p, &table, &est, n);
     eprintln!(
-        "KNIVES-PLAN shards={n} scripts={} known={known} secs={}",
+        "KNIVES-PLAN shards={n} scripts={} known={known} estimated={estimated} secs={}",
         p.len(),
         l.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
     );
@@ -936,5 +1179,262 @@ mod tests {
         );
         assert_eq!(estimate_macos_queue_min(2, 3, 5), 45);
         assert_eq!(estimate_macos_queue_min(5, 5, 5), 90);
+    }
+
+    /// `n` knives in `file`, each running `cmd` (the words after `--`).
+    fn knives_running(file: &str, n: usize, cmd: &str) -> Vec<crate::knife_anchors::Knife> {
+        (0..n)
+            .map(|i| {
+                let mut argv: Vec<String> =
+                    vec!["src/x.rs".into(), "a".into(), "b".into(), "--".into()];
+                argv.extend(cmd.split(' ').map(String::from));
+                argv.push(format!("test_{i}"));
+                crate::knife_anchors::Knife {
+                    at: format!("{file}:{}", i + 1),
+                    argv: Ok(argv),
+                    file: "src/x.rs".into(),
+                    old: "a".into(),
+                    step: String::new(),
+                    job: String::new(),
+                }
+            })
+            .collect()
+    }
+
+    const PAGE: &str = "cargo test -p aibd --locked --test page_static";
+
+    /// ebab8 11-25: knives-page2 is 142 node-light knives that took 695s (~4.9s a knife) while
+    /// aibd's other scripts take ~27s a knife. A new page script must be judged by the page
+    /// scripts, not by aibd's median, or it is refused for nothing.
+    fn page_tree() -> (Vec<crate::knife_anchors::Knife>, BTreeMap<String, u64>) {
+        let mut k = knives_running("crates/aibd/knives/knives-page2-fc7f9.sh", 142, PAGE);
+        k.extend(knives_running(
+            "crates/aibd/knives/knives-page2b-fc7f9.sh",
+            100,
+            PAGE,
+        ));
+        let mut rows = vec![
+            ("crates/aibd/knives/knives-page2-fc7f9.sh", 695),
+            ("crates/aibd/knives/knives-page2b-fc7f9.sh", 500),
+        ];
+        let names = ["a1", "a2", "a3", "a4", "a5"];
+        for n in names {
+            let f = format!("crates/aibd/knives/knives-{n}.sh");
+            k.extend(knives_running(&f, 10, "cargo test -p aibd --locked"));
+            rows.push((Box::leak(f.into_boxed_str()), 270));
+        }
+        (k, table(&rows))
+    }
+
+    #[test]
+    fn a_new_page_script_is_estimated_by_the_page_scripts_not_by_the_crate() {
+        let (mut k, secs) = page_tree();
+        k.extend(knives_running(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            PAGE,
+        ));
+        let infos = script_infos(&k);
+        let e = est_script_secs("crates/aibd/knives/knives-page2c.sh", 140, &secs, &infos);
+        assert_eq!(e.source, "target", "{e:?}");
+        assert_eq!(e.key, "cargo -p aibd --test page_static");
+        assert_eq!(e.samples, 2);
+        // per knife 695/142 = 4.894s and 500/100 = 5.000s; lower median 4.894 ⇒ 140 x 4.894 = 685.16 ⇒ 686
+        assert_eq!(e.per_knife_ms, 4894);
+        assert_eq!(e.secs, 686);
+        let s = check_size(
+            &k,
+            &secs,
+            4,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            None,
+        )
+        .unwrap();
+        assert!(s.violations.is_empty(), "{:?}", s.violations);
+        // by the crate it would have been 140 x 27s = 3780s and refused
+        let crate_only = est_script_secs("crates/aibd/knives/knives-x.sh", 140, &secs, &infos);
+        assert_eq!(crate_only.source, "crate");
+        assert_eq!(crate_only.secs, 3780);
+    }
+
+    #[test]
+    fn a_heavy_new_script_is_refused_with_its_source_samples_and_a_split() {
+        let (mut k, secs) = page_tree();
+        k.extend(knives_running(
+            "crates/aibd/knives/knives-new.sh",
+            40,
+            "cargo test -p aibd --locked",
+        ));
+        let s = check_size(
+            &k,
+            &secs,
+            4,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            None,
+        )
+        .unwrap();
+        // the five other `cargo -p aibd` scripts at 27.000s a knife ⇒ 40 x 27 = 1080s
+        let v = s
+            .violations
+            .iter()
+            .find(|v| v.contains("knives-new.sh"))
+            .expect("refused");
+        assert!(v.contains("~1080s estimated"), "{v}");
+        assert!(v.contains("40 knives x 27.000s/knife"), "{v}");
+        assert!(
+            v.contains("p50 of 5 measured scripts with the same target cargo -p aibd"),
+            "{v}"
+        );
+        assert!(
+            v.contains("split into 2 scripts of at most 20 knives"),
+            "{v}"
+        );
+        // 33 knives = 891s stays under 900
+        let mut k2 = page_tree().0;
+        k2.extend(knives_running(
+            "crates/aibd/knives/knives-new.sh",
+            33,
+            "cargo test -p aibd --locked",
+        ));
+        let s2 = check_size(
+            &k2,
+            &secs,
+            4,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            None,
+        )
+        .unwrap();
+        assert!(s2.violations.is_empty(), "{:?}", s2.violations);
+    }
+
+    #[test]
+    fn too_few_samples_fall_back_from_target_to_crate_to_repo_and_rounding_is_up() {
+        let mut k = knives_running("crates/c/knives/t1.sh", 10, "node apps/web/t.js");
+        k.extend(knives_running(
+            "crates/c/knives/c1.sh",
+            10,
+            "cargo test -p c --locked",
+        ));
+        k.extend(knives_running(
+            "crates/d/knives/d1.sh",
+            3,
+            "cargo test -p d --locked",
+        ));
+        k.extend(knives_running(
+            "crates/c/knives/new.sh",
+            7,
+            "node apps/web/t.js",
+        ));
+        let secs = table(&[
+            ("crates/c/knives/t1.sh", 100),
+            ("crates/c/knives/c1.sh", 200),
+            ("crates/d/knives/d1.sh", 10),
+        ]);
+        let infos = script_infos(&k);
+        // one script with the same target (< 2), two in the crate (< 3) ⇒ the repo: 3.333 10 20 ⇒ 10
+        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs, &infos);
+        assert_eq!(
+            (e.source, e.samples, e.per_knife_ms, e.secs),
+            ("repo", 3, 10000, 70)
+        );
+        // a third crate script ⇒ the crate (3.333 10 20 ⇒ 10.000 per knife; 7 ⇒ 70)
+        k.extend(knives_running(
+            "crates/c/knives/c2.sh",
+            3,
+            "cargo test -p c --locked",
+        ));
+        let mut secs3 = secs.clone();
+        secs3.insert("crates/c/knives/c2.sh".into(), 10);
+        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs3, &script_infos(&k));
+        assert_eq!((e.source, e.samples), ("crate", 3));
+        // a second script with the same target ⇒ the target; 100/10 and 50/3 = 10.000 / 16.666 ⇒ 10.000
+        k.extend(knives_running(
+            "crates/c/knives/t2.sh",
+            3,
+            "node apps/web/t.js",
+        ));
+        secs3.insert("crates/c/knives/t2.sh".into(), 50);
+        let infos = script_infos(&k);
+        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs3, &infos);
+        assert_eq!(
+            (e.source, e.key.as_str(), e.samples),
+            ("target", "node apps/web/t.js", 2)
+        );
+        // rounding up: 1 knife at 3.333s ⇒ 4, not 3
+        let one = est_script_secs(
+            "crates/d/knives/new.sh",
+            1,
+            &table(&[("crates/d/knives/d1.sh", 10)]),
+            &infos,
+        );
+        assert_eq!((one.source, one.per_knife_ms, one.secs), ("repo", 3333, 4));
+        // a measured script with no knife left in the tree is no sample; none at all ⇒ the median
+        let none = est_script_secs(
+            "crates/z/knives/new.sh",
+            5,
+            &table(&[("crates/z/knives/gone.sh", 40)]),
+            &infos,
+        );
+        assert_eq!((none.source, none.samples, none.secs), ("median", 0, 40));
+    }
+
+    #[test]
+    fn windows_separators_give_the_same_script_crate_and_estimate() {
+        assert_eq!(crate_of("crates\\aibd\\knives\\k.sh"), "aibd");
+        assert_eq!(crate_of("crates/aibd/knives/k.sh"), "aibd");
+        assert_eq!(crate_of("xtask\\knives\\k.sh"), "xtask");
+        let (mut k, secs) = page_tree();
+        k.extend(knives_running(
+            "crates\\aibd\\knives\\knives-page2c.sh",
+            140,
+            PAGE,
+        ));
+        let infos = script_infos(&k);
+        assert_eq!(
+            infos
+                .get("crates/aibd/knives/knives-page2c.sh")
+                .map(|i| i.count),
+            Some(140)
+        );
+        let win = est_script_secs("crates\\aibd\\knives\\knives-page2c.sh", 140, &secs, &infos);
+        let mac = est_script_secs("crates/aibd/knives/knives-page2c.sh", 140, &secs, &infos);
+        assert_eq!(win, mac);
+        assert_eq!(win.source, "target");
+    }
+
+    #[test]
+    fn plan_and_loads_weigh_a_new_script_by_its_estimate() {
+        let (mut k, secs) = page_tree();
+        k.extend(knives_running(
+            "crates/aibd/knives/knives-new.sh",
+            30,
+            "cargo test -p aibd --locked",
+        ));
+        let est = estimates(&secs, &script_infos(&k));
+        assert_eq!(est.get("crates/aibd/knives/knives-new.sh"), Some(&810));
+        let list: Vec<String> = script_infos(&k).into_keys().collect();
+        let p = plan_with(&list, &secs, &est, 1).unwrap();
+        // 695 + 500 + 5 x 270 + 810
+        assert_eq!(loads_with(&p, &secs, &est, 1), vec![3355]);
+        // without estimates it would weigh the table's median (270)
+        assert_eq!(loads(&p, &secs, 1), vec![2815]);
+        assert_eq!(
+            target_of(&[
+                "a".into(),
+                "--".into(),
+                "node".into(),
+                "apps\\web\\t.js".into(),
+                "x".into()
+            ])
+            .as_deref(),
+            Some("node apps/web/t.js")
+        );
+        assert_eq!(target_of(&["a".into()]), None);
     }
 }
