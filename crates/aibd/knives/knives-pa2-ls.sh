@@ -30,8 +30,8 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   -- cargo test -p aibd --locked --lib "$L1"
 # pa2-l2-line (L-a: the name back before the brand and the uid, where a long or copied name pushes them out)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '    format!("{provider} · {persona_uid} · {name} · {line}")' \
-  '    format!("{name} · {provider} · {persona_uid} · {line}")' \
+  '    format!("{who} · {line}")' \
+  '    format!("{persona_name} · {who} · {line}")' \
   --expect-fail 'perm_apply::tests::an_open_window_says_who_and_which_brand_first' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::an_open_window_says_who_and_which_brand_first'
 # pa2-l2-open (the template open's window is left as it was)
@@ -58,12 +58,6 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '    if let Some(mode) = tpl_uid.strip_prefix("mode:") {' \
   --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
-# pa2-la-cut (L-a: the persona's name not cut)
-python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '    let mut name: String = persona_name.chars().take(OPEN_NAME_SHOWN).collect();' \
-  '    let mut name: String = persona_name.chars().take(usize::MAX).collect();' \
-  --expect-fail 'perm_apply::tests::an_open_window_says_who_and_which_brand_first' \
-  -- cargo test -p aibd --locked --lib 'perm_apply::tests::an_open_window_says_who_and_which_brand_first'
 # pa2-lb-order (L-b: the change warning back after a name the window cuts)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),' \
@@ -82,3 +76,21 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '    e.tpl_uid = match tokio::task::spawn_blocking(move || db.perm_template(&uid)).await {' \
   --expect-fail 'a_take_back_to_a_removed_template_says_so_in_the_window' \
   -- cargo test -p aibd --locked --test perm_revoke_window 'a_take_back_to_a_removed_template_says_so_in_the_window'
+# ow-cut (L-a, ebab8 11-25 13:37: the shared window helper does not cut the AI-writable name)
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '    let mut n: String = name.chars().take(NAME_SHOWN).collect();' \
+  '    let mut n: String = name.chars().take(usize::MAX).collect();' \
+  --expect-fail 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut' \
+  -- cargo test -p aibd --locked --lib 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut'
+# ow-order (L-a: the shared window helper puts the name before aibd's fixed words)
+python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs \
+  '    format!("{fixed} · {n}")' \
+  '    format!("{n} · {fixed}")' \
+  --expect-fail 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut' \
+  -- cargo test -p aibd --locked --lib 'owner_ok::tests::fixed_words_come_first_and_a_name_is_cut'
+# a11-plain-order (L-a on main's A11: a plain dgrs open's window with the persona's name first again)
+python3 -I scripts/knife.py crates/aibd/src/repos.rs \
+  '            &[provider, persona_uid, "完全權限,不帶倉"],' \
+  '            &[persona_name, provider, persona_uid, "完全權限,不帶倉"],' \
+  --expect-fail 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other' \
+  -- cargo test -p aibd --locked --lib 'repos::tests::a_dgrs_open_and_restart_say_what_they_are_and_do_not_pass_for_each_other'

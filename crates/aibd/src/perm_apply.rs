@@ -171,21 +171,12 @@ pub fn window_line(e: &Expanded, raised: &[&str]) -> String {
     s
 }
 
-/// The most of a persona's name an open's window line shows (c2f0b REVIEW-pa2ls L-a).
-pub const OPEN_NAME_SHOWN: usize = 8;
-
 /// pa2 L2 (c2f0b REVIEW-pa2-postmerge L2; REVIEW-pa2ls-993c0f9b L-a): an open's window line —
 /// the brand and the uid first, aibd's own words (the ticket is bound to both), then the
-/// persona's name cut to [`OPEN_NAME_SHOWN`] characters, then [`window_line`]'s. The window
-/// keeps only the start of a long line, and the name is a card's word an AI of the same account
-/// can write: put first, a long name pushed the brand and the uid out of the window, and a name
-/// written as 「小安(un0eba)· claude」 stood where the real ones should be.
+/// persona's name cut short ([`crate::owner_ok::fixed_then_name`]), then [`window_line`]'s.
 pub fn open_line(persona_name: &str, persona_uid: &str, provider: &str, line: &str) -> String {
-    let mut name: String = persona_name.chars().take(OPEN_NAME_SHOWN).collect();
-    if persona_name.chars().count() > OPEN_NAME_SHOWN {
-        name.push('…');
-    }
-    format!("{provider} · {persona_uid} · {name} · {line}")
+    let who = crate::owner_ok::fixed_then_name(&[provider, persona_uid], persona_name);
+    format!("{who} · {line}")
 }
 
 /// pa2 L3 L4 (c2f0b REVIEW-pa2-postmerge L3, L4): the template's name a take-back's window
