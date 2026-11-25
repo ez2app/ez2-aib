@@ -1331,12 +1331,16 @@ async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Valu
     // asked first, as at its open
     let ticket = body.get("ticket").and_then(Value::as_str);
     let asker = format!("page:{}", hex(&page.digest[..8]));
-    if let Some(r) = crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker).await {
-        return r;
-    }
-    // 5d33a PREREAD-nx d523a5af L1: a restart counts the folder's writers as an open does
+    // 5d33a PREREAD-nx d523a5af L1: a restart counts the folder's writers as an open does;
+    // before the owner is asked (f163c REVIEW-a11 N1: no fingerprint spent on a full folder)
     if crate::seats::restart_overfills(&st, seat_id).await {
         return crate::seats::folder_writers_full();
+    }
+    if let Some(r) =
+        crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker, crate::repos::GateAct::Restart)
+            .await
+    {
+        return r;
     }
     let by = json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});
     use crate::revive::NotRestarted as N;

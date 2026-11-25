@@ -249,7 +249,10 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
     // before the key is claimed or anything stopped
     let ticket = body.get("ticket").and_then(Value::as_str);
     let asker = format!("page:{}", hex8(&page.digest));
-    if let Some(r) = crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker).await {
+    if let Some(r) =
+        crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker, crate::repos::GateAct::Clear)
+            .await
+    {
         return r;
     }
     let mut rest = body.clone();
