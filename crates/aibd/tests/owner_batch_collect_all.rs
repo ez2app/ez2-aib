@@ -5,8 +5,13 @@
 //! 指紋批次簽 B1 (LIST-ownerbatch-collect-sideeffects-08de5-1123 r1):
 //! collecting all 7 batchable acts (`repo_register`, `seat_open` with repo, `seat_trust`,
 //! `seat_move`, `seat_send_back`, `repo_push`, `pr_open`) writes nothing under aibd's folders,
-//! appends no DB/journal events, and raises no window; an already-registered repo stops with
-//! `409 batch_item_done_without_window` without opening a window.
+//! appends no DB/journal events, and raises no window. What collecting may leave behind is named
+//! one by one in [`collect_may_write`] (08de5 JUDGE-ownerbatch-3pts-08de5-1125 2): `seat_send_back`'s
+//! plan, which runs before the owner is asked on main too, makes its scratch folder and fetches the
+//! seat's commits into the registered repo as objects only. No ref, no file of the work tree.
+//! (The `409 batch_item_done_without_window` path is a guard, not a way a listed act goes today:
+//! it is held by `owner_batch::tests::an_item_done_without_a_window_is_told_as_done` and knife
+//! obw-done, and by `owner_batch_signs`; JUDGE 3.)
 
 #[path = "support/seat_input_harness.rs"]
 mod harness;
@@ -122,13 +127,41 @@ fn tree(root: &Path) -> Vec<String> {
     out
 }
 
+/// The only paths collecting may add (JUDGE 2): `seat_send_back`'s scratch folder, and the pack
+/// its plan fetched into the registered repo (objects only). Anything else new is a failure.
+fn collect_may_write(rel: &str) -> bool {
+    if rel == "data/send-back" || rel.starts_with("data/send-back/") {
+        return true;
+    }
+    rel.strip_prefix("demo/.git/objects/pack/pack-")
+        .is_some_and(|f| [".pack", ".idx", ".rev"].iter().any(|e| f.ends_with(e)))
+}
+
+/// What git says of the registered repo: every ref with what it names, and the work tree's state.
+fn repo_state(repo: &Path) -> (String, String) {
+    let out = |args: &[&str]| {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "precondition: git {args:?}");
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    (
+        out(&["for-each-ref", "--format=%(refname) %(objectname)"]) + &out(&["rev-parse", "HEAD"]),
+        out(&["status", "--porcelain", "--untracked-files=all"]),
+    )
+}
+
 async fn act(d: &Daemon, cred: &str, body: Value) -> Reply {
     d.call("POST", "/api/v1/act", Some(cred), Some(&body.to_string()))
         .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_without_window() {
+async fn collecting_all_seven_acts_asks_each_and_writes_only_what_is_named() {
     let windows = Arc::new(AtomicUsize::new(0));
     aibd::owner_ok::set_presence(Arc::new(Yes(windows.clone())), Arc::new(Gate));
     aibd::pr_open::set_api(Arc::new(FakePr));
@@ -218,6 +251,7 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
     windows.store(0, Ordering::SeqCst);
 
     let before_tree = tree(dir.path());
+    let before_repo = repo_state(&demo);
     let before_db_events = db.events_after(0, 10_000).unwrap().len();
     let before_api_events = d
         .call("GET", "/api/v1/events?limit=500", None, None)
@@ -234,7 +268,7 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         ),
         (
             "seat_open",
-            json!({"type": "seat_open", "body": {"provider": "claude", "mode": "safe", "repo": "demo", "persona_uid": "un0eba", "idem_key": "ob-open"}}),
+            json!({"type": "seat_open", "body": {"provider": "claude", "mode": "dgrs", "repo": "demo", "persona_uid": "un0eba", "idem_key": "ob-open"}}),
         ),
         (
             "seat_trust",
@@ -278,10 +312,25 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         0,
         "reason: collecting_raised_a_window"
     );
+    let after_tree = tree(dir.path());
+    let gone: Vec<&String> = before_tree
+        .iter()
+        .filter(|p| !after_tree.contains(p))
+        .collect();
+    assert!(gone.is_empty(), "reason: collecting_removed_files {gone:?}");
+    let wrote: Vec<&String> = after_tree
+        .iter()
+        .filter(|p| !before_tree.contains(p) && !collect_may_write(p))
+        .collect();
+    assert!(wrote.is_empty(), "reason: collecting_wrote_files {wrote:?}");
+    let after_repo = repo_state(&demo);
     assert_eq!(
-        tree(dir.path()),
-        before_tree,
-        "reason: collecting_wrote_files"
+        after_repo.0, before_repo.0,
+        "reason: collecting_wrote_a_ref"
+    );
+    assert_eq!(
+        after_repo.1, before_repo.1,
+        "reason: collecting_touched_the_work_tree"
     );
     assert_eq!(
         db.events_after(0, 10_000).unwrap().len(),
@@ -299,26 +348,6 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         after_api_events, before_api_events,
         "reason: collecting_wrote_journal"
     );
-
-    // An already-registered repo sent in a batch stops with 409 batch_item_done_without_window
-    let r = act(
-        &d,
-        &cred,
-        json!({
-            "type": "owner_batch",
-            "items": [{"type": "repo_register", "body": {"name": "demo", "path": demo.to_string_lossy()}}],
-            "idem_key": "ob-already-repo"
-        }),
-    )
-    .await;
-    assert_eq!(r.code, 409, "{}", r.body);
-    assert_eq!(
-        r.json["reason"], "batch_item_done_without_window",
-        "{}",
-        r.body
-    );
-    assert_eq!(r.json["result"]["already"], true, "{}", r.body);
-    assert_eq!(windows.load(Ordering::SeqCst), 0);
 
     d.shutdown().await;
 }

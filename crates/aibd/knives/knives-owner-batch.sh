@@ -141,3 +141,15 @@ python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '    let Some(page) = Some(crate::pairing::PageAccess { digest, confirmed: true, user_page: false, carried: false }) else {' \
   --expect-fail one_yes_does_the_list_and_collecting_it_writes_nothing \
   -- cargo test -p aibd --locked --test owner_batch_signs one_yes_does_the_list_and_collecting_it_writes_nothing
+# obc-fetchhead (08de5 JUDGE-ownerbatch-3pts 2): collecting may leave a pack and the scratch folder, never a file git reads as a ref
+python3 -I scripts/knife.py crates/aibd/src/send_back.rs \
+  '            "--no-write-fetch-head",' \
+  '            "--write-fetch-head",' \
+  --expect-fail collecting_all_seven_acts_asks_each_and_writes_only_what_is_named \
+  -- cargo test -p aibd --locked --test owner_batch_collect_all collecting_all_seven_acts_asks_each_and_writes_only_what_is_named
+# obc-dgrs: a seat opened on a repo is collected only when it is one the owner is asked for
+python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
+  '            body["repo"].is_string() && body["mode"].as_str().is_some_and(|m| m != "work")' \
+  '            body["repo"].is_string() && body["mode"].as_str().is_some_and(|m| m != "work" && m != "dgrs")' \
+  --expect-fail collecting_all_seven_acts_asks_each_and_writes_only_what_is_named \
+  -- cargo test -p aibd --locked --test owner_batch_collect_all collecting_all_seven_acts_asks_each_and_writes_only_what_is_named
