@@ -274,7 +274,14 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!/終端機打 (claude|codex)/.test(ws) && !/LOGIN\[p\.key\]/.test(ws) && /not_logged_in: '這台的登入沒有或已過期' \}/.test(ws), 'reason: win_login_no_terminal');
   ok(/nl: !!\(p && !p\.open && p\.reason === 'not_logged_in'\)/.test(ws) && /\$\{p\.nl && RELOG_NAME\[p\.key\] \? '。' \+ addLoginCard\(p\.key\) :/.test(ws) && /PV\.filter\(\(p\) => \(p\.nl \|\| A\.needLogin === p\.key\) && RELOG_NAME\[p\.key\]\)\.map\(\(p\) => `<div class="apn anl">這台的 \$\{esc\(p\.name\)\} 沒登入或已過期。\$\{addLoginCard\(p\.key\)\}<\/div>`\)/.test(ws) && /const addLoginCard = \(k\) => `<span class="anlc">\$\{relogHtml\(k\)\}<\/span>`;/.test(ws), 'reason: win_login_card_in_add_dialog');
   ok(/const nl = e && \(e\.code === 'not_logged_in' \|\| e\.reason === 'not_logged_in' \|\| \(e\.body && e\.body\.reason === 'not_logged_in'\)\);/.test(ws) && /if \(nl && RELOG_NAME\[A\.provider\]\) \{ A\.needLogin = A\.provider;/.test(ws), 'reason: win_login_409_card');
-  ok(/S\.version = await soft\(get\('\/api\/v1\/version'\)\)\.catch\(\(\) => S\.version\); \/\/ 08de5 定案 4[^\n]*\n\s*if \(inAdd && S\.add === A\) \{ const again = A\.needLogin === pv; A\.needLogin = null; A\.msg = ''; A\.err = false; if \(again\) return doAdd\(\); \}/.test(ws), 'reason: win_login_refetch_and_retry');
+  ok(/S\.version = await soft\(get\('\/api\/v1\/version'\)\)\.catch\(\(\) => S\.version\); \/\/ 08de5 定案 4[^\n]*\n[^\n]*\n\s*if \(inAdd && S\.add === A\) \{ const snap = A\.needLogin === pv \? A\.nlSnap : null; A\.needLogin = null; A\.nlSnap = null; A\.msg = ''; A\.err = false; if \(snap\) return doAdd\(snap\); \}/.test(ws), 'reason: win_login_refetch_and_retry');
+  // f163c L1 / 3e53b M1:登入完自動再送只在 body 跟被擋那次一樣;換品牌 / 換模式就不送、只叫人自己按
+  {
+    const src = (ws.match(/  const addSnap = \(b\) => [^\n]*/) || [''])[0], c = {}; vm.createContext(c); vm.runInContext(src.replace('const addSnap', 'this.addSnap'), c);
+    const b = { provider: 'claude', mode: 'safe', persona_uid: 'p1', idem_key: 'k1' }, s0 = c.addSnap(b);
+    ok(typeof c.addSnap === 'function' && c.addSnap(Object.assign({}, b, { idem_key: 'k2' })) === s0 && c.addSnap(Object.assign({}, b, { provider: 'codex' })) !== s0 && c.addSnap(Object.assign({}, b, { mode: 'dgrs' })) !== s0 && c.addSnap(Object.assign({}, b, { persona_uid: 'p2' })) !== s0, 'reason: win_login_retry_only_same_body');
+    ok(/if \(typeof onlySnap === 'string' && addSnap\(body\) !== onlySnap\) \{ A\.busy = false; A\.msg = '已重新登入;設定跟剛才被擋那次不一樣,沒有自動開,請確認後按「開」'; A\.err = false; return render\(\); \}\n\s*A\.nlSnap = addSnap\(body\);\n\s*const r = await fingerAct\('seat_open', body,/.test(ws) && !/body\.ticket|ticket: A\./.test(ws), 'reason: win_login_retry_gate_before_open');
+  }
   ok(/login_not_tried_here: 'AIB 在這台\(Windows\)還不能從頁面登入這一家\(先做 Claude\)',/.test(ws), 'reason: win_login_not_tried_no_terminal');
   ok(/data-addpv="1">去預覽開席</.test(ws), 'reason: mother_page_plus_no_preview_way');
   ok(/回了失敗碼/.test(ws), 'reason: nonzero_exit_marked_error');
@@ -669,7 +676,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §34 現行「加一席」S0 修正(2e2cd 11-23 派工;SPEC-ai-partner-open-ebab8-1122 §8 + BRIEF-seatopen-ui-2e2cd-1122 P1 / D2)
 {
   const addH = (ws.split('  function addHtml() {')[1] || '').split('\n  }\n')[0];
-  const doA = (ws.split('  async function doAdd() {')[1] || '').split('\n  }\n')[0];
+  const doA = (ws.split('  async function doAdd(onlySnap) {')[1] || '').split('\n  }\n')[0];
   ok(addH.length > 2000 && doA.length > 2000, 'reason: s0_functions_missing');
   // 1. 點品牌不把模式打回安全
   const apLine = (ws.match(/const ap = x\.closest\('\[data-addp\]'\); if \(ap\) \{[^\n]*/) || [''])[0];

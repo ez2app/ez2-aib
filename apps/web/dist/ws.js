@@ -4641,7 +4641,8 @@
         const A = S.add, inAdd = !!(A && (A.needLogin === pv || providers().some((p) => p.key === pv && p.nl)));
         S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + (inAdd ? '' : ';按「重開」讓這一席接著做') };
         S.version = await soft(get('/api/v1/version')).catch(() => S.version); // 08de5 定案 4:capabilities 不快取 ⇒ 重抓一次就是 open=true;開席被 409 擋的那一次自動再送
-        if (inAdd && S.add === A) { const again = A.needLogin === pv; A.needLogin = null; A.msg = ''; A.err = false; if (again) return doAdd(); }
+        // f163c L1 / 3e53b M1:只在設定跟被擋那次一模一樣(同一家、同模式 / 人格 / 倉 …)才自動再送;改過就只重畫,讓人自己按「開」
+        if (inAdd && S.add === A) { const snap = A.needLogin === pv ? A.nlSnap : null; A.needLogin = null; A.nlSnap = null; A.msg = ''; A.err = false; if (snap) return doAdd(snap); }
         return render();
       }
       if (st === 'failed' || Date.now() > until) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(r ? String(r.reason || 'exit_not_0') : 'timeout') }; return render(); }
@@ -5798,6 +5799,7 @@
   }
   // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
   const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
+  const addSnap = (b) => JSON.stringify(Object.assign({}, b, { idem_key: '' })); // 開席 body 快照(idem_key 每次新的,不算)
   function addHtml() {
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
@@ -6289,7 +6291,7 @@
     if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 AIB 不收這些欄位(' + why + ')';
     return c === 'shared_folder_writers_full' ? '這個資料夾已經有兩席在寫,請開在自己的資料夾' : c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 AIB 還不能從頁面開席' : errText(e);
   }
-  async function doAdd() {
+  async function doAdd(onlySnap) { // onlySnap:登入完自動再送時,要跟被擋那次的 body 快照一樣才送
     const A = S.add, PV = providers(), pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.open);
     const persona = A.persona;
     if (!pv || !persona) { A.msg = pv ? '先選一個人格(這一席的個性與專長)' : '要選品牌和人格'; A.err = true; return render(); }
@@ -6323,6 +6325,9 @@
       const T = A.tpl && hasAct('perm_template_apply') === true ? ptOf(A.tpl) : null;
       if (T && body.repo) { A.busy = false; A.msg = PT_WHY.template; A.err = true; return render(); } // 08de5:兩個驗證會搶 ticket 欄,aibd 回 400 reason=template
       if (T) { body.tpl_uid = T.tpl_uid; body.rev = T.rev; body.mode = T.base; }
+      // 自動再送:body 不帶 ticket(c2f0b N1:409 在本人窗之前,完全權限照樣要新的本人窗);idem_key 每次新的,不算進快照
+      if (typeof onlySnap === 'string' && addSnap(body) !== onlySnap) { A.busy = false; A.msg = '已重新登入;設定跟剛才被擋那次不一樣,沒有自動開,請確認後按「開」'; A.err = false; return render(); }
+      A.nlSnap = addSnap(body);
       const r = await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = FP_SEE; render(); } }); // 08de5 A11:dgrs 不帶倉也會 202 要指紋 ⇒ 一律走 fingerAct(不是 202 就照原樣回)
       const seat = r.seat || {};
       let note = '';
