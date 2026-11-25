@@ -246,7 +246,7 @@ python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
 # c-keep-home (the seat's spawn env loses the home the gate made: it runs with the user's own ~/.copilot; 3e53b REVIEW-copilot e3d07aff L1)
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '    req.env.extend(own_home);' \
-  '    req.env.extend(own_home.filter(|_| false));' \
+  '    req.env.extend(own_home.into_iter().filter(|_| false));' \
   --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
   -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
 # c-seat-env-call (the gate makes the home but never puts it in the seat's env; 3e53b L1)

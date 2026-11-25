@@ -81,3 +81,9 @@ python3 -I scripts/knife.py crates/aibd/src/provider_login.rs \
   '    if crate::copilot_wire::is_copilot(provider) && provider.is_empty() {' \
   --expect-fail 'provider_login::tests::a_copilot_login_is_pinned' \
   -- cargo test -p aibd --locked --lib 'provider_login::tests::a_copilot_login_is_pinned'
+# cp-platform-table (a platform folder not in the table is taken: read from its shape, not the table)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        && tail.next().is_some_and(|p| PIN_PLATFORMS.contains(&p))' \
+  '        && tail.next().is_some_and(|p| p.contains('"'"'-'"'"'))' \
+  --expect-fail 'copilot_wire::tests::a_seat_runs_only_pinned' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_seat_runs_only_pinned'

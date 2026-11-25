@@ -202,15 +202,16 @@ pub fn pin_dir_of(os: PinOs, arch: &str, var: impl Fn(&str) -> Option<String>) -
     if !absolute {
         return None;
     }
-    let plat = match os {
+    let want = match os {
         PinOs::Mac => format!("darwin-{arch}"),
         PinOs::Windows => format!("win32-{arch}"),
     };
+    let plat = *PIN_PLATFORMS.iter().find(|p| **p == want)?;
     let mut out = base.to_owned();
     for p in parts
         .iter()
         .copied()
-        .chain([plat.as_str(), aib_seatopen::COPILOT_PINNED])
+        .chain([plat, aib_seatopen::COPILOT_PINNED])
     {
         out.push(sep);
         out.push_str(p);
@@ -239,12 +240,20 @@ pub fn pin_entry(k: &str, v: &str) -> bool {
     if k == PIN_UPDATE.0 {
         return v == PIN_UPDATE.1;
     }
-    k == PIN_DIST
-        && pinned(&[
-            (PIN_UPDATE.0.into(), PIN_UPDATE.1.into()),
-            (PIN_DIST.into(), v.into()),
-        ])
-        .is_ok()
+    k == PIN_DIST && pin_shaped(v)
+}
+
+/// The platform folders copilot keeps its packages under (a table, never read from the cache
+/// folder itself; 3e53b 11-26).
+pub const PIN_PLATFORMS: [&str; 4] = ["darwin-arm64", "darwin-x64", "win32-x64", "win32-arm64"];
+
+/// Is `dir` named `.../pkg/<one of PIN_PLATFORMS>/<pinned version>` (either separator)? Whether
+/// it is there is [`pinned`]'s to say, in words a person reads.
+pub fn pin_shaped(dir: &str) -> bool {
+    let mut tail = dir.rsplit(['/', '\\']);
+    tail.next() == Some(aib_seatopen::COPILOT_PINNED)
+        && tail.next().is_some_and(|p| PIN_PLATFORMS.contains(&p))
+        && tail.next() == Some("pkg")
 }
 
 /// Is the seat's environment pinned (3e53b 11-26): [`PIN_UPDATE`] exactly, and [`PIN_DIST`]
@@ -267,13 +276,7 @@ pub fn pinned(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> Result<(), St
         return Err(format!("{} is not {}", PIN_UPDATE.0, PIN_UPDATE.1));
     }
     let dir = var(PIN_DIST).unwrap_or_default();
-    let mut tail = dir.rsplit(['/', '\\']);
-    let shaped = tail.next() == Some(aib_seatopen::COPILOT_PINNED)
-        && tail
-            .next()
-            .is_some_and(|p| p.starts_with("darwin-") || p.starts_with("win32-"))
-        && tail.next() == Some("pkg");
-    if !shaped {
+    if !pin_shaped(&dir) {
         return Err(format!("{PIN_DIST} is not the pinned package"));
     }
     if !Path::new(&dir).is_dir() {
@@ -956,6 +959,26 @@ mod tests {
         assert_eq!(pinned(&env("false", &pkg)), Ok(()));
         assert!(pin_entry(PIN_DIST, &pkg.to_string_lossy()));
         assert!(pin_entry(PIN_UPDATE.0, "false") && !pin_entry(PIN_UPDATE.0, "true"));
+        // the platform folder from the table only; the entry is read by its name (whether the
+        // package is there is the gate's to say, in words a person reads)
+        for p in PIN_PLATFORMS {
+            assert!(
+                pin_shaped(&format!("/c/pkg/{p}/{v}")),
+                "reason: table_platform {p}"
+            );
+        }
+        for bad in [
+            format!("/c/pkg/darwin-riscv/{v}"),
+            format!("/c/pkg/linux-x64/{v}"),
+            format!("/c/pkg/darwin-arm64x/{v}"),
+            format!("/c/other/darwin-arm64/{v}"),
+        ] {
+            assert!(!pin_shaped(&bad), "reason: platform_not_in_table {bad}");
+        }
+        assert!(pin_entry(
+            PIN_DIST,
+            &format!(r"C:\L\copilot\pkg\win32-x64\{v}")
+        ));
         for (u, dir) in [
             ("true", pkg.as_path()),
             ("", pkg.as_path()),
