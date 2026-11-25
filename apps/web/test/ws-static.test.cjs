@@ -284,7 +284,16 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     ok(typeof c.addSnap === 'function' && c.addSnap(Object.assign({}, b, { idem_key: 'k2' })) === s0 && c.addSnap(Object.assign({}, b, { provider: 'codex' })) !== s0 && c.addSnap(Object.assign({}, b, { mode: 'dgrs' })) !== s0 && c.addSnap(Object.assign({}, b, { persona_uid: 'p2' })) !== s0, 'reason: win_login_retry_only_same_body');
     ok(/if \(typeof onlySnap === 'string' && addSnap\(body\) !== onlySnap\) \{ A\.busy = false; A\.msg = '已重新登入;設定跟剛才被擋那次不一樣,沒有自動開,請確認後按「開」'; A\.err = false; return render\(\); \}\n\s*A\.nlSnap = addSnap\(body\);\n\s*const r = await fingerAct\('seat_open', body,/.test(ws) && !/body\.ticket|ticket: A\./.test(ws), 'reason: win_login_retry_gate_before_open');
   }
-  ok(/login_not_tried_here: 'AIB 在這台\(Windows\)還不能從頁面登入這一家\(先做 Claude\)',/.test(ws), 'reason: win_login_not_tried_no_terminal');
+  ok(ws.includes("login_not_tried_here: '這一版 AIB 在 Windows 先只支援 Claude,這一家要等下一版',"), 'reason: win_login_not_tried_no_terminal');
+  {
+    // ebab8 03:34:501 login_not_tried_here 四語都說這一版 Windows 先只支援 Claude、沒有終端機;不認得的鍵(constructor)不查表
+    const a = ws.indexOf('  const RELOG_WHY = {'), b = ws.indexOf('\n  };\n', ws.indexOf('  const relogWhy = (e) => {', a)), src = ws.slice(a, b + 5);
+    const c = vm.createContext({ lang: 'zh-TW', FINGER_GONE: 'FG', errText: (e) => 'ERR:' + (e && e.code) });
+    vm.runInContext('const askLang = () => lang;\n' + src + '\nthis.f = relogWhy;', c);
+    const want = { 'zh-TW': '這一版 AIB 在 Windows 先只支援 Claude,這一家要等下一版', en: 'This version of AIB supports only Claude on Windows for now; this one comes in a later version', ja: 'この版の AIB は Windows ではまず Claude だけに対応しています。こちらは次の版で対応します', ko: '이번 버전의 AIB는 Windows에서 우선 Claude만 지원합니다. 이 서비스는 다음 버전에서 지원합니다' };
+    for (const [l, w] of Object.entries(want)) { c.lang = l; const g = c.f({ status: 501, body: { reason: 'login_not_tried_here' } }); ok(g === w && !/終端機|terminal|ターミナル|터미널/i.test(g), 'reason: win_login_not_tried_4lang ' + l + ' ' + g); }
+    c.lang = 'en'; ok(c.f('login_running') === '已經有一輪登入在跑' && c.f({ code: 'constructor' }) === 'ERR:constructor', 'reason: relog_why_own_keys ' + c.f({ code: 'constructor' }));
+  }
   ok(/data-addpv="1">去預覽開席</.test(ws), 'reason: mother_page_plus_no_preview_way');
   ok(/回了失敗碼/.test(ws), 'reason: nonzero_exit_marked_error');
   ok(/function repoTag\(s\)/.test(ws) && /\$\{repoTag\(s\)\}/.test(ws), 'reason: seat_card_without_repo_tag');

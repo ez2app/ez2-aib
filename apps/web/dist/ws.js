@@ -4566,7 +4566,7 @@
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
   const RELOG_NAME = { claude: 'Claude', codex: 'Codex' };
   const RELOG_WHY = {
-    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: 'AIB 在這台(Windows)還不能從頁面登入這一家(先做 Claude)',
+    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這一版 AIB 在 Windows 先只支援 Claude,這一家要等下一版',
     login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
     login_not_started: '登入程式開不起來', url_host_refused: '登入程式給的網址不是官方登入頁,沒有轉給你', no_url: '登入程式 20 秒內沒給登入網址',
     relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 AIB 還不能從頁面重新登入',
@@ -4574,7 +4574,17 @@
     finger_denied: '指紋取消了,沒有開始', finger_expired: FINGER_GONE + ';沒有開始,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開始',
     timeout: '10 分鐘內沒登入完,這一輪結束了', exit_not_0: '登入沒成功(登入程式回報失敗)', not_logged_in: '登入程式結束了,但這台還是沒有登入', code: '碼要 8–512 個字、不能有空白,只能送一次', login_id: '這一輪登入找不到了',
   };
-  const relogWhy = (e) => { const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code); return RELOG_WHY[rs] || (typeof e === 'string' ? e : errText(e)); };
+  // ebab8 03:34(08de5 核對 H、Andy「不要讓客戶自己執行」):Windows 上 Codex / Grok / Copilot 回 501 login_not_tried_here ⇒ 說這一版只支援 Claude,不叫人開終端機;四語
+  const RELOG_WHY_L = {
+    en: { login_not_tried_here: 'This version of AIB supports only Claude on Windows for now; this one comes in a later version' },
+    ja: { login_not_tried_here: 'この版の AIB は Windows ではまず Claude だけに対応しています。こちらは次の版で対応します' },
+    ko: { login_not_tried_here: '이번 버전의 AIB는 Windows에서 우선 Claude만 지원합니다. 이 서비스는 다음 버전에서 지원합니다' },
+  };
+  const relogWhy = (e) => {
+    const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code), L = RELOG_WHY_L[typeof askLang === 'function' ? askLang() : ''];
+    if (typeof rs === 'string' && L && Object.prototype.hasOwnProperty.call(L, rs)) return L[rs];
+    return (typeof rs === 'string' && Object.prototype.hasOwnProperty.call(RELOG_WHY, rs) ? RELOG_WHY[rs] : '') || (typeof e === 'string' ? e : errText(e));
+  };
   // 08de5 新登入卡(SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126):大字碼框、按了才複製、頂條寫家別 + 共幾步;
   // Andy 01:04:登入網址已帶碼(url 含 device_code)⇒ 不顯示碼框 / 複製,只留打開登入頁;有效時間 aibd 沒給 ⇒ 照實寫
   const RELOG_TTL_NA = '有效時間:這一版 AIB 還沒給';
