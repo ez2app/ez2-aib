@@ -67,6 +67,21 @@ pub fn is_cloud_placeholder(name: &str, m: &std::fs::Metadata) -> bool {
     (name.starts_with('.') && name.ends_with(".icloud")) || cloud_only(m)
 }
 
+/// A link, or on Windows any reparse point (a junction or a directory link too; 6770f
+/// follows brain_note's fsops). Ask [`is_cloud_placeholder`] first: a cloud-only file is a
+/// reparse point as well, and must refuse the copy, not be skipped as a link.
+fn is_link(m: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    m.file_type().is_symlink()
+}
+
 /// Count a brain folder: regular files, bytes, placeholders; links are not followed.
 pub fn scan(root: &Path) -> NotesCheck {
     let mut check = NotesCheck::default();
@@ -80,12 +95,12 @@ pub fn scan(root: &Path) -> NotesCheck {
             let Ok(meta) = std::fs::symlink_metadata(&p) else {
                 continue;
             };
-            if meta.file_type().is_symlink() {
-                continue;
-            }
             let name = e.file_name().to_string_lossy().into_owned();
             if is_cloud_placeholder(&name, &meta) {
                 check.cloud_placeholders += 1;
+                continue;
+            }
+            if is_link(&meta) {
                 continue;
             }
             if meta.is_dir() {
@@ -182,14 +197,14 @@ fn copy_tree(src: &Path, to: &Path) -> Result<Vec<(String, String)>, &'static st
             let e = e.map_err(|_| "notes_copy_failed")?;
             let p = e.path();
             let meta = std::fs::symlink_metadata(&p).map_err(|_| "notes_copy_failed")?;
-            if meta.file_type().is_symlink() {
-                continue;
-            }
             let name_os = e.file_name();
             let name = name_os.to_string_lossy().into_owned();
             let cloud = is_cloud_placeholder(&name, &meta);
             if cloud {
                 return Err("notes_cloud_placeholder");
+            }
+            if is_link(&meta) {
+                continue;
             }
             let r = if rel.is_empty() {
                 name.clone()
@@ -412,7 +427,7 @@ pub fn take_back(keep_dir: &Path, c: &Copied, undo_dir: &Path) -> TookBack {
             continue;
         };
         // N2: a file grown past what a copy may hold is not the copied one; never read it whole
-        if !m.is_file() || m.file_type().is_symlink() || m.len() > MAX_FILE_BYTES {
+        if !m.is_file() || is_link(&m) || m.len() > MAX_FILE_BYTES {
             t.changed.push(rel.clone());
             continue;
         }
@@ -585,8 +600,7 @@ mod tests {
         );
     }
 
-    // symlinks need no privilege only on unix; Windows' copy refuses links by the same
-    // symlink_metadata check (UNVERIFIED on a Windows machine)
+    // ebab8 11-25 19:16: on Windows the same is checked with a junction below
     #[cfg(unix)]
     #[test]
     fn links_are_not_followed() {
@@ -597,5 +611,33 @@ mod tests {
         let c = copy_into(&src, &keep, "k").unwrap();
         assert!(c.files.iter().all(|(r, _)| r != "link.md"), "{c:?}");
         assert!(!keep.join(&c.folder).join("link.md").exists());
+    }
+
+    /// A junction needs no privilege (a directory symlink does); made with cmd's built-in
+    /// mklink /J, test only. Its target's file must not be copied, counted, or taken back.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_is_not_followed_on_windows() {
+        let (t, src, keep) = tree();
+        let outside = t.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), "secret").unwrap();
+        let j = src.join("jdir");
+        let ok = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&j)
+            .arg(&outside)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "mklink /J failed");
+        assert!(is_link(&std::fs::symlink_metadata(&j).unwrap()));
+        let before = scan(&src);
+        let c = copy_into(&src, &keep, "k").unwrap();
+        assert!(c.files.iter().all(|(r, _)| !r.starts_with("jdir")), "{c:?}");
+        assert!(!keep.join(&c.folder).join("jdir").exists());
+        assert_eq!(before.files, c.files.len(), "{before:?}");
     }
 }
