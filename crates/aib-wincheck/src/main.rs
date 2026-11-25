@@ -5,10 +5,10 @@
 //! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    check_pack, decode_saved, failed_names, icacls_lock_args, icacls_owner_args, kept_env, may_run,
-    parse_results, parse_sums, parse_tests, place_tree, sddl_only, sha256_hex, step_args,
-    suite_name, whoami_user, Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST,
-    WINDOWS_ROOT,
+    check_pack, decode_saved, failed_names, failure_output, icacls_lock_args, icacls_owner_args,
+    kept_env, may_run, needs_missing_tool, parse_results, parse_sums, parse_tests, place_tree,
+    sddl_only, sha256_hex, step_args, suite_name, whoami_user, Counts, Guard, Report, TestExe,
+    SCREEN_ASKS, STEPS, TESTS_LIST, USAGE, WINDOWS_ROOT,
 };
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -40,7 +40,12 @@ fn args() -> Result<Args, String> {
             "--root" => a.root = Some(PathBuf::from(it.next().ok_or("--root needs a folder")?)),
             "--out" => a.out = Some(PathBuf::from(it.next().ok_or("--out needs a file")?)),
             "--no-ask" => a.ask = false,
-            other => return Err(format!("unknown argument {other:?}")),
+            // ebab8 11-25 18:37: the person on site types --help first
+            "--help" | "-h" | "/?" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
     }
     Ok(a)
@@ -92,6 +97,9 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
         .env_clear()
         .envs(kept_env(std::env::vars()))
         .env("CARGO_MANIFEST_DIR", manifest)
+        // the pack carries target/debug/aib-fixture-tree.exe built by CI; the aibd session tests
+        // use it instead of building it with cargo, which the laptop does not have (ebab8 19:04)
+        .env("AIB_FIXTURE_PREBUILT", "1")
         .stdin(Stdio::null())
         .output();
     let ms = t.elapsed().as_millis();
@@ -331,8 +339,22 @@ fn main() -> ExitCode {
                 c.ignored
             ));
             for n in failed_names(&out) {
+                // ebab8 11-25 19:04: red only because this machine has no cargo / bash ⇒ listed,
+                // not red, so the reds left are real; each red test's own output is kept
+                if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &on_path) {
+                    r.line(format!(
+                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} is not on PATH)"
+                    ));
+                    for l in failure_output(&out, &n, 8) {
+                        r.line(format!("| {l}"));
+                    }
+                    continue;
+                }
                 suite_red = true;
                 r.red(format!("TEST-RED {suite} {n}"));
+                for l in failure_output(&out, &n, 40) {
+                    r.line(format!("| {l}"));
+                }
             }
             if rc != Some(0) && c.failed == 0 {
                 suite_red = true;
@@ -351,6 +373,12 @@ fn main() -> ExitCode {
 
         // 3. the named steps (c2f0b W-8), output kept whole
         for s in STEPS {
+            // ebab8 11-25 19:04: every step waits for a person at Windows Hello (W4-M2 sat 150 s
+            // over ssh); with --no-ask they are skipped and the result says so
+            if !a.ask {
+                r.skip(format!("STEP-SKIPPED-NO-HUMAN {}", s.name));
+                continue;
+            }
             let Some(t) = tests
                 .iter()
                 .find(|t| suite_name(t.exe.rsplit('/').next().unwrap_or(&t.exe)) == s.exe)
@@ -425,6 +453,8 @@ fn main() -> ExitCode {
         "{}",
         if r.is_red() {
             "有紅的項目,結果已記下,不用重試。"
+        } else if r.is_incomplete() {
+            "沒有紅的,但要真人的步驟這次跳過了(--no-ask)。"
         } else {
             "全部通過。"
         }
@@ -436,14 +466,35 @@ fn main() -> ExitCode {
     }
     if r.is_red() {
         ExitCode::from(1)
+    } else if r.is_incomplete() {
+        ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     }
 }
 
 /// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red.
+/// Is `tool` (or `tool.exe`) in a folder of this process's `PATH`? The children get the same
+/// `PATH` (it is one of the kept variables).
+fn on_path(tool: &str) -> bool {
+    let Some(p) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&p).any(|d| {
+        d.join(tool).is_file()
+            || d.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
+                .is_file()
+    })
+}
+
 fn answer(r: &mut Report, can_ask: bool, name: &str, q: &str) {
-    match can_ask.then(|| ask(q)).flatten() {
+    // ebab8 11-25 19:04: with nobody at the screen a question is skipped, not red; the result
+    // then ends WINCHECK-INCOMPLETE, never OK
+    if !can_ask {
+        r.skip(format!("ASK {name} SKIPPED-NO-HUMAN"));
+        return;
+    }
+    match ask(q) {
         Some(true) => r.line(format!("ASK {name} yes")),
         Some(false) => r.red(format!("ASK {name} no")),
         None => r.red(format!("ASK {name} unanswered")),

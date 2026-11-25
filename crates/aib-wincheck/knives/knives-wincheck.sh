@@ -28,8 +28,8 @@ wl '    if s.ignored {' \
    '    if !s.ignored { // knife' \
    a_step_passes_its_filter_exactly_and_runs_ignored_tests_only_when_asked
 # WCK6 a red check is written as OK
-wl '        if self.red.is_empty() {' \
-   '        if self.red.is_empty() || true { // knife' \
+wl '        if !self.red.is_empty() {' \
+   '        if false && !self.red.is_empty() { // knife' \
    the_result_file_ends_with_the_verdict_and_the_sum_of_what_is_above
 # WCK7 failed tests are not counted
 wl '                "failed" => c.failed += n,' \
@@ -71,3 +71,27 @@ wl '        if kind != "A" {' \
 wl '    if !flags.contains('\''P'\'') {' \
    '    if false && !flags.contains('\''P'\'') { // knife' \
    whoami_and_icacls_are_read_strictly
+# WCK17 a red test that needs a tool is let off even where the tool is there (ebab8 11-25 19:04)
+wl '        .filter(|n| !has(n.tool))' \
+   '        .filter(|n| !has(n.tool) || true) // knife' \
+   a_red_test_that_needs_a_missing_tool_is_named_not_counted
+# WCK18 the same test names in another package are let off too
+wl '        .find(|n| n.package == package && n.suite == suite && n.test == test)' \
+   '        .find(|n| (n.package == package || true) && n.suite == suite && n.test == test) // knife' \
+   a_red_test_that_needs_a_missing_tool_is_named_not_counted
+# WCK19 a red test's output is not cut at max lines
+wl '        .take(max)' \
+   '        .take(max.max(usize::MAX)) // knife' \
+   a_red_tests_own_output_is_taken_from_libtests_report
+# WCK20 a red test's output runs on into the next test's
+wl '        .take_while(|l| !l.starts_with("---- ") && l.trim_end() != "failures:")' \
+   '        .take_while(|l| (!l.starts_with("---- ") || true) && l.trim_end() != "failures:") // knife' \
+   a_red_tests_own_output_is_taken_from_libtests_report
+# WCK21 skipped steps (--no-ask) end WINCHECK-OK
+wl '        } else if !self.skipped.is_empty() {' \
+   '        } else if false && !self.skipped.is_empty() { // knife' \
+   a_skipped_step_makes_the_result_incomplete_not_ok_and_red_still_wins
+# WCK22 incomplete even when something is red
+wl '        self.red.is_empty() && !self.skipped.is_empty()' \
+   '        !self.skipped.is_empty() // knife' \
+   a_skipped_step_makes_the_result_incomplete_not_ok_and_red_still_wins
