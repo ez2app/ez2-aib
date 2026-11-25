@@ -79,7 +79,15 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         Some("cfg(target_os = \"macos\")"),
         "=0.3.2",
         // LABiometryType: S10-2 owner_check_state (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
-        &["LABiometryType", "LAContext", "std"],
+        // block2: S10-2b-1 evaluatePolicy (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a)
+        &["LABiometryType", "LAContext", "block2", "std"],
+    ),
+    // DECISION-t135b-objc2-deps item 1 (block2 when the signing flow needs it; ebab8 11-25)
+    (
+        "block2",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.6.2",
+        &["alloc"],
     ),
 ];
 

@@ -53,4 +53,12 @@ ks '        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,' \
 ks 'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "";' \
    'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "Use Password"; // knife' \
    the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS10 (S10-2b-1 §8-3) the signing step after the fingerprint may show another window
+ks 'pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = true;' \
+   'pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = false; // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS11 (S10-2b-1 §8-3) a key that wants another window after the fingerprint is not called a mismatch
+ks '    if wanted_a_window {' \
+   '    if false && wanted_a_window { // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
 echo "aib-sys presence knives: all bit"

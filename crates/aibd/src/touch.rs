@@ -381,9 +381,14 @@ pub struct MacSe;
 fn se_code(e: aib_sys::presence_macos::SeError) -> &'static str {
     match e {
         aib_sys::presence_macos::SeError::Timeout => TIMEOUT,
+        aib_sys::presence_macos::SeError::KeyMismatch => KEY_MISMATCH,
         other => other.code(),
     }
 }
+
+/// The fingerprint was given but the pairing key wanted another window: it is not the
+/// fingerprint key this Mac should have (S10-2b-1 §8-3). Refused, no second window.
+pub const KEY_MISMATCH: &str = "owner_check_key_mismatch";
 
 #[cfg(target_os = "macos")]
 fn class_now() -> crate::owner_probe::Class {
