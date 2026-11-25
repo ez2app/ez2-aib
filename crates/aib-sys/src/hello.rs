@@ -124,6 +124,16 @@ pub fn probe_outcome(code: u32) -> Result<(), HelloError> {
     }
 }
 
+/// 3e53b REVIEW-winfirst M1: the pairing key's `NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY`
+/// must read 1 (every use asks for the gesture; no signing for a few seconds after the owner
+/// answered once). Anything else, or a value that could not be read, is a weak key.
+pub fn gesture_required(read: Result<u32, HelloError>) -> Result<(), HelloError> {
+    match read {
+        Ok(1) => Ok(()),
+        _ => Err(HelloError::WeakKey),
+    }
+}
+
 /// S10-3b-2: `NCRYPT_IMPL_HARDWARE_FLAG` in `NCRYPT_IMPL_TYPE_PROPERTY`.
 pub const IMPL_HARDWARE_FLAG: u32 = 1;
 
@@ -351,6 +361,44 @@ mod tests {
     use super::*;
     /// S10-3b-2 (3e53b READ-ap26-r2 L): only the hardware flag makes a key hardware-bound; a
     /// software key or a type that could not be read is not.
+    #[test]
+    fn a_key_that_does_not_ask_every_time_is_weak() {
+        assert_eq!(gesture_required(Ok(1)), Ok(()));
+        assert_eq!(gesture_required(Ok(0)), Err(HelloError::WeakKey));
+        assert_eq!(gesture_required(Ok(2)), Err(HelloError::WeakKey));
+        assert_eq!(
+            gesture_required(Err(HelloError::Os(0x8009_0029))),
+            Err(HelloError::WeakKey)
+        );
+    }
+
+    /// The Windows code (compiled on Windows only) sets the gesture property before the key is
+    /// finalized and reads it back in the probe; read from the source so every receipt machine
+    /// checks it (3e53b REVIEW-winfirst M1).
+    #[test]
+    fn the_passport_key_is_made_and_probed_with_the_gesture_required() {
+        let src = include_str!("hello_ncrypt.rs");
+        let create = src.find("pub fn create(").unwrap_or(usize::MAX);
+        let set = src[create.min(src.len())..]
+            .find("NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY")
+            .map(|i| i + create);
+        let fin = src[create.min(src.len())..]
+            .find("NCryptFinalizeKey(k.0")
+            .map(|i| i + create);
+        assert!(
+            matches!((set, fin), (Some(s), Some(f)) if s < f),
+            "reason: gesture_set_before_finalize"
+        );
+        let probe = src.find("pub fn probe(").unwrap_or(usize::MAX);
+        let end = src[probe.min(src.len())..]
+            .find("\n}\n")
+            .map_or(src.len(), |i| i + probe);
+        assert!(
+            src[probe.min(src.len())..end].contains("gesture_required("),
+            "reason: probe_reads_gesture"
+        );
+    }
+
     #[test]
     fn only_the_hardware_flag_is_hardware() {
         assert!(impl_is_hardware(Ok(IMPL_HARDWARE_FLAG)));
