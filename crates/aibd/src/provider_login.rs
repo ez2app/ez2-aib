@@ -3,7 +3,7 @@
 //! card with 「重新登入」; the built-in page in this pairing presses it, the owner's fingerprint
 //! approves it, and aibd runs the provider's own login program the session policy lists.
 //!
-//! - `{"type":"provider_relogin","provider":"claude"|"codex","ticket"?}`: the fingerprint ask,
+//! - `{"type":"provider_relogin","provider":"claude"|"codex"|"grok"|"copilot","ticket"?}`: the fingerprint ask,
 //!   then the program is started with fixed words ([`args_of`]) and the environment a seat gets.
 //!   The answer to this one request (no event, no replay) carries the sign-in address it printed,
 //!   checked by [`url_ok`] (https, no user, no port, host exactly [`host_of`]) and rebuilt, and
@@ -64,6 +64,8 @@ pub fn status_args_of(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "claude" => Some(&["auth", "status", "--json"]),
         "codex" => Some(&["login", "status"]),
+        // grok 1.0.70 has no status command; `models` says which account it uses (exit 0 either way)
+        "grok" => Some(&["models"]),
         _ => None,
     }
 }
@@ -390,13 +392,15 @@ pub fn logged_in(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> bool {
     let Some(args) = status_args_of(provider) else {
-        if matches!(provider, "grok" | "copilot") {
+        if provider == "copilot" {
             let home = env
                 .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("HOME"))
+                .find(|(k, _)| k == "HOME")
                 .map(|(_, v)| std::path::PathBuf::from(v))
                 .or_else(crate::workspace::seat_login_home);
-            return home.is_some_and(|h| crate::workspace::logged_in(provider, &h, None));
+            return home.is_some_and(|h| {
+                crate::workspace::copilot_users(&h.join(".copilot").join("config.json"))
+            }) && copilot_token_stored();
         }
         return false;
     };
@@ -413,7 +417,36 @@ pub fn logged_in(
                     .and_then(|v| v.get("loggedIn").and_then(Value::as_bool))
                     == Some(true)
         }
+        "grok" => code == Some(0) && grok_says_logged_in(&out),
         _ => code == Some(0),
+    }
+}
+
+/// `grok models`' first line: `You are logged in with …` or `You are not authenticated.`
+/// (grok 1.0.70, measured 08de5 11-25); its exit is 0 both ways, so the words are read.
+pub fn grok_says_logged_in(out: &[u8]) -> bool {
+    strip_ansi(&String::from_utf8_lossy(out))
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| l.trim_start().starts_with("You are logged in"))
+}
+
+/// copilot keeps its token in the system credential store (macOS: the keychain item
+/// `copilot-cli`, measured 1.0.115): is the item there? Its attributes only are asked (no
+/// `-g` / `-w`: the secret is never read) and the answer is dropped. Elsewhere: no (Windows
+/// is refused before a login starts; not tried there).
+pub fn copilot_token_stored() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = Command::new("/usr/bin/security");
+        c.args(["find-generic-password", "-s", "copilot-cli"]);
+        let (code, _) =
+            crate::gh_view::run_timed(c, &crate::timers::PROVIDER_LOGIN_STATUS_WAIT, None);
+        code == Some(0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }
 
@@ -754,6 +787,60 @@ mod tests {
             Some("https://auth.openai.com/codex/device")
         );
         assert_eq!(url_ok("https://claude.com/x", "gemini"), None);
+        // grok / copilot: the hosts their device logins print (measured 08de5 11-25)
+        assert_eq!(
+            url_ok("https://accounts.x.ai/oauth2/device?user_code=X", "grok").as_deref(),
+            Some("https://accounts.x.ai/oauth2/device?user_code=X")
+        );
+        assert_eq!(
+            url_ok("https://github.com/login/device", "copilot").as_deref(),
+            Some("https://github.com/login/device")
+        );
+        for (bad, p) in [
+            ("https://x.ai/oauth2/device", "grok"),
+            ("https://accounts.x.ai.evil.example/x", "grok"),
+            ("https://github.com.evil.example/login/device", "copilot"),
+            ("https://gist.github.com/x", "copilot"),
+            ("https://github.com/login/device", "grok"),
+        ] {
+            assert_eq!(url_ok(bad, p), None, "reason: handed_on {bad}");
+        }
+    }
+
+    /// ebab8 condition 5: grok's and copilot's own words, as their login and status print them
+    /// (grok 1.0.70, copilot 1.0.115; codes made up).
+    #[test]
+    fn grok_and_copilot_logins_are_read_from_their_own_words() {
+        let grok = "To sign in, open this URL in your browser:\n\n  https://accounts.x.ai/oauth2/device?user_code=QWER-TY12\n\nConfirm this code in your browser:\n\n  QWER-TY12\n";
+        assert_eq!(
+            first_address(grok).as_deref(),
+            Some("https://accounts.x.ai/oauth2/device?user_code=QWER-TY12")
+        );
+        assert_eq!(device_code(grok).as_deref(), Some("QWER-TY12"));
+        let copilot = "To authenticate, visit https://github.com/login/device and enter code ABCD-1234\nWaiting for authorization...\n";
+        assert_eq!(
+            first_address(copilot).as_deref(),
+            Some("https://github.com/login/device")
+        );
+        assert_eq!(device_code(copilot).as_deref(), Some("ABCD-1234"));
+        assert_eq!(args_of("grok"), Some(&["login", "--device-auth"][..]));
+        assert_eq!(args_of("copilot"), Some(&["login", "--device-code"][..]));
+        // grok: `models` exits 0 both ways; its first line is what says it
+        assert_eq!(status_args_of("grok"), Some(&["models"][..]));
+        assert!(grok_says_logged_in(
+            b"You are logged in with grok.com.\n\nDefault model: grok-4.6\n"
+        ));
+        assert!(
+            !grok_says_logged_in(b"You are not authenticated.\n\nDefault model: grok-4.6\n"),
+            "reason: grok_not_authenticated_is_logged_in"
+        );
+        assert!(!grok_says_logged_in(b""), "reason: grok_empty_is_logged_in");
+        assert!(
+            !grok_says_logged_in(b"Default model: grok-4.6\nYou are logged in with grok.com.\n"),
+            "reason: grok_not_first_line"
+        );
+        // copilot has no status words: its config and the stored token are looked at
+        assert_eq!(status_args_of("copilot"), None);
     }
 
     #[test]
@@ -898,6 +985,62 @@ mod tests {
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// ebab8 condition 5: a grok / copilot login hands the page the address and the code only;
+    /// whatever else the program prints (a token among it) is not in what comes back, and a
+    /// device login without its code is not handed on.
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_or_copilot_login_hands_on_the_address_and_the_code_only() {
+        let d = tempfile::tempdir().unwrap();
+        let env = vec![("PATH".into(), "/usr/bin:/bin".into())];
+        for (provider, body, url, code) in [
+            (
+                "grok",
+                "echo 'token: xai-SECRETSECRETSECRET'\necho 'open: https://accounts.x.ai/oauth2/device?user_code=QWER-TY12 '\necho 'Confirm: QWER-TY12'\necho 'refresh_token=SECRETSECRET'\nsleep 30",
+                "https://accounts.x.ai/oauth2/device?user_code=QWER-TY12",
+                "QWER-TY12",
+            ),
+            (
+                "copilot",
+                "echo 'gho_SECRETSECRETSECRET'\necho 'To authenticate, visit https://github.com/login/device and enter code ABCD-1234'\nsleep 30",
+                "https://github.com/login/device",
+                "ABCD-1234",
+            ),
+        ] {
+            let p = script(d.path(), body);
+            let (mut child, _input, s) = start(&p, provider, &[], &env).unwrap();
+            kill_all(&mut child);
+            assert_eq!(s.url, url, "reason: {provider}_url");
+            assert_eq!(s.device_code.as_deref(), Some(code), "reason: {provider}_code");
+            let handed = format!("{} {:?}", s.url, s.device_code);
+            assert!(!handed.contains("SECRET"), "reason: {provider}_token_handed_on");
+        }
+        // an address with no code yet is waited on, not handed on without it
+        let p = script(
+            d.path(),
+            "echo 'visit https://github.com/login/device now'\nexit 0",
+        );
+        assert_eq!(
+            start(&p, "copilot", &[], &env).err(),
+            Some("no_url"),
+            "reason: copilot_without_code"
+        );
+        // grok's status: exit 0 with "not authenticated" is not a login
+        let p = script(
+            d.path(),
+            "echo 'You are not authenticated.'\necho\necho 'Default model: grok-4.6'\nexit 0",
+        );
+        assert!(
+            !logged_in(&p, "grok", &env),
+            "reason: grok_exit_0_is_logged_in"
+        );
+        let p = script(
+            d.path(),
+            "echo 'You are logged in with grok.com.'\necho\necho 'Default model: grok-4.6'\nexit 0",
+        );
+        assert!(logged_in(&p, "grok", &env));
     }
 
     /// RL5 / RL6 / RL7: the address comes back, the code reaches the program once as a line,
