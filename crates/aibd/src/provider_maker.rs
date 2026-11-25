@@ -194,9 +194,33 @@ mod tests {
         let fetch = include_str!("provider_fetch.rs");
         assert!(fetch.contains("\npub(crate) fn run("), "reason: run_public");
         assert!(!fetch.contains("\npub fn run("), "reason: run_public");
-        let me = include_str!("provider_maker.rs");
-        let calls = me.matches(concat!("provider_fetch::", "run(")).count();
-        assert_eq!(calls, 1, "reason: more_callers");
+        // every aibd source file: only this one names the download, once (3e53b Nb)
+        let mut callers = Vec::new();
+        let mut dirs = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    dirs.push(p);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("provider_fetch.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap();
+                for l in text.lines().map(str::trim_start) {
+                    if l.starts_with("//") {
+                        continue;
+                    }
+                    let named = l.contains(concat!("provider_fetch::", "run"))
+                        || (l.contains(concat!("provider_fetch", "::{")) && l.contains("run"));
+                    if named {
+                        callers.push(p.file_name().unwrap().to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        assert_eq!(callers, ["provider_maker.rs"], "reason: more_callers");
     }
 
     /// The production path refuses a file whose hash is measured but which the maker did not
