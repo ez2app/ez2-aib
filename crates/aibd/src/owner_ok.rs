@@ -192,11 +192,25 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
     let n = |key: &str| v[key].as_u64();
     Some(match operation {
         crate::repos::OP_REGISTER => format!("登記這個資料夾當倉:{}", piece(&v, "name")?),
-        crate::repos::OP_OPEN => format!(
-            "開一個能改程式的席,帶倉 {}({})",
-            piece(&v, "repo")?,
-            piece(&v, "provider")?
-        ),
+        // A11: a dgrs open with no repo, and a page's restart of a dgrs seat
+        crate::repos::OP_OPEN => match v["kind"].as_str() {
+            Some("open") => format!(
+                "開一個完全權限的席({}),人格 {}",
+                piece(&v, "provider")?,
+                piece(&v, "persona_uid")?
+            ),
+            Some("restart") => format!(
+                "重開完全權限的席 @{}({})",
+                seat_code(&v)?,
+                piece(&v, "provider")?
+            ),
+            _ => format!(
+                "開一個能改程式的席,帶倉 {}({})",
+                piece(&v, "repo")?,
+                piece(&v, "provider")?
+            ),
+        },
+        crate::persona_edit::OP_SET => crate::persona_edit::plain(&v)?,
         crate::send_back::OP_SEND_BACK => format!(
             "把席 {} 的 {} 個提交、{} 個檔送回 {}",
             seat_code(&v)?,
@@ -360,6 +374,12 @@ pub const WIRED: &[&str] = &[
     // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
     crate::test_host_add::OP_ADD,
     crate::test_host_add::OP_REMOVE,
+    // A1: a persona card's sections changed from the built-in page (DESIGN-a1-edit-archive)
+    crate::persona_edit::OP_SET,
+    // aibd §7: a permission template change that turns an item on or raises the base
+    crate::perm_tpl::OP,
+    crate::perm_apply::OP_OPEN,
+    crate::perm_apply::OP_APPLY,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
@@ -977,6 +997,26 @@ pub async fn ticket_state(
 /// for this very act; a yes is used up. Without the switch nothing is approved.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
     OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
+}
+
+#[doc(hidden)]
+pub fn test_expire_ticket(ticket: &str) {
+    if let Some(o) = OWNER.get() {
+        if let Some(v) = o.slots().get_mut(ticket) {
+            v.rec.expires_at = 0;
+            v.state = State::Expired;
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn test_revoke_ticket(ticket: &str) {
+    if let Some(o) = OWNER.get() {
+        if let Some(v) = o.slots().get_mut(ticket) {
+            v.rec.approved = false;
+            v.state = State::Refused("revoked".to_owned());
+        }
+    }
 }
 
 /// [`approved_for`] for a caller that keeps the approval: the key's signature of the ticket's

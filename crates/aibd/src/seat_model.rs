@@ -29,9 +29,12 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
 /// The fields, or the refusal code.
 pub fn fields(body: &Value) -> Result<(String, String), &'static str> {
     let o = body.as_object().ok_or("seat_model_fields")?;
-    if o.keys()
-        .any(|k| !matches!(k.as_str(), "type" | "seat_id" | "model" | "idem_key"))
-    {
+    if o.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "type" | "seat_id" | "model" | "idem_key" | "ticket"
+        )
+    }) {
         return Err("seat_model_fields");
     }
     let key_ok = o
@@ -76,6 +79,17 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             "seat_busy",
             "the seat is in a turn now; change its model when the turn is over",
         );
+    }
+    // A11 r1 L2: a new model starts a dgrs seat again with no sandbox: the owner first,
+    // before the model is written or the seat stopped
+    let ticket = body.get("ticket").and_then(Value::as_str);
+    let asker: String = page.digest[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let asker = format!("page:{asker}");
+    if let Some(r) = crate::repos::dgrs_restart_gate(&st, &seat_id, ticket, asker).await {
+        return r;
     }
     let (store, id, m) = (st.store.clone(), seat_id.clone(), model.clone());
     let written = tokio::task::spawn_blocking(move || {

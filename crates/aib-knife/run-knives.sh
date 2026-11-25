@@ -61,10 +61,11 @@ else
   echo "AIB_KNIVES_SHARD=$shard is not k/N with 1 <= k <= N"
   exit 2
 fi
-# the scripts never see these two either (see AIB_KNIVES_SHARD above)
+# the scripts never see these three either (see AIB_KNIVES_SHARD above)
 list_only=${AIB_KNIVES_LIST:-}
 plan_file=${AIB_KNIVES_PLAN:-}
-unset AIB_KNIVES_LIST AIB_KNIVES_PLAN
+limits_file=${AIB_KNIVES_LIMITS:-}
+unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS
 plan_f=()
 plan_k=()
 if [ -n "$plan_file" ]; then
@@ -78,6 +79,21 @@ if [ -n "$plan_file" ]; then
       echo "AIB_KNIVES_PLAN line is not <k><tab><path> with 1 <= k <= $shard_n: $line"; exit 2
     fi
   done < "$plan_file"
+fi
+limits_f=()
+limits_m=()
+if [ -n "$limits_file" ]; then
+  [ ! -d "$limits_file" ] && [ -r "$limits_file" ] || { echo "AIB_KNIVES_LIMITS=$limits_file cannot be read"; exit 2; }
+  lim_re=$'^([1-9][0-9]{0,2})\t([^\t]+)$'
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    if [[ "$line" =~ $lim_re ]] && [ "${BASH_REMATCH[1]}" -le 240 ]; then
+      limits_m+=("${BASH_REMATCH[1]}")
+      limits_f+=("${BASH_REMATCH[2]}")
+    else
+      echo "AIB_KNIVES_LIMITS line is not <mins><tab><path> with 1 <= mins <= 240: $line"; exit 2
+    fi
+  done < "$limits_file"
 fi
 mine=0
 here_ok=0 # scripts of <job> that run on this OS, the ones shards take turns over
@@ -166,6 +182,16 @@ for f in "${scripts[@]}"; do
     echo "KNIVES-ELIGIBLE $f"
     ran=$((ran + 1))
     continue
+  fi
+  if [ -n "$limits_file" ]; then
+    li=0
+    while [ "$li" -lt "${#limits_f[@]}" ]; do
+      if [ "${limits_f[$li]}" = "$f" ]; then
+        limit=${limits_m[$li]}
+        break
+      fi
+      li=$((li + 1))
+    done
   fi
   ran=$((ran + 1))
   echo "== $f"
