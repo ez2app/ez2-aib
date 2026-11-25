@@ -2395,7 +2395,7 @@ fn pair_key_init() -> Result<(), String> {
     };
     println!(
         "Pairing key made in {} (Windows Hello asks for you; the key is kept {where_kept}). \
-         Start aibd with AIBD_PAIRING=touchid to confirm pairings with it.",
+         aibd confirms pairings with it.",
         dir.display()
     );
     Ok(())
@@ -2494,11 +2494,33 @@ impl aibd::winsetup::Ops for SetupOps {
     fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
         std::fs::rename(from, to).map_err(|e| e.to_string())
     }
-    fn pair_key_exists(&self) -> bool {
-        data_dir().is_ok_and(|d| {
-            let k = aibd::touch::key_dir(&d);
-            k.join("key.pub").exists() || k.join("key.blob").exists()
-        })
+    fn pair_key(&self) -> aibd::winsetup::PairKey {
+        use aibd::winsetup::PairKey;
+        let dir = match data_dir() {
+            Ok(d) => aibd::touch::key_dir(&d),
+            Err(e) => return PairKey::Bad(e),
+        };
+        let there = |n: &str| std::fs::symlink_metadata(dir.join(n)).is_ok();
+        if !there("key.blob") && !there("key.pub") {
+            return PairKey::None;
+        }
+        // the same check aibd runs at start: both plain files of this account, then the
+        // Hello key behind them still answers with the same public key
+        let ok = aibd::touch::load(&dir).and_then(|k| {
+            #[cfg(windows)]
+            {
+                aibd::touch::check(&aibd::touch::WinHello, &k)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = k;
+                Err("not_windows")
+            }
+        });
+        match ok {
+            Ok(()) => PairKey::Good,
+            Err(why) => PairKey::Bad(format!("{why} in {}", dir.display())),
+        }
     }
     fn pair_key_init(&self) -> Result<(), String> {
         pair_key_init()

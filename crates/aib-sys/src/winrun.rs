@@ -78,7 +78,9 @@ pub fn run_set(name: &str, command: &str) -> Result<(), crate::SysError> {
 #[cfg(windows)]
 pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
-    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, RRF_NOEXPAND, RRF_RT_REG_SZ,
+    };
     let key = wide(RUN_KEY);
     let name_w = wide(name);
     let mut buf = vec![0u16; 2048];
@@ -89,7 +91,8 @@ pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
             HKEY_CURRENT_USER,
             key.as_ptr(),
             name_w.as_ptr(),
-            RRF_RT_REG_SZ,
+            // RRF_NOEXPAND: a REG_EXPAND_SZ value is not expanded and read as a REG_SZ (3e53b N1)
+            RRF_RT_REG_SZ | RRF_NOEXPAND,
             std::ptr::null_mut(),
             buf.as_mut_ptr().cast(),
             &mut bytes,
