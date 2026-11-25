@@ -267,8 +267,11 @@ fn selfcheck(json: bool) -> ExitCode {
         process,
         j0.as_ref(),
     );
+    // the channel this aibd really uses: on Windows an unset AIBD_PAIRING is Hello (8ced9f3eb6;
+    // f163c / 3e53b N1 on c2904f8cfa: the row said off)
     rows.push(aibd::selfcheck::pairing_row(
         std::env::var("AIBD_PAIRING").ok().as_deref(),
+        cfg!(windows),
     ));
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
