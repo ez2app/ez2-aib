@@ -2036,7 +2036,7 @@ lateChecks.push((async () => {
   const F = c.F, A = (code) => (c.S.add = { refuse: { code, provider: 'claude' } });
   ok(src.length > 2000, 'reason: rf_block_found');
   let h = F.rfHtml(A('lifecycle_verify_failed'));
-  ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
+  ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好;若重裝後仍是這個錯,是開席設定指錯了,請聯絡我們協助重設。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
   h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('>安裝驗過的版本</button>'), 'reason: rf_unmeasured_zh');
   h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了連結(symlink / junction)') && !/捷徑|shortcut|ショートカット|바로 가기/.test(src) && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
   ok(!/略過|照開|Skip|skip|スキップ|건너/.test(src), 'reason: rf_no_skip_button');
