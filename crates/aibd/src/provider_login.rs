@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 #[cfg(unix)]
-use std::process::Child;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, Stdio};
+use std::process::{ChildStdin, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
