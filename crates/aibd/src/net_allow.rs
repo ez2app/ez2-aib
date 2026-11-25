@@ -637,7 +637,9 @@ mod tests {
         });
 
         let Step::Ask(ask1) =
-            cards.answer("rq_2step", "always", None, t1, "page:test", |_, _| false)
+            cards.answer_as("rq_2step", "always", None, t1, "page:test", true, |_, _| {
+                false
+            })
         else {
             panic!("expected Step::Ask");
         };
@@ -645,12 +647,14 @@ mod tests {
         let expected_msg = owner_ok::binding("tk_2step", &ask1);
 
         let mut captured: Option<(String, Vec<u8>, Vec<u8>)> = None;
-        let step2 = cards.answer(
+        // the owner's window here signs (c2f0b L-a: "always" is taken only then)
+        let step2 = cards.answer_as(
             "rq_2step",
             "always",
             Some("tk_2step"),
             t2,
             "page:test",
+            true,
             |t, ask2| {
                 let got_msg = owner_ok::binding(t, ask2);
                 if got_msg != expected_msg {
