@@ -2846,7 +2846,7 @@ pub(crate) async fn start_session(
         serde_json::json!({
             "code": code,
             "message": if code == crate::provider_fetch::maker::ERR_LINKED {
-                "a folder on the way to the provider program (the data folder, providers, or a provider or version folder) is a link; aibd starts providers only from its own folders"
+                "a folder on the way to the provider program (the data folder, providers, or a provider or version folder) is a link; aibd starts providers only from its own folders: set its data folder to the real location, not a link"
             } else {
                 "the provider program aibd placed does not match the measured table"
             },

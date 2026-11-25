@@ -114,6 +114,17 @@ pub const ERR_UNMEASURED: &str = "provider_unmeasured";
 /// only from its own folders. A customer who made the data folder a link gets this word.
 pub const ERR_LINKED: &str = "provider_path_linked";
 
+/// One line on what to do about a refusal word, for the seat's reply and the API message;
+/// empty when there is nothing the customer can do (f163c REVIEW-…-1c836c88 N1).
+pub fn what_to_do(word: &str) -> &'static str {
+    match word {
+        ERR_LINKED => "(aibd 的資料夾或其下的 providers / 品牌 / 版本夾是捷徑或 junction;請把 aibd 的資料夾設成實際位置，不要指向捷徑)",
+        ERR_UNMEASURED => "(這個版本不在量過的表上;請用 aibd 裝的版本)",
+        provider_fetch::ERR_VERIFY => "(放好的程式和量過的不一樣;請讓 aibd 重新安裝)",
+        _ => "",
+    }
+}
+
 /// Opening a seat (L1 / L2 接點; 3e53b REVIEW-w2policy-90856 L1): when the program the policy
 /// names is one aibd placed (`<data>/providers/<provider>/<version>/<name>`), check it against
 /// this machine's row of the measured table again, now, and give back the checked handle; the
@@ -420,6 +431,25 @@ mod tests {
                 .exists(),
             "reason: placed_unsigned"
         );
+    }
+
+    /// Each refusal word a customer can act on says what to do; others say nothing
+    /// (f163c REVIEW-…-1c836c88 N1, 3e53b r11).
+    #[test]
+    fn a_refusal_the_customer_can_fix_says_how() {
+        assert!(
+            what_to_do(ERR_LINKED).contains("實際位置"),
+            "reason: linked_no_hint"
+        );
+        assert!(
+            !what_to_do(ERR_UNMEASURED).is_empty(),
+            "reason: unmeasured_no_hint"
+        );
+        assert!(
+            !what_to_do(provider_fetch::ERR_VERIFY).is_empty(),
+            "reason: verify_no_hint"
+        );
+        assert_eq!(what_to_do("program_not_allowed"), "");
     }
 
     /// Opening a seat checks a program aibd placed against the table again and hands back the
