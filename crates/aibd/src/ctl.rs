@@ -2372,9 +2372,20 @@ fn owner_check_probe() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows (W-3, PLAN-ap26-windows-first-c2f0b-1125 r2 §1): which Windows machine this is
+/// ([`aibd::owner_probe_win`]); no window, no key.
+#[cfg(windows)]
 fn owner_check_probe() -> Result<(), String> {
-    Err("owner-check probe reads macOS LocalAuthentication; Windows Hello comes with S10-3".into())
+    println!(
+        "{}",
+        aibd::owner_probe_win::win_probe(&aibd::owner_probe_win::Win::read())
+    );
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn owner_check_probe() -> Result<(), String> {
+    Err("owner-check probe reads macOS LocalAuthentication or Windows Hello".into())
 }
 
 /// How long `aibd ctl web` waits for an aibd launchd was asked to start, and how often it looks.

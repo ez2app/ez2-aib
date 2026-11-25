@@ -165,6 +165,12 @@ fn sign_digest(k: &Key, digest: &[u8; 32], flags: u32) -> Result<Vec<u8>, u32> {
     Ok(raw[..len as usize].to_vec())
 }
 
+/// Whether the Passport provider opens here (the signed-in desktop only); no key, no window
+/// (W-3 `aibd ctl owner-check probe`).
+pub fn provider_ready() -> Result<(), HelloError> {
+    provider().map(drop)
+}
+
 /// Make a Passport key named `blob`; its X9.63 public key. Making it may itself ask for Hello.
 pub fn create(blob: &[u8]) -> Result<[u8; 65], HelloError> {
     let p = provider()?;
