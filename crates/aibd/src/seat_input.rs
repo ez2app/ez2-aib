@@ -1261,7 +1261,10 @@ async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Valu
     if crate::seats::restart_overfills(&st, seat_id).await {
         return crate::seats::folder_writers_full();
     }
-    if let Some(r) = crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker).await {
+    if let Some(r) =
+        crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker, crate::repos::GateAct::Restart)
+            .await
+    {
         return r;
     }
     let by = json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});

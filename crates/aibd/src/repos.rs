@@ -368,6 +368,7 @@ pub async fn dgrs_restart_gate(
     seat_id: &str,
     ticket: Option<&str>,
     by: String,
+    act: GateAct,
 ) -> Option<Response> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
     let read = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
@@ -391,7 +392,7 @@ pub async fn dgrs_restart_gate(
         st.sessions.list().iter().any(|s| {
             s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
         });
-    match gate_step(meta.mode.as_deref(), archived, runs) {
+    match gate_step(act, meta.mode.as_deref(), archived, runs) {
         Step::Act => return None,
         Step::Refuse(reason, message) => {
             return Some(
@@ -435,12 +436,25 @@ enum Step {
     Ask,
 }
 
-fn gate_step(mode: Option<&str>, archived: bool, runs: bool) -> Step {
+/// Which page act asks the dgrs gate (08de5 1125, the A11 8cf426cd82 receipt red): only 重開
+/// is refused on a running seat — 換模型 and 清對話 stop a running seat and start it again, so
+/// running is what they are for, and are asked like a stopped one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAct {
+    /// 重開 (seat_restart): the act refuses a seat that runs now
+    Restart,
+    /// 換模型 (seat_model_set): stops a running seat, starts it on the new model
+    Model,
+    /// 清對話 (seat_clear): stops a running seat, starts it on a new conversation
+    Clear,
+}
+
+fn gate_step(act: GateAct, mode: Option<&str>, archived: bool, runs: bool) -> Step {
     if mode != Some("dgrs") {
         Step::Act
     } else if archived {
         Step::Refuse("seat_archived", "the seat is archived")
-    } else if runs {
+    } else if runs && act == GateAct::Restart {
         Step::Refuse("seat_running", "the seat runs now")
     } else {
         Step::Ask
@@ -644,24 +658,57 @@ mod tests {
     }
     use std::process::Command;
 
-    /// A11 (f163c REVIEW-a11 N1, pre-8947d325 M1): an archived or running dgrs seat is refused
-    /// by the gate itself (no fingerprint spent, nothing let through); only a dgrs seat that is
-    /// neither asks; any other seat is the act's.
+    /// A11 (f163c REVIEW-a11 N1, pre-8947d325 M1; 08de5 1125): every act × every seat state.
+    /// An archived dgrs seat is refused by the gate itself for all three acts (no fingerprint
+    /// spent, nothing let through); a running one only for 重開 — 換模型 and 清對話 stop and
+    /// start a running seat, so they ask; a dgrs seat neither archived nor running asks; any
+    /// other seat is the act's.
     #[test]
     fn a_restart_refused_anyway_asks_no_fingerprint() {
-        assert_eq!(gate_step(Some("dgrs"), false, false), Step::Ask);
+        use GateAct::{Clear, Model, Restart};
+        let archived = Step::Refuse("seat_archived", "the seat is archived");
+        let running = Step::Refuse("seat_running", "the seat runs now");
+        for act in [Restart, Model, Clear] {
+            assert_eq!(
+                gate_step(act, Some("dgrs"), false, false),
+                Step::Ask,
+                "{act:?}"
+            );
+            assert_eq!(
+                gate_step(act, Some("dgrs"), true, false),
+                archived,
+                "reason: archived_let_through {act:?}"
+            );
+            assert_eq!(
+                gate_step(act, Some("dgrs"), true, true),
+                archived,
+                "reason: archived_running_let_through {act:?}"
+            );
+            for (mode, archived, runs) in [
+                (Some("work"), false, false),
+                (Some("work"), false, true),
+                (Some("safe"), true, false),
+                (None, true, true),
+            ] {
+                assert_eq!(
+                    gate_step(act, mode, archived, runs),
+                    Step::Act,
+                    "reason: not_dgrs_gated {act:?} {mode:?}"
+                );
+            }
+        }
         assert_eq!(
-            gate_step(Some("dgrs"), true, false),
-            Step::Refuse("seat_archived", "the seat is archived"),
-            "reason: archived_let_through"
-        );
-        assert_eq!(
-            gate_step(Some("dgrs"), false, true),
-            Step::Refuse("seat_running", "the seat runs now"),
+            gate_step(Restart, Some("dgrs"), false, true),
+            running,
             "reason: running_let_through"
         );
-        assert_eq!(gate_step(Some("work"), false, false), Step::Act);
-        assert_eq!(gate_step(None, true, true), Step::Act);
+        for act in [Model, Clear] {
+            assert_eq!(
+                gate_step(act, Some("dgrs"), false, true),
+                Step::Ask,
+                "reason: running_refused_for_a_stop_and_start {act:?}"
+            );
+        }
     }
 
     /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
