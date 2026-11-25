@@ -340,6 +340,13 @@ pub static PROVIDER_LOGIN_STATUS_WAIT: Timer = Timer::operation(
     "only after a login round's program ended: run its status once, kill it at 20 s (DESIGN-relogin-card r2, a9136 11-21)",
 );
 
+pub static PROVIDER_FETCH_WAIT: Timer = Timer::operation(
+    "provider.fetch_wait",
+    ms(500),
+    secs(30 * 60),
+    "only while a provider program downloads: look whether curl ended and how many bytes it wrote, kill it on cancel or at 30 min (IFACE-provider-lifecycle §3.1, L1c 6770f 11-26)",
+);
+
 pub static PREVIEW_HANDOFF_WAIT: Timer = Timer::operation(
     "preview.handoff_wait",
     secs(5),
@@ -434,6 +441,7 @@ pub static ALL: &[&Timer] = &[
     &PROVIDER_LOGIN_URL_WAIT,
     &PROVIDER_LOGIN_WAIT,
     &PROVIDER_LOGIN_STATUS_WAIT,
+    &PROVIDER_FETCH_WAIT,
     &DM_MIRROR,
     &SEAT_TICK,
     &RECEIPT_POLL,
