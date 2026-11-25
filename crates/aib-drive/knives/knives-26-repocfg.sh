@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # A15-repocfg knives RC1–RC2 (a9136 11-18, DECISION-council-split-519d0-1118): the repo is read from the
 # settings before the built-in default, and an empty setting is unset. Run from the repo root.
 set -eo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TP1–TP3: pairing's fingerprint windows say it plainly first, until when and the code beside them, then what they always said (Andy 11-21 01:42, 01:44; 519d0 05:49)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

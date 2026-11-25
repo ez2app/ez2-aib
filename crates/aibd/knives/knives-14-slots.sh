@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace event slots knives SL1-SL16, NI1-NI3, MQ1-MQ3, ST1-ST3, PG1-PG4, MU1-MU3, RS1-RS2, AO1-AO2 (7ebca 11-18, ORDER-workspace-519d0-1118): each slot
 # rule (the table, the notify fallback, the order and caps, decision_answer and slot_dismiss
 # checks, the journal keeping lengths and hashes only), broken, turns its own test red.

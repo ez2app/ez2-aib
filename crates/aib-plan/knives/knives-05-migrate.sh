@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan migrate MG1–MG7 (a9136 11-18, DECISION-council-gaps-519d0-1117 R1 / R5 + 5d33a / 0eed7 spot checks):
 # a paused card takes the reason it was paused for, a paused head held back by the queue is not in flight,
 # a card already in the seven stations is not migrated, a parent card is left to its children, an owner

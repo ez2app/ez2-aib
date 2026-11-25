@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 0eed7 VERIFY-realentry-ea0885a7 H1 knives KC1-KC2 (7ebca 11-20): a safe codex seat keeps the
 # host that runs its MCP tool calls (off, aibd's tools are never called) and has code mode off.
 set -eo pipefail

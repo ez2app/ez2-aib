@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-dismiss-persist + N-ws-event-pin knives PN1-PN5 (7ebca 11-19, 519d0 07:22): a dismissal
 # and a pin are replayed from their events at start; only the built-in page pins, only to an item
 # on the tree; the store reads the slot events by type.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a work seat in a preview (a9136 11-19, 519d0 12:02 8-hour goal): a preview opens safe and work seats, never dgrs.
 # Each rule, broken, turns its own test red. Run from the repo root; -eo pipefail like GitHub's `shell: bash`.
 set -eo pipefail

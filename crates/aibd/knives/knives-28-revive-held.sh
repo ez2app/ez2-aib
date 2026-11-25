@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_candidate_is_older_only_when_it_started_strictly_before_a_recorded_root; #895 run 45610010326)
 # RK2 (a9136 11-18, 0eed7 VERIFY 51ac92d9 M1): a held stop the next start turned `interrupted`
 # is still decided by its recorded stop, never taken up as a plain interrupted one.
 # Run from the repo root.

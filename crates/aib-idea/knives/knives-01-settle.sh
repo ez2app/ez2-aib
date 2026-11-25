@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-idea settle knives (519d0 11-19 09:20): each rule loosened must turn its own test red.
 # Run by crates/aib-knife/run-knives.sh (macOS); from the repo root; -eo pipefail like GitHub's `shell: bash`.
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PM1-PM3 (b4297 11-21; 5d33a PREREAD-pvtouch-rrmerge L1): a preview aibd's fingerprint window
 # starts with 「預覽:」, the real one's does not. Every mutant keeps its names used (knife-compile).
 set -eu

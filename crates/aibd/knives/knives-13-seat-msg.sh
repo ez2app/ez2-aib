@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # B1dm-S5 / S3c knives SM1–SM5, RQ1–RQ2 (b4297 11-18, 519d0 07:34 dispatch; DECISION-council-dmq-519d0-1118 §2):
 # a seat_send is a library row written queued before anything is typed; a refused send leaves no
 # open row; only the receiving seat reads and closes, and a seat gives a reason to close.

@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_codex_work_seat_runs_in_the_seat_profile; #895 run 45610010326)
 # N-ws-codex-work knives CW1-CW8 (7ebca 11-20, FEASIBILITY-codex-work-seat-7ebca-1120 C): a codex
 # work seat runs in the profile `seat` (no codex sandbox_mode), network off, its git reads no
 # user config, and the profile writes only the seat's folder and its .git.

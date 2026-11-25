@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-web-worktree knives WT1–WT9 (b4297 11-19; DECISION-council-webonly-q12-519d0-1119 Q1 (a),
 # BOUNDARY-webonly-5d33a-1119 §1 / r2 §1.4): a dgrs seat's own git worktree of a registered
 # repo, opened with no git hooks, its project settings listed and checked before every open,

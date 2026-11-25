@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # A15 (DESIGN-a15-quota-08de5-1123 r1, f163c REVIEW-a15 r0/r1): each brand's account limits from its own seats, whitelisted fields only
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

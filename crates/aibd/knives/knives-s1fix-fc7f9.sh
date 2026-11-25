@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 刀名一律 PG 前綴(下面寫的是舊名):SF1–SF64 + HS17 (no SF19; fc7f9 11-23; SF16 / SF30 / SF34 written for the page2 stack top — S3 template block, 逐項調整, S2 Windows line and host button sit in the mode row)
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs) red.
 set -eu

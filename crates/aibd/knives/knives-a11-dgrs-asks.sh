@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # A11 (DESIGN-a11-dgrs-open-asks-08de5-1123 r1, f163c REVIEW-a11 r1): a dgrs seat starts from the page only through the owner
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

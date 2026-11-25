@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S79-explain knives (a9136 11-17): `aib-drive explain <seat>` says each fact's source, time and how
 # long it holds, and what blocks a dm from act. aibd.yml runs every crates/aib-drive/knives/*.sh in
 # name order in one step; aib-xtask knife-anchors reads crates/*/knives/*.sh. Run from the repo root.

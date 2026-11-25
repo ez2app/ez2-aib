@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PT-K (DESIGN-brainnote-08de5-1123 r2 §2/§7; f163c REVIEW-permtpl r2): permission templates ask the owner for every item turned on and every base raised, refuse reserved names, parse items strictly, name what a base cannot hold, and show what this raise opens last. Each rule broken turns its test red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

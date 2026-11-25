@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly 第 4 件 knives RM1–RM5 (7ebca 11-20): the seat_receipt tool sends a seat's receipt
 # acts with its own token and passes on only the fields of each `do`. Run from the repo root.
 set -euo pipefail

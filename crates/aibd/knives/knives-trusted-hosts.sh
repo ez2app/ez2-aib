@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The pinned test machine list aibd's delegated receipts reach (ORDER-webonly-today 5 G1 slice 1, a9136 11-20)
 set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 th() { python3 -I scripts/knife.py crates/aibd/src/trusted_hosts.rs "$1" "$2" --expect-fail "$3" \

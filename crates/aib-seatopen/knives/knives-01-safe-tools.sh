@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-seatopen knives SO-T1 (b4297 11-18, 5d33a REVIEW-S89-talk1-5d33a-67211a25 M1): a safe claude seat gets
 # no built-in tool (`--tools ""`). Each rule, broken, turns its own test red. Run from the repo root.
 set -eu

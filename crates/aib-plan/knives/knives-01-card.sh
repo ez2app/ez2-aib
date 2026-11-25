@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan card knives CD1–CD18 (a9136 11-17, DECISION-council-board-coop-519d0-1117 §2.1 mine / set / note / add):
 # each rule broken on purpose must turn its own test red. Run by the "aib-plan knives (macOS)" step in
 # aibd.yml (one line runs crates/aib-plan/knives/*.sh); new knives live here, not inline (RULES §21).

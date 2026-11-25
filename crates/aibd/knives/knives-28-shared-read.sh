@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a seat reads and closes a post that named it in a shared conversation (0eed7 VERIFY-pv6 M2)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

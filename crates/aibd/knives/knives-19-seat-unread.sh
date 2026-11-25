@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # M9b knives SU1–SU2 (a9136 11-18; 0eed7 VERIFY-autotest 3a2d6b09, 519d0 r16 裁定 5): the page's
 # seat list carries each seat's messages to the person not read yet. Each rule, broken, turns
 # its own test red. Run from the repo root.

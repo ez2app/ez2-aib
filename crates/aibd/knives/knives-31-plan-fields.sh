@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # plan fields through aibd (b4297 11-19, #862 receipt pm1: main's SPEC-plan-fields `fields` met the
 # chain's aib-plan-via-aibd path): touches / branch / verifier go to aibd and back into aib-plan's
 # writer. Each knife breaks one rule and must turn its own test red. Run from the repo root.

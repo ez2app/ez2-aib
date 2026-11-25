@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # WD1-WD2 every operation an owner ask names as a constant is on owner_ok::WIRED (519d0 11-21;
 # 0eed7 a82: repo.send_back was merged without its line, every send back was unavailable)
 set -euo pipefail

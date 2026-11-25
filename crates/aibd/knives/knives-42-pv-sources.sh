@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PS1–PS4 (7b81e 11-20; N-pv-env-rest): the tree and the board's usage file are read where the
 # parent names them (AIBD_TREE_SOURCE / AIBD_USAGE_SOURCE) and handed to a preview by path, never
 # copied. Each, broken, turns its own test red.

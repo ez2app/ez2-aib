@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # N-codex-user-mcp knives MC1-MC15 (7ebca 11-20; MC13-15 the list runs with the seat's env; 5d33a PREREAD-codexmcp M1 L1): a codex seat
 # turns off every MCP server of the user's own, refuses one already named aibd, reads the list
 # without aibd's own -c and never waits for it past MCP_LIST_WAIT.

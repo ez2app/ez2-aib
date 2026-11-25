@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # u-4 unblock knives (56cda 11-15, DECISION-council-unblock-519d0-1115 §2; #807): each rule loosened must
 # turn its own test red. UF1-UF20 moved word for word out of knives-09-wake.sh (where the #804 restack had put
 # them) into their own script, so they get their own watchdog in crates/aib-knife/run-knives.sh.

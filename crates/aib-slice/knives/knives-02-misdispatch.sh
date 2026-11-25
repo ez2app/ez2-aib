@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-slice misdispatch knives MD1–MD9 (1ced7 11-17; a9136 / 5d33a reviewed on 4cc5ff4d). Run by one line at the
 # end of aibd.yml's inline "aib-slice knives (macOS)" step until that step moves whole to knives-slice.sh
 # (ci/slice-knives-out-1ced7-1117, recut after integration 1). New knives live here, not inline (§21).

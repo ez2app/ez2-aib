@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aibd ctl chat knives CH1–CH4 (b4297 11-18, 519d0 dispatch S89-live-chat; Andy 03:1x: pair → open → say →
 # watch printed raw pages and needed two ids copied by hand). Each rule, broken, turns its own test red.
 # Run from the repo root.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-opinion knives (macOS)" step of aibd.yml's rust job, moved here word for word (519d0 11-16
 # 23:5x: aibd.yml is red past 450,000 bytes; new knives live in crates/<crate>/knives/, the workflow
 # keeps one call). aib-xtask knife-anchors reads crates/*/knives/*.sh, so every knife here is still

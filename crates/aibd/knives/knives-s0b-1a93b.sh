@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 刀名一律 PG 前綴(下面寫的是舊名):S01 / S02 / S03 / S04 / S05 / S06 / S07 / S08 / S09 / S10 / S11 / S12 / S13 / S14 / S61 / S62 / S63 / S64 / S65 / S66 / S67(1a93b 11-23 加一席S0b;90856 照 pending KNIVES-s0b-addseat-1a93b-5b53ced4a0.tsv 逐把轉寫,f163c REVIEW M1)
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs) red.
 set -eu

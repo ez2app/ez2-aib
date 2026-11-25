@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # ORDER-today-usable knives CM1–CM7 (7b81e 11-18): the contacts list and the flow lines read the message
 # library (S89-talk-2a). Counts are what waits for the page and for the seat, a closed decide is not open,
 # the newest message dates and sorts the row, flows keep failed apart and stop at 200 pairs.

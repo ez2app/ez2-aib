@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-slice git cache knives CK1–CK6 (1ced7 11-17, CK6 a9136, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
 # each rule of the cache, broken on purpose, must turn its own test red. Run by the shared crate-knives step
 # (crates/aib-knife/run-knives.sh rust, main 454ccd67 #836); no step of its own. Run from the repo root.

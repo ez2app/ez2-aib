@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # HU1–HU4: the countdown beside the fingerprint window only shows; its script is fixed, its words are arguments, it ends with the window, and it carries the ticket's own code (DESIGN-touch-countdown-7b81e-1121; Andy 11-21 01:42; 5d33a PREREAD-touchcountdown 3, L1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

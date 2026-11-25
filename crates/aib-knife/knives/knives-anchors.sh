@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "knife anchors knives (macOS)" step of aibd.yml's rust job, moved here word for word
 # (519d0 11-16 23:5x: aibd.yml was 448,728 B of the 450,000 its line 44 allows; new knives go in
 # crates/<c>/knives/, the workflow keeps the call). These knives break aib-xtask knife-anchors
@@ -57,6 +58,19 @@ ka '    unresolved.extend(twice);' '    let _ = twice; // knife' \
 # KA13 (7ebca 11-19) a knife whose test is not in the binary it runs passes
 ka '    } else if bad > 0 || missing > 0 {' '    } else if bad > 0 { // knife' \
   run_is_red_when_a_knifes_test_is_not_in_the_binary_it_runs
+# E3: run-knives.sh steps with AIB_KNIVES_ONLY_OS own only the scripts of those header oses
+# KA14 the list is read and not used: the Linux and macOS cells both own every rust script (all "run twice")
+ka '                                    l.iter().any(|o| o == os)' '                                    { let _ = (l, os); true } // knife' \
+  a_run_knives_step_with_only_os_owns_only_the_scripts_of_those_oses
+# KA15 the step's env line is not read (only the command-line form would work)
+ka '                step_only = Some(only_list(v));' '                let _ = only_list(v); // knife' \
+  a_run_knives_step_with_only_os_owns_only_the_scripts_of_those_oses
+# KA16 a header with no os reads as unix, not run-knives.sh's macos
+ka '    let mut os = "macos".to_string();' '    let mut os = "unix".to_string(); // knife' \
+  a_run_knives_step_with_only_os_owns_only_the_scripts_of_those_oses
+# KA17 a step's list is kept into the next step (the next job's run-knives takes the wrong scripts)
+ka '                step_only = None;' '                // knife: kept' \
+  a_run_knives_step_with_only_os_owns_only_the_scripts_of_those_oses
 kt() { python3 -I scripts/knife.py xtask/src/knife_testname.rs "$1" "$2" \
          --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
 # KT1 a --test binary is read as the whole package

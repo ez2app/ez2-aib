@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # Restart names its reason (7ebca 11-20; 519d0 L1 after 0eed7 VERIFY-codexcfg-65be8029): a restart
 # refused for a codex reason says which (Skip::Refused), only the code aibd puts last.
 set -eo pipefail

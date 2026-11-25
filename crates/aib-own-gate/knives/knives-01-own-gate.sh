@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-own-gate knives (macOS)" step of aibd.yml's rust job, moved here word for word (11-16 裁定:
 # 新刀放 crates/<套件>/knives/;IFACE-drive-shadow-519d0-1117 §5; #804's shape). Run on macOS (the header
 # default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust, main #836); aib-xtask

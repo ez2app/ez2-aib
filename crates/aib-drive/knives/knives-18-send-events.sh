@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-drive drive_send events DS1–DS12 (a9136 11-17, S107-product slice 3, IFACE-s107-product-a9136-1117 r1
 # §2.2 §8 item 2): every dm act tries is one drive_send event, work held by its switch is `held`, and a
 # later queue status is one drive_send_after, once. Each rule, broken, turns its own test red. Run on macOS

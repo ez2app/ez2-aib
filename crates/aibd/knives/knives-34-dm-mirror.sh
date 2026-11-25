@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-web-dmbridge mirror knives DM1-DM6 (7ebca 11-19, 能用 after Andy 定 04:2x; 5d33a
 # BOUNDARY-webonly §5, CHECK-importdm M1 / N1 / N2): only a seat's own letter is that seat's post,
 # a relay file is read only when it is a RELAY- file under the state folder, the text is cleaned

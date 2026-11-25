@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # registry_archive (f163c REVIEW-regarchive-code pre d698a7ef L4): alias loops and chain length, the batch table, no double archiving, steps only while running, every archived uid
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

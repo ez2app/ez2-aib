@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # KE29 for the aib-expect tests' own folders (#789), kept out of aibd.yml (RULES §21, 519d0 11-16 23:5x:
 # new knives go in crates/<crate>/knives/, the workflow only calls them). The "aib-expect knives (macOS)"
 # step runs this file; aib-xtask knife-anchors reads crates/*/knives/*.sh, so the knife is still checked.

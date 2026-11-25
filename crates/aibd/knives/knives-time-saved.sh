@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The page's time-saved act (PLAN-skipstop-master F2, c5d88 11-23): each rule loosened must
 # turn its own test red. From the repo root; -eo pipefail like GitHub's shell.
 set -euo pipefail

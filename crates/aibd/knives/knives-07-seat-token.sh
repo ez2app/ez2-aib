@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-1 knives ST1–ST5 (b4297 11-18, DECISION-council-seat-talk-519d0-1118): a seat token
 # lists its own cabin and sends, nothing else; a request cannot set it; it dies with the seat.
 # Each rule, broken, turns its own test red. Run from the repo root.

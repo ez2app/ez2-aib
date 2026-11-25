@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_lock_file_created_by_many_threads_at_once_opens_for_all; #895 run 45610010326)
 # the seat folder held open (5d33a PREREAD-g5-bridge-7ebca-5d33a-1121 L1 / L2; G5 and G3 share it)
 set -euo pipefail
 umask 022

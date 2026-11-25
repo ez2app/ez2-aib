@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_new_folder_is_named_noindex_and_an_old_one_kept; #895 run 45610010326)
 # NI1-NI4, NI6, NI7 shared folders and keeping indexers out (PREREAD-shared-folder-noindex-a9136-1121, 5d33a 0/0/2/2). NI5 (Windows attribute) is aib_sys::noindex's own test on the Windows cell.
 set -euo pipefail
 fo() { python3 -I scripts/knife.py crates/aibd/src/folders.rs "$1" "$2" --expect-fail "folders::tests::$3" \

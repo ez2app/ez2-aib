@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 送回倉 knives SB1-SB10 (a9136 11-20, N-webonly-c6-merge; DESIGN-web-merge-a9136-1120 r2,
 # 5d33a PREREAD-webmerge M1 L1 L2): a taken branch is never moved; a link among the copy's
 # object files is not followed; objects/info is not read; git's object check stays on; settings,

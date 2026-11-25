@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-drive refresh: the GitHub reader named for aib-slice (a9136 11-19, 519d0 10:52 S107-auto: this Mac's
 # gh pages took 5–18 s and the 600 s scan timed out). Each rule, broken, turns its own test red.
 # Run from the repo root; -eo pipefail like GitHub's `shell: bash`.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # D7a dispatch switch knives (DECISION-council-driveweb r1 §2, 5d33a PREREAD-d7d5): each rule
 # loosened must turn its own test red. From the repo root; -eo pipefail like GitHub's shell.
 set -euo pipefail

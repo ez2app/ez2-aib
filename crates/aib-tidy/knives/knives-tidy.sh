@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-tidy knives (519d0 11-21 14:27, DECISION-council-tidy-519d0-1121 r1): each rule loosened
 # must turn its own test red. Run by crates/aib-knife/run-knives.sh; from the repo root.
 #

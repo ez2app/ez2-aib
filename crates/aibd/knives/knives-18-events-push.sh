@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-events-push knives EP1–EP4 (a9136 11-18; ADR 0003, ORDER-workspace-519d0-1118 第三波 2): a
 # new event is pushed on the open stream with no new request; a reconnect starts after its last
 # id; an open stream does not hold up aibd's stop. Each rule, broken, turns its own test red.

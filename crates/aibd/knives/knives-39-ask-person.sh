@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 「要你決定」卡 knives AP1-AP7 (7ebca 11-19, 519d0 20:22 (5), PLAN-ask-person-card-7ebca-1119):
 # a seat asks with ids only, aibd checks them, one open ask a seat, a pace, the answer is one of
 # two fixed values, an answered ask leaves the board.

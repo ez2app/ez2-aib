@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # landed fix rows (a9136 11-18, 519d0 22:51; Andy 22:23 「還是有 壞了」): a fix row whose head is
 # already in main or a package, or listed twice, is no fix. Each rule loosened turns its test red.
 # Run by crates/aib-knife/run-knives.sh (macOS); from the repo root; -eo pipefail like GitHub's `shell: bash`.
