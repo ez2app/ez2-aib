@@ -591,10 +591,7 @@ fn grok_gate(
 /// [`grok_gate`] on one turn's words, with the environment that turn starts with (the
 /// seat's own, without the session marker), in the seat's folder.
 pub(crate) fn grok_turn_check(spec: &Spec) -> Result<(), String> {
-    let mut env = crate::platform::session::child_env(spec, std::env::vars_os());
-    env.retain(|(k, _)| {
-        !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)
-    });
+    let env = seat_env(spec, std::env::vars_os());
     let real = spec.argv.first().map(String::as_str).unwrap_or_default();
     grok_gate(real, &spec.argv, Some(&spec.cwd), &env)
 }
@@ -682,7 +679,16 @@ fn codex_list_env(
         pass: without(p.env.clone(), &req.withhold),
         input: false,
     };
-    let mut env = crate::platform::session::child_env(&spec, parent);
+    seat_env(&spec, parent)
+}
+
+/// The environment `spec`'s program starts with over `parent`, without the session marker: a
+/// listing or a check run beside the seat is not the seat (0eed7 VERIFY-codexcfg-65be8029).
+fn seat_env(
+    spec: &Spec,
+    parent: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = crate::platform::session::child_env(spec, parent);
     env.retain(|(k, _)| {
         !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)
     });
