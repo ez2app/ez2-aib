@@ -47,16 +47,34 @@ python3 -I scripts/knife.py crates/aibd/src/perm_tpl.rs \
   -- cargo test -p aibd --locked --lib 'perm_tpl::tests::a_template_name_never_stands_before_the_base'
 # w4-rp-cut (table 5: the branch not cut)
 python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
-  '            BRANCH_SHOWN,' \
-  '            usize::MAX,' \
+  '    let room = crate::owner_ok::RESOURCE_MAX.saturating_sub(head.chars().count() + 3);' \
+  '    let room = usize::MAX;' \
   --expect-fail 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host' \
   -- cargo test -p aibd --locked --lib 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host'
-# w4-rp-order (table 5: the repo and branch put before the remote's path)
+# w4-rp-order (table 5: the branch put before the head, the host and the path)
 python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
-  '                &path_shown(&t.remote),' \
-  '                &format!("{} {} {}", t.repo, t.branch, path_shown(&t.remote)),' \
+  '    format!("{head} · {}", end_shown(&t.branch, room))' \
+  '    format!("{} · {head}", end_shown(&t.branch, room))' \
   --expect-fail 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host' \
   -- cargo test -p aibd --locked --lib 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host'
+# w4-n2-repo (c2f0b REVIEW-win4 N2: the repo name put back before the branch)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '    format!("{head} · {}", end_shown(&t.branch, room))' \
+  '    format!("{head} · {} {}", t.repo, end_shown(&t.branch, room))' \
+  --expect-fail 'repo_push::tests::the_branch_shows_whatever_the_repo_name' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::the_branch_shows_whatever_the_repo_name'
+# w4-n2-tail (N2: the branch cut from its end, its date and number lost)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '    format!("{head} · {}", end_shown(&t.branch, room))' \
+  '    format!("{head} · {}", crate::owner_ok::cut_to(&t.branch, room.saturating_sub(1)))' \
+  --expect-fail 'repo_push::tests::the_branch_shows_whatever_the_repo_name' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::the_branch_shows_whatever_the_repo_name'
+# w4-n1-group (N1: the last subgroup dropped, two subgroups read the same)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '        end_shown(last, GROUP_TAIL)' \
+  '        String::new()' \
+  --expect-fail 'repo_push::tests::two_subgroups_read_apart' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::two_subgroups_read_apart'
 # w4-la-owner (c2f0b REVIEW-win4 L-a: the remote path's owner dropped, two owners of one long name read the same)
 python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
   '    let owner = crate::owner_ok::cut_to(owner, OWNER_SHOWN);' \

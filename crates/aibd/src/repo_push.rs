@@ -212,7 +212,7 @@ fn path_shown(remote: &str) -> String {
     // `other/long-name` read the same
     let p = p.strip_suffix(".git").unwrap_or(p);
     let (owner, name) = p.rsplit_once('/').unwrap_or(("", p));
-    let owner = crate::owner_ok::cut_to(owner, OWNER_SHOWN);
+    let owner = owner_shown(owner);
     let c: Vec<char> = name.chars().collect();
     let name: String = if c.len() > NAME_TAIL_SHOWN {
         std::iter::once('…')
@@ -228,17 +228,73 @@ fn path_shown(remote: &str) -> String {
     }
 }
 
+/// The remote path's owner as the window shows it. One name: its first [`OWNER_SHOWN`].
+/// A group path (GitLab subgroups, `corp/team-a`): whole when it fits [`GROUP_SHOWN`], else
+/// the top group's first [`GROUP_HEAD`] and the last subgroup's end ([`GROUP_TAIL`]), the
+/// middle left out — c2f0b REVIEW-win4-f5dbc6c2 N1: `corp/team-a/repo` and `corp/team-b/repo`
+/// both read `corp/tea…/repo` when only the start was kept.
+fn owner_shown(owner: &str) -> String {
+    let parts: Vec<&str> = owner.split('/').collect();
+    let (Some(first), Some(last)) = (parts.first(), parts.last()) else {
+        return String::new();
+    };
+    if parts.len() == 1 {
+        let owner = crate::owner_ok::cut_to(owner, OWNER_SHOWN);
+        return owner;
+    }
+    if owner.chars().count() <= GROUP_SHOWN {
+        return owner.to_owned();
+    }
+    let mid = if parts.len() > 2 { "…/" } else { "" };
+    format!(
+        "{}/{mid}{}",
+        crate::owner_ok::cut_to(first, GROUP_HEAD),
+        end_shown(last, GROUP_TAIL)
+    )
+}
+
+/// `word` whole when it has at most `shown` characters, else `…` and its last `shown - 1`.
+fn end_shown(word: &str, shown: usize) -> String {
+    let c: Vec<char> = word.chars().collect();
+    if c.len() <= shown {
+        return word.to_owned();
+    }
+    let keep = shown.saturating_sub(1);
+    std::iter::once('…')
+        .chain(c[c.len() - keep..].iter().copied())
+        .collect()
+}
+
 /// How much of the remote path's owner the window shows, its start kept.
 pub const OWNER_SHOWN: usize = 8;
+/// A group path shown whole up to this many characters.
+pub const GROUP_SHOWN: usize = 12;
+/// A long group path: how much of its top group, its start kept.
+pub const GROUP_HEAD: usize = 4;
+/// A long group path: how much of its last subgroup, its end kept (`…` counted).
+pub const GROUP_TAIL: usize = 6;
 /// How much of the remote repo's name the window shows, its end kept.
 pub const NAME_TAIL_SHOWN: usize = 11;
-/// How much of `{repo} {branch}` (the seat's and the registrant's words) the window shows:
-/// with the head, the host and the path it is never more than the window's 80.
-pub const BRANCH_SHOWN: usize = 12;
+
+/// The window's words: the head, the host, the path, then the branch alone — the repo's name
+/// is in the path already (c2f0b REVIEW-win4-f5dbc6c2 N2: with `{repo} {branch}` cut to 12, a
+/// repo name of 12 or more left no branch at all). The branch gets what the window's 80 leaves
+/// (at least 8 with the longest host and path) and keeps its end, so its date and number
+/// (`-1125-1`) always show. Only `web/…` branches get here ([`branch_ok`]): never main.
+fn push_words(t: &Target) -> String {
+    let head = format!(
+        "{} → {} · {}",
+        &t.sha[..12.min(t.sha.len())],
+        crate::seat_trust::host_shown(&crate::repos::remote_host(&t.remote)),
+        path_shown(&t.remote)
+    );
+    let room = crate::owner_ok::RESOURCE_MAX.saturating_sub(head.chars().count() + 3);
+    format!("{head} · {}", end_shown(&t.branch, room))
+}
 
 /// What the owner is asked. The window: the head's first 12 and where it goes — the host
-/// with its end kept, the path's owner and its name's end — first, then the repo and the branch, a seat's
-/// words, cut (ebab8 11-25 14:01, SCAN-owner-window-words 5: a long branch pushed the head
+/// with its end kept, the path's owner and its name's end — first, then the branch, a seat's
+/// words, its end kept ([`push_words`]) (ebab8 11-25 14:01, SCAN-owner-window-words 5: a long branch pushed the head
 /// into the part the window cuts). The whole object fits the window's 80: nothing is cut there.
 pub fn push_ask(t: &Target, by: String) -> crate::owner_ok::Ask {
     let params = json!({
@@ -247,18 +303,7 @@ pub fn push_ask(t: &Target, by: String) -> crate::owner_ok::Ask {
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP,
-        resource: crate::owner_ok::fixed_then_cut(
-            &[
-                &format!(
-                    "{} → {}",
-                    &t.sha[..12.min(t.sha.len())],
-                    crate::seat_trust::host_shown(&crate::repos::remote_host(&t.remote))
-                ),
-                &path_shown(&t.remote),
-            ],
-            &format!("{} {}", t.repo, t.branch),
-            BRANCH_SHOWN,
-        ),
+        resource: push_words(t),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
     }
@@ -1059,7 +1104,93 @@ mod tests {
                 &["ffffffffffff", "evil.example"],
             )
             .unwrap();
-            assert!(r.ends_with('…'), "reason: branch_not_cut {r}");
+            assert!(r.contains(" · …"), "reason: branch_not_cut {r}");
+        }
+    }
+
+    /// c2f0b REVIEW-win4-f5dbc6c2 N2: a long repo name leaves the branch whole in the window;
+    /// with the longest host, group path and name the branch still shows its date and number.
+    #[test]
+    fn the_branch_shows_whatever_the_repo_name() {
+        let ask = |remote: &str, branch: &str| {
+            push_ask(
+                &Target {
+                    repo: "a-very-long-registered-repo".into(),
+                    path: PathBuf::from("/x"),
+                    remote: remote.into(),
+                    branch: branch.into(),
+                    sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                },
+                "page:1".into(),
+            )
+            .resource
+        };
+        let r = ask(
+            "git@github.com:andy-company/a-very-long-repository-name.git",
+            "web/b4297-1125-1",
+        );
+        assert!(
+            r.ends_with(" · web/b4297-1125-1"),
+            "reason: branch_lost {r}"
+        );
+        assert!(!r.contains("registered"), "reason: repo_twice {r}");
+        let worst = ask(
+            &format!(
+                "git@github.com.{}.attacker-owned.example:corporation/x/y/team-alpha/{}.git",
+                "x".repeat(60),
+                "n".repeat(60)
+            ),
+            "web/abcdefghijkl-1231-20",
+        );
+        assert!(
+            worst.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+            "reason: window_cuts {worst}"
+        );
+        assert!(
+            worst.ends_with(" · …1231-20"),
+            "reason: date_or_number_lost {worst}"
+        );
+        assert!(
+            !branch_ok("main") && !branch_ok("master"),
+            "reason: main_pushable"
+        );
+    }
+
+    /// c2f0b REVIEW-win4-f5dbc6c2 N1: two remotes that differ only in a subgroup read apart.
+    #[test]
+    fn two_subgroups_read_apart() {
+        let ask = |remote: &str| {
+            push_ask(
+                &Target {
+                    repo: "demo".into(),
+                    path: PathBuf::from("/x"),
+                    remote: remote.into(),
+                    branch: BRANCH.into(),
+                    sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                },
+                "page:1".into(),
+            )
+            .resource
+        };
+        let a = ask("git@gitlab.com:corp/team-a/repo.git");
+        let b = ask("git@gitlab.com:corp/team-b/repo.git");
+        assert_ne!(a, b, "reason: subgroups_read_the_same");
+        assert!(
+            a.contains(" · corp/team-a/repo · "),
+            "reason: short_group_cut {a}"
+        );
+        let a = ask("https://gitlab.com/corporation-x/platform/team-alpha/repo");
+        let b = ask("https://gitlab.com/corporation-x/platform/team-bravo/repo");
+        assert_ne!(a, b, "reason: long_subgroups_read_the_same");
+        assert!(
+            a.contains(" · corp…/…/…alpha/repo · "),
+            "reason: group_shape {a}"
+        );
+        for r in [&a, &b] {
+            assert!(
+                r.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+                "reason: window_cuts {r}"
+            );
         }
     }
 
