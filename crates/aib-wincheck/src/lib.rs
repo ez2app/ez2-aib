@@ -616,10 +616,12 @@ pub fn icacls_owner_args(path: &str, sid: &str) -> Vec<String> {
 /// What `icacls <path> /save <file>` wrote, as text: UTF-16LE (how icacls writes it), else UTF-8.
 pub fn decode_saved(b: &[u8]) -> String {
     let b = b.strip_prefix(&[0xFF, 0xFE]).unwrap_or(b);
-    if b.len() >= 2 && b.len() % 2 == 0 && b[1] == 0 {
+    if b.len() >= 2 && b.len().is_multiple_of(2) && b[1] == 0 {
         let u: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         String::from_utf16_lossy(&u)
     } else {

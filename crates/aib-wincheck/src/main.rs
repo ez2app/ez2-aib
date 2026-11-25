@@ -233,12 +233,19 @@ fn main() -> ExitCode {
     if let Some(Err(e)) = &who {
         r.red(format!("ROOT-ACL {e}"));
     }
+    // c2f0b REVIEW d3784ed2 N1: what setting the owner did, for the result file
+    let owner_notes = std::cell::RefCell::new(Vec::<String>::new());
     let lock = |d: &Path| -> Result<(), String> {
         match &who {
             Some(Ok((_, sid))) => {
                 let p = d.to_string_lossy();
                 system_tool("icacls.exe", &icacls_lock_args(&p, sid))?;
-                system_tool("icacls.exe", &icacls_owner_args(&p, sid)).map(|_| ())
+                let set = system_tool("icacls.exe", &icacls_owner_args(&p, sid));
+                owner_notes.borrow_mut().push(format!(
+                    "ROOT-OWNER {p} set {sid} rc={}",
+                    if set.is_ok() { 0 } else { 1 }
+                ));
+                set.map(|_| ())
             }
             Some(Err(e)) => Err(e.clone()),
             None => Ok(()),
@@ -275,6 +282,9 @@ fn main() -> ExitCode {
     let placed = match (&a.root, &sums, trusted) {
         (Some(root), Ok(s), true) => {
             let problems = place_tree(&a.pack, root, s, &guard);
+            for n in owner_notes.borrow_mut().drain(..) {
+                r.line(n);
+            }
             for p in &problems {
                 r.red(p.clone());
             }
