@@ -3901,6 +3901,9 @@ jobs:
         with:
           name: ${{ steps.winexe.outputs.name }}
           path: winexe/
+          # the tree has dot files and dot folders (.github, .gitignore …); without this the upload
+          # leaves them out and aib-wincheck refuses the pack (SUMS-MISSING), as it should
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
