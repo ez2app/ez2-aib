@@ -4141,8 +4141,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      # Read-only, the rust job's key (as in cloud-knives above): only the rust job saves it
+      # E3 N2 / CI 15-minute plan step 1 (ebab8 11-26): no job saved an ubuntu cache (the rust job runs
+      # macOS / Windows only), so every Linux cell built from nothing (55-78 minutes, #895). A main push now
+      # saves one (cell 1, below); pull requests only restore it
       - uses: actions/cache/restore@v4
+        id: kcache
         if: env.RUN == 'true'
         with:
           path: |
@@ -4154,6 +4157,43 @@ jobs:
           restore-keys: aibd-ubuntu-latest-${{ runner.environment }}-
       # (f163c a5f760d2af N3: these cells moved to ubuntu in E3, and the timer / shadow / ledger steps
       #   still said runner.os == 'macOS', so they never ran; they go by the job now, not the os)
+      # main push only, cell 1 only, on a cache miss: build every test target once with the knife step's
+      # profile (incremental, no debug, -D warnings from the job) so the dependencies are what a knife build
+      # reuses, drop the incremental folder (rebuilt per checkout anyway) and save; a pull request never saves
+      # (S66-0: each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB)
+      - name: build the Linux knife cache (main push, cell 1)
+        id: kwarm
+        if: >-
+          env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && strategy.job-index == 0 && steps.kcache.outputs.cache-hit != 'true'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          s=$SECONDS
+          cargo test --workspace --locked --no-run
+          rm -rf target/debug/incremental
+          echo "Linux knife cache built in $((SECONDS - s)) s; target $(du -sh target | cut -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/save@v4
+        if: steps.kwarm.outcome == 'success'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.kcache.outputs.cache-primary-key }}
+      - name: Linux knife cache read
+        if: env.RUN == 'true'
+        shell: bash
+        env:
+          HIT: ${{ steps.kcache.outputs.cache-hit }}
+          MATCHED: ${{ steps.kcache.outputs.cache-matched-key }}
+        run: |
+          echo "Linux knife cache: hit=${HIT:-false} matched=${MATCHED:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: knife timer
         if: env.RUN == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
