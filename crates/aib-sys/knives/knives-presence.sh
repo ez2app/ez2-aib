@@ -49,4 +49,8 @@ fi
 ks '        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,' \
    '        ("NSOSStatusErrorDomain", -25292) => SeError::AuthFailed, // knife' \
    errors_map_like_the_1x_helper
+# KS9 (S10-2b-1 §7a) the finger-only window keeps the "Use Password…" button
+ks 'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "";' \
+   'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "Use Password"; // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
 echo "aib-sys presence knives: all bit"

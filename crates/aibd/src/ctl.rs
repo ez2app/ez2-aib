@@ -2261,14 +2261,22 @@ fn pair_key_init() -> Result<(), String> {
             dir.display()
         ));
     }
+    // S10-2b-1 (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §4a): which key, by what this Mac's
+    // owner check reads now; Touch ID there but not usable makes nothing
+    let kind =
+        aibd::owner_probe::key_kind(aibd::owner_probe::class_of(&aibd::owner_probe::Mac::read()))
+            .map_err(|why| format!("{why}: {}", pair_key_not_now_words(why)))?;
+    let acl = match kind {
+        aibd::owner_probe::KeyKind::Finger => aib_sys::presence_macos::Acl::BiometryCurrentSet,
+        aibd::owner_probe::KeyKind::LoginPassword => aib_sys::presence_macos::Acl::UserPresence,
+    };
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let (blob, public) =
-        aib_sys::presence_macos::create(aib_sys::presence_macos::Acl::BiometryCurrentSet)
-            .map_err(|e| format!("could not make the key: {}", e.code()))?;
+    let (blob, public) = aib_sys::presence_macos::create(acl)
+        .map_err(|e| format!("could not make the key: {}", e.code()))?;
     for (name, bytes) in [("key.blob", &blob[..]), ("key.pub", &public[..])] {
         let p = dir.join(name);
         let mut f = std::fs::OpenOptions::new()
@@ -2288,12 +2296,34 @@ fn pair_key_init() -> Result<(), String> {
             "the new key failed the start-up check ({why}); nothing kept"
         ));
     }
+    let asks = match kind {
+        aibd::owner_probe::KeyKind::Finger => "it asks for your fingerprint",
+        aibd::owner_probe::KeyKind::LoginPassword => {
+            "this Mac reports no Touch ID, so it asks for your login password; if you add a \
+             Touch ID keyboard later, remove that folder and make the key again"
+        }
+    };
     println!(
-        "Pairing key made in {} (it asks for your fingerprint). Start aibd with \
-         AIBD_PAIRING=touchid to confirm pairings with it.",
+        "Pairing key made in {} ({asks}). Start aibd with AIBD_PAIRING=touchid to confirm \
+         pairings with it.",
         dir.display()
     );
     Ok(())
+}
+
+/// What to do when `pair-key init` makes nothing (S10-2b-1 §4a).
+#[cfg(target_os = "macos")]
+fn pair_key_not_now_words(why: &str) -> &'static str {
+    match why {
+        "owner_check_finger_not_now" => {
+            "Touch ID is there but not usable now: open the lid or connect the Touch ID \
+             keyboard, then run this again"
+        }
+        "owner_check_finger_not_enrolled" => {
+            "this Mac has Touch ID but no fingerprint: add one in System Settings first"
+        }
+        _ => "this Mac has no owner check (no Touch ID and no login password)",
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

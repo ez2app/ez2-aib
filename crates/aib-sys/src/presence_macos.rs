@@ -628,6 +628,41 @@ pub fn sign_until(
     msg: &[u8],
     limit: std::time::Duration,
 ) -> Result<Vec<u8>, SeError> {
+    sign_until_with(blob, reason, msg, limit, Window::AsTheKeyAllows)
+}
+
+/// The fallback title a finger-only window gets. Apple: an empty string hides the
+/// "Use Password…" button (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a).
+pub const FINGER_ONLY_FALLBACK_TITLE: &str = "";
+
+/// Which window a signature lets the system show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// Whatever the key's ACL takes (a login-password key shows the password window).
+    AsTheKeyAllows,
+    /// The fingerprint only: no "Use Password…" button, even on a key whose ACL would take
+    /// the password (a pair-key swapped for one on a Touch ID Mac).
+    FingerOnly,
+}
+
+/// [`sign_until`] on a Mac whose owner check reads "fingerprint": the window offers no
+/// password, so a key swapped for a login-password one still needs the finger.
+pub fn sign_until_finger_only(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, SeError> {
+    sign_until_with(blob, reason, msg, limit, Window::FingerOnly)
+}
+
+fn sign_until_with(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+    window: Window,
+) -> Result<Vec<u8>, SeError> {
     // the same two refusals as `sign`, spelled apart (each knife anchor is once in this file)
     let no_reason = reason.trim().is_empty();
     if no_reason {
@@ -644,6 +679,11 @@ pub fn sign_until(
     let r = NSString::from_str(reason);
     // SAFETY: `ctx` is live and `r` a live NSString for the call's duration.
     unsafe { ctx.setLocalizedReason(&r) };
+    if window == Window::FingerOnly {
+        let t = NSString::from_str(FINGER_ONLY_FALLBACK_TITLE);
+        // SAFETY: `ctx` is live and `t` a live NSString for the call's duration (copied).
+        unsafe { ctx.setLocalizedFallbackTitle(Some(&t)) };
+    }
     // SAFETY: `ctx` is live; 0 = never reuse an earlier unlock for this signature.
     unsafe { ctx.setTouchIDAuthenticationAllowableReuseDuration(0.0) };
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -938,6 +978,27 @@ mod tests {
         let mut p = [0u8; PUBLIC_KEY_LEN];
         p[0] = 0x02;
         assert_eq!(verify(&p, b"m", b"s"), Err(SeError::BadArg("public key")));
+    }
+
+    /// S10-2b-1 (DESIGN-s10-2b-nofinger r1 §7a): the finger-only window hides the password
+    /// button (an empty fallback title) and refuses what `sign_until` refuses, before any
+    /// window.
+    #[test]
+    fn the_finger_only_window_offers_no_password_and_refuses_the_same() {
+        assert_eq!(FINGER_ONLY_FALLBACK_TITLE, "");
+        let lim = std::time::Duration::from_secs(5);
+        assert_eq!(
+            sign_until_finger_only(b"x", " ", b"m", lim),
+            Err(SeError::BadArg("empty reason"))
+        );
+        assert_eq!(
+            sign_until_finger_only(b"x", "ok", b"", lim),
+            Err(SeError::BadArg("message size"))
+        );
+        assert_eq!(
+            sign_until_finger_only(b"x", "ok", b"m", std::time::Duration::ZERO),
+            Err(SeError::Timeout)
+        );
     }
 
     #[test]

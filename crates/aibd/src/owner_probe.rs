@@ -70,6 +70,52 @@ pub fn class(ty: isize, bio: Result<(), isize>, owner: Result<(), isize>) -> Cla
     }
 }
 
+/// [`class`] of what `d` says now, asking nobody (the same reads as [`probe`]).
+pub fn class_of(d: &dyn Device) -> Class {
+    let bio = d.can_biometrics();
+    let owner = d.can_owner();
+    class(d.biometry_type(), bio, owner)
+}
+
+/// Which pairing key `aibd ctl pair-key init` makes (DESIGN-s10-2b-nofinger-c2f0b-1125 r1
+/// §4a): the fingerprint key where Touch ID works; the login-password key only where the Mac
+/// reports no biometry at all. Touch ID there but not usable now (a closed lid, a keyboard
+/// away) makes nothing: a password key made then would outlive the reason. There is no flag
+/// to force the password key: an AI types a flag as easily as the owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    Finger,
+    LoginPassword,
+}
+
+pub fn key_kind(c: Class) -> Result<KeyKind, &'static str> {
+    match c {
+        Class::Fingerprint => Ok(KeyKind::Finger),
+        Class::PasswordOnly => Ok(KeyKind::LoginPassword),
+        Class::NotNow => Err("owner_check_finger_not_now"),
+        Class::NotEnrolled => Err("owner_check_finger_not_enrolled"),
+        Class::None => Err("owner_check_none"),
+    }
+}
+
+/// How the pairing key is asked to sign, by what the owner check reads at that moment
+/// (DESIGN-s10-2b-nofinger r1 §7a): where Touch ID works, a window with the finger only
+/// whatever the key's ACL (a key swapped for a login-password one still needs the finger);
+/// Touch ID there but not usable now: nothing, never the password instead; no biometry: the
+/// window the key's own ACL gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    FingerOnly,
+    AsTheKeyAllows,
+}
+
+pub fn route(c: Class) -> Result<Route, &'static str> {
+    Ok(match key_kind(c)? {
+        KeyKind::Finger => Route::FingerOnly,
+        KeyKind::LoginPassword => Route::AsTheKeyAllows,
+    })
+}
+
 fn said(r: Result<(), isize>) -> Value {
     match r {
         Ok(()) => json!("ok"),
@@ -172,7 +218,8 @@ mod tests {
             fake(0, Err(NOT_AVAILABLE), Err(NO_PASSCODE)),
         ] {
             let v = probe(&f);
-            assert_eq!(f.asked.load(Ordering::SeqCst), 0, "reason: asked {v}");
+            let c = class_of(&f);
+            assert_eq!(f.asked.load(Ordering::SeqCst), 0, "reason: asked {v} {c:?}");
         }
     }
 
@@ -195,5 +242,37 @@ mod tests {
         assert_eq!(class(0, Err(NOT_AVAILABLE), Ok(())), Class::PasswordOnly);
         assert_eq!(class(0, Err(NOT_AVAILABLE), Err(NO_PASSCODE)), Class::None);
         assert_eq!(class(1, Ok(()), Err(NO_PASSCODE)), Class::None);
+    }
+
+    /// S10-2b-1 §4a: the login-password key only where no biometry is reported; nothing
+    /// while Touch ID is there but not usable, not enrolled, or no owner check at all.
+    #[test]
+    fn the_password_key_only_where_there_is_no_touch_id() {
+        assert_eq!(key_kind(Class::Fingerprint), Ok(KeyKind::Finger));
+        assert_eq!(key_kind(Class::PasswordOnly), Ok(KeyKind::LoginPassword));
+        assert_eq!(key_kind(Class::NotNow), Err("owner_check_finger_not_now"));
+        assert_eq!(
+            key_kind(Class::NotEnrolled),
+            Err("owner_check_finger_not_enrolled")
+        );
+        assert_eq!(key_kind(Class::None), Err("owner_check_none"));
+        assert_eq!(
+            key_kind(class_of(&fake(1, Err(NOT_AVAILABLE), Ok(())))),
+            Err("owner_check_finger_not_now")
+        );
+    }
+
+    /// S10-2b-1 §7a: a Touch ID Mac signs through the finger-only window; Touch ID not usable
+    /// now is a refusal, never the password; no biometry: the key's own window.
+    #[test]
+    fn a_touch_id_mac_signs_with_the_finger_only() {
+        assert_eq!(route(Class::Fingerprint), Ok(Route::FingerOnly));
+        assert_eq!(route(Class::PasswordOnly), Ok(Route::AsTheKeyAllows));
+        assert_eq!(route(Class::NotNow), Err("owner_check_finger_not_now"));
+        assert_eq!(
+            route(Class::NotEnrolled),
+            Err("owner_check_finger_not_enrolled")
+        );
+        assert_eq!(route(Class::None), Err("owner_check_none"));
     }
 }
