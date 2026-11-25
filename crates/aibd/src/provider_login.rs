@@ -500,7 +500,7 @@ fn program(st: &AppState, provider: &str) -> Option<std::path::PathBuf> {
     p.programs
         .iter()
         .find(|e| e.name == provider)
-        .and_then(|e| crate::allowlist::resolve(&e.path.to_string_lossy(), p).ok())
+        .and_then(|e| crate::allowlist::resolve(&e.path.to_string_lossy(), &p).ok())
 }
 
 /// `provider_relogin`, for the built-in page `by` (`page:<pair>`).
