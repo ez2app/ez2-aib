@@ -40,7 +40,7 @@ impl fmt::Display for PipeRefused {
 impl std::error::Error for PipeRefused {}
 
 /// The providers [`pipe_argv`] can start.
-pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex"];
+pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex", "grok"];
 
 /// The modes each of [`PIPE_PROVIDERS`] starts in (GET version's capabilities).
 pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
@@ -50,9 +50,16 @@ pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
         // seat start-up it then runs); only a seat CODEX_HOME keeps it out, and how that
         // home shares the login is not measured yet. A safe seat has no tool to run it with.
         "codex" => CODEX_MODES,
+        // AP31 (andymini 11-25 probe on grok 1.0.70): safe-only until work sandbox probes pass.
+        "grok" => &["safe"],
         _ => &[],
     }
 }
+
+/// Built-in tools removed in grok `safe` mode (measured on grok 1.0.70: `--tools ""` still
+/// left all 24 built-in tools enabled and ran `read_file` / `curl`, whereas `--disallowed-tools`
+/// with this list yields `"tools":[]` and refuses file, shell, and web-fetch).
+pub const GROK_SAFE_DISALLOWED: &str = "run_terminal_command,read_file,search_replace,list_dir,grep,kill_command_or_subagent,todo_write,get_command_or_subagent_output,scheduler_create,scheduler_delete,scheduler_list,monitor,search_tool,use_tool,workflow,enter_plan_mode,exit_plan_mode,ask_user_question,send_feedback,image_gen,image_edit,image_to_video,reference_to_video,write";
 
 /// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C, COUNCIL-worktree-gitdir Q3): a
 /// codex work seat runs in a codex permission profile that only macOS was measured with
@@ -355,6 +362,32 @@ fn argv_with(
             }
             Ok(a)
         }
+        "grok" => {
+            if !pipe_modes("grok").contains(&mode) {
+                return Err(PipeRefused::ProviderMode("grok".into(), mode.into()));
+            }
+            let grok_id_flag = if id_flag == RESUME_FLAG { "-r" } else { "-s" };
+            let mut a = vec![
+                "grok".to_owned(),
+                "--output-format".to_owned(),
+                "streaming-json".to_owned(),
+                "--permission-mode".to_owned(),
+                "plan".to_owned(),
+                "--disable-web-search".to_owned(),
+                "--no-subagents".to_owned(),
+                "--sandbox".to_owned(),
+                "readonly".to_owned(),
+                "--disallowed-tools".to_owned(),
+                GROK_SAFE_DISALLOWED.to_owned(),
+                grok_id_flag.to_owned(),
+                session_id.to_owned(),
+            ];
+            if let Some(m) = model {
+                a.push("--model".into());
+                a.push(m.into());
+            }
+            Ok(a)
+        }
         other => Err(PipeRefused::Provider(other.to_owned())),
     }
 }
@@ -364,9 +397,9 @@ fn argv_with(
 /// without its persona). The text never goes in argv (seen by `ps`; Windows' command line
 /// is 32 K), only the file's path.
 pub fn add_persona_file(provider: &str, argv: &mut Vec<String>, file: &str) -> bool {
-    // codex: aibd hands the card over in the protocol (thread/start developerInstructions,
-    // codex_wire), so nothing goes in argv
-    if provider == "codex" {
+    // codex / grok: aibd hands the card over in the turn protocol / prompt-file, so nothing
+    // goes in argv
+    if provider == "codex" || provider == "grok" {
         return true;
     }
     // appended to Claude Code's own system prompt: the tools and rules stay
@@ -403,8 +436,46 @@ mod tests {
         let mut b = vec!["codex".to_string()];
         assert!(add_persona_file("codex", &mut b, "/d/p.md"));
         assert_eq!(b, ["codex"], "reason: persona_in_codex_argv");
+        let mut g = vec!["grok".to_string()];
+        assert!(add_persona_file("grok", &mut g, "/d/p.md"));
+        assert_eq!(g, ["grok"], "reason: persona_in_grok_argv");
         let mut c = vec!["agy".to_string()];
         assert!(!add_persona_file("agy", &mut c, "/d/p.md"));
+    }
+
+    #[test]
+    fn grok_safe_has_all_safety_flags_and_refuses_other_modes() {
+        let a = pipe_argv("grok", "safe", Some("grok-4.6"), ID).unwrap();
+        assert_eq!(
+            words(&a),
+            [
+                "grok",
+                "--output-format",
+                "streaming-json",
+                "--permission-mode",
+                "plan",
+                "--disable-web-search",
+                "--no-subagents",
+                "--sandbox",
+                "readonly",
+                "--disallowed-tools",
+                GROK_SAFE_DISALLOWED,
+                "-s",
+                ID,
+                "--model",
+                "grok-4.6",
+            ]
+        );
+        let r = resume_argv("grok", "safe", None, ID).unwrap();
+        assert!(r.windows(2).any(|w| w == ["-r", ID]), "{r:?}");
+        assert_eq!(
+            pipe_argv("grok", "dgrs", None, ID),
+            Err(PipeRefused::ProviderMode("grok".into(), "dgrs".into()))
+        );
+        assert_eq!(
+            pipe_argv("grok", "work", None, ID),
+            Err(PipeRefused::ProviderMode("grok".into(), "work".into()))
+        );
     }
 
     const ID: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
