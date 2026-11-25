@@ -4026,8 +4026,10 @@ jobs:
             target
           key: aibd-ubuntu-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-ubuntu-latest-${{ runner.environment }}-
+      # (f163c a5f760d2af N3: these cells moved to ubuntu in E3, and the timer / shadow / ledger steps
+      #   still said runner.os == 'macOS', so they never ran; they go by the job now, not the os)
       - name: knife timer
-        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
         run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
@@ -4082,7 +4084,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: knife-affected (shadow)
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 3
         shell: bash
@@ -4100,9 +4102,9 @@ jobs:
             done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
           fi
           [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
-          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (Linux, ${{ matrix.shard }})" "${args[@]}"
       - uses: actions/upload-artifact@v4
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 2
         with:
@@ -4173,6 +4175,11 @@ jobs:
             target
           key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      - name: knife timer
+        if: env.RUN == 'true' && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: crate knives (macOS-only)
         if: env.RUN == 'true'
         timeout-minutes: 45
@@ -4211,6 +4218,36 @@ jobs:
           name: knife-secs-macos-${{ strategy.job-index }}
           path: knife-secs/*.txt
           if-no-files-found: warn
+          retention-days: 30
+      # f163c a5f760d2af N3: the macOS cells keep the shadow / ledger too (aib-cireuse pull lists these names)
+      - name: knife-affected (shadow)
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: bash
+        env:
+          AIB_SHADOW_SKIP_AFTER_S: "7500"
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          f="knife-secs/cell-macos-${{ strategy.job-index }}.txt"
+          args=()
+          if [ -r "$f" ]; then
+            while IFS= read -r s; do
+              [ -n "$s" ] && args+=("--source=$s")
+            done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
+          fi
+          [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          name: cireuse-ledger-crate-knives-macos-${{ strategy.job-index }}
+          path: reuse-ledger/*.jsonl
+          if-no-files-found: ignore
           retention-days: 30
 
   crate-knives-gate:
