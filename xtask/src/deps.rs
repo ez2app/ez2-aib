@@ -55,6 +55,12 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_Security",
             // S10-3 / W1b hello_ncrypt (DESIGN-persona-propose-osverify-c2f0b-1123 §3)
             "Win32_Security_Cryptography",
+            // L1b wintrust.rs (08de5 b741ec8c8e, 3e53b REVIEW-l1b-wintrust 0/0/0/3): WinVerifyTrust
+            // and its WTHelper signer reads (WinTrust); windows-sys gates the WinTrust provider
+            // structs behind Catalog and Sip, nothing of either is called on its own
+            "Win32_Security_Cryptography_Catalog",
+            "Win32_Security_Cryptography_Sip",
+            "Win32_Security_WinTrust",
             // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
             "Win32_Storage_FileSystem",
             "Win32_System_Console",
