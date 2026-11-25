@@ -26,3 +26,5 @@ k '    if (S.add && x.closest('\''[data-addrfx]'\'')) { rfFix(); return; }' ' '
 k '  const rfT = () => OPEN_RF[typeof askLang === '\''function'\'' ? askLang() : '\''zh-TW'\''] || OPEN_RF['\''zh-TW'\''];' '  const rfT = () => OPEN_RF['\''zh-TW'\''];'
 # RF11 (又寫成捷徑;Windows 的捷徑是 .lnk,f163c REVIEW-l2 02e02b04 N1)
 k '被換成了連結(symlink / junction),AIB' '被換成了捷徑,AIB'
+# RF12 (重裝還是錯沒說要聯絡我們重設;c2f0b 05:37 §5b r3)
+k '驗過再放好;若重裝後仍是這個錯,是開席設定指錯了,請聯絡我們協助重設。'\''' '驗過再放好。'\'''
