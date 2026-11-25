@@ -3955,14 +3955,14 @@
     return ADD_BRANDS.filter(([k]) => got[k]).map(([k, name, b]) => {
       const p = got[k];
       // b4297 1c335b166:不能開時 reason = not_built(aibd 還不驅動)/ not_set_up(這台政策沒列)/ not_installed(列了但程式不在)
-      const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台還沒登入' };
+      const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台的登入沒有或已過期' };
       // Andy 11-20 00:2x 親打「先把 codex 選項灰掉」:codex 席叫不出 aibd 工具、話進不了串(0eed7 VERIFY-realentry ea0885a7 H1)⇒ aibd 修好前頁面不讓開
       const held = HOLD_BRANDS[k] || null;
       const npm = !(p && p.open) && typeof spNpm === 'function' && typeof S !== 'undefined' ? spNpm(k) : ''; // W-10 c2f0b 第 5 點
       const why = (held && held.block) || npm || (!p ? '這版還不能開' : p.open ? (held && held.note) || '' : R[p.reason] || '這台還不能開');
       const modes = ((p && p.modes) || ['safe']).filter((m) => !held || !held.modes || held.modes.includes(m));
       const ms = p && Array.isArray(p.models) ? p.models.filter((m) => m && typeof m.id === 'string' && m.id && MODEL_RE.test(m.id)).slice(0, 40).map((m) => ({ id: m.id, label: String(m.label || m.id).slice(0, 80), dflt: m.default === true, used: m.used === true })) : null;
-      return { id: p ? p.id : k, key: k, name, b, open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
+      return { id: p ? p.id : k, key: k, name, b, nl: !!(p && !p.open && p.reason === 'not_logged_in'), open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
     });
   }
   function personas() {
@@ -4566,7 +4566,7 @@
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
   const RELOG_NAME = { claude: 'Claude', codex: 'Codex' };
   const RELOG_WHY = {
-    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請在這台的終端機先登入它',
+    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: 'AIB 在這台(Windows)還不能從頁面登入這一家(先做 Claude)',
     login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
     login_not_started: '登入程式開不起來', url_host_refused: '登入程式給的網址不是官方登入頁,沒有轉給你', no_url: '登入程式 20 秒內沒給登入網址',
     relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 AIB 還不能從頁面重新登入',
@@ -4637,7 +4637,13 @@
       const R = S.relog; if (!R || R.id !== id) return;
       const r = await act('provider_relogin_state', { login_id: id }).catch(() => null);
       const st = r && String(r.state || '');
-      if (st === 'ok') { S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + ';按「重開」讓這一席接著做' }; return render(); }
+      if (st === 'ok') {
+        const A = S.add, inAdd = !!(A && (A.needLogin === pv || providers().some((p) => p.key === pv && p.nl)));
+        S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + (inAdd ? '' : ';按「重開」讓這一席接著做') };
+        S.version = await soft(get('/api/v1/version')).catch(() => S.version); // 08de5 定案 4:capabilities 不快取 ⇒ 重抓一次就是 open=true;開席被 409 擋的那一次自動再送
+        if (inAdd && S.add === A) { const again = A.needLogin === pv; A.needLogin = null; A.msg = ''; A.err = false; if (again) return doAdd(); }
+        return render();
+      }
       if (st === 'failed' || Date.now() > until) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(r ? String(r.reason || 'exit_not_0') : 'timeout') }; return render(); }
     }
   }
@@ -5790,6 +5796,8 @@
     } catch (e) { SP.msg = { bad: true, text: errText(e) }; }
     SP.busy = false; await spLoad();
   }
+  // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
+  const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
   function addHtml() {
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
@@ -5822,7 +5830,7 @@
     const NO = nodeOpts(); const node = A.node || ''; // S0-3:不默默帶左樹選中的那項,要用戶自己選
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     // S1b 3(Andy 11-23 03:00「不同品牌的AI 設計的不好」):跟其他選項同一套橫向按鈕;沒有原因的寫這家能做什麼
-    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}`;
+    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}${PV.filter((p) => (p.nl || A.needLogin === p.key) && RELOG_NAME[p.key]).map((p) => `<div class="apn anl">這台的 ${esc(p.name)} 沒登入或已過期。${addLoginCard(p.key)}</div>`).join('')}`;
     const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' && A.mode !== 'host' ? 'on' : ''}" data-addm="safe"><span class="amh">${ICO_SAFE}<b>討論研究</b></span><i>不碰檔案、不跑指令${apNetWords(pv, 'safe') ? ';' + esc(apNetWords(pv, 'safe')) : ''}</i><em class="adang d1">危險程度:低</em></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}><span class="amh">${ICO_WORK}<b>沙盒開發</b></span><i>${canW ? '只動自己的資料夾,不推送' + (apNetWords(pv, 'work') ? ';' + esc(apNetWords(pv, 'work')) : '') : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 AIB 還不能開'}</i><em class="adang d2">危險程度:中</em></button>${hsModeBtn(A, pv) || apHostCard(A, pv)}<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD && !inPreview() ? '' : 'off'}" data-addm="dgrs" ${canD && !inPreview() ? '' : 'disabled aria-disabled="true"'}><span class="amh">${ICO_DGRS}<b>完全權限</b></span><i>${inPreview() ? '預覽區不能開完全權限,到正式版才行' : canD ? '跟你本人一樣,每次開都要驗證' + (apNetWords(pv, 'dgrs') ? ';' + esc(apNetWords(pv, 'dgrs')) : '') : '這個品牌在這台只能開討論研究'}</i><em class="adang d4">危險程度:最高</em></button>`; // S1b 5(Andy 11-23 03:01「只有二個」):開不了也畫出來、變灰寫原因,不要整顆消失
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
@@ -5832,10 +5840,10 @@
     const where = `<div class="apl"><button type="button" class="apr ${!node ? 'on' : ''}" data-addnu="" aria-pressed="${!node}"><b>不指定</b><i>自由發揮,不綁專案</i></button></div><div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找已有專案(標題或編號)" aria-label="找已有專案" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div><div class="apn">讀自進度樹;選了之後它只專注做這個專案,不會再默默帶入左樹選中的那一項${node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改' : node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個(不選就只開席、不掛)' : ''}</div>`;
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
-    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
-    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
+    // Andy 11-26 02:0x「用那台既有的登入,過期或沒有一樣彈出綁定視窗」:沒登入 / 過期不叫人去終端機,就地接同一張重新登入卡(TABLE-win-login-on-open-fc7f9-1126 §F)
+    const FIX = { 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
     if (!pv) {
-      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
+      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${p.nl && RELOG_NAME[p.key] ? '。' + addLoginCard(p.key) : FIX[p.why] ? '。怎麼辦:' + esc(FIX[p.why]) : ''}</li>`).join('');
       // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
       const pvGo = !inPreview() && Array.isArray(S.pvs) && S.pvs.some((x) => !x.sample);
       if (pvGo) return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="新增 AI 夥伴">
@@ -6344,7 +6352,12 @@
       await tick(true);
       if (seat.seat_id && seatById(seat.seat_id)) { S.mode = seat.seat_id; S.atOpen = false; render(); } // 不走 setMode:它會清掉上面那句「開了 @… / 在排隊…」
       return;
-    } catch (e) { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
+    } catch (e) {
+      // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
+      const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
+      if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
+      else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
+    }
     A.busy = false; render();
   }
 

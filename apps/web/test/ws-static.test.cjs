@@ -270,7 +270,12 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   }
   ok(!/先按這一席的「停止」,停好再按/.test(ws), 'reason: stop_still_asked_before_send_back');
   ok(/if \(S\.sbMsg && S\.sbMsg\.bad\) say\(S\.sbMsg\.text, 'err'\)/.test(ws), 'reason: send_back_error_only_in_seat_box');
-  ok(/codex: '終端機打 codex login'/.test(ws) && !/例:claude 打 \/login/.test(ws), 'reason: codex_told_claude_login');
+  // Andy 11-26 02:0x「用那台既有的登入,過期或沒有一樣彈出綁定視窗」(TABLE-win-login-on-open-fc7f9-1126 §F,08de5 定案 1–4)
+  ok(!/終端機打 (claude|codex)/.test(ws) && !/LOGIN\[p\.key\]/.test(ws) && /not_logged_in: '這台的登入沒有或已過期' \}/.test(ws), 'reason: win_login_no_terminal');
+  ok(/nl: !!\(p && !p\.open && p\.reason === 'not_logged_in'\)/.test(ws) && /\$\{p\.nl && RELOG_NAME\[p\.key\] \? '。' \+ addLoginCard\(p\.key\) :/.test(ws) && /PV\.filter\(\(p\) => \(p\.nl \|\| A\.needLogin === p\.key\) && RELOG_NAME\[p\.key\]\)\.map\(\(p\) => `<div class="apn anl">這台的 \$\{esc\(p\.name\)\} 沒登入或已過期。\$\{addLoginCard\(p\.key\)\}<\/div>`\)/.test(ws) && /const addLoginCard = \(k\) => `<span class="anlc">\$\{relogHtml\(k\)\}<\/span>`;/.test(ws), 'reason: win_login_card_in_add_dialog');
+  ok(/const nl = e && \(e\.code === 'not_logged_in' \|\| e\.reason === 'not_logged_in' \|\| \(e\.body && e\.body\.reason === 'not_logged_in'\)\);/.test(ws) && /if \(nl && RELOG_NAME\[A\.provider\]\) \{ A\.needLogin = A\.provider;/.test(ws), 'reason: win_login_409_card');
+  ok(/S\.version = await soft\(get\('\/api\/v1\/version'\)\)\.catch\(\(\) => S\.version\); \/\/ 08de5 定案 4[^\n]*\n\s*if \(inAdd && S\.add === A\) \{ const again = A\.needLogin === pv; A\.needLogin = null; A\.msg = ''; A\.err = false; if \(again\) return doAdd\(\); \}/.test(ws), 'reason: win_login_refetch_and_retry');
+  ok(/login_not_tried_here: 'AIB 在這台\(Windows\)還不能從頁面登入這一家\(先做 Claude\)',/.test(ws), 'reason: win_login_not_tried_no_terminal');
   ok(/data-addpv="1">去預覽開席</.test(ws), 'reason: mother_page_plus_no_preview_way');
   ok(/回了失敗碼/.test(ws), 'reason: nonzero_exit_marked_error');
   ok(/function repoTag\(s\)/.test(ws) && /\$\{repoTag\(s\)\}/.test(ws), 'reason: seat_card_without_repo_tag');
@@ -507,9 +512,9 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 }
 
 // §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
-// 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對、甲2 開席登入,等 aibd 給路後拿掉
+// 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對(甲2 開席登入 11-26 拿掉:改接重新登入卡)
 {
-  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/, /終端機打 claude,再打 \/login/, /在這台的終端機先登入它/];
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
   const bad = [];
   for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
     read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
