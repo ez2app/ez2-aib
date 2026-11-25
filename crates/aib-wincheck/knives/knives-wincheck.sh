@@ -28,8 +28,8 @@ wl '    if s.ignored {' \
    '    if !s.ignored { // knife' \
    a_step_passes_its_filter_exactly_and_runs_ignored_tests_only_when_asked
 # WCK6 a red check is written as OK
-wl '        if self.red.is_empty() {' \
-   '        if self.red.is_empty() || true { // knife' \
+wl '        if !self.red.is_empty() {' \
+   '        if false && !self.red.is_empty() { // knife' \
    the_result_file_ends_with_the_verdict_and_the_sum_of_what_is_above
 # WCK7 failed tests are not counted
 wl '                "failed" => c.failed += n,' \
