@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_pull_request_is_asked_by_the_built_in_page_only_and_fixed_by_aibd; #895 run 45610010326)
 # PA1–PA11, PW1–PW3, PO11–PO13: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

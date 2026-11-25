@@ -1,5 +1,5 @@
 #!/bin/bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-26: on ubuntu a knife here missed (a_codex_work_seat_writes_its_own_folder_only; #895 run 45610010326)
 # N-ws-codex-work knives CO1-CO4 (7ebca 11-20, COUNCIL-worktree-gitdir-7ebca-1120 Q3): aibd opens a
 # codex work seat in its own folder only and adds the folder half of its profile at start.
 set -eo pipefail
