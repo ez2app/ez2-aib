@@ -119,6 +119,7 @@ pub fn logged_in(
             .unwrap_or_else(|| home.join(".codex"))
             .join("auth.json")
             .is_file(),
+        "grok" => home.join(".grok").join("auth.json").is_file(),
         _ => true,
     }
 }
@@ -1357,6 +1358,7 @@ mod tests {
             &vec![
                 json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
                 json!({"id": "codex", "open": false, "modes": aib_seatopen::pipe_modes("codex"), "reason": "not_installed"}),
+                json!({"id": "grok", "open": false, "modes": aib_seatopen::pipe_modes("grok"), "reason": "not_set_up"}),
             ],
             "reason: brands_are_aib2_only_each_ready_or_why"
         );
@@ -1395,7 +1397,11 @@ mod tests {
             .iter()
             .map(|p| p["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["claude", "codex"], "reason: brands_not_aib2_only");
+        assert_eq!(
+            ids,
+            ["claude", "codex", "grok"],
+            "reason: brands_not_aib2_only"
+        );
         for old in [
             "openrouterjev",
             "typesafe",
@@ -1409,7 +1415,8 @@ mod tests {
         }
         // nothing listed for them here: not set up
         assert_eq!(brand_ready("claude", &policy_with(&[])), Err("not_set_up"));
-        assert_eq!(brand_ready("grok", &policy_with(&[])), Err("not_built"));
+        assert_eq!(brand_ready("grok", &policy_with(&[])), Err("not_set_up"));
+        assert_eq!(brand_ready("agy", &policy_with(&[])), Err("not_built"));
     }
 
     #[test]
@@ -1417,6 +1424,7 @@ mod tests {
         let h = tempfile::tempdir().unwrap();
         assert!(!logged_in("claude", h.path(), None));
         assert!(!logged_in("codex", h.path(), None));
+        assert!(!logged_in("grok", h.path(), None));
         // claude: the account named in ~/.claude.json (macOS keychain) or the credentials file
         std::fs::write(
             h.path().join(".claude.json"),

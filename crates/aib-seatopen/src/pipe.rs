@@ -533,14 +533,14 @@ mod tests {
 
     #[test]
     fn a_provider_not_measured_is_refused() {
-        for p in ["agy", "grok", "copilot", "nope"] {
+        for p in ["agy", "copilot", "nope"] {
             assert_eq!(
                 pipe_argv(p, "dgrs", None, ID),
                 Err(PipeRefused::Provider(p.into())),
                 "{p}"
             );
         }
-        assert_eq!(PIPE_PROVIDERS, ["claude", "codex"]);
+        assert_eq!(PIPE_PROVIDERS, ["claude", "codex", "grok"]);
     }
 
     #[test]
