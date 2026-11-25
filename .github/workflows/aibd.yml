@@ -3911,6 +3911,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # (ebab8 19:1x, f163c c3d0f306ee N1: sha256sum on the Windows runner writes "<sum> *<name>", binary
+      #   mode, not two spaces; the diagnostics below read both, `sha256sum -c` already does.)
       # The laptop found the last one; this cell finds the next: download what was uploaded and check
       #   it the way aib-wincheck will (every SHA256SUMS line present and equal, no file that is not in it).
       - uses: actions/download-artifact@v4
@@ -3930,11 +3932,11 @@ jobs:
           if [ "$got" != "$want" ]; then
             echo "::error::the uploaded pack has $got files, SHA256SUMS lists $want"
             find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort > ../got.txt
-            sed 's/^[0-9a-f]*  //' SHA256SUMS | LC_ALL=C sort > ../want.txt
+            sed -E 's/^[0-9a-f]{64} [ *]//' SHA256SUMS | LC_ALL=C sort > ../want.txt
             LC_ALL=C comm -3 ../want.txt ../got.txt | head -40
             exit 1
           fi
-          hidden=$(grep -cE '^[0-9a-f]{64}  (.*/)?\.' SHA256SUMS || true)
+          hidden=$(grep -cE '^[0-9a-f]{64} [ *](.*/)?\.' SHA256SUMS || true)
           echo "::notice title=wincheck pack uploaded::$got files match SHA256SUMS ($hidden with a dot-folder or dot-file name)"
 
   cloud-knives:
