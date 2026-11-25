@@ -146,11 +146,11 @@ async fn a_full_permission_seat_from_a_template_is_always_asked() {
         "reason: two_windows_for_one_open"
     );
     assert_eq!(list().await, before, "reason: opened_before_the_owner");
-    // pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): the window says who (no card: the uid) and which
-    // brand, first
+    // pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): the window's object says who (the card's name,
+    // its uid) and which brand, before the template's line
     let w = SEEN.lock().unwrap().last().cloned().unwrap_or_default();
     assert!(
-        w.contains("un0eba(un0eba)· claude · "),
+        w.contains("(un0eba)· claude · 用權限模板"),
         "reason: open_window_without_who {w}"
     );
 
