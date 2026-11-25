@@ -54,7 +54,7 @@ ks '    let (source, key, samples) = if by_target.len() >= EST_MIN_TARGET {' \
    a_new_page_script_is_estimated_by_the_page_scripts_not_by_the_crate
 # KES2 one crate sample is enough: two scripts decide a crate's speed
 ks '    } else if by_crate.len() >= EST_MIN_CRATE {' \
-   '    } else if by_crate.len() >= 1 {' \
+   '    } else if by_crate.len() >= EST_MIN_CRATE - 2 {' \
    too_few_samples_fall_back_from_target_to_crate_to_repo_and_rounding_is_up
 # KES3 the estimate is rounded down
 ks '        secs: total_ms.div_ceil(1000),' \
