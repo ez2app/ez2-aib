@@ -73,7 +73,9 @@ impl WinClass {
             WinClass::NoHello => {
                 "這台還沒設 Windows Hello,只能做一般動作。設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN。沒有 Windows 登入密碼的話，要先設密碼才能設 PIN。"
             }
-            WinClass::Unknown => "讀不到這台的 Windows Hello 狀態，先只開一般動作。",
+            WinClass::Unknown => {
+                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好再建核准鑰。"
+            }
         }
     }
 }
@@ -237,6 +239,9 @@ mod tests {
             );
         }
         assert!(WinClass::NoHello.words().contains("PIN"));
+        // c2f0b REVIEW-wincls L1: a machine not paired yet reads Unknown, so its words carry
+        // the PIN step too
+        assert!(WinClass::Unknown.words().contains("PIN"));
         assert!(WinClass::HelloSoftware.words().contains("TPM"));
     }
 
