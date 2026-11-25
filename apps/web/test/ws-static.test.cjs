@@ -1830,14 +1830,16 @@ const relogChecks = (async () => {
   const mac = mk('MacIntel'), win = mk('Win32');
   const dev = (o) => Object.assign({ provider: 'codex', id: 'L1', url: 'https://auth.example.test/device', mode: 'device', dcode: 'WXYZ-1234', msg: '' }, o || {});
   mac.S.relog = dev(); const h = mac.html('codex');
-  ok(h.startsWith('<div class="rlc rlc-codex"><div class="rlcband"><span class="rlcmark rlclogo"><img src="data:image/svg+xml;base64,') && h.includes('" alt="" width="28" height="28"></span><b>Codex</b><span class="rlcstep">共 3 步</span></div>') && h.includes('<h4>登入 Codex</h4>') && h.includes('<div class="rlcode" aria-label="登入碼">WXYZ-1234</div>') && h.includes('<button type="button" class="rlccp" data-relogcopy="1">複製碼</button><a class="rlcgo" href="https://auth.example.test/device" target="_blank" rel="noopener noreferrer">打開登入網頁 ↗</a>') && h.includes('<li>到登入網頁的輸入框按 ⌘V 貼上碼</li><li>按授權</li><li>授權完這裡會自己更新</li>'), 'reason: relogcard_code_box_copy_steps ' + h.slice(0, 200));
+  ok(h.startsWith('<div class="rlc rlc-codex"><div class="rlcband"><span class="rlcmark rlclogo"><img src="data:image/svg+xml;base64,') && h.includes('" alt="" width="56" height="56"></span><b>Codex</b><span class="rlcstep">共 3 步</span></div>') && h.includes('<h4>登入 Codex</h4>') && h.includes('<div class="rlcode" aria-label="登入碼">WXYZ-1234</div>') && h.includes('<button type="button" class="rlccp" data-relogcopy="1">複製碼</button><a class="rlcgo" href="https://auth.example.test/device" target="_blank" rel="noopener noreferrer">打開登入網頁 ↗</a>') && h.includes('<li>到登入網頁的輸入框按 ⌘V 貼上碼</li><li>按授權</li><li>授權完這裡會自己更新</li>'), 'reason: relogcard_code_box_copy_steps ' + h.slice(0, 200));
   // 家別色只認名單裡的家(class 名不拿 provider 原字);名字跳脫
   // 四家標誌 = 官方檔逐位元組(sha256 對 docs/design/BRAND-LOGOS-login-card.md);放在中性深色方塊(.rlclogo),不染家色
   const LOGO_SHA = { codex: '01d158767c4eec0e47bd617e67759c33da0accd1438be1a8d29dfdb99ce87285', copilot: 'ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b', claude: '6d53db4be375e899c937c26cf16684a80d6e869b1928d72b37748bef2560e219', grok: '349cb7362ffe9ec76489ace9732255d6fa80f645cb7e172d69d9c126963a0bd2' };
   for (const [pv, want] of Object.entries(LOGO_SHA)) {
-    const hl = mac.card(dev({ provider: pv }), pv, ''), m = /<span class="rlcmark rlclogo(?: rlclogo-light)?"><img src="data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)" alt="" width="28" height="28"><\/span><b>/.exec(hl);
+    const hl = mac.card(dev({ provider: pv }), pv, ''), m = /<span class="rlcmark rlclogo(?: rlclogo-light)?"><img src="data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)" alt="" width="(\d+)" height="\2"><\/span><b>/.exec(hl);
     const got = m ? require('crypto').createHash('sha256').update(Buffer.from(m[1], 'base64')).digest('hex') : 'none';
     ok(got === want, 'reason: relogcard_logo_official_bytes ' + pv + ' ' + got);
+    // Andy 01:4x 大小:本體長邊 28px;Codex 原檔本體只佔 49.5% ⇒ 整檔 56px
+    ok(m && m[2] === ({ codex: '56', grok: '34' }[pv] || '28'), 'reason: relogcard_logo_visible_size ' + pv + ' ' + (m && m[2]));
   }
   ok(mac.card(dev({ provider: 'grok' }), 'Grok', '').includes('<span class="rlcmark rlclogo rlclogo-light"><img') && !mac.card(dev({ provider: 'codex' }), 'Codex', '').includes('rlclogo-light') && /\.rlclogo-light\{background:#fff;/.test(css), 'reason: relogcard_logo_grok_light_square');
   ok(/\.rlclogo\{background:#0c0d10;/.test(css) && !/\.rlclogo\{[^}]*var\(--rl[bi]\)/.test(css), 'reason: relogcard_logo_neutral_square');

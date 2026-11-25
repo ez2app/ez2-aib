@@ -48,3 +48,9 @@ k '`<span class="rlcmark rlclogo${b === ' '`<span class="rlcmark${b === '
 k '${RELOG_LOGO[b] ? `' '${false ? `'
 # RLC21 Grok 不放白方塊(原檔黑標放在深色方塊上看不見)
 k 'b === '\''grok'\'' ? '\'' rlclogo-light'\'' : '\'''\''' 'b === '\''grok'\'' ? '\'''\'' : '\'''\'''
+# RLC22 Codex 不放大(本體只剩方塊三成)
+k '  const RELOG_LOGO_PX = { codex: 56, grok: 34 };' '  const RELOG_LOGO_PX = { grok: 34 };'
+# RLC23 不認得大小時不給預設 28
+k 'width="${RELOG_LOGO_PX[b] || 28}"' 'width="${RELOG_LOGO_PX[b] || 44}"'
+# RLC24 Grok 扁形不加大
+k '  const RELOG_LOGO_PX = { codex: 56, grok: 34 };' '  const RELOG_LOGO_PX = { codex: 56 };'

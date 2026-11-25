@@ -26,3 +26,18 @@ Archives as downloaded (sha256): openai-logos.zip c54e85ab5884228f89f0230dd8effa
 | xAI | https://x.ai/legal/brand-guidelines | could not be read (403) | could not be read |
 
 Contacts if permission is sought later: OpenAI partnercomms@openai.com · GitHub https://github.com/contact · Anthropic marketing@anthropic.com · xAI legal@x.ai (from search results; not read on the page).
+
+## Size (owner's request, 2026-11-26: "logo 要適當的大小, codex 就太小")
+
+Logos are aligned by the visible mark, not by the file's frame: the mark's long side is about 28px in the 44px square (64%), measured with getBBox on each file.
+
+| Provider | Mark inside the file's frame | Shown at | How |
+|---|---|---|---|
+| Codex | 354.67 of 716 (49.5%); openai-logos.zip has no tighter Blossom (the two Blossom files on openai.com/brand are compositions, not the mark alone) | 56px file → mark ≈ 28px | the whole file scaled up evenly; the empty margin falls outside the square and is clipped by it. Paths and colours unchanged, nothing redrawn |
+| GitHub Copilot | ≈ 100% | 28px | as is |
+| Claude | ≈ 100% | 28px | as is |
+| Grok | 24 × 9.2, ≈ 100% of the frame but 2.6 : 1 wide | 34px wide (≈ 13px high) | a long side of 28px looked a size smaller than the others, so 34px |
+
+## Grok mark, owner's check
+
+The owner looked at the Grok screenshot (the docs.x.ai header mark) and answered "照用" (use it), 2026-11-26. That screenshot showed the earlier version, whose colour was set to white with the path unchanged; the version here uses the file unchanged on a white square instead, so no colour is changed at all.
