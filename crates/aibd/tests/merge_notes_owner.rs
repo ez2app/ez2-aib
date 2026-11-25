@@ -182,6 +182,24 @@ async fn mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refu
     .await;
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(r.json["state"], "undone", "{}", r.body);
+    // M3: the brain batch's journal had its steps and they are all put back
+    let r2 = act(
+        &d,
+        &page,
+        json!({"type": "merge_log", "batch_id": batch_id}),
+    )
+    .await;
+    let steps = r2.json["batches"][0]["steps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        steps.iter().any(|s| s["op"] == "notes_copy")
+            && steps.iter().any(|s| s["op"] == "archive")
+            && steps.iter().all(|s| s["state"] == "undone"),
+        "reason: journal_empty {}",
+        r2.body
+    );
     let last = said.lock().unwrap().last().cloned().unwrap();
     assert!(
         last.contains("還原第二大腦合併 1 組"),
@@ -281,6 +299,8 @@ async fn mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refu
     let next =
         |db: &aib_store::MessageDb| db.seat_next("seat_x").unwrap().and_then(|r| r.persona_next);
     assert_eq!(next(&msgs).as_deref(), Some("bbbbb1"));
+    assert!(msgs.archived("persona", "bbbbb2").unwrap().is_some());
+    assert_eq!(msgs.alias_resolve("bbbbb2").unwrap(), "bbbbb1");
     let r = with_ticket(
         &d,
         &page,
@@ -293,6 +313,15 @@ async fn mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refu
         next(&msgs).as_deref(),
         Some("aaaaa1"),
         "reason: earlier_switch_lost"
+    );
+    assert!(
+        msgs.archived("persona", "bbbbb2").unwrap().is_none(),
+        "reason: archive_not_undone"
+    );
+    assert_eq!(
+        msgs.alias_resolve("bbbbb2").unwrap(),
+        "bbbbb2",
+        "reason: alias_not_undone"
     );
 
     // L2: a run that stops midway (a seat id the journal refuses, after the archive and alias

@@ -37,6 +37,23 @@ async fn act(d: &Daemon, cred: &str, body: Value) -> Reply {
         .await
 }
 
+/// A batch's journal as merge_log lists it: (op, state) per step, in order.
+async fn steps_of(d: &Daemon, page: &str, batch_id: &str) -> Vec<(String, String)> {
+    let r = act(d, page, json!({"type": "merge_log", "batch_id": batch_id})).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    r.json["batches"][0]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["op"].as_str().unwrap().to_owned(),
+                s["state"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
 /// The roles a seat is assigned, sorted.
 async fn roles_of(d: &Daemon, page: &str, seat: &str) -> Vec<String> {
     let r = d
@@ -182,6 +199,17 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(r.json["batches"][0]["state"], "done", "{}", r.body);
     assert_eq!(r.json["batches"][0]["can_undo"], true, "{}", r.body);
+    // M3 (f163c REVIEW-macts): the journal really has the steps (it was empty: seq from 1)
+    let steps = steps_of(&d, &page, &batch_id).await;
+    assert!(
+        steps.iter().any(|(op, st)| op == "archive" && st == "done")
+            && steps
+                .iter()
+                .any(|(op, st)| op == "role_assign" && st == "done"),
+        "reason: journal_empty {steps:?}"
+    );
+    let msgs = aib_store::MessageDb::open(&data.join(aib_store::MESSAGES_FILE)).unwrap();
+    assert!(msgs.archived("role", "r_two").unwrap().is_some());
 
     // merge_undo restores it
     let r = act(
@@ -198,6 +226,15 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
         "reason: assignment_not_moved_back"
     );
     assert_eq!(r.json["kept_changed"], json!([]), "{}", r.body);
+    assert!(
+        msgs.archived("role", "r_two").unwrap().is_none(),
+        "reason: archive_not_undone"
+    );
+    let steps = steps_of(&d, &page, &batch_id).await;
+    assert!(
+        !steps.is_empty() && steps.iter().all(|(_, st)| st == "undone"),
+        "reason: steps_not_undone {steps:?}"
+    );
 
     d.shutdown().await;
 }
