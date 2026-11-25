@@ -155,5 +155,6 @@ pub mod usage;
 pub mod verify_preview;
 pub mod verify_run;
 pub mod wake;
+pub mod winsetup;
 pub mod work_audit;
 pub mod workspace;

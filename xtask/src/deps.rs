@@ -64,6 +64,9 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             // AP26 W-4 / W-5 (PRE-READ-w4-winsys-features-c2f0b-1125, 3e53b 0/0/2/2):
             // GetModuleHandleW for the passphrase window's class
             "Win32_System_LibraryLoader",
+            // winrun: RegSetKeyValueW / RegGetValueW / RegDeleteKeyValueW on the HKCU Run
+            // key only (Windows setup, PLAN-win-customer-today-c2f0b-1126 rows 2 / 4)
+            "Win32_System_Registry",
             "Win32_System_RemoteDesktop",
             // W-5: aibd's own desktop (CreateDesktopW / SwitchDesktop / SetThreadDesktop)
             "Win32_System_StationsAndDesktops",

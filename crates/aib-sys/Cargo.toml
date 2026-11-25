@@ -59,6 +59,7 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader", # AP26 W-5: passphrase window class (PRE-READ-w4-winsys-features)
+    "Win32_System_Registry", # winrun: the HKCU Run value only (Windows setup, 90856 11-26; 3e53b pre-read)
     "Win32_System_RemoteDesktop",
     "Win32_System_StationsAndDesktops", # AP26 W-5: aibd's own desktop
     "Win32_System_SystemInformation", # sysdir: GetSystemDirectoryW for host_ssh (3e53b DEEP2 T1)
