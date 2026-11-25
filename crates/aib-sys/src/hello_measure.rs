@@ -195,9 +195,11 @@ fn unpack_and_free(buf: *mut c_void, len: u32) -> &'static str {
         // SAFETY: a live u16 of our own array
         unsafe { std::ptr::write_volatile(x, 0) };
     }
-    for i in 0..len as usize {
-        // SAFETY: inside the buffer CredUI gave (len bytes)
-        unsafe { std::ptr::write_volatile(buf.cast::<u8>().add(i), 0) };
+    // SAFETY: the buffer CredUI gave, len bytes, ours until it is freed below
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), len as usize) };
+    for x in bytes.iter_mut() {
+        // SAFETY: a live byte of that buffer
+        unsafe { std::ptr::write_volatile(x, 0) };
     }
     // SAFETY: CredUI's buffer, freed once
     unsafe { CoTaskMemFree(buf) };
@@ -387,8 +389,9 @@ fn w4_m2_own_desktop_window() {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let name = format!("aib-w4-m2-{}-{stamp}", std::process::id());
-    // SAFETY: this thread's own desktop handle (not to be closed)
-    let user = unsafe { GetThreadDesktop(GetCurrentThreadId()) } as usize;
+    // SAFETY: (both) this thread's id and its own desktop handle (not to be closed)
+    let tid = unsafe { GetCurrentThreadId() };
+    let user = unsafe { GetThreadDesktop(tid) } as usize;
     let before = shot();
     let n2 = name.clone();
     let ui = std::thread::spawn(move || m2_window(&n2, user as HDESK));
