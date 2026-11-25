@@ -65,7 +65,11 @@ async fn a_copilot_seat_runs_in_the_home_aibd_made_for_it() {
 
     // N3: a home an earlier aibd left (it died before its seat's turn thread ended), with the
     // conversation copilot wrote there, is gone once aibd has started
-    let left = dir.path().join("data").join("copilot-home").join("c_dead00");
+    let left = dir
+        .path()
+        .join("data")
+        .join("copilot-home")
+        .join("c_dead00");
     {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
