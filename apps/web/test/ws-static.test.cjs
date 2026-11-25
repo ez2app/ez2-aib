@@ -1644,6 +1644,12 @@ const hsChecks = (async () => {
   const h2 = src ? c.card({ d: Object.assign({}, d, { can_write: false }) }) : 'data-spok';
   const h3 = src ? c.card({ d: Object.assign({}, d, { found: d.found.filter((f) => f.kind !== 'native') }) }) : 'data-spok';
   ok(!h2.includes('data-spok') && !h3.includes('data-spok') && h2.includes('data-spre="1"'), 'reason: w10_no_approve_without_can_write_and_native');
+  // c2f0b IFACE r3:讀不懂的設定檔 aibd 不覆蓋 ⇒ 不出核准鈕、叫人刪檔,路徑用 policy_path
+  const pth = 'C:\\ProgramData\\aib\\config\\seats\\v2\\session-policy.json';
+  const hi = src ? c.card({ d: Object.assign({}, d, { policy: 'invalid', policy_path: pth }) }) : 'data-spok';
+  ok(!hi.includes('data-spok') && hi.includes('data-spre="1"') && hi.includes('這台的開席設定檔讀不懂(<span class="sppath" title="' + pth + '">C:\\ProgramData\\aib\\…\\session-policy.json</span>)。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。'), 'reason: w10_invalid_no_approve_says_delete_file');
+  const hn = src ? c.card({ d: { policy: 'invalid', can_write: true, policy_path: 7, found: [] } }) : '(';
+  ok(hn.includes('這台的開席設定檔讀不懂。AIB 不會自己蓋掉它') && !hn.includes('data-spok'), 'reason: w10_invalid_without_path');
   ok(c.NA === '官方安裝說明的連結:這一版 AIB 還沒有' && h.includes(c.NA) && !/https?:/.test(h), 'reason: w10_install_link_not_faked');
   const odd = src ? c.found({ found: [{ name: 'x', kind: 'weird', path: '' }, { name: 7, kind: 'native' }, null, { name: '<b>z', kind: 'native', path: '' }] }) : [];
   const ho = src ? c.card({ d: { policy: 'missing', can_write: true, found: [{ name: '<b>z', kind: 'native', path: '' }] } }) : '<b>';
@@ -1660,6 +1666,6 @@ const hsChecks = (async () => {
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
   ok(ws.includes('      spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
-  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不覆蓋。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做。'") && ow.includes("policy_bad_request: '頁面送出的設定請求格式不對,這次沒做。'"), 'reason: w10_policy_refusals_said');
+  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

@@ -4817,11 +4817,11 @@
     passphrase_locked: '密語打錯太多次,暫時鎖住。',
     // c2f0b 18:00(Pro 16 實機單 2 r7):蓋上蓋子會讀成這個,打開就恢復
     owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
-    // W-10(c2f0b IFACE r0 §1b):寫開席設定的三個拒絕原因
+    // W-10(c2f0b IFACE r3 核字):寫開席設定的拒絕原因
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
-    policy_exists: '這台已經有開席設定,AIB 不覆蓋。',
-    policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做。',
-    policy_bad_request: '頁面送出的設定請求格式不對,這次沒做。',
+    policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。',
+    policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。',
+    policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。',
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
   const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
@@ -5610,8 +5610,10 @@
     return `<li class="spwarn">⚠️ ${n}:找到的不是程式本體${pt ? '(' + pt + ')' : ''},請用官方安裝程式重裝</li>`;
   }
   function spCard(SP) {
-    const d = SP.d, F = spFound(d), canW = d.can_write === true && F.some((f) => f.kind === 'native');
-    const head = d.policy === 'invalid' ? '<div class="apn">這台的開席設定檔讀不懂,AIB 先當沒有設定。</div>' : '';
+    // c2f0b IFACE r3:設定檔讀不懂 ⇒ aibd 一律不覆蓋(按了必定 policy_exists),所以不出核准鈕,改叫人刪檔;路徑用 GET 的 policy_path
+    const d = SP.d, F = spFound(d), bad = d.policy === 'invalid', canW = !bad && d.can_write === true && F.some((f) => f.kind === 'native');
+    const pp = typeof d.policy_path === 'string' && d.policy_path ? `(<span class="sppath" title="${esc(d.policy_path)}">${esc(spPath(d.policy_path))}</span>)` : '';
+    const head = bad ? `<div class="aerr" role="alert">這台的開席設定檔讀不懂${pp}。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>` : '';
     const msg = SP.msg ? `<div class="${SP.msg.bad ? 'aerr' : 'aok'}" role="${SP.msg.bad ? 'alert' : 'status'}">${esc(SP.msg.text)}</div>` : '';
     return `<div class="spcard" role="region" aria-label="開席設定"><h4>還沒設定這台能開哪些 AI</h4>
       <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${head}

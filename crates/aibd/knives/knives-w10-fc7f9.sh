@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# W-10 開席設定引導卡(fc7f9 11-25,ebab8 派;c2f0b IFACE-w10-session-policy r2)。
+# W-10 開席設定引導卡(fc7f9 11-25,ebab8 派;c2f0b IFACE-w10-session-policy r3)。
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs, W-10 block) red.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -9,7 +9,7 @@ k() { python3 -I scripts/knife.py apps/web/dist/ws.js "$1" "$2" \
 # W10K1
 k 'npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的' 'npm 版不安全,AIB 沒辦法確定開的是不是真的'
 # W10K2
-k 'canW = d.can_write === true && F.some((f) => f.kind === '\''native'\'');' 'canW = d.can_write === true;'
+k 'canW = !bad && d.can_write === true && F.some((f) => f.kind === '\''native'\'');' 'canW = !bad && d.can_write === true;'
 # W10K3
 k 'const SP_INSTALL_NA = '\''官方安裝說明的連結:這一版 AIB 還沒有'\'';' 'const SP_INSTALL_NA = '\''官方安裝說明:https://example.com/install'\'';'
 # W10K4
@@ -23,7 +23,7 @@ k '${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `' '${false ? spCard(S.sp
 # W10K8
 k '      spLoad(); // W-10' '      // W-10'
 # W10K9
-k 'policy_exists: '\''這台已經有開席設定,AIB 不覆蓋。'\'',' 'policy_exists: '\''已有設定。'\'','
+k 'policy_exists: '\''這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'\'',' 'policy_exists: '\''已有設定。'\'','
 # W10K10
 k 'const n = esc(spName(f.name)), pt =' 'const n = spName(f.name), pt ='
 # W10K11
@@ -37,6 +37,14 @@ k 'const why = (held && held.block) || npm || (!p ?' 'const why = (held && held.
 # W10K15
 k 'map((f) => spName(f.name) + '\''('\'' + f.path + '\'')'\'').join('\''、'\'')' 'map((f) => f.path + '\'' '\'' + spName(f.name)).join('\''、'\'')'
 # W10K16
-k 'policy_bad_request: '\''頁面送出的設定請求格式不對,這次沒做。'\'',' 'policy_bad_request: '\''格式不對。'\'','
+k 'policy_bad_request: '\''頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'\'',' 'policy_bad_request: '\''格式不對。'\'','
 # W10K17
 k 'spFound(S.sp && S.sp.d).some((f) => f.name === k && f.kind === '\''npm'\'') ? SP_NPM_WHY(spName(k)) : '\'''\''' ''\'''\'''
+# W10K18
+k 'canW = !bad && d.can_write' 'canW = d.can_write'
+# W10K19
+k '。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>' '。AIB 先當沒有設定。</div>'
+# W10K20
+k 'typeof d.policy_path === '\''string'\'' && d.policy_path ? `' 'typeof d.policy_path === '\''string'\'' && false ? `'
+# W10K21
+k 'policy_write_failed: '\''AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'\'',' 'policy_write_failed: '\''AIB 寫不進開席設定檔,這次沒做。'\'','
