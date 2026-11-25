@@ -37,6 +37,8 @@
 
 use std::fmt;
 
+pub mod measured;
+pub use measured::{claude_version_ok, measured_for, Measured, MEASURED};
 pub mod pipe;
 pub use pipe::{
     add_persona_file, claude_project_dir, codex_version_ok, codex_work_args, pipe_argv, pipe_modes,
