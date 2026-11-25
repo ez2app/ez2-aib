@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# PS1–PS17: the owner's passphrase record — costs below the floor or another KDF are refused, the comparison is whole, a short or personal sentence is not taken, five wrong lock fifteen minutes and double up to a day (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7; Andy DECISION 第十七節)
+set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+ps() { python3 -I scripts/knife.py crates/aibd/src/passphrase.rs "$1" "$2" --expect-fail "passphrase::tests::$3" \
+        -- cargo test -p aibd --locked --lib "passphrase::tests::$3"; }
+# PS1 a record with lower costs is used
+ps '    if c.m_kib < MIN.m_kib || c.t < MIN.t || c.p < MIN.p {' \
+   '    if c.m_kib < 1 {' \
+   a_record_with_lower_costs_or_another_kdf_is_refused
+# PS2 a record naming another KDF is used
+ps '    if r.v != 1 || r.kdf != kdf.name() {' \
+   '    if r.v != 1 || kdf.name().is_empty() {' \
+   a_record_with_lower_costs_or_another_kdf_is_refused
+# PS3 the comparison looks at the first byte only
+ps '    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0' \
+   '    a.iter().zip(b).take(1).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0' \
+   same_is_byte_equality
+# PS4 a short sentence is taken
+ps '    if words < MIN_WORDS && chars < MIN_CHARS {' \
+   '    if words < 1 && chars < 1 {' \
+   a_short_or_personal_sentence_is_not_taken
+# PS5 the account or computer name in the sentence is taken
+ps '        if n.chars().count() >= 3 && low.contains(&n) {' \
+   '        if n.chars().count() >= 3 && low == n {' \
+   a_short_or_personal_sentence_is_not_taken
+# PS6 no lock after five wrong
+ps '    if wrong < FREE_TRIES {' \
+   '    if wrong < 50 {' \
+   five_wrong_lock_fifteen_minutes_then_double_up_to_a_day
+# PS7 the lock has no ceiling
+ps '        .min(MAX_LOCK_SECS)' \
+   '        .min(u64::MAX)' \
+   five_wrong_lock_fifteen_minutes_then_double_up_to_a_day
+# PS8 (f163c e5f942dd L1) a record with costs above the ceiling is used
+ps '    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {' \
+   '    if c.m_kib > MAX.m_kib && c.t > MAX.t && c.p > MAX.p {' \
+   a_record_with_costs_above_the_ceiling_is_refused
+# PS9 (f163c e5f942dd L3) the backend runs Argon2i, not Argon2id
+ps '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);' \
+   '        let a = argon2::Argon2::new(argon2::Algorithm::Argon2i, argon2::Version::V0x13, params);' \
+   the_argon2id_backend_gives_the_known_answer
+# PS10 (S11-2 acts) two different typings set a passphrase
+ps '    if !same(n.phrase.as_bytes(), n.again.as_bytes()) {' \
+   '    if n.again.len() == usize::MAX {' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS11 the owner's own sentence skips the rules
+ps '    if n.source == Source::Owner {' \
+   '    if n.source == Source::Generated {' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS12 a passphrase is set where the system check works
+ps '        return Err(SetError::UseSystem);' \
+   '        let _ = SetError::UseSystem;' \
+   set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check
+# PS13 the answer goes on where the system check works
+ps '        return Answer::UseSystem;' \
+   '        let _ = Answer::UseSystem;' \
+   the_answer_checks_the_system_then_the_record_then_the_lock
+# PS14 a record swapped outside the window is used
+ps '    if known_sha != Some(record_sha(r).as_str()) {' \
+   '    if known_sha.is_none() {' \
+   the_answer_checks_the_system_then_the_record_then_the_lock
+# PS15 the lock does not hold the right phrase back
+ps '    if now < tries.locked_until {' \
+   '    if false {' \
+   five_wrong_lock_and_the_right_phrase_waits_for_the_lock
+# PS16 a right answer leaves the wrong count
+ps '        *tries = Tries::default();' \
+   '        let _ = &tries;' \
+   five_wrong_lock_and_the_right_phrase_waits_for_the_lock
+# PS17 the page never hears of a swapped record
+ps '    let swapped = rec.is_some_and(|r| known_sha != Some(record_sha(r).as_str()));' \
+   '    let swapped = known_sha.is_some() && false;' \
+   the_page_view_has_no_secret_and_says_swapped_and_locked

@@ -442,3 +442,56 @@ async fn a_bad_revive_policy_stops_the_start() {
         other => panic!("expected a revive policy error, got {other:?}"),
     }
 }
+
+/// HD4 (DESIGN-persona-propose-osverify-c2f0b-1123 r1 §2b, f163c L1): "until this seat ends"
+/// also ends when the seat starts again, and every grant of a seat ends with its session.
+/// The grants are aibd's memory (`aibd::grants::GRANTS`), shared with this test's server.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seats_grants_end_when_it_starts_again_and_when_it_ends() {
+    use aibd::grants::{Hold, GRANTS, OP_FS_OPEN};
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let seat = d.seat("hd4").await;
+    let other = d.seat("hd4-other").await;
+    // given before the seat starts (again): gone once it starts
+    GRANTS
+        .give(&seat, OP_FS_OPEN, "f", Hold::UntilSeatEnds, 0)
+        .unwrap();
+    GRANTS
+        .give(&other, OP_FS_OPEN, "f", Hold::UntilSeatEnds, 0)
+        .unwrap();
+    let (code, s) = d
+        .call(
+            "POST",
+            &format!("/api/v1/seats/{seat}/sessions"),
+            Some(&common::fx_body(&["gc-hold"])),
+        )
+        .await;
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_string();
+    assert!(
+        GRANTS.of_seat(&seat, 1).is_empty(),
+        "reason: restart_kept_grant"
+    );
+    assert_eq!(
+        GRANTS.of_seat(&other, 1).len(),
+        1,
+        "reason: other_seat_lost"
+    );
+    // given while it runs: gone once it ends
+    GRANTS
+        .give(&seat, OP_FS_OPEN, "f", Hold::UntilSeatEnds, 0)
+        .unwrap();
+    let (code, v) = d
+        .call("DELETE", &format!("/api/v1/sessions/{id}"), None)
+        .await;
+    assert!(code == 200 || code == 202, "{code} {v}");
+    d.ended(&id).await;
+    assert!(
+        GRANTS.of_seat(&seat, 1).is_empty(),
+        "reason: end_kept_grant"
+    );
+    GRANTS.seat_ended(&other);
+    d.shutdown().await;
+}
