@@ -484,7 +484,13 @@ mod tests {
         let data = Path::new("/tmp/aibd-data");
         let args = test_host_identity_args(data);
         assert_eq!(args[0], "-i");
-        assert!(args[1].ends_with("trusted/partner_test_ed25519"));
+        // compared by path parts: the separator is the platform's (`\` on Windows); the file
+        // name is written out, not PARTNER_KEY_FILE, so the hm19-key knife still bites here
+        assert!(
+            Path::new(&args[1]).ends_with(Path::new("trusted").join("partner_test_ed25519")),
+            "reason: not_partner_key {}",
+            args[1]
+        );
         assert!(!args[1].contains("delegate_ed25519"));
         assert_eq!(key_for_kind(data, "test"), partner_key_path(data));
         assert_eq!(

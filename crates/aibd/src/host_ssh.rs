@@ -195,16 +195,25 @@ mod tests {
     /// stored name; a user or key that reads as an option is refused.
     #[test]
     fn the_ssh_command_is_pinned_and_goes_to_the_checked_address() {
-        let key = Path::new("/Users/x/.ssh/id_ed25519");
-        let kh = Path::new("/Users/x/Library/Application Support/app.Ez2.AIB/run/hk/a1");
+        // Path::is_absolute is this platform's rule: on Windows a path needs a drive to be
+        // absolute, so the same Unix-shaped places get one there and the test runs on both
+        let r = if cfg!(windows) { "C:" } else { "" };
+        let key = PathBuf::from(format!("{r}/Users/x/.ssh/id_ed25519"));
+        let key = key.as_path();
+        let kh = PathBuf::from(format!(
+            "{r}/Users/x/Library/Application Support/app.Ez2.AIB/run/hk/a1"
+        ));
+        let kh = kh.as_path();
         // a known-hosts place with a blank is refused (it sits inside -o)
         assert_eq!(
             args(Os::Mac, &target(key), kh, "uptime"),
             Err("known_hosts_path"),
             "reason: blank_in_option"
         );
-        let kh = Path::new("/Users/x/aibd/run/hk/a1");
+        let kh = PathBuf::from(format!("{r}/Users/x/aibd/run/hk/a1"));
+        let kh = kh.as_path();
         let a = args(Os::Mac, &target(key), kh, "uptime; df -h").unwrap();
+        let kh_opt = format!("UserKnownHostsFile={r}/Users/x/aibd/run/hk/a1");
         assert_eq!(&a[..5], ["-F", "none", "-T", "-e", "none"], "reason: head");
         for o in [
             "BatchMode=yes",
@@ -212,7 +221,7 @@ mod tests {
             "UpdateHostKeys=no",
             "CheckHostIP=no",
             "HostKeyAlias=lin-mini",
-            "UserKnownHostsFile=/Users/x/aibd/run/hk/a1",
+            kh_opt.as_str(),
             "GlobalKnownHostsFile=/dev/null",
             "ForwardAgent=no",
             "ForwardX11=no",
@@ -232,7 +241,7 @@ mod tests {
             &a[n - 9..],
             [
                 "-i",
-                "/Users/x/.ssh/id_ed25519",
+                format!("{r}/Users/x/.ssh/id_ed25519").as_str(),
                 "-p",
                 "2222",
                 "-l",
@@ -256,8 +265,8 @@ mod tests {
         assert_eq!(args(Os::Mac, &target(bad), kh, "id"), Err("key_path"));
         let tilde = Path::new("~/.ssh/id");
         assert_eq!(args(Os::Mac, &target(tilde), kh, "id"), Err("key_path"));
-        let pct = Path::new("/Users/%u/key");
-        assert_eq!(args(Os::Mac, &target(pct), kh, "id"), Err("key_path"));
+        let pct = PathBuf::from(format!("{r}/Users/%u/key"));
+        assert_eq!(args(Os::Mac, &target(&pct), kh, "id"), Err("key_path"));
         // the command: present, bounded, no NUL
         assert_eq!(args(Os::Mac, &target(key), kh, ""), Err("command"));
         let long = "x".repeat(MAX_COMMAND + 1);
