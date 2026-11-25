@@ -3969,7 +3969,7 @@ jobs:
           retention-days: 30
 
   # S88-split (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做"): the crates/*/knives/*.sh scripts of job rust,
-  # E3: platform-independent crate knives run on ubuntu-latest (4 shards); the 30 os=macos scripts
+  # E3: platform-independent crate knives run on ubuntu-latest (4 shards); the 34 os=macos scripts (3 cells)
   # run in crate-knives-macos below. crate-knives-gate keeps the required check name `crate knives (macOS)`.
   crate-knives:
     name: crate knives (Linux, ${{ matrix.shard }})
@@ -4037,6 +4037,9 @@ jobs:
         shell: bash
         env:
           AIB_KNIVES_SHARD: ${{ matrix.shard }}
+          # E3: these cells take the os=unix / os=any scripts; os=macos ones are crate-knives-macos's
+          # (run-knives.sh and knife-anchors read the same list, so no script is run by two cells)
+          AIB_KNIVES_ONLY_OS: "unix,any"
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
@@ -4116,9 +4119,16 @@ jobs:
   # counts this run's cells by name: exactly SHARDS of them, every one success (a cell taken out of the matrix
   # would leave its third of the scripts run nowhere while the matrix result still reads success).
   crate-knives-macos:
-    name: crate knives (macOS, 1/1)
+    name: crate knives (macOS, ${{ matrix.shard }})
     needs: changes
     if: ${{ !cancelled() }}
+    # 34 os=macos scripts, about 4500 s in knife-secs.tsv (E3 r2 90856 11-25): one cell is 75 minutes and
+    # two are about 37 each before the build, too near the 45-minute step limit, so three cells planned
+    # by time like the Linux ones (about 25 minutes of knives each)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
     timeout-minutes: 60
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
@@ -4168,15 +4178,40 @@ jobs:
         timeout-minutes: 45
         shell: bash
         env:
-          AIB_KNIVES_SHARD: "1/1"
+          AIB_KNIVES_SHARD: ${{ matrix.shard }}
           AIB_KNIVES_ONLY_OS: "macos"
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022
-          echo "crate knives (macOS-only) 1/1 on ${ImageOS:-?} ${ImageVersion:-?} ($RUNNER_NAME)" >> "$GITHUB_STEP_SUMMARY"
+          echo "crate knives (macOS-only) $AIB_KNIVES_SHARD on ${ImageOS:-?} ${ImageVersion:-?} ($RUNNER_NAME)" >> "$GITHUB_STEP_SUMMARY"
+          # the same plan as the Linux cells, over the scripts that run here (os=macos only)
+          AIB_KNIVES_SHARD=1/1 AIB_KNIVES_LIST=1 bash crates/aib-knife/run-knives.sh rust > "$RUNNER_TEMP/knives-list.out" \
+            || { cat "$RUNNER_TEMP/knives-list.out"; exit 1; }
+          sed -n 's/^KNIVES-ELIGIBLE //p' "$RUNNER_TEMP/knives-list.out" > "$RUNNER_TEMP/knives-list.txt"
+          cargo run -q --locked -p aib-xtask -- knife-shards plan --shards "${AIB_KNIVES_SHARD#*/}" \
+            --secs crates/aib-knife/knife-secs.tsv --list "$RUNNER_TEMP/knives-list.txt" > "$RUNNER_TEMP/knives-plan.tsv"
+          cargo run -q --locked -p aib-xtask -- knife-shards limits \
+            --secs crates/aib-knife/knife-secs.tsv > "$RUNNER_TEMP/knives-limits.tsv"
+          export AIB_KNIVES_PLAN="$RUNNER_TEMP/knives-plan.tsv"
+          export AIB_KNIVES_LIMITS="$RUNNER_TEMP/knives-limits.tsv"
           bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"
+      - name: keep each script's seconds
+        if: env.RUN == 'true' && always()
+        shell: bash
+        run: |
+          mkdir -p knife-secs
+          grep -E '^KNIVES-(SCRIPT|PLAN|OK|RED|NONE) ' "$RUNNER_TEMP/knives-run.out" > "knife-secs/cell-macos-${{ strategy.job-index }}.txt" 2>/dev/null || true
+          wc -l knife-secs/*.txt || true
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && always()
+        timeout-minutes: 3
+        with:
+          name: knife-secs-macos-${{ strategy.job-index }}
+          path: knife-secs/*.txt
+          if-no-files-found: warn
+          retention-days: 30
 
   crate-knives-gate:
     name: crate knives (macOS)
@@ -4192,6 +4227,7 @@ jobs:
           CELLS: ${{ needs.crate-knives.result }}
           MACOS_CELL: ${{ needs.crate-knives-macos.result }}
           SHARDS: "4"
+          MAC_SHARDS: "3"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -4216,7 +4252,21 @@ jobs:
             echo "::error::crate knives cells: $total found, $ok success; want exactly $SHARDS, all success"
             exit 1
           fi
-          echo "crate knives: linux=$ok/$SHARDS + macos=1/1 success" | tee -a "$GITHUB_STEP_SUMMARY"
+          mrows=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("crate knives (macOS, ")) | "\(.name)\t\(.conclusion)"') || {
+            echo "::error::could not list this run's jobs"; exit 1; }
+          printf '%s\n' "$mrows"
+          mtotal=$(printf '%s\n' "$mrows" | grep -c . || true)
+          mok=$(printf '%s\n' "$mrows" | grep -c "${TAB}success$" || true)
+          for k in $(seq 1 "$MAC_SHARDS"); do
+            printf '%s\n' "$mrows" | grep -q "^crate knives (macOS, $k/$MAC_SHARDS)${TAB}success$" || {
+              echo "::error::macOS cell $k/$MAC_SHARDS is missing or not success"; exit 1; }
+          done
+          if [ "$mtotal" != "$MAC_SHARDS" ] || [ "$mok" != "$MAC_SHARDS" ]; then
+            echo "::error::macOS crate knives cells: $mtotal found, $mok success; want exactly $MAC_SHARDS, all success"
+            exit 1
+          fi
+          echo "crate knives: linux=$ok/$SHARDS + macos=$mok/$MAC_SHARDS success" | tee -a "$GITHUB_STEP_SUMMARY"
 
   knife-summary:
     name: knife summary
