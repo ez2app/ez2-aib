@@ -18,8 +18,8 @@
 //!   the link (N2).
 //!
 //! Not here: the act, the owner check and the one-job-per-provider rule (L2); the time limit
-//! through timers, stopping curl midway (Job Object / killpg) and the Windows read-only lock
-//! between check and copy (L1b / L1c).
+//! through timers and stopping curl midway (Job Object / killpg) (L1c); the Windows signer
+//! (WinVerifyTrust, L1b). The Windows read-only lock is here ([`open_locked`]).
 
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -231,10 +231,27 @@ fn hash_stream(
     Ok((hex, n))
 }
 
+/// Open `path` to read it. On Windows, while this handle is open, other handles may only read
+/// it: no write, delete or rename (IFACE §3.3), so the file checked is the file copied or run.
+/// macOS has no such lock; there a second check only narrows the window (§3.3, said as is).
+pub fn open_locked(path: &Path) -> std::io::Result<File> {
+    let mut o = File::options();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        o.share_mode(FILE_SHARE_READ);
+    }
+    o.open(path)
+}
+
 /// Whether the file at `path` is exactly the table's: SHA-256 and size, the whole file, no
-/// cache (IFACE r1 補 (a)). Opening a seat calls this each time.
-pub fn verify_placed(row: &FetchRow, path: &Path) -> Result<(), &'static str> {
-    let mut f = File::open(path).map_err(|_| ERR_VERIFY)?;
+/// cache (IFACE r1 補 (a)). Opening a seat calls this each time and keeps the handle it gives
+/// back until the seat's program has started (c2f0b 11-26 03:18, L1 / L2 接點): on Windows the
+/// file cannot be changed in between.
+pub fn verify_placed(row: &FetchRow, path: &Path) -> Result<File, &'static str> {
+    let mut f = open_locked(path).map_err(|_| ERR_VERIFY)?;
     let (sha, size) = hash_stream(
         &mut f,
         None,
@@ -245,7 +262,8 @@ pub fn verify_placed(row: &FetchRow, path: &Path) -> Result<(), &'static str> {
     if sha != row.sha256 || size != row.size {
         return Err(ERR_VERIFY);
     }
-    Ok(())
+    f.seek(SeekFrom::Start(0)).map_err(|_| ERR_VERIFY)?;
+    Ok(f)
 }
 
 /// The folder a checked program is kept in.
@@ -303,7 +321,7 @@ fn run_in(
         return Err(ERR_CANCELLED);
     }
     // P: the whole file against the table
-    let mut f = File::open(&got).map_err(|_| ERR_VERIFY)?;
+    let mut f = open_locked(&got).map_err(|_| ERR_VERIFY)?;
     let (got_sha, got_size) = hash_stream(&mut f, None, cancel, progress, 1)?;
     if got_sha != row.sha256 || got_size != row.size {
         return Err(ERR_VERIFY);
@@ -323,7 +341,7 @@ fn run_in(
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    verify_placed(row, &fin)?;
+    drop(verify_placed(row, &fin)?);
     Ok(fin)
 }
 
@@ -517,7 +535,7 @@ mod tests {
             .with_file_name(format!("{}.part", program_name("claude")))
             .exists());
         assert!(dl_empty(d.path()), "reason: download_left");
-        assert_eq!(verify_placed(&r, &p), Ok(()));
+        assert!(verify_placed(&r, &p).is_ok());
         // the same version again replaces it with the same bytes
         assert_eq!(go(d.path(), &r, &bytes(BODY), &signed), Ok(p));
     }
@@ -695,14 +713,42 @@ mod tests {
         b[1] ^= 1;
         std::fs::write(&p, &b).unwrap();
         assert_eq!(
-            verify_placed(&r, &p),
-            Err(ERR_VERIFY),
+            verify_placed(&r, &p).err(),
+            Some(ERR_VERIFY),
             "reason: changed_kept"
         );
         b.truncate(3);
         std::fs::write(&p, &b).unwrap();
-        assert_eq!(verify_placed(&r, &p), Err(ERR_VERIFY));
-        assert_eq!(verify_placed(&r, &d.path().join("none")), Err(ERR_VERIFY));
+        assert_eq!(verify_placed(&r, &p).err(), Some(ERR_VERIFY));
+        assert_eq!(
+            verify_placed(&r, &d.path().join("none")).err(),
+            Some(ERR_VERIFY)
+        );
+    }
+
+    /// IFACE §7 knife 5: between the check and the run another handle cannot write it.
+    #[cfg(windows)]
+    #[test]
+    fn a_checked_file_cannot_be_written_or_replaced_while_its_handle_is_held() {
+        let d = tempfile::tempdir().unwrap();
+        let r = here();
+        let p = go(d.path(), &r, &bytes(BODY), &signed).unwrap();
+        let held = verify_placed(&r, &p).unwrap();
+        assert!(
+            File::options().write(true).open(&p).is_err(),
+            "reason: written_while_held"
+        );
+        assert!(
+            std::fs::rename(&p, p.with_extension("old")).is_err(),
+            "reason: renamed_while_held"
+        );
+        assert!(
+            std::fs::remove_file(&p).is_err(),
+            "reason: removed_while_held"
+        );
+        assert!(File::open(&p).is_ok(), "reason: read_refused");
+        drop(held);
+        assert!(File::options().write(true).open(&p).is_ok());
     }
 
     #[test]
