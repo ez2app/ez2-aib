@@ -114,10 +114,22 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
     assert_eq!(r.code, 200, "{}", r.body);
     let ps = r.json["capabilities"]["providers"].as_array().unwrap();
     // AIB 2.0's brands only (§22), each saying whether it opens here and in which modes
-    // (S89-live-2: codex safe only); the harness policy lists both, each a real file
+    // (S89-live-2: codex safe only); A13 adds `models`, `default_model`, `models_source`.
+    let core: Vec<serde_json::Value> = ps
+        .iter()
+        .map(|p| {
+            assert!(p["models"].is_array(), "missing models: {p}");
+            assert!(p["models_source"].is_string(), "missing models_source: {p}");
+            assert!(
+                p.get("default_model").is_some(),
+                "missing default_model: {p}"
+            );
+            serde_json::json!({"id": p["id"], "open": p["open"], "modes": p["modes"]})
+        })
+        .collect();
     assert_eq!(
-        ps,
-        &vec![
+        core,
+        vec![
             serde_json::json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
             // N-ws-codex-work: a codex work seat only where its sandbox profile was measured
             serde_json::json!({"id": "codex", "open": true, "modes": if cfg!(target_os = "macos") {

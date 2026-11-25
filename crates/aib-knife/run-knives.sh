@@ -65,7 +65,8 @@ fi
 list_only=${AIB_KNIVES_LIST:-}
 plan_file=${AIB_KNIVES_PLAN:-}
 limits_file=${AIB_KNIVES_LIMITS:-}
-unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS
+skip_files=${AIB_SKIP_FILES:-}
+unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS AIB_SKIP_FILES
 plan_f=()
 plan_k=()
 if [ -n "$plan_file" ]; then
@@ -98,6 +99,7 @@ fi
 mine=0
 here_ok=0 # scripts of <job> that run on this OS, the ones shards take turns over
 ran=0
+skipped_unaffected=0
 bad=()
 
 # Byte order (LC_ALL=C), not the glob's locale order: shards take turns over this list, so every cell
@@ -183,6 +185,13 @@ for f in "${scripts[@]}"; do
     ran=$((ran + 1))
     continue
   fi
+  case "$skip_files" in
+    *",$f,"*)
+      echo "KNIVES-SCRIPT $f: SKIPPED why=unaffected"
+      skipped_unaffected=$((skipped_unaffected + 1))
+      continue
+      ;;
+  esac
   if [ -n "$limits_file" ]; then
     li=0
     while [ "$li" -lt "${#limits_f[@]}" ]; do
@@ -264,7 +273,9 @@ if [ "${#bad[@]}" -gt 0 ]; then
   echo "KNIVES-RED ${#bad[@]}: ${bad[*]}"
   exit 1
 fi
-if [ "$shard_n" = 1 ]; then
+if [ "$skipped_unaffected" -gt 0 ]; then
+  echo "KNIVES-PARTIAL job=$job scripts=$mine skipped=$skipped_unaffected ran=$ran"
+elif [ "$shard_n" = 1 ]; then
   echo "KNIVES-OK job=$job scripts=$mine"
 else
   echo "KNIVES-OK job=$job scripts=$mine shard=$shard_k/$shard_n ran=$ran"

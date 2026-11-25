@@ -270,6 +270,16 @@ pub fn brain_route(data: &Path, uid: &str) -> Result<String, &'static str> {
         .ok_or("brain_unknown")
 }
 
+/// All brain uids registered for `route_key`.
+pub fn brain_uids_for_route(data: &Path, route_key: &str) -> Result<Vec<String>, &'static str> {
+    let r = load(data).map_err(|_| "registry_unreadable")?;
+    Ok(r.brains
+        .into_iter()
+        .filter(|e| e.route_key.as_deref() == Some(route_key))
+        .map(|e| e.uid)
+        .collect())
+}
+
 /// One second brain a person may register (043dd 05:13: the add form picks one of these,
 /// never types a path). Listed from `<data>/brain-candidates.json` when that file is there (a list
 /// of `{route_key, title, notes?}`, kept for tests and fixed previews), else from the library

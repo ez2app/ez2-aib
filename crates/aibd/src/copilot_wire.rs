@@ -3,18 +3,15 @@
 //!
 //! Translates `copilot` stdout JSON lines (`assistant.message`, `result`) into Claude-compatible
 //! `stream-json` lines (`assistant`, `result`) so `ctl`, `usage`, `session_output`, and the web
-//! UI read them uniformly.
+//! UI read them uniformly. One program per turn through [`crate::turn_wire`]; the persona card
+//! and the user's words go on the turn's stdin, never in argv (08de5 11-25, ebab8 q_cd554b24
+//! condition 4: `-p <prompt>` put them where `ps` shows them). That copilot reads a piped
+//! stdin as the prompt is from its own `--help` (`-p, or piped stdin`), not run here yet:
+//! UNVERIFIED until the seat is measured signed in (condition 6).
 
-use crate::platform::session::{
-    child_env, CandidateDiag, Exit, ExitWait, Input, Output, Running, SpawnFail, Spec, Stop,
-    StopStatus,
-};
+use crate::turn_wire::{Brand, PromptBy};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::path::Path;
 
 /// Whether `prog` is the `copilot` binary (`copilot` or `/…/copilot` or `copilot.exe`).
 pub fn is_copilot(prog: &str) -> bool {
@@ -26,45 +23,43 @@ pub fn is_copilot(prog: &str) -> bool {
     stem.eq_ignore_ascii_case("copilot")
 }
 
-/// Extract the plain user text from one Claude-style `stream-json` user line.
-pub fn user_text(line: &[u8]) -> Option<String> {
-    let v: Value = serde_json::from_slice(line).ok()?;
-    let msg = v.get("message")?;
-    let content = msg.get("content")?;
-    if let Some(s) = content.as_str() {
-        return Some(s.to_owned());
-    }
-    let arr = content.as_array()?;
-    let mut out = String::new();
-    for b in arr {
-        if b.get("type").and_then(Value::as_str) == Some("text") {
-            if let Some(t) = b.get("text").and_then(Value::as_str) {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(t);
-            }
+/// The words that turn off every MCP server `copilot mcp list --json` lists (each
+/// `--disable-mcp-server <name>`): the user's own (`~/.copilot/mcp-config.json`, a folder's
+/// `.mcp.json`), a plugin's, and the built-in ones `--disable-builtin-mcps` does not reach
+/// (1.0.115 lists `computer-use` from its built-in plugin beside `github-mcp-server`). A
+/// listing that is not read, or a name that is not plain, starts nothing (`Err`).
+pub fn mcp_off(listed: &str) -> Result<Vec<String>, String> {
+    let v: Value = serde_json::from_str(listed.trim())
+        .map_err(|_| "its MCP list could not be read".to_owned())?;
+    let servers = v
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .ok_or("its MCP list has no mcpServers")?;
+    let mut out = Vec::new();
+    for name in servers.keys() {
+        let plain = !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
+        if !plain {
+            return Err("an MCP server's name is not plain".into());
         }
+        out.push("--disable-mcp-server".to_owned());
+        out.push(name.clone());
     }
-    (!out.is_empty()).then_some(out)
+    Ok(out)
 }
 
-/// Build the turn-1 prompt combining `persona` (if any) and `prompt`.
-pub fn turn_prompt(persona: Option<&str>, prompt: &str, is_first: bool) -> String {
-    match persona.filter(|p| is_first && !p.is_empty()) {
-        Some(p) => format!("{p}\n\n{prompt}"),
-        None => prompt.to_owned(),
-    }
-}
+pub use crate::turn_wire::{turn_prompt, user_text};
 
-/// Build `copilot` args for one turn (`--resume=<sid>` when `session_id` is `Some`, plus `-p <prompt>`).
-pub fn turn_args(base_argv: &[String], session_id: Option<&str>, prompt: &str) -> Vec<String> {
+/// Build `copilot` args for one turn: the seat's words, and `--resume=<sid>` once turn 1
+/// gave its `sessionId`. No prompt: it goes on stdin.
+pub fn turn_args(base_argv: &[String], session_id: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = base_argv.iter().skip(1).cloned().collect();
     if let Some(sid) = session_id {
         out.push(format!("--resume={sid}"));
     }
-    out.push("-p".to_owned());
-    out.push(prompt.to_owned());
     out
 }
 
@@ -116,250 +111,36 @@ pub fn translate_line(raw: &str, session_id_out: &mut Option<String>) -> Option<
     }
 }
 
-struct CopilotState {
-    exit: Mutex<Option<Exit>>,
-    cv: Condvar,
-    stopping: AtomicBool,
-    active_child: Mutex<Option<Child>>,
+/// copilot as a [`Brand`] of [`crate::turn_wire`]: the prompt on stdin, `--resume` with
+/// the session id its first `result` said.
+#[derive(Default)]
+struct Copilot {
+    session_id: Option<String>,
 }
 
-struct CopilotExitWait(Arc<CopilotState>);
-
-impl ExitWait for CopilotExitWait {
-    // ExitWait::wait is called off the async runtime by sessions.rs with the caller's timeout.
-    #[allow(clippy::disallowed_methods)]
-    fn wait(&self, timeout: Duration) -> Option<Exit> {
-        let mut g = self.0.exit.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(e) = g.clone() {
-            return Some(e);
-        }
-        let (g2, _) = self
-            .0
-            .cv
-            .wait_timeout_while(g, timeout, |e| e.is_none())
-            .unwrap_or_else(|e| e.into_inner());
-        g = g2;
-        g.clone()
+impl Brand for Copilot {
+    fn name(&self) -> &'static str {
+        "copilot"
     }
-}
-
-struct CopilotInput {
-    tx: mpsc::Sender<Vec<u8>>,
-    buf: Vec<u8>,
-}
-
-impl Write for CopilotInput {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.buf.extend_from_slice(data);
-        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=pos).collect();
-            self.tx.send(line).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "copilot closed")
-            })?;
-        }
-        Ok(data.len())
+    fn prompt_by(&self) -> PromptBy {
+        PromptBy::Stdin
     }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    fn turn_args(&mut self, base: &[String], _turn: usize, _file: Option<&Path>) -> Vec<String> {
+        turn_args(base, self.session_id.as_deref())
+    }
+    fn lines(&mut self, raw: &str) -> Vec<String> {
+        translate_line(raw, &mut self.session_id)
+            .into_iter()
+            .collect()
+    }
+    fn finish(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }
 
-struct CopilotRunning {
-    state: Arc<CopilotState>,
-    output: Option<Output>,
-    input: Option<Input>,
-}
-
-impl Running for CopilotRunning {
-    fn pid(&self) -> u32 {
-        0
-    }
-
-    fn take_output(&mut self) -> Option<Output> {
-        self.output.take()
-    }
-
-    fn take_input(&mut self) -> Option<Input> {
-        self.input.take()
-    }
-
-    fn try_exit(&mut self) -> std::io::Result<Option<Exit>> {
-        Ok(self
-            .state
-            .exit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone())
-    }
-
-    fn exit_wait(&self) -> Arc<dyn ExitWait> {
-        Arc::new(CopilotExitWait(self.state.clone()))
-    }
-
-    fn stop(&mut self, _grace: Duration) -> Stop {
-        self.state.stopping.store(true, Ordering::SeqCst);
-        if let Some(mut child) = self
-            .state
-            .active_child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        {
-            let mut ex = self.state.exit.lock().unwrap_or_else(|e| e.into_inner());
-            if ex.is_none() {
-                *ex = Some(Exit::Code(0));
-            }
-        }
-        self.state.cv.notify_all();
-        Stop {
-            status: StopStatus::Clean,
-            survivors: Vec::new(),
-            tree_size: 0,
-            signals: Vec::new(),
-            blind_spots: Vec::new(),
-            candidates: CandidateDiag {
-                count: 0,
-                orphan_extra: 0,
-                unreadable: Vec::new(),
-                unreadable_more: 0,
-                other_coalition: Vec::new(),
-                other_coalition_more: 0,
-            },
-        }
-    }
-}
-
-fn write_line(w: &mut std::io::PipeWriter, line: &str) {
-    let _ = writeln!(w, "{line}");
-    let _ = w.flush();
-}
-
-/// Start a turn-by-turn `copilot` session backed by pipes into `session_output`.
-pub fn spawn(spec: &Spec, persona: Option<String>) -> Result<Box<dyn Running>, SpawnFail> {
-    let pipe_err = |e: std::io::Error| SpawnFail::from_io(&e);
-    let (out_r, mut out_w) = std::io::pipe().map_err(pipe_err)?;
-    let (err_r, err_w) = std::io::pipe().map_err(pipe_err)?;
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let state = Arc::new(CopilotState {
-        exit: Mutex::new(None),
-        cv: Condvar::new(),
-        stopping: AtomicBool::new(false),
-        active_child: Mutex::new(None),
-    });
-    let st_bg = state.clone();
-    let spec_bg = spec.clone();
-    let env_bg = child_env(spec, std::env::vars_os());
-    let spawned = std::thread::Builder::new()
-        .name("aibd-copilot-turns".into())
-        .spawn(move || {
-            let mut turn = 0usize;
-            let mut session_id: Option<String> = None;
-            while let Ok(raw_in) = rx.recv() {
-                if st_bg.stopping.load(Ordering::SeqCst) {
-                    break;
-                }
-                let Some(text) = user_text(&raw_in) else {
-                    continue;
-                };
-                let prompt = turn_prompt(persona.as_deref(), &text, turn == 0);
-                let args = turn_args(&spec_bg.argv, session_id.as_deref(), &prompt);
-                let child_res = Command::new(&spec_bg.argv[0])
-                    .args(&args)
-                    .current_dir(&spec_bg.cwd)
-                    .env_clear()
-                    .envs(env_bg.iter().map(|(k, v)| (k, v)))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn();
-                let mut child = match child_res {
-                    Ok(c) => c,
-                    Err(e) => {
-                        write_line(
-                            &mut out_w,
-                            &json!({"type":"result","subtype":"error","is_error":true,"result":format!("copilot spawn failed: {e}")}).to_string(),
-                        );
-                        continue;
-                    }
-                };
-                let c_out = child.stdout.take();
-                let c_err = child.stderr.take();
-                *st_bg.active_child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-                let err_handle = c_err.map(|ce| {
-                    let mut ew = err_w.try_clone().ok();
-                    std::thread::spawn(move || {
-                        let mut br = BufReader::new(ce);
-                        let mut line = String::new();
-                        while br.read_line(&mut line).unwrap_or(0) > 0 {
-                            if let Some(w) = ew.as_mut() {
-                                let _ = w.write_all(line.as_bytes());
-                                let _ = w.flush();
-                            }
-                            line.clear();
-                        }
-                    })
-                });
-                let mut emitted_result = false;
-                if let Some(co) = c_out {
-                    let mut br = BufReader::new(co);
-                    let mut line = String::new();
-                    while br.read_line(&mut line).unwrap_or(0) > 0 {
-                        if let Some(out_line) = translate_line(&line, &mut session_id) {
-                            if out_line.contains(r#""type":"result""#) {
-                                emitted_result = true;
-                            }
-                            write_line(&mut out_w, &out_line);
-                        }
-                        line.clear();
-                    }
-                }
-                if let Some(h) = err_handle {
-                    let _ = h.join();
-                }
-                let exit_ok = st_bg
-                    .active_child
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .and_then(|mut c| c.wait().ok())
-                    .is_some_and(|s| s.success());
-                if !emitted_result {
-                    let msg = if exit_ok { "" } else { "copilot exited with error" };
-                    write_line(
-                        &mut out_w,
-                        &json!({"type":"result","subtype": if exit_ok { "success" } else { "error" },"is_error": !exit_ok,"result": msg}).to_string(),
-                    );
-                }
-                turn += 1;
-            }
-            let mut ex = st_bg.exit.lock().unwrap_or_else(|e| e.into_inner());
-            if ex.is_none() {
-                *ex = Some(Exit::Code(0));
-            }
-            st_bg.cv.notify_all();
-        });
-    if let Err(e) = spawned {
-        return Err(SpawnFail::from_io(&e));
-    }
-    let input: Option<Input> = spec.input.then(|| {
-        Box::new(CopilotInput {
-            tx,
-            buf: Vec::new(),
-        }) as Input
-    });
-    Ok(Box::new(CopilotRunning {
-        state,
-        output: Some(Output {
-            stdout: Box::new(out_r),
-            stderr: Box::new(err_r),
-        }),
-        input,
-    }))
+/// copilot's words and output for [`crate::turn_wire::spawn`].
+pub fn brand() -> Box<dyn Brand> {
+    Box::new(Copilot::default())
 }
 
 #[cfg(test)]
@@ -404,12 +185,38 @@ mod tests {
             "--output-format".to_owned(),
             "json".to_owned(),
         ];
-        let t0 = turn_args(&base, None, "hi");
-        assert_eq!(t0, ["--output-format", "json", "-p", "hi"]);
-        let t1 = turn_args(&base, Some("f8781f79"), "next");
+        let t0 = turn_args(&base, None);
+        assert_eq!(t0, ["--output-format", "json"]);
+        let t1 = turn_args(&base, Some("f8781f79"));
+        assert_eq!(t1, ["--output-format", "json", "--resume=f8781f79"]);
+    }
+
+    /// 1.0.115 `mcp list --json` here (trimmed): each server turned off by name; an unread
+    /// list or a name that is not plain starts nothing.
+    #[test]
+    fn every_listed_mcp_server_is_turned_off() {
+        let listed = r#"{"mcpServers":{"computer-use":{"source":"builtin"},"github-mcp-server":{"source":"builtin"}}}"#;
         assert_eq!(
-            t1,
-            ["--output-format", "json", "--resume=f8781f79", "-p", "next"]
+            mcp_off(listed).unwrap(),
+            [
+                "--disable-mcp-server",
+                "computer-use",
+                "--disable-mcp-server",
+                "github-mcp-server"
+            ]
         );
+        assert_eq!(
+            mcp_off(r#"{"mcpServers":{}}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        for bad in [
+            "",
+            "nope",
+            "{}",
+            r#"{"mcpServers":{"a b":{}}}"#,
+            r#"{"mcpServers":{"--allow-all":{}}}"#,
+        ] {
+            assert!(mcp_off(bad).is_err(), "reason: bad_list_started {bad}");
+        }
     }
 }

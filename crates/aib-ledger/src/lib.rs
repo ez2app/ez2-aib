@@ -178,9 +178,50 @@ pub fn write_if_complete<S, T, E>(
     Ok(out)
 }
 
+/// Create `dir` and its parents, tolerating concurrent `AlreadyExists` races (notably
+/// Windows `os error 183` when two processes create the same nested folder at once).
+pub fn ensure_dir(dir: &Path) -> Result<(), String> {
+    let mut last_err = None;
+    for _ in 0..4 {
+        match fs::create_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_dir_race(&e) => {
+                if dir.is_dir() {
+                    return Ok(());
+                }
+                last_err = Some(e);
+            }
+            Err(e) => return Err(format!("mkdir: {e}")),
+        }
+    }
+    if dir.is_dir() {
+        Ok(())
+    } else if let Some(e) = last_err {
+        Err(format!("mkdir: {e}"))
+    } else {
+        Err("mkdir: unknown error".into())
+    }
+}
+
+fn is_dir_race(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(183)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_dir_tolerates_existing_dir_and_rejects_file_parent() {
+        let d = tempfile::tempdir().expect("tmp");
+        let nested = d.path().join("a/b/c");
+        ensure_dir(&nested).expect("create");
+        ensure_dir(&nested).expect("idempotent");
+        let file = d.path().join("file");
+        fs::write(&file, "x").expect("write");
+        let err = ensure_dir(&file.join("child")).unwrap_err();
+        assert!(err.starts_with("mkdir:"), "{err}");
+    }
 
     fn keys(text: &str) -> (Vec<String>, Vec<String>) {
         let mut seen = Vec::new();
