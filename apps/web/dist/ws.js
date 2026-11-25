@@ -6421,7 +6421,7 @@
       <div class="apsrc">${esc(apSrc())}</div>${guideTourLine()}
       ${apTop(A)}${set}
       ${apMine(A)}
-      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
+      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       ${apGrp(A)}
       <div class="afoot">${!addNoRepo(A) ? `<span class="apsum">${esc(A.plan && pv ? apSum(A, pv) : '先選一個方案')}</span>` : ''}${addNoRepo(A) ? `<span class="anorepo" role="alert">${esc(NO_REPO)}${A.noRepoAsk ? ';確定要開就再按一次' : ''}</span>` : ''}<button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv || !A.plan ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(addNoRepo(A) && A.noRepoAsk && !A.busy ? '確定不用倉,開' : !A.busy && (A.mates || []).length ? `開這一組(${(A.mates || []).length + 1} 位)` : step)}</button></div></div></div>`;
@@ -6816,6 +6816,40 @@
       try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; if (e && e.status === 409) f.next = Date.now() + 10000; else f.tries++; }
     }
   }
+  // c2f0b IFACE-provider-lifecycle §5b(05:3x;頭 02e02b0453 起開席回原字):開席被拒的三個碼 = 這是什麼 + 怎麼辦 + 鈕;
+  // verify_failed / unmeasured 給一顆鈕接既有 provider_install(body 只帶 provider,版本由 aibd 定);path_linked 沒有一鍵修,只說明;三個都不給「略過照開」
+  const OPEN_RF = {
+    'zh-TW': { lifecycle_verify_failed: ['AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。', '按「重新安裝」,AIB 會重新下載、驗過再放好。', '重新安裝'],
+      provider_unmeasured: ['這個 AI 程式的版本不在 AIB 驗過的清單上,不開這一席。', '按「安裝驗過的版本」,AIB 會裝清單上的版本。', '安裝驗過的版本'],
+      provider_path_linked: ['AIB 的資料夾(或裡面放 AI 程式的資料夾)被換成了捷徑,AIB 只從自己的資料夾啟動 AI 程式。', '把 AIB 的資料夾設回實際位置(不要用捷徑);如果是你自己搬過資料夾,搬回來或請我們協助。', ''],
+      done: '裝好了,再按一次「開」。', busy: '安裝中…' },
+    en: { lifecycle_verify_failed: ['The AI program AIB placed has been changed and no longer matches the measured copy, so this seat was not opened for safety.', 'Press Reinstall and AIB will download it again, check it and put it back.', 'Reinstall'],
+      provider_unmeasured: ['This version of the AI program is not on the list AIB has verified, so this seat was not opened.', 'Press Install the verified version and AIB will install the version on the list.', 'Install the verified version'],
+      provider_path_linked: ["AIB's folder (or the folder inside it that holds the AI program) has been replaced with a shortcut; AIB only starts AI programs from its own folder.", "Put AIB's folder back in its real location (not a shortcut). If you moved the folder yourself, move it back or ask us for help.", ''],
+      done: 'Installed. Press Open again.', busy: 'Installing…' },
+    ja: { lifecycle_verify_failed: ['AIB が置いた AI プログラムが変更されていて、計測したものと一致しないため、安全のためこの席は開きませんでした。', '「再インストール」を押すと、AIB がもう一度ダウンロードし、確認してから置き直します。', '再インストール'],
+      provider_unmeasured: ['この AI プログラムのバージョンは AIB が検証した一覧にないため、この席は開きませんでした。', '「検証済みのバージョンを入れる」を押すと、AIB が一覧にあるバージョンを入れます。', '検証済みのバージョンを入れる'],
+      provider_path_linked: ['AIB のフォルダ(またはその中の AI プログラムを置くフォルダ)がショートカットに置き換えられています。AIB は自分のフォルダからしか AI プログラムを起動しません。', 'AIB のフォルダを実際の場所に戻してください(ショートカットは使わないでください)。ご自身でフォルダを移動した場合は、元に戻すか、私たちにご相談ください。', ''],
+      done: '入れました。もう一度「開く」を押してください。', busy: 'インストール中…' },
+    ko: { lifecycle_verify_failed: ['AIB가 놓아 둔 AI 프로그램이 바뀌어 측정한 것과 달라서, 안전을 위해 이 좌석을 열지 않았습니다.', '「다시 설치」를 누르면 AIB가 다시 내려받아 확인한 뒤 다시 놓습니다.', '다시 설치'],
+      provider_unmeasured: ['이 AI 프로그램 버전은 AIB가 검증한 목록에 없어 이 좌석을 열지 않았습니다.', '「검증된 버전 설치」를 누르면 AIB가 목록에 있는 버전을 설치합니다.', '검증된 버전 설치'],
+      provider_path_linked: ['AIB 폴더(또는 그 안의 AI 프로그램 폴더)가 바로 가기로 바뀌었습니다. AIB는 자기 폴더에서만 AI 프로그램을 시작합니다.', 'AIB 폴더를 실제 위치로 되돌려 주세요(바로 가기는 쓰지 마세요). 직접 폴더를 옮겼다면 되돌리거나 저희에게 도움을 요청하세요.', ''],
+      done: '설치했습니다. 「열기」를 다시 눌러 주세요.', busy: '설치하는 중…' },
+  };
+  const rfT = () => OPEN_RF[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OPEN_RF['zh-TW'];
+  const rfOwn = (c) => (typeof c === 'string' && c !== 'done' && c !== 'busy' && Object.prototype.hasOwnProperty.call(OPEN_RF['zh-TW'], c) ? c : '');
+  function rfHtml(A) {
+    const R = A && A.refuse, c = R && rfOwn(R.code); if (!c) return '';
+    const T = rfT(), w = T[c], btn = w[2] && typeof lcHas === 'function' && lcHas('provider_install');
+    return `<div class="aerr" role="alert"><b>${esc(w[0])}</b> ${esc(R.done ? T.done : w[1])}${btn && !R.done ? `<div class="afoot"><button type="button" class="go" data-addrfx="1" ${R.busy ? 'disabled' : ''}>${esc(R.busy ? T.busy : w[2])}</button></div>` : ''}</div>`;
+  }
+  async function rfFix() {
+    const A = S.add, R = A && A.refuse; if (!R || R.busy || R.done || !rfOwn(R.code) || !rfT()[R.code][2]) return;
+    R.busy = true; render();
+    try { await fingerAct('provider_install', { provider: R.provider }); R.done = true; }
+    catch (e) { R.err = lcWhy(rgCode(e), lcName(R.provider)); }
+    R.busy = false; if (typeof lcLoad === 'function') await lcLoad().catch(() => null); render();
+  }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
     if (c === 'host_ssh_missing' || c === 'host_verify_failed') return HS_WHY[c] + '。席沒有開';
@@ -6846,7 +6880,7 @@
     if (mpPath && (!hoPath || !mpPathOk(mpPath))) { A.msg = hoPath ? '記憶包要是完整路徑、檔名 MEMPACK-<5 碼席碼>-<月日>.md(一行、不超過 400 字)' : '填了記憶包也要填交接單'; A.err = true; return render(); }
     if (hoPath && !hoPathOk(hoPath)) { A.msg = '交接單要是完整路徑、檔名 HANDOFF-….md(一行、不超過 400 字)'; A.err = true; return render(); }
     try { localStorage.setItem('ws.lastPersona', persona); } catch (e) { /* 記不住就下次再選 */ }
-    A.busy = true; A.step = 1; A.msg = ''; A.grp = null; render();
+    A.busy = true; A.step = 1; A.msg = ''; A.grp = null; A.refuse = null; render();
     let body0 = null;
     try {
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
@@ -6906,6 +6940,7 @@
       // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
       const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
       if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
+      else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }
       else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
     }
     A.busy = false; render();
@@ -7549,6 +7584,7 @@
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
+    if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     if (S.add) {
