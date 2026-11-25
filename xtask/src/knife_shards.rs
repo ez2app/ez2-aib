@@ -218,7 +218,95 @@ pub fn limits(table: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
         .collect()
 }
 
-const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE";
+/// A single knife script must stay under 15 minutes (900s, leaving 2x headroom for slow runners under 30m) and 140 knives.
+pub const MAX_SCRIPT_SECS: u64 = 900;
+pub const MAX_SCRIPT_KNIVES: usize = 140;
+/// No shard should exceed 140 minutes (8400s) of projected work.
+pub const MAX_SHARD_SECS: u64 = 8400;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SizeSummary {
+    pub scripts: usize,
+    pub max_secs: u64,
+    pub max_knives: usize,
+    pub max_shard_secs: u64,
+    pub violations: Vec<String>,
+}
+
+/// Check per-script knife count, historical seconds, and projected shard load.
+/// When `only` is `Some(paths)`, per-script checks apply only to scripts in `paths`
+/// (so unrelated PRs are not blocked by pre-existing grandfathered scripts).
+pub fn check_size(
+    knives: &[crate::knife_anchors::Knife],
+    secs: &BTreeMap<String, u64>,
+    shards: u32,
+    max_secs: u64,
+    max_knives: usize,
+    max_shard_secs: u64,
+    only: Option<&BTreeSet<String>>,
+) -> Result<SizeSummary, String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut non_crate_job: BTreeSet<String> = BTreeSet::new();
+    for k in knives {
+        let file = crate::knife_precheck::written_in(&k.at);
+        if file.ends_with(".sh") {
+            *counts.entry(file.to_string()).or_default() += 1;
+            if k.job == "cloud-knives" || k.job == "cloud-host-knives" {
+                non_crate_job.insert(file.to_string());
+            }
+        }
+    }
+    let mut summary = SizeSummary {
+        scripts: counts.len(),
+        ..SizeSummary::default()
+    };
+    for (file, &count) in &counts {
+        if only.is_some_and(|set| !set.contains(file)) {
+            continue;
+        }
+        summary.max_knives = summary.max_knives.max(count);
+        if count > max_knives {
+            summary.violations.push(format!(
+                "{file}: {count} knives (max {max_knives}; split into smaller scripts)"
+            ));
+        }
+        if let Some(&s) = secs.get(file) {
+            summary.max_secs = summary.max_secs.max(s);
+            if s > max_secs {
+                summary.violations.push(format!(
+                    "{file}: {s}s in secs table (max {max_secs}s / {}m; split into smaller scripts)",
+                    max_secs / 60
+                ));
+            }
+        } else if only.is_some()
+            && !secs.is_empty()
+            && file.starts_with("crates/")
+            && !non_crate_job.contains(file)
+        {
+            summary.violations.push(format!(
+                "{file}: missing from crates/aib-knife/knife-secs.tsv (add an estimated/measured seconds row so shard planning does not fall back to median)"
+            ));
+        }
+    }
+    let list: Vec<String> = counts.keys().cloned().collect();
+    if !list.is_empty() {
+        let p = plan(&list, secs, shards)?;
+        let l = loads(&p, secs, shards);
+        for (i, &load) in l.iter().enumerate() {
+            summary.max_shard_secs = summary.max_shard_secs.max(load);
+            if load > max_shard_secs {
+                summary.violations.push(format!(
+                    "shard {}/{shards}: {load}s projected (max {max_shard_secs}s / {}m)",
+                    i + 1,
+                    max_shard_secs / 60
+                ));
+            }
+        }
+    }
+    Ok(summary)
+}
+
+const USAGE: &str = "usage: aib-xtask knife-shards plan --shards N --secs FILE --list FILE\n       aib-xtask knife-shards secs LOG...\n       aib-xtask knife-shards grew --secs FILE LOG...\n       aib-xtask knife-shards limits --secs FILE\n       aib-xtask knife-shards check [--secs FILE] [--shards N] [ROOT]\n       aib-xtask knife-shards summary --tier <strict|normal|fast> [--passed N] [--deferred N] [--failed N] [--timed-out N] [--cancelled N]\n       aib-xtask knife-shards queue [--repo OWNER/NAME]";
 
 fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -326,7 +414,220 @@ fn limits_cmd(args: &[String]) -> Result<String, String> {
         .collect())
 }
 
+fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let (mut secs, mut shards, mut root) = (None, 4u32, None);
+    let (mut base, mut head) = (None, None);
+    let (mut max_secs, mut max_knives, mut max_shard_secs) =
+        (MAX_SCRIPT_SECS, MAX_SCRIPT_KNIVES, MAX_SHARD_SECS);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let val = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<String, String> {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))
+        };
+        match a.as_str() {
+            "--secs" => secs = Some(val(a, &mut it)?),
+            "--base" => base = Some(val(a, &mut it)?),
+            "--head" => head = Some(val(a, &mut it)?),
+            "--shards" => {
+                let v = val(a, &mut it)?;
+                shards = v
+                    .parse()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| format!("--shards {v}: not a whole number from 1"))?;
+            }
+            "--max-secs" => {
+                let v = val(a, &mut it)?;
+                max_secs = v
+                    .parse()
+                    .map_err(|_| format!("--max-secs {v}: not a number"))?;
+            }
+            "--max-knives" => {
+                let v = val(a, &mut it)?;
+                max_knives = v
+                    .parse()
+                    .map_err(|_| format!("--max-knives {v}: not a number"))?;
+            }
+            "--max-shard-secs" => {
+                let v = val(a, &mut it)?;
+                max_shard_secs = v
+                    .parse()
+                    .map_err(|_| format!("--max-shard-secs {v}: not a number"))?;
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("{other}: not an option\n{USAGE}"));
+            }
+            other if root.is_none() => root = Some(other.to_string()),
+            other => return Err(format!("{other}: unexpected argument\n{USAGE}")),
+        }
+    }
+    let root_str = root.unwrap_or_else(|| ".".to_string());
+    let root_path = Path::new(&root_str);
+    let secs_path = secs.unwrap_or_else(|| {
+        root_path
+            .join("crates/aib-knife/knife-secs.tsv")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let only = match (base.as_deref(), head.as_deref()) {
+        (Some(b), Some(h)) => Some(crate::knife_precheck::changed(root_path, b, h)?),
+        (None, None) => None,
+        _ => return Err(format!("--base and --head go together\n{USAGE}")),
+    };
+    let table = parse_secs(&read(&secs_path)?).map_err(|e| format!("{secs_path}: {e}"))?;
+    let (_, knives, errs) = crate::knife_anchors::collect(root_path);
+    if !errs.is_empty() {
+        return Err(errs.join("\n"));
+    }
+    let summary = check_size(
+        &knives,
+        &table,
+        shards,
+        max_secs,
+        max_knives,
+        max_shard_secs,
+        only.as_ref(),
+    )?;
+    let mut out = String::new();
+    for v in &summary.violations {
+        out.push_str(&format!("KNIVES-SIZE-OVER {v}\n"));
+    }
+    if summary.violations.is_empty() {
+        out.push_str(&format!(
+            "KNIVES-SIZE-CHECK scripts={} shards={shards} max_secs={} max_knives={} max_shard_secs={} ok\n",
+            summary.scripts, summary.max_secs, summary.max_knives, summary.max_shard_secs
+        ));
+        Ok((0, out))
+    } else {
+        out.push_str(&format!(
+            "KNIVES-SIZE-CHECK violations={}\n",
+            summary.violations.len()
+        ));
+        Ok((1, out))
+    }
+}
+
+fn summary_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let mut tier = "normal".to_string();
+    let (mut passed, mut deferred, mut failed, mut timed_out, mut cancelled) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let val = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<String, String> {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))
+        };
+        let num = |flag: &str, it: &mut std::slice::Iter<'_, String>| -> Result<u64, String> {
+            let v = val(flag, it)?;
+            v.parse()
+                .map_err(|_| format!("{flag} {v}: not a whole number"))
+        };
+        match a.as_str() {
+            "--tier" => tier = val(a, &mut it)?,
+            "--passed" => passed = num(a, &mut it)?,
+            "--deferred" => deferred = num(a, &mut it)?,
+            "--failed" => failed = num(a, &mut it)?,
+            "--timed-out" => timed_out = num(a, &mut it)?,
+            "--cancelled" => cancelled = num(a, &mut it)?,
+            other => return Err(format!("{other}: not an option\n{USAGE}")),
+        }
+    }
+    if !matches!(tier.as_str(), "strict" | "normal" | "fast" | "unknown") {
+        return Err(format!(
+            "--tier {tier}: must be strict, normal, fast, or unknown"
+        ));
+    }
+    let bad = failed.saturating_add(timed_out).saturating_add(cancelled);
+    let label = if bad > 0 {
+        "失敗"
+    } else if deferred > 0 {
+        "條件通過"
+    } else if tier == "strict" {
+        "嚴格通過"
+    } else if tier == "unknown" {
+        "一般通過（一期未讀設定）"
+    } else {
+        "一般通過"
+    };
+    let line = format!(
+        "KNIVES-SUMMARY tier={tier} label={label} passed={passed} deferred={deferred} failed={bad}\n"
+    );
+    Ok((u8::from(bad > 0), line))
+}
+
+pub fn estimate_macos_queue_min(running: usize, queued: usize, macos_slots: usize) -> usize {
+    let slots = macos_slots.max(1);
+    let total = running.saturating_add(queued);
+    // Average ~45m per macOS knife/rust cell across slots
+    (total.div_ceil(slots)).saturating_mul(45)
+}
+
+fn queue_cmd(args: &[String]) -> Result<(u8, String), String> {
+    let mut repo = "ez2app/ez2-aib".to_string();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => {
+                repo = it
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| format!("--repo needs a value\n{USAGE}"))?;
+            }
+            other => return Err(format!("{other}: not an option\n{USAGE}")),
+        }
+    }
+    let query = |status: &str| -> Result<usize, String> {
+        let out = std::process::Command::new("gh")
+            .args([
+                "api",
+                &format!("repos/{repo}/actions/runs?status={status}&per_page=1"),
+                "--jq",
+                ".total_count",
+            ])
+            .output()
+            .map_err(|e| format!("gh api: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| format!("bad gh count: {e}"))
+    };
+    let running = query("in_progress")?;
+    let queued = query("queued")?;
+    let est = estimate_macos_queue_min(running, queued, 5);
+    Ok((
+        0,
+        format!(
+            "CI-QUEUE repo={repo} running_runs={running} queued_runs={queued} est_wait_min={est}\n"
+        ),
+    ))
+}
+
 pub fn run(args: &[String]) -> u8 {
+    if let [cmd, rest @ ..] = args {
+        if cmd == "check" || cmd == "summary" || cmd == "queue" {
+            let res = match cmd.as_str() {
+                "check" => check_cmd(rest),
+                "summary" => summary_cmd(rest),
+                _ => queue_cmd(rest),
+            };
+            return match res {
+                Ok((rc, text)) => {
+                    print!("{text}");
+                    rc
+                }
+                Err(e) => {
+                    eprintln!("knife-shards: {e}");
+                    2
+                }
+            };
+        }
+    }
     let r = match args {
         [cmd, rest @ ..] if cmd == "plan" => plan_cmd(rest),
         [cmd, rest @ ..] if cmd == "secs" => secs_cmd(rest),
@@ -543,5 +844,97 @@ mod tests {
             secs_from_logs(&[a, b]),
             table(&[("crates/a/knives/k1.sh", 20), ("crates/a/knives/k2.sh", 4)])
         );
+    }
+
+    #[test]
+    fn check_size_flags_heavy_scripts_many_knives_and_overloaded_shards() {
+        let make = |file: &str, n: usize| -> Vec<crate::knife_anchors::Knife> {
+            (0..n)
+                .map(|i| crate::knife_anchors::Knife {
+                    at: format!("{file}:{}", i + 1),
+                    argv: Ok(vec!["true".into()]),
+                    file: "src/lib.rs".into(),
+                    old: "a".into(),
+                    step: String::new(),
+                    job: String::new(),
+                })
+                .collect()
+        };
+        let mut knives = make("crates/a/knives/ok.sh", 10);
+        knives.extend(make("crates/b/knives/many.sh", 141));
+        knives.extend(make("crates/c/knives/slow.sh", 5));
+        let secs = table(&[
+            ("crates/a/knives/ok.sh", 600),
+            ("crates/b/knives/many.sh", 100),
+            ("crates/c/knives/slow.sh", 901),
+        ]);
+        let s = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            1600,
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.scripts, 3);
+        assert_eq!(s.max_knives, 141);
+        assert_eq!(s.max_secs, 901);
+        assert_eq!(s.max_shard_secs, 1601);
+        assert_eq!(s.violations.len(), 3, "{:?}", s.violations);
+        assert!(s
+            .violations
+            .iter()
+            .any(|v| v.contains("many.sh: 141 knives")));
+        assert!(s.violations.iter().any(|v| v.contains("slow.sh: 901s")));
+        assert!(s.violations.iter().any(|v| v.contains("shard 1/1: 1601s")));
+
+        let only: BTreeSet<String> = ["crates/a/knives/ok.sh".to_string()].into();
+        let filtered = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            Some(&only),
+        )
+        .unwrap();
+        assert!(filtered.violations.is_empty(), "{:?}", filtered.violations);
+
+        let ok = check_size(
+            &make("crates/a/knives/ok.sh", 140),
+            &table(&[("crates/a/knives/ok.sh", 900)]),
+            4,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            None,
+        )
+        .unwrap();
+        assert!(ok.violations.is_empty(), "{:?}", ok.violations);
+        let missing_only: BTreeSet<String> = ["crates/d/knives/new.sh".to_string()].into();
+        knives.extend(make("crates/d/knives/new.sh", 3));
+        let missing_res = check_size(
+            &knives,
+            &secs,
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            Some(&missing_only),
+        )
+        .unwrap();
+        assert!(
+            missing_res
+                .violations
+                .iter()
+                .any(|v| v.contains("missing from crates/aib-knife/knife-secs.tsv")),
+            "{:?}",
+            missing_res.violations
+        );
+        assert_eq!(estimate_macos_queue_min(2, 3, 5), 45);
+        assert_eq!(estimate_macos_queue_min(5, 5, 5), 90);
     }
 }

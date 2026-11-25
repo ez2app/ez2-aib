@@ -206,6 +206,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -3883,6 +3892,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -3918,7 +3936,13 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: |
+          umask 022
+          ./crates/aib-cloud/knives/knives-cloud-decision-1.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-2.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-3.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-4.sh
+          ./crates/aib-cloud/knives/knives-cloud-decision-5.sh
       # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
       # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
       - name: knife-affected (shadow)
@@ -3933,7 +3957,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source=crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source=crates/aib-cloud/knives/knives-cloud-decision-1.sh --source=crates/aib-cloud/knives/knives-cloud-decision-2.sh --source=crates/aib-cloud/knives/knives-cloud-decision-3.sh --source=crates/aib-cloud/knives/knives-cloud-decision-4.sh --source=crates/aib-cloud/knives/knives-cloud-decision-5.sh
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -3992,6 +4016,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -4134,6 +4167,32 @@ jobs:
           fi
           echo "crate knives: $ok/$SHARDS cells success" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  knife-summary:
+    name: knife summary
+    needs: [changes, rust, crate-knives-gate, cloud-knives, cloud-host-knives]
+    if: ${{ always() && needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: summarize knife cells
+        shell: bash
+        env:
+          R_RUST: ${{ needs.rust.result }}
+          R_CRATE: ${{ needs.crate-knives-gate.result }}
+          R_CLOUD: ${{ needs.cloud-knives.result }}
+          R_HOST: ${{ needs.cloud-host-knives.result }}
+        run: |
+          passed=0; deferred=0; failed=0; cancelled=0
+          for r in "$R_RUST" "$R_CRATE" "$R_CLOUD" "$R_HOST"; do
+            case "$r" in
+              success) passed=$((passed + 1)) ;;
+              cancelled) cancelled=$((cancelled + 1)) ;;
+              *) failed=$((failed + 1)) ;;
+            esac
+          done
+          cargo run -q -p aib-xtask --locked -- knife-shards summary --tier unknown --passed "$passed" --deferred "$deferred" --failed "$failed" --cancelled "$cancelled" | tee -a "$GITHUB_STEP_SUMMARY"
+
   cloud-host-knives:
     name: cloud-host command knives (macOS)
     needs: changes
@@ -4194,6 +4253,15 @@ jobs:
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+            avail_gb=$((avail_kb / 1024 / 1024))
+            echo "self-hosted disk free: ${avail_gb} GiB (${avail_kb} KiB)"
+            if [ "$avail_kb" -lt 31457280 ]; then
+              echo "::error::self-hosted runner disk free ${avail_gb} GiB < 30 GiB — clean stale target/receipt dirs before running cargo"
+              exit 1
+            fi
+          fi
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
@@ -4274,4 +4342,10 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
+        run: |
+          umask 022
+          ./crates/aib-cloud-host/knives/knives-cloud-host-1.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-2.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-4.sh
+          ./crates/aib-cloud-host/knives/knives-cloud-host-5.sh

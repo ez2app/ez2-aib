@@ -70,6 +70,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::plugins_page::SET,
     crate::plugins_page::MARKETPLACE_LIST,
     crate::plugins_page::MARKETPLACE_INSTALL,
+    crate::plugins_page::TIER_GET,
+    crate::plugins_page::TIER_SET,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
     crate::seat_rank::SET,
@@ -618,6 +620,20 @@ pub async fn act(
                 );
             }
             return crate::plugins_page::marketplace_install_act(body).await;
+        }
+        Some(crate::plugins_page::TIER_GET) => {
+            return crate::plugins_page::tier_get_act().await;
+        }
+        Some(crate::plugins_page::TIER_SET) => {
+            let cannot_set_tier_here = held_as_user_page(&page).await || page.carried;
+            if cannot_set_tier_here {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "tier settings are changed from the built-in page in this pairing only",
+                );
+            }
+            return crate::plugins_page::tier_set_act(body).await;
         }
         // F2: the plugin's time-saved numbers; read only, nothing of the caller's is run
         Some(crate::time_saved::KIND) => {
@@ -1477,6 +1493,19 @@ mod tests {
             .expect("reason: arm_does_not_switch");
         assert!(gate < moved, "reason: switched_before_the_gate");
         assert!(arm.contains("\"page_only\""));
+
+        let tat = src
+            .find("        Some(crate::plugins_page::TIER_SET) => {")
+            .expect("reason: tier_set_arm_moved");
+        let tarm = &src[tat..tat + src[tat..].find("\n        }\n").unwrap()];
+        let tgate = tarm
+            .find("held_as_user_page(&page).await || page.carried;")
+            .expect("reason: a_user_page_or_carried_pairing_sets_tier");
+        let tcall = tarm
+            .find("return crate::plugins_page::tier_set_act(body).await;")
+            .expect("reason: tier_set_arm_missing");
+        assert!(tgate < tcall, "reason: tier_set_before_the_gate");
+        assert!(tarm.contains("\"page_only\""));
     }
 
     #[test]

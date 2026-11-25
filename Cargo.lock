@@ -150,6 +150,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-fp"
+version = "0.2.0-preview.8"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "aib-ghread"
 version = "0.2.0-preview.8"
 dependencies = [
