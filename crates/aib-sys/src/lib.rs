@@ -90,6 +90,8 @@ mod test_only_calls;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;
+#[cfg(windows)]
+pub mod wintrust;
 
 #[cfg(target_os = "macos")]
 pub use macos::{sigchld, sigchld_keep_zombies, Macos, Sigchld};
