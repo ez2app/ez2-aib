@@ -8,7 +8,7 @@ na() { python3 -I scripts/knife.py crates/aibd/src/net_card.rs "$1" "$2" --expec
 # NA1 the approved ticket does not finish the card
 na '                if !approved(t, &ask) {' '                if approved(t, &ask) { // knife' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NA2 a second send without the ticket raises another window
-na '            (None, _) => Step::Refused("net_card_used"),' '            (None, _) => Step::Ask(Box::new(ask)), // knife' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
+na '            (None, _) => Step::Refused("net_card_used"),' '            (None, _) => Step::Ask(Box::new(card.ask(c, by))), // knife' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NA3 a ticket is taken for a card no window was asked for
 na '            (Some(_), _) => Step::NotApproved,' '            (Some(_), _) => Step::Done(c, c.lasts().map(|lasts| Verified { lasts })), // knife' net_card::tests::a_yes_that_needs_the_owner_finishes_only_with_the_approved_ticket
 # NA4 the window's parameters do not bind the choice (a min15 ticket would open an hour)

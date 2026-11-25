@@ -73,7 +73,7 @@ python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
 # na-choices-no-always
 python3 -I scripts/knife.py crates/aibd/src/net_card.rs \
   '            .filter(|c| owner_avail || *c != Choice::Always)' \
-  '            .filter(|_| true)' \
+  '            .filter(|c| owner_avail || *c != Choice::Always || !owner_avail)' \
   --expect-fail net_card::tests::choices_with_owner_hides_always_when_unavailable \
   -- cargo test -p aibd --locked --lib net_card::tests::choices_with_owner_hides_always_when_unavailable
 # na-restart-list-ip
