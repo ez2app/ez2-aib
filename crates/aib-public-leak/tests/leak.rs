@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 const WORD: &str = "examplehost";
 
 fn public() -> String {
-    format!("{}.{}.{}.{}", 1, 2, 3, 4)
+    format!("{}.{}.{}.{}", 1, 2, 3, 5)
 }
 
 fn git(dir: &Path, args: &[&str]) {
