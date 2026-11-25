@@ -33,7 +33,7 @@ Logos are aligned by the visible mark, not by the file's frame: the mark's long 
 
 | Provider | Mark inside the file's frame | Shown at | How |
 |---|---|---|---|
-| Codex | 354.67 of 716 (49.5%); openai-logos.zip has no tighter Blossom (the two Blossom files on openai.com/brand are compositions, not the mark alone) | 56px file → mark ≈ 28px | the whole file scaled up evenly; the empty margin falls outside the square and is clipped by it. Paths and colours unchanged, nothing redrawn |
+| Codex | 354.67 of 716 (49.5%); openai-logos.zip has no tighter Blossom (the two Blossom files on openai.com/brand are compositions, not the mark alone) | 56px file → mark ≈ 28px | the whole file scaled up evenly; the empty margin falls outside the square and is clipped by it (an outer ring of about 6px; the mark stays about 8px from the square's edge). Paths and colours unchanged, nothing redrawn. OpenAI asks for open space around the Blossom; part of the file's own clear space is cut, a known trade-off of the owner's size request |
 | GitHub Copilot | ≈ 100% | 28px | as is |
 | Claude | ≈ 100% | 28px | as is |
 | Grok | 24 × 9.2, ≈ 100% of the frame but 2.6 : 1 wide | 34px wide (≈ 13px high) | a long side of 28px looked a size smaller than the others, so 34px |
