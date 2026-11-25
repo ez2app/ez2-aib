@@ -342,7 +342,7 @@ fn main() -> ExitCode {
                 // ebab8 11-25 19:04: red only because this machine has no cargo / bash ⇒ listed,
                 // not red, so the reds left are real; each red test's own output is kept
                 if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &on_path) {
-                    r.line(format!(
+                    r.needs_toolchain(format!(
                         "NEEDS-TOOLCHAIN {suite} {n} ({tool} is not on PATH)"
                     ));
                     for l in failure_output(&out, &n, 8) {
@@ -473,7 +473,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red.
 /// Is `tool` (or `tool.exe`) in a folder of this process's `PATH`? The children get the same
 /// `PATH` (it is one of the kept variables).
 fn on_path(tool: &str) -> bool {
@@ -487,6 +486,9 @@ fn on_path(tool: &str) -> bool {
     })
 }
 
+/// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red. With nobody at
+/// the screen (`--no-ask`) it is `ASK <name> SKIPPED-NO-HUMAN` instead, which makes the result
+/// INCOMPLETE (c2f0b 3cfd7eb29e N1).
 fn answer(r: &mut Report, can_ask: bool, name: &str, q: &str) {
     // ebab8 11-25 19:04: with nobody at the screen a question is skipped, not red; the result
     // then ends WINCHECK-INCOMPLETE, never OK

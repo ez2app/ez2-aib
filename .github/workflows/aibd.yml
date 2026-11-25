@@ -3913,30 +3913,58 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # (ebab8 19:1x, f163c c3d0f306ee N1: sha256sum on the Windows runner writes "<sum> *<name>", binary
+      #   mode, not two spaces; the diagnostics below read both, `sha256sum -c` already does.)
       # The laptop found the last one; this cell finds the next: download what was uploaded and check
       #   it the way aib-wincheck will (every SHA256SUMS line present and equal, no file that is not in it).
+      # (ebab8 19:37, run 45603042778: by name, 0.3 s after the upload, the download said "Artifact
+      #   not found" while the pack was fine. Download by the id the upload step gave; one more try
+      #   after 30 s; both failing is said as "not checked", not as a broken pack.)
       - uses: actions/download-artifact@v4
+        id: winget
         if: steps.winup.outcome == 'success'
+        continue-on-error: true
         with:
-          name: ${{ steps.winexe.outputs.name }}
+          artifact-ids: ${{ steps.winup.outputs.artifact-id }}
+          path: winexe-check/
+      - name: wait before the second download try
+        if: steps.winup.outcome == 'success' && steps.winget.outcome == 'failure'
+        shell: bash
+        run: sleep 30
+      - uses: actions/download-artifact@v4
+        id: winget2
+        if: steps.winup.outcome == 'success' && steps.winget.outcome == 'failure'
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ steps.winup.outputs.artifact-id }}
           path: winexe-check/
       - name: the uploaded pack matches its SHA256SUMS
         if: steps.winup.outcome == 'success'
         shell: bash
+        env:
+          GOT1: ${{ steps.winget.outcome }}
+          GOT2: ${{ steps.winget2.outcome }}
+          PACK: ${{ steps.winexe.outputs.name }}
         run: |
           set -euo pipefail
-          cd winexe-check
+          if [ "$GOT1" != success ] && [ "$GOT2" != success ]; then
+            echo "::error title=wincheck pack not checked::the pack was uploaded, but downloading it back to check it failed twice; this is not a fault in the pack"
+            exit 1
+          fi
+          # by id the files may land in winexe-check/<name>/ rather than winexe-check/
+          d=winexe-check; [ -f "$d/SHA256SUMS" ] || d="winexe-check/$PACK"
+          cd "$d"
           [ -s SHA256SUMS ] || { echo "::error::the uploaded pack has no SHA256SUMS"; exit 1; }
           sha256sum --quiet -c SHA256SUMS || { echo "::error::files of the uploaded pack are missing or differ from SHA256SUMS (above)"; exit 1; }
           want=$(wc -l < SHA256SUMS); got=$(find . -type f ! -name SHA256SUMS | wc -l)
           if [ "$got" != "$want" ]; then
             echo "::error::the uploaded pack has $got files, SHA256SUMS lists $want"
-            find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort > ../got.txt
-            sed 's/^[0-9a-f]*  //' SHA256SUMS | LC_ALL=C sort > ../want.txt
-            LC_ALL=C comm -3 ../want.txt ../got.txt | head -40
+            find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort > "$RUNNER_TEMP/got.txt"
+            sed -E 's/^[0-9a-f]{64} [ *]//' SHA256SUMS | LC_ALL=C sort > "$RUNNER_TEMP/want.txt"
+            LC_ALL=C comm -3 "$RUNNER_TEMP/want.txt" "$RUNNER_TEMP/got.txt" | head -40
             exit 1
           fi
-          hidden=$(grep -cE '^[0-9a-f]{64}  (.*/)?\.' SHA256SUMS || true)
+          hidden=$(grep -cE '^[0-9a-f]{64} [ *](.*/)?\.' SHA256SUMS || true)
           echo "::notice title=wincheck pack uploaded::$got files match SHA256SUMS ($hidden with a dot-folder or dot-file name)"
 
   cloud-knives:
