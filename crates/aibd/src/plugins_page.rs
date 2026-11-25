@@ -23,6 +23,8 @@ pub const LIST: &str = "plugin_list";
 pub const SET: &str = "plugin_set";
 pub const MARKETPLACE_LIST: &str = "marketplace_list";
 pub const MARKETPLACE_INSTALL: &str = "marketplace_install";
+pub const TIER_GET: &str = "skipstop_tier_get";
+pub const TIER_SET: &str = "skipstop_tier_set";
 
 /// The list the page is shown, from the plugin area under `home`.
 pub fn list(home: &Path, windows: bool) -> Value {
@@ -304,6 +306,419 @@ pub async fn marketplace_install_act(body: Value) -> Response {
             crate::time_saved::clear_cache();
             Json(v).into_response()
         }
+        Ok(Some(Err((status, code)))) => refuse(status, code),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
+    }
+}
+
+fn tiers_file(home: &Path) -> PathBuf {
+    home.join("skipstop-tiers.json")
+}
+
+fn tier_defaults(tier: &str) -> Value {
+    match tier {
+        "strict" => json!({
+            "reuse": "main_exact", "spot": 5, "knives": "changed_all", "retry_miss": "on",
+            "platforms": "all", "overflow": "add_cell", "cell_max_min": 90, "cells_max": 5
+        }),
+        "fast" => json!({
+            "reuse": "scope", "spot": 20, "knives": "affected", "retry_miss": "off",
+            "platforms": "primary", "overflow": "defer", "cell_max_min": 60, "cells_max": 4
+        }),
+        _ => json!({
+            "reuse": "scope", "spot": 10, "knives": "affected", "retry_miss": "off",
+            "platforms": "primary", "overflow": "add_cell", "cell_max_min": 90, "cells_max": 5
+        }),
+    }
+}
+
+fn valid_tier_reuse(s: &str) -> bool {
+    matches!(s, "main_exact" | "exact" | "scope")
+}
+
+fn valid_tier_knives(s: &str) -> bool {
+    matches!(s, "changed_all" | "affected" | "touched_only")
+}
+
+fn valid_tier_retry_miss(s: &str) -> bool {
+    matches!(s, "on" | "off")
+}
+
+fn valid_tier_platforms(s: &str) -> bool {
+    matches!(s, "all" | "primary")
+}
+
+fn valid_tier_overflow(s: &str) -> bool {
+    matches!(s, "add_cell" | "defer")
+}
+
+fn is_looser_than_base(requested: &str, policy: &Value, repo: &Value) -> bool {
+    let Some(reuse) = policy
+        .get("reuse")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_reuse(s))
+    else {
+        return true;
+    };
+    let Some(spot) = policy
+        .get("spot")
+        .and_then(Value::as_u64)
+        .filter(|n| (2..=100).contains(n))
+    else {
+        return true;
+    };
+    let Some(knives) = policy
+        .get("knives")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_knives(s))
+    else {
+        return true;
+    };
+    let Some(retry_miss) = policy
+        .get("retry_miss")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_retry_miss(s))
+    else {
+        return true;
+    };
+    let Some(platforms) = policy
+        .get("platforms")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_platforms(s))
+    else {
+        return true;
+    };
+    let Some(overflow) = policy
+        .get("overflow")
+        .and_then(Value::as_str)
+        .filter(|s| valid_tier_overflow(s))
+    else {
+        return true;
+    };
+    let Some(cell) = policy
+        .get("cell_max_min")
+        .and_then(Value::as_u64)
+        .filter(|n| (10..=140).contains(n))
+    else {
+        return true;
+    };
+    let Some(cells_max) = policy
+        .get("cells_max")
+        .and_then(Value::as_u64)
+        .filter(|n| (1..=8).contains(n))
+    else {
+        return true;
+    };
+
+    let Some(linux_knives) = repo.get("linux_knives").and_then(Value::as_bool) else {
+        return true;
+    };
+    let Some(knife_length_check) = repo.get("knife_length_check").and_then(Value::as_str) else {
+        return true;
+    };
+    let Some(sk) = repo
+        .get("script_max_knives")
+        .and_then(Value::as_u64)
+        .filter(|n| (20..=300).contains(n))
+    else {
+        return true;
+    };
+    let Some(sm) = repo
+        .get("script_max_min")
+        .and_then(Value::as_u64)
+        .filter(|n| (5..=30).contains(n))
+    else {
+        return true;
+    };
+    let repo_looser = linux_knives || knife_length_check != "reject" || sk > 140 || sm > 15;
+    if repo_looser {
+        return true;
+    }
+
+    if requested == "strict" {
+        return reuse != "main_exact"
+            || spot > 5
+            || knives != "changed_all"
+            || retry_miss != "on"
+            || platforms != "all"
+            || overflow == "defer"
+            || (overflow == "defer" && cell < 90)
+            || cells_max > 5;
+    }
+
+    spot > 10
+        || knives == "touched_only"
+        || overflow == "defer"
+        || (overflow == "defer" && cell < 90)
+        || cells_max > 5
+}
+
+fn expand_tier_state(raw: &Value) -> Value {
+    let requested = raw
+        .get("tier")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "strict" | "normal" | "fast"))
+        .unwrap_or("normal");
+    let mut policy = tier_defaults(requested);
+    if let Some(ov) = raw.get("overrides").and_then(Value::as_object) {
+        if let Some(p) = policy.as_object_mut() {
+            for (k, v) in ov {
+                if p.contains_key(k) {
+                    p.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    let mut repo = json!({
+        "linux_knives": false,
+        "knife_length_check": "reject",
+        "script_max_knives": 140,
+        "script_max_min": 15,
+        "merge_batch_tz": "Asia/Taipei",
+        "merge_batch_hours": [10, 16, 22]
+    });
+    if let Some(rs) = raw.get("repo_settings").and_then(Value::as_object) {
+        if let Some(r) = repo.as_object_mut() {
+            for (k, v) in rs {
+                if r.contains_key(k) {
+                    r.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    // Phase 1: unsigned relaxations fall back to strict (main_exact)
+    let fell_back = requested == "fast" || is_looser_than_base(requested, &policy, &repo);
+    let effective_tier = if fell_back { "strict" } else { requested };
+    if fell_back {
+        policy = tier_defaults("strict");
+        repo["linux_knives"] = json!(false);
+        repo["knife_length_check"] = json!("reject");
+        repo["script_max_knives"] = json!(140);
+        repo["script_max_min"] = json!(15);
+    }
+    let presets = raw
+        .get("presets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "state": "ok",
+        "requested_tier": requested,
+        "effective_tier": effective_tier,
+        "fell_back_to_strict": fell_back,
+        "policy": policy,
+        "repo_settings": repo,
+        "presets": presets
+    })
+}
+
+pub fn tier_get(home: &Path) -> Value {
+    let raw = std::fs::read_to_string(tiers_file(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| json!({ "tier": "normal" }));
+    expand_tier_state(&raw)
+}
+
+pub fn tier_set(home: &Path, body: &Value) -> Result<Value, (StatusCode, &'static str)> {
+    let o = body
+        .as_object()
+        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_request"))?;
+    if o.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "type" | "tier" | "overrides" | "repo_settings" | "save_preset"
+        )
+    }) {
+        return Err((StatusCode::BAD_REQUEST, "bad_tier_request"));
+    }
+    let tier = o
+        .get("tier")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "strict" | "normal" | "fast"))
+        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_name"))?;
+    if let Some(ov) = o.get("overrides") {
+        let ov_obj = ov
+            .as_object()
+            .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
+        for (k, v) in ov_obj {
+            match k.as_str() {
+                "cell_max_min" => {
+                    let c = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
+                    if !(10..=140).contains(&c) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "spot" => {
+                    let s = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
+                    if !(2..=100).contains(&s) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "cells_max" => {
+                    let c = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_overrides"))?;
+                    if !(1..=8).contains(&c) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "reuse" => {
+                    if !v.as_str().is_some_and(valid_tier_reuse) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
+                    }
+                }
+                "knives" => {
+                    if !v.as_str().is_some_and(valid_tier_knives) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
+                    }
+                }
+                "retry_miss" => {
+                    if !v.as_str().is_some_and(valid_tier_retry_miss) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
+                    }
+                }
+                "platforms" => {
+                    if !v.as_str().is_some_and(valid_tier_platforms) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
+                    }
+                }
+                "overflow" => {
+                    if !v.as_str().is_some_and(valid_tier_overflow) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides"));
+                    }
+                }
+                _ => return Err((StatusCode::BAD_REQUEST, "bad_tier_overrides")),
+            }
+        }
+    }
+    if let Some(rs) = o.get("repo_settings") {
+        let rs_obj = rs
+            .as_object()
+            .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+        for (k, v) in rs_obj {
+            match k.as_str() {
+                "linux_knives" => {
+                    if !v.is_boolean() {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "knife_length_check" => {
+                    if !v.as_str().is_some_and(|s| matches!(s, "reject" | "warn")) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "script_max_knives" => {
+                    let k_val = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+                    if !(20..=300).contains(&k_val) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "script_max_min" => {
+                    let m = v
+                        .as_u64()
+                        .ok_or((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"))?;
+                    if !(5..=30).contains(&m) {
+                        return Err((StatusCode::BAD_REQUEST, "out_of_range"));
+                    }
+                }
+                "merge_batch_tz" => {
+                    if !v.as_str().is_some_and(|s| {
+                        let t = s.trim();
+                        !t.is_empty() && t.len() <= 64 && !t.chars().any(char::is_control)
+                    }) {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                "merge_batch_hours" => {
+                    let Some(arr) = v.as_array() else {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    };
+                    if arr.is_empty()
+                        || arr.len() > 24
+                        || arr.iter().any(|h| !h.as_u64().is_some_and(|n| n <= 23))
+                    {
+                        return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings"));
+                    }
+                }
+                _ => return Err((StatusCode::BAD_REQUEST, "bad_tier_repo_settings")),
+            }
+        }
+    }
+    let _turn = turn();
+    let path = tiers_file(home);
+    let mut cur = match std::fs::read_to_string(&path) {
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                let _ = std::fs::rename(&path, path.with_extension("json.bad"));
+                json!({ "tier": "normal", "presets": [] })
+            }
+        },
+        Err(_) => json!({ "tier": "normal", "presets": [] }),
+    };
+    cur["tier"] = json!(tier);
+    if let Some(ov) = o.get("overrides") {
+        cur["overrides"] = ov.clone();
+    } else if let Some(obj) = cur.as_object_mut() {
+        obj.remove("overrides");
+    }
+    if let Some(rs) = o.get("repo_settings") {
+        cur["repo_settings"] = rs.clone();
+    }
+    let mut dropped = 0usize;
+    if let Some(name) = o
+        .get("save_preset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 40)
+    {
+        let mut presets = cur
+            .get("presets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        presets.retain(|p| p.get("name").and_then(Value::as_str) != Some(name));
+        presets.push(json!({
+            "name": name,
+            "tier": tier,
+            "overrides": cur.get("overrides").cloned().unwrap_or_else(|| json!({}))
+        }));
+        if presets.len() > 20 {
+            dropped = presets.len() - 20;
+            presets.drain(0..dropped);
+        }
+        cur["presets"] = json!(presets);
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(&cur)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "tier_save_failed"))?;
+    std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "tier_save_failed"))?;
+    let mut out = expand_tier_state(&cur);
+    if dropped > 0 {
+        out["dropped"] = json!(dropped);
+    }
+    Ok(out)
+}
+
+pub async fn tier_get_act() -> Response {
+    match tokio::task::spawn_blocking(|| home_now().map(|h| tier_get(&h))).await {
+        Ok(Some(v)) => Json(v).into_response(),
+        _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
+    }
+}
+
+pub async fn tier_set_act(body: Value) -> Response {
+    match tokio::task::spawn_blocking(move || home_now().map(|h| tier_set(&h, &body))).await {
+        Ok(Some(Ok(v))) => Json(v).into_response(),
         Ok(Some(Err((status, code)))) => refuse(status, code),
         _ => refuse(StatusCode::INTERNAL_SERVER_ERROR, "no_home"),
     }
@@ -643,5 +1058,144 @@ mod tests {
         .expect("install");
         assert_eq!(installed["plugins"][0]["name"], "gamma");
         assert_eq!(installed["plugins"][0]["runs"], "ok");
+    }
+
+    #[test]
+    fn tier_get_and_set_enforce_phase1_and_save_presets() {
+        let h = home("tiers");
+        let init = tier_get(&h.0);
+        assert_eq!(init["effective_tier"], "normal");
+        assert_eq!(init["fell_back_to_strict"], false);
+
+        // Phase 1: fast falls back to strict
+        let fast = tier_set(&h.0, &json!({"type": TIER_SET, "tier": "fast"})).expect("fast");
+        assert_eq!(fast["requested_tier"], "fast");
+        assert_eq!(fast["effective_tier"], "strict");
+        assert_eq!(fast["fell_back_to_strict"], true);
+
+        // Out-of-range value rejected
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"cell_max_min": 5}})
+            )
+            .unwrap_err()
+            .1,
+            "out_of_range"
+        );
+
+        // Valid normal + custom preset saved
+        let saved = tier_set(
+            &h.0,
+            &json!({
+                "type": TIER_SET,
+                "tier": "normal",
+                "overrides": {"cell_max_min": 60},
+                "save_preset": "我的一般"
+            }),
+        )
+        .expect("saved");
+        assert_eq!(saved["effective_tier"], "normal");
+        assert_eq!(saved["fell_back_to_strict"], false);
+        assert_eq!(saved["policy"]["cell_max_min"], 60);
+        assert_eq!(saved["presets"][0]["name"], "我的一般");
+
+        // M1: strict + normal values must fall back to strict
+        let strict_plus_normal = tier_set(
+            &h.0,
+            &json!({
+                "type": TIER_SET,
+                "tier": "strict",
+                "overrides": {"spot": 10, "knives": "affected", "platforms": "primary", "cell_max_min": 90}
+            }),
+        )
+        .expect("strict plus normal");
+        assert_eq!(strict_plus_normal["fell_back_to_strict"], true);
+        assert_eq!(strict_plus_normal["effective_tier"], "strict");
+        assert_eq!(strict_plus_normal["policy"]["spot"], 5);
+
+        // M2: unknown string, string number, float, spot out-of-range all rejected
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"knives": "none"}})
+            )
+            .unwrap_err()
+            .1,
+            "bad_tier_overrides"
+        );
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot": "50"}})
+            )
+            .unwrap_err()
+            .1,
+            "bad_tier_overrides"
+        );
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"cell_max_min": 5.5}})
+            )
+            .unwrap_err()
+            .1,
+            "bad_tier_overrides"
+        );
+        assert_eq!(
+            tier_set(
+                &h.0,
+                &json!({"type": TIER_SET, "tier": "normal", "overrides": {"spot": 0}})
+            )
+            .unwrap_err()
+            .1,
+            "out_of_range"
+        );
+        // M2 on disk: corrupt/unknown override falls back to strict
+        std::fs::write(
+            tiers_file(&h.0),
+            r#"{"tier":"normal","overrides":{"knives":"none"}}"#,
+        )
+        .unwrap();
+        let disk_bad = tier_get(&h.0);
+        assert_eq!(disk_bad["fell_back_to_strict"], true);
+        assert_eq!(disk_bad["effective_tier"], "strict");
+
+        // M2 repo_settings: unknown string, string bool, bad merge_batch_hours rejected; unknown on disk falls back
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"knife_length_check": "off"}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"linux_knives": "true"}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        assert_eq!(
+            tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal", "repo_settings": {"merge_batch_hours": ["10"]}}))
+                .unwrap_err()
+                .1,
+            "bad_tier_repo_settings"
+        );
+        std::fs::write(
+            tiers_file(&h.0),
+            r#"{"tier":"normal","repo_settings":{"knife_length_check":"off"}}"#,
+        )
+        .unwrap();
+        let disk_bad_repo = tier_get(&h.0);
+        assert_eq!(disk_bad_repo["fell_back_to_strict"], true);
+        assert_eq!(disk_bad_repo["effective_tier"], "strict");
+        assert_eq!(
+            disk_bad_repo["repo_settings"]["knife_length_check"],
+            "reject"
+        );
+
+        // N1: corrupt JSON is backed up to .bad before overwrite
+        std::fs::write(tiers_file(&h.0), "{not json").unwrap();
+        let _ = tier_set(&h.0, &json!({"type": TIER_SET, "tier": "normal"})).expect("overwrite");
+        assert!(tiers_file(&h.0).with_extension("json.bad").exists());
     }
 }

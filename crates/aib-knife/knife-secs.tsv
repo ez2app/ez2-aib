@@ -104,7 +104,8 @@
 26	crates/aibd/knives/knives-06-stdin-provider-only.sh
 598	crates/aibd/knives/knives-07-seat-token.sh
 147	crates/aibd/knives/knives-08-seat-send.sh
-1229	crates/aibd/knives/knives-09-seat-talk-mcp.sh
+615	crates/aibd/knives/knives-09-seat-talk-mcp-2.sh
+615	crates/aibd/knives/knives-09-seat-talk-mcp.sh
 230	crates/aibd/knives/knives-10-seat-now.sh
 126	crates/aibd/knives/knives-11-contacts.sh
 107	crates/aibd/knives/knives-12-messages.sh
@@ -258,6 +259,7 @@
 144	crates/aibd/knives/knives-t97-update.sh
 162	crates/aibd/knives/knives-t97.sh
 119	crates/aibd/knives/knives-test-host-add.sh
+60	crates/aibd/knives/knives-time-saved.sh
 36	crates/aibd/knives/knives-touch-close.sh
 107	crates/aibd/knives/knives-touch-hud.sh
 44	crates/aibd/knives/knives-touch-limited.sh
