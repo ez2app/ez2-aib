@@ -508,7 +508,7 @@ fn argv_with(
             if !pipe_modes("copilot").contains(&mode) {
                 return Err(PipeRefused::ProviderMode("copilot".into(), mode.into()));
             }
-            let mut a = vec![
+            let a = vec![
                 "copilot".to_owned(),
                 "--output-format".to_owned(),
                 "json".to_owned(),
