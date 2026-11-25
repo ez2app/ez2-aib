@@ -12,7 +12,7 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | setup | status ... | install ... | uninstall ... | import <summary|handoff> [--dry-run | --undo] | start | stop | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | setup [--uninstall] | status ... | install ... | uninstall ... | import <summary|handoff> [--dry-run | --undo] | start | stop | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,14 +20,14 @@ fn main() -> ExitCode {
     // Windows setup (PLAN-win-customer-today-c2f0b-1126): the same program renamed
     // AIB-Setup.exe and double-clicked installs itself instead of starting the server
     if args.is_empty() && std::env::current_exe().is_ok_and(|e| aibd::winsetup::is_setup_exe(&e)) {
-        return match ctl::setup(true) {
+        return match ctl::setup(true, false) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::from(1),
         };
     }
     match args.as_slice() {
-        ["setup"] => {
-            return match ctl::setup(false) {
+        ["setup"] | ["setup", "--uninstall"] => {
+            return match ctl::setup(false, args.len() == 2) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(_) => ExitCode::from(1),
             };
@@ -281,8 +281,11 @@ fn selfcheck(json: bool) -> ExitCode {
         process,
         j0.as_ref(),
     );
+    // the channel this aibd really uses: on Windows an unset AIBD_PAIRING is Hello (8ced9f3eb6;
+    // f163c / 3e53b N1 on c2904f8cfa: the row said off)
     rows.push(aibd::selfcheck::pairing_row(
         std::env::var("AIBD_PAIRING").ok().as_deref(),
+        cfg!(windows),
     ));
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
