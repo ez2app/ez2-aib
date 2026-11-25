@@ -96,7 +96,7 @@ python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
 # g-turn-check (a turn started without the gate run again: what was added after the seat opened is loaded; 3e53b M1)
 python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '    if let Err(why) = (turns.check)(&turn_spec) {' \
-  '    if let Err(why) = (turns.check)(&turn_spec).and(Ok::<(), String>(())) {' \
+  '    if let Err(why) = (turns.check)(&turn_spec).or(Ok::<(), String>(())) {' \
   --expect-fail 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started' \
   -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started'
 # g-turn-gate (the per-turn check passes whatever the turn would load; 3e53b M1)
