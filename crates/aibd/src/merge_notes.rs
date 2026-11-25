@@ -51,14 +51,13 @@ pub fn attrs_say_cloud_only(attrs: u32) -> bool {
         != 0
 }
 
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-
 /// What one folder entry is to a merge copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {
     /// iCloud's `.name.icloud`, or cloud-only Windows attributes: the copy is refused.
     Placeholder,
-    /// A link, or (Windows) any other reparse point: a junction, a directory link; skipped.
+    /// A symlink; on Windows std counts a junction as one too (a name-surrogate reparse
+    /// point). Skipped.
     Link,
     Plain,
 }
@@ -67,11 +66,14 @@ pub enum Entry {
 /// platform: a OneDrive cloud-only file is a reparse point too, and must refuse the copy, not
 /// be skipped as a link. Pure (name, Windows attributes, is a symlink) so both orders are
 /// tested on Mac and Windows alike.
+/// L1 (f163c REVIEW-macts a2c64199): the reparse-point attribute alone is not a link. A
+/// OneDrive file downloaded or pinned keeps 0x400 with no recall bit: it is a plain note and
+/// is copied; only what std calls a symlink (links, junctions) is skipped.
 pub fn entry_kind(name: &str, attrs: u32, symlink: bool) -> Entry {
     if (name.starts_with('.') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs) {
         return Entry::Placeholder;
     }
-    if symlink || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    if symlink {
         return Entry::Link;
     }
     Entry::Plain
@@ -95,10 +97,9 @@ fn classify(name: &str, m: &std::fs::Metadata) -> Entry {
     entry_kind(name, attrs_of(m), m.file_type().is_symlink())
 }
 
-/// A link or a reparse point that is not a cloud placeholder (brain_note's fsops does the
-/// same); for files already known not to be placeholders (what a copy made).
+/// A symlink or (Windows) a junction, as [`entry_kind`] counts links; for what a copy made.
 fn is_link(m: &std::fs::Metadata) -> bool {
-    m.file_type().is_symlink() || attrs_of(m) & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    m.file_type().is_symlink()
 }
 
 /// Count a brain folder: regular files, bytes, placeholders; links are not followed.
@@ -569,14 +570,19 @@ mod tests {
     #[test]
     fn a_placeholder_is_asked_before_a_link_on_every_platform() {
         const RECALL: u32 = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
-        const REPARSE: u32 = FILE_ATTRIBUTE_REPARSE_POINT;
+        const REPARSE: u32 = 0x400;
         // a OneDrive cloud-only file is a reparse point too: refused, not skipped
         assert_eq!(
             entry_kind("a.md", REPARSE | RECALL, false),
             Entry::Placeholder
         );
         assert_eq!(entry_kind(".a.md.icloud", 0, true), Entry::Placeholder);
-        assert_eq!(entry_kind("jdir", REPARSE, false), Entry::Link);
+        // a junction: std says symlink; a pinned OneDrive note: reparse point, plain (L1)
+        assert_eq!(entry_kind("jdir", REPARSE, true), Entry::Link);
+        assert_eq!(
+            entry_kind("a.md", 0x0008_0000 | 0x20 | REPARSE, false),
+            Entry::Plain
+        );
         assert_eq!(entry_kind("l.md", 0, true), Entry::Link);
         assert_eq!(entry_kind("a.md", 0, false), Entry::Plain);
     }

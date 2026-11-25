@@ -69,6 +69,12 @@ python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
 # mn-order (f163c REVIEW-macts ddb16d16 N1: a placeholder before a link)
 python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
   '    if (name.starts_with('\''.'\'') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs) {' \
-  '    if ((name.starts_with('\''.'\'') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs)) && !(symlink || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0) {' \
+  '    if ((name.starts_with('\''.'\'') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs)) && !symlink {' \
+  --expect-fail 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform' \
+  -- cargo test -p aibd --locked --lib 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform'
+# mn-pinned (f163c REVIEW-macts a2c64199 L1: a reparse point alone is not a link)
+python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
+  '    if symlink {' \
+  '    if symlink || attrs & 0x400 != 0 {' \
   --expect-fail 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform' \
   -- cargo test -p aibd --locked --lib 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform'
