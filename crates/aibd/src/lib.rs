@@ -45,6 +45,7 @@ pub mod lineage;
 pub mod mail_nudge;
 pub mod merge_acts;
 pub mod merge_find;
+pub mod merge_notes;
 pub mod merge_plan;
 pub mod messages;
 pub mod nodes;

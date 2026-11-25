@@ -13,6 +13,7 @@
 
 use crate::api::AppState;
 use crate::merge_find::{self, Item};
+use crate::merge_notes;
 use crate::merge_plan::{self, StepState};
 use aib_store::registry_archive::{ArchivedItem, MergeBatch, MergeStep};
 use axum::http::StatusCode;
@@ -34,63 +35,11 @@ pub const OP_BRAIN: &str = "merge.brain";
 const PLAN_TTL_SECS: u64 = 600;
 const PLAN_CACHE_MAX: usize = 64;
 const NAME_MAX_CHARS: usize = 20;
-const NOTES_MAX_FILES: usize = 2000;
-const NOTES_MAX_BYTES: u64 = 200 * 1024 * 1024;
-const NOTE_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NotesCheck {
-    pub files: usize,
-    pub bytes: u64,
-    pub cloud_placeholders: usize,
-    pub over_limit: bool,
-}
-
-fn is_cloud_placeholder(name: &str) -> bool {
-    name.starts_with('.') && name.ends_with(".icloud")
-}
-
-/// 8c (DESIGN-merge §4b-2): scan a brain folder without following symlinks, counting regular
-/// files, total bytes, and iCloud placeholders.
-pub fn scan_brain_notes(root: &Path) -> NotesCheck {
-    let mut check = NotesCheck::default();
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(d) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            let Ok(meta) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            if meta.file_type().is_symlink() {
-                continue;
-            }
-            let name = e.file_name().to_string_lossy().into_owned();
-            if is_cloud_placeholder(&name) {
-                check.cloud_placeholders += 1;
-                continue;
-            }
-            if meta.is_dir() {
-                dirs.push(p);
-            } else if meta.is_file() {
-                let len = meta.len();
-                check.files += 1;
-                check.bytes = check.bytes.saturating_add(len);
-                if len > NOTE_MAX_FILE_BYTES
-                    || check.files > NOTES_MAX_FILES
-                    || check.bytes > NOTES_MAX_BYTES
-                {
-                    check.over_limit = true;
-                }
-            }
-        }
-    }
-    check
-}
-
-use std::path::Path;
+use crate::merge_notes::{
+    scan as scan_brain_notes, NotesCheck, MAX_BYTES as NOTES_MAX_BYTES,
+    MAX_FILES as NOTES_MAX_FILES,
+};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
 struct CachedPlan {
@@ -826,6 +775,17 @@ fn execute_merge(
     let mut seq: i64 = 0;
     let data = crate::registry::data_of(st);
 
+    if kind == "brain" {
+        if let Err(code) = copy_notes(st, groups, &batch_id, &data, &mut seq) {
+            let _ = st.messages.merge_batch_state(&batch_id, "failed");
+            return Err(Box::new(err(
+                StatusCode::CONFLICT,
+                code,
+                "筆記複製沒有完成，已全部收回，什麼都沒改",
+            )));
+        }
+    }
+
     for g in groups {
         let keep = g["keep"].as_str().unwrap_or_default();
         let merge_list = g["merge"].as_array().map_or(&[][..], Vec::as_slice);
@@ -1121,6 +1081,106 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
     }
 }
 
+/// Where a brain's folder is: its route key and the folder under the brain library.
+fn brain_dir(
+    root: &Path,
+    reg: &crate::registry::Registry,
+    uid: &str,
+) -> Result<(String, PathBuf), &'static str> {
+    let rk = reg
+        .brains
+        .iter()
+        .find(|b| b.uid == uid)
+        .and_then(|b| b.route_key.clone())
+        .ok_or("brain_unknown")?;
+    let rel = crate::registry::brain_folder(root, &rk)?;
+    Ok((rk, root.join(rel)))
+}
+
+type Made = (PathBuf, merge_notes::Copied, PathBuf, i64);
+
+#[allow(clippy::too_many_arguments)]
+fn copy_all(
+    st: &AppState,
+    groups: &[Value],
+    batch_id: &str,
+    data: &Path,
+    seq: &mut i64,
+    root: &Path,
+    reg: &crate::registry::Registry,
+    made: &mut Vec<Made>,
+) -> Result<(), &'static str> {
+    for g in groups.iter().filter(|g| g["notes"] == "copy") {
+        let keep = g["keep"].as_str().unwrap_or_default();
+        let (keep_rk, keep_dir) = brain_dir(root, reg, keep)?;
+        for m in g["merge"].as_array().into_iter().flatten() {
+            let old_uid = m.as_str().unwrap_or_default();
+            let (rk, dir) = brain_dir(root, reg, old_uid)?;
+            *seq += 1;
+            st.messages
+                .merge_step_pending(MergeStep {
+                    batch_id: batch_id.to_string(),
+                    seq: *seq,
+                    op: "notes_copy".to_string(),
+                    target: old_uid.to_string(),
+                    before_json: json!({"copied": false}).to_string(),
+                    planned_after_json: json!({"copied": true, "into": keep}).to_string(),
+                    state: "pending".to_string(),
+                })
+                .map_err(|_| "notes_copy_failed")?;
+            let c = merge_notes::copy_into(&dir, &keep_dir, &rk)?;
+            let Some(mpath) = merge_notes::manifest_path(data, batch_id, *seq) else {
+                merge_notes::remove_copy(&keep_dir, &c);
+                return Err("notes_copy_failed");
+            };
+            if let Err(e) = merge_notes::write_manifest(&mpath, &keep_rk, &c) {
+                merge_notes::remove_copy(&keep_dir, &c);
+                return Err(e);
+            }
+            made.push((keep_dir.clone(), c, mpath, *seq));
+            let _ = st.messages.merge_step_state(batch_id, *seq, "done");
+        }
+    }
+    Ok(())
+}
+
+/// 8c (DESIGN-merge §4b-2): every `notes: copy` group copies its merged brains' notes into the
+/// kept brain before anything else in the run changes. One copy failing takes back every copy
+/// this run made (folders and manifests), so a refused run leaves no half copy.
+fn copy_notes(
+    st: &AppState,
+    groups: &[Value],
+    batch_id: &str,
+    data: &Path,
+    seq: &mut i64,
+) -> Result<(), &'static str> {
+    if !groups.iter().any(|g| g["notes"] == "copy") {
+        return Ok(());
+    }
+    let root = crate::brain_note::library()?;
+    let reg = crate::registry::load(data).map_err(|_| "brain_index_unreadable")?;
+    let mut made: Vec<Made> = Vec::new();
+    let res = copy_all(st, groups, batch_id, data, seq, &root, &reg, &mut made);
+    if res.is_err() {
+        for (keep_dir, c, mpath, s) in made.iter().rev() {
+            merge_notes::remove_copy(keep_dir, c);
+            let _ = std::fs::remove_file(mpath);
+            let _ = st.messages.merge_step_state(batch_id, *s, "undone");
+        }
+    }
+    res
+}
+
+/// Undo one `notes_copy` step: what is still as copied goes to `<data>/archive/merge-undo/`.
+fn undo_notes(data: &Path, batch_id: &str, seq: i64) -> Option<merge_notes::TookBack> {
+    let mpath = merge_notes::manifest_path(data, batch_id, seq)?;
+    let (keep_rk, c) = merge_notes::read_manifest(&mpath)?;
+    let root = crate::brain_note::library().ok()?;
+    let keep_dir = root.join(crate::registry::brain_folder(&root, &keep_rk).ok()?);
+    let undo_dir = data.join("archive").join("merge-undo").join(batch_id);
+    Some(merge_notes::take_back(&keep_dir, &c, &undo_dir))
+}
+
 fn execute_undo(st: &AppState, batch: &MergeBatch) -> Result<Value, Box<Response>> {
     let steps = st.messages.merge_steps(&batch.batch_id).map_err(|_| {
         Box::new(err(
@@ -1190,6 +1250,22 @@ fn execute_undo(st: &AppState, batch: &MergeBatch) -> Result<Value, Box<Response
                             merge_plan::Back::Skip => {}
                         }
                     }
+                }
+            }
+            "notes_copy" => {
+                if state == StepState::Done {
+                    if let Some(t) = undo_notes(&data, &batch.batch_id, s.seq) {
+                        if !t.changed.is_empty() {
+                            kept_changed.push(json!({
+                                "target": s.target,
+                                "why": "複製過去的筆記合併後改過，留在原地",
+                                "files": t.changed,
+                            }));
+                        }
+                    }
+                    let _ = st
+                        .messages
+                        .merge_step_state(&batch.batch_id, s.seq, "undone");
                 }
             }
             _ => {}
