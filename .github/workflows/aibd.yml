@@ -4166,6 +4166,9 @@ jobs:
         if: >-
           env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
           && strategy.job-index == 0 && steps.kcache.outputs.cache-hit != 'true'
+        # f163c 7659cc6296 L1: a cold build past 40 minutes or out of disk must not turn main's cell 1 red
+        # (the knives below still run; the save only follows a success)
+        continue-on-error: true
         timeout-minutes: 40
         shell: bash
         env:
@@ -4192,8 +4195,9 @@ jobs:
         env:
           HIT: ${{ steps.kcache.outputs.cache-hit }}
           MATCHED: ${{ steps.kcache.outputs.cache-matched-key }}
+          WARM: ${{ steps.kwarm.outcome }}
         run: |
-          echo "Linux knife cache: hit=${HIT:-false} matched=${MATCHED:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Linux knife cache: hit=${HIT:-false} matched=${MATCHED:-none} build=${WARM:-skipped}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: knife timer
         if: env.RUN == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
