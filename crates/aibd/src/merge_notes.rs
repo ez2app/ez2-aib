@@ -585,6 +585,9 @@ mod tests {
         );
     }
 
+    // symlinks need no privilege only on unix; Windows' copy refuses links by the same
+    // symlink_metadata check (UNVERIFIED on a Windows machine)
+    #[cfg(unix)]
     #[test]
     fn links_are_not_followed() {
         let (t, src, keep) = tree();
