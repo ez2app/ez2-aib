@@ -94,6 +94,15 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
     }
 }
 
+/// `rel` of the pack is still the file its sum names, read again right before it is run: the
+/// folder may be one other accounts of the machine can write (c2f0b 16:19 L), so the check at
+/// the start is not enough.
+fn still_same(pack: &Path, rel: &str, sums: &std::collections::BTreeMap<String, String>) -> bool {
+    std::fs::read(pack.join(rel))
+        .ok()
+        .is_some_and(|b| sums.get(rel).is_some_and(|w| *w == sha256_hex(&b)))
+}
+
 /// y / n from the person; anything else asks again. `None` when there is no one to ask.
 fn ask(q: &str) -> Option<bool> {
     let stdin = std::io::stdin();
@@ -142,6 +151,7 @@ fn main() -> ExitCode {
         std::env::consts::ARCH
     ));
     r.line(format!("STARTED {started}"));
+    r.line("EVIDENCE hands-on measurement, not signed evidence");
     match std::fs::read_to_string(a.pack.join("HEAD")) {
         Ok(h) => r.line(format!("HEAD {}", h.trim())),
         Err(e) => r.red(format!("HEAD-UNKNOWN {e}")),
@@ -195,6 +205,13 @@ fn main() -> ExitCode {
             let file = t.trim_start_matches("tests/");
             print!("{} …", suite_name(file));
             let _ = std::io::stdout().flush();
+            if !sums.as_ref().is_ok_and(|s| still_same(&a.pack, t, s)) {
+                suite_red = true;
+                r.red(format!(
+                    "SUMS-CHANGED {t} (changed after the check; not run)"
+                ));
+                continue;
+            }
             let (rc, out, ms) = run(&a.pack.join(t), &[], &work);
             let c = parse_results(&out);
             println!(" {} 過 / {} 紅", c.passed, c.failed);
@@ -245,6 +262,13 @@ fn main() -> ExitCode {
                 r.red(format!("STEP-MISSING {} {}", s.name, s.exe));
                 continue;
             };
+            if !sums.as_ref().is_ok_and(|x| still_same(&a.pack, &exe, x)) {
+                r.red(format!(
+                    "SUMS-CHANGED {exe} (changed after the check; step {} not run)",
+                    s.name
+                ));
+                continue;
+            }
             r.line(format!("STEP-BEGIN {}", s.name));
             let (rc, out, ms) = run(&a.pack.join(&exe), &step_args(s), &work);
             for l in out.lines() {
