@@ -1,11 +1,23 @@
 //! L2 (f163c REVIEW-l2-c2f0b-f163c-b029c9cc L1): a session that had to wait for a slot is
 //! checked again when it leaves the queue: a program in aibd's providers folder that is not
 //! the measured file does not start, even when it was put there while the session waited.
-#![cfg(unix)]
+//! Both platforms: Windows is the one where the held handle stops a change (f163c / 3e53b N).
 
 use aib_store::Store;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// a program that stays (the slot holder) and one to copy into the providers folder
+const STAY: &[&str] = if cfg!(windows) {
+    &[r"C:\Windows\System32\ping.exe", "-n", "30", "127.0.0.1"]
+} else {
+    &["/bin/sleep", "30"]
+};
+const COPY: &str = if cfg!(windows) {
+    r"C:\Windows\System32\whoami.exe"
+} else {
+    "/bin/echo"
+};
 
 fn req(argv: &[&str]) -> aibd::sessions::Request {
     aibd::sessions::Request {
@@ -28,21 +40,21 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
     let s = aibd::sessions::Sessions::new(
         store,
         None,
-        aibd::platform::session_unix::spawn,
+        aibd::platform::default_spawn(),
         1,
         sessions_dir,
     );
 
     // the one slot is taken
-    let a = s.start_for_seat(None, req(&["/bin/sleep", "30"])).unwrap();
+    let a = s.start_for_seat(None, req(STAY)).unwrap();
     assert_eq!(a.state, "running");
 
     // a program in the providers folder, by the measured version's own path; while its
     // session waits, the file there is not the measured one (put there, or changed)
     let dir = data.join("providers").join("claude").join("2.1.326");
     std::fs::create_dir_all(&dir).unwrap();
-    let placed = dir.join("claude");
-    std::fs::copy("/bin/echo", &placed).unwrap();
+    let placed = dir.join(aibd::provider_fetch::program_name("claude"));
+    std::fs::copy(COPY, &placed).unwrap();
     let b = s
         .start_for_seat(None, req(&[placed.to_str().unwrap(), "hi"]))
         .unwrap();

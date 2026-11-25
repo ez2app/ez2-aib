@@ -523,6 +523,29 @@ mod tests {
                 "reason: linked_step_opened"
             );
         }
+        // the same on Windows, with a directory link (a junction is a reparse point too, and
+        // `is_symlink` is true for both; the runner can make links, so no skip)
+        #[cfg(windows)]
+        {
+            let other = tempfile::tempdir().unwrap();
+            let store = other.path().join("store");
+            let vdir = store.join("claude").join("9.9.9");
+            std::fs::create_dir_all(&vdir).unwrap();
+            std::fs::write(vdir.join(&name), body).unwrap();
+            std::os::windows::fs::symlink_dir(&store, other.path().join("providers"))
+                .expect("make a directory link (the Windows runner allows it)");
+            let via = other
+                .path()
+                .join("providers")
+                .join("claude")
+                .join("9.9.9")
+                .join(&name);
+            assert_eq!(
+                placed_check(other.path(), &via, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: linked_step_opened"
+            );
+        }
 
         // the customer's own program elsewhere: the policy rules it
         let own = data.path().join("elsewhere");

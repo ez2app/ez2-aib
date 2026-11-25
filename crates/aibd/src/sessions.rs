@@ -2089,9 +2089,15 @@ impl Sessions {
     /// A program aibd placed (`<data>/providers/…`, data = the sessions folder's parent, as
     /// `registry::data_of`) checked against the measured table again; the checked handle back.
     /// Refused ⇒ `program_not_allowed` on the queued session (the exact word is logged).
+    /// Runs on the dequeue thread (a plain thread, not a runtime worker): hashing a large
+    /// program holds up only the queue, which waits for this one anyway (3e53b r7 N1).
     fn placed_now(&self, argv0: Option<&str>) -> Result<Option<std::fs::File>, ErrorCode> {
-        let (Some(argv0), Some(data)) = (argv0, self.default_cwd.parent()) else {
+        let Some(argv0) = argv0 else {
             return Ok(None);
+        };
+        // no data folder to look in: refused, never started unchecked (3e53b r7 N2)
+        let Some(data) = self.default_cwd.parent() else {
+            return Err(ErrorCode::ProgramNotAllowed);
         };
         crate::provider_fetch::maker::placed_for_seat(data, std::path::Path::new(argv0)).map_err(
             |why| {
