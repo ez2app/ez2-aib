@@ -507,11 +507,19 @@ fn reaping_row(r: &ChildReaping) -> Row {
 /// not the running aibd's, which a service may have started with another value (5d33a
 /// REVIEW-pweak L1); the row says so (`source=this_shell`). A weak pairing is `unverified`
 /// with the plain sentence; it never fails the check.
-pub fn pairing_row(env_value: Option<&str>) -> Row {
-    let ch = crate::pairing::ConfirmChannel::from_env_value(env_value);
-    let mut row = match ch.method() {
-        None => Row::new("pairing", Status::Ok, "off (the default)"),
-        Some(_) => Row::new(
+/// `windows`: this aibd runs on Windows, where an unset value is Hello ([`crate::pairing::ConfirmChannel::from_env_here`]).
+pub fn pairing_row(env_value: Option<&str>, windows: bool) -> Row {
+    use crate::pairing::ConfirmChannel;
+    let ch = ConfirmChannel::from_env_here(env_value, windows);
+    let mut row = match ch {
+        ConfirmChannel::Off => Row::new("pairing", Status::Ok, "off"),
+        // the owner's fingerprint / Windows Hello, never the weak y (f163c / 3e53b N1)
+        ConfirmChannel::TouchId => Row::new(
+            "pairing",
+            Status::Ok,
+            if windows { "Windows Hello" } else { "Touch ID" },
+        ),
+        ConfirmChannel::TerminalUnverified => Row::new(
             "pairing",
             Status::Unverified,
             "WEAK pairing on: answering y in the terminal only means this account on this machine agreed, not the person (an AI on the same account can answer); it ends when Windows Hello / Touch ID pairing lands",
@@ -583,9 +591,23 @@ pub fn render_json(rows: &[Row]) -> serde_json::Value {
 mod tests {
     #[test]
     fn the_pairing_row_names_a_weak_pairing_and_never_fails() {
-        let off = pairing_row(None);
+        let off = pairing_row(None, false);
+        assert_eq!(off.detail, "off");
+        // f163c / 3e53b N1 (c2904f8cfa): the row names the channel this aibd really uses; on
+        // Windows an unset value is Hello, and Touch ID / Hello is never called off or weak
+        let hello = pairing_row(None, true);
+        assert_eq!(
+            (hello.status.clone(), hello.detail.as_str()),
+            (Status::Ok, "Windows Hello")
+        );
+        let touch = pairing_row(Some("touchid"), false);
+        assert_eq!(
+            (touch.status.clone(), touch.detail.as_str()),
+            (Status::Ok, "Touch ID")
+        );
+        assert_eq!(pairing_row(Some("off"), true).detail, "off");
         assert_eq!((off.name, off.status.clone()), ("pairing", Status::Ok));
-        let asked = pairing_row(Some("terminal-unverified"));
+        let asked = pairing_row(Some("terminal-unverified"), true);
         // a20 r3b: weak and named so on every platform
         assert_eq!(asked.status, Status::Unverified);
         assert!(asked.detail.contains("not the person"), "{}", asked.detail);
