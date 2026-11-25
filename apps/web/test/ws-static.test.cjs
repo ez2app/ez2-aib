@@ -206,6 +206,11 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/typeof b\.clock_ms !== 'number'\) return head \+/.test(ws), 'reason: time_saved_missing_number_draws_zero');
   ok(ws.includes('tsDur(b.clock_ms)') && !/tsDur\(b\.total/.test(ws), 'reason: time_saved_shows_unit_time_sum');
   for (const w of ['not_installed', 'off', 'not_runnable', 'unreadable', 'no_answer', 'bad_answer']) ok(new RegExp('\\b' + w + ": '").test(ws), 'reason: time_saved_state_without_words ' + w);
+  // f163c REVIEW-post884 M1:skipstop_tier_set 回 dropped = 刪掉最舊的幾組(數字);頁面要說刪了幾組,沒有就不說
+  { const a = ws.indexOf('  function tierHtml('), b = ws.indexOf('\n  }\n', a); const src = a >= 0 && b > a ? ws.slice(a, b + 4) : '';
+    const run = (r) => { const c = vm.createContext({ S: { tier: { r, at: 1 }, ts: null }, hasAct: () => true, esc: (x) => String(x), fmtMs: () => '0 秒', setTimeout: () => 0 }); vm.runInContext(src + '\nthis.f = tierHtml;', c); return c.f(); };
+    const h2 = run({ effective_tier: 'normal', policy: {}, dropped: 2 }), h0 = run({ effective_tier: 'normal', policy: {} });
+    ok(src.length > 500 && h2.includes('<div class="thm" role="status">範本超過 20 組，已刪掉最舊的 2 組</div>') && !h0.includes('範本超過') && !run({ effective_tier: 'normal', policy: {}, dropped: 0 }).includes('範本超過'), 'reason: tier_set_dropped_count_said ' + h2.slice(h2.indexOf('thm'), h2.indexOf('thm') + 200)); }
 }
 // 15d. c5d88 H1b 外掛區:沒有 plugin_list 不畫;開關只在有 plugin_set 且開關檔讀得懂(on 不是 null)時才有鈕;每個 runs 字與錯誤碼都有人話
 {
