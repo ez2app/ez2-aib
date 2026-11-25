@@ -1680,7 +1680,7 @@ const hsChecks = (async () => {
   // ja / ko 是提案字(未核);Windows / Apple 介面原名(unavailable、finger_not_now、pin)ja / ko 不給 ⇒ 退英文,不猜
   const WANT_L = {
     en: {
-      owner_check_too_weak: "This computer's owner check is not strong enough, so this action is not available.",
+      owner_check_too_weak: "This computer's owner verification is not strong enough, so this action is not available.",
       owner_check_unmeasured: "Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.",
       unavailable: "AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.",
       no_biometry: "Windows Hello is not set up on this computer.",
@@ -1691,7 +1691,7 @@ const hsChecks = (async () => {
       pair_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
       owner_check_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
       pair_key_missing: "This computer has no pairing key yet. Make a pairing key first.",
-      pair_touch_not_on_this_system: "This computer's system does not support the owner check yet.",
+      pair_touch_not_on_this_system: "This computer's system does not support owner verification yet.",
       passphrase_locked: "The passphrase was wrong too many times, so it is locked for now.",
       owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
       policy_no_native: "No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).",
@@ -1699,7 +1699,7 @@ const hsChecks = (async () => {
       policy_write_failed: "AIB could not write the seat-opening setup file. Nothing was changed. You can press again.",
       policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
       pin: "If this computer has a Windows sign-in password but Windows Hello is not set up yet: open Settings → Accounts → Sign-in options → PIN (Windows Hello), press Set up, then press again.",
-      class_na: "Which kind of owner check this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
       lock_at: "You can try again after {t}.",
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
     },
