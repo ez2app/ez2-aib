@@ -241,8 +241,24 @@ pub fn file_state(p: &Path) -> &'static str {
     }
 }
 
+/// Names that carry a key or a credential (Andy 11-26 02:0x via ebab8: a seat uses the login the
+/// provider already has on this computer, and a policy the page writes passes no key). `aibd ctl
+/// policy init` still lists them; a person who wants one adds it to the file by hand.
+pub const KEY_ENV: [&str; 6] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+fn is_key(name: &str) -> bool {
+    KEY_ENV.iter().any(|k| k.eq_ignore_ascii_case(name))
+}
+
 /// The policy file's text for what `looks` found native (paths that are not UTF-8 are left
-/// out), with the [`allowlist::PREFILL_ENV`] names that are set; `None` when no native one.
+/// out), with the [`allowlist::PREFILL_ENV`] names that are set, but no [`KEY_ENV`]; `None` when no native one.
 /// Checked with aibd's own parser: what is written is what aibd will load.
 pub fn policy_text(looks: &[Look], is_set: impl Fn(&str) -> bool) -> Option<String> {
     let programs: Vec<Value> = looks
@@ -256,7 +272,8 @@ pub fn policy_text(looks: &[Look], is_set: impl Fn(&str) -> bool) -> Option<Stri
     if programs.is_empty() {
         return None;
     }
-    let text = json!({"programs": programs, "env": allowlist::prefill_env(is_set)}).to_string();
+    let env = allowlist::prefill_env(|k| !is_key(k) && is_set(k));
+    let text = json!({"programs": programs, "env": env}).to_string();
     allowlist::parse(&text).ok()?;
     Some(text)
 }
@@ -627,6 +644,30 @@ mod tests {
             Err(InitRefused::WriteFailed)
         );
         assert!(!d.path().join("other.json").exists());
+    }
+
+    /// Andy 11-26 02:0x: the page writes no key name, even when aibd has the variable set; the
+    /// names that are not keys (a proxy) are kept.
+    #[test]
+    fn a_policy_the_page_writes_names_no_key() {
+        let l = Look {
+            name: "claude".into(),
+            kind: LookKind::Native,
+            path: Some(std::env::temp_dir().join("claude")),
+            why: String::new(),
+        };
+        let t = policy_text(&[l], |_| true).unwrap();
+        let p = allowlist::parse(&t).unwrap();
+        for k in KEY_ENV {
+            assert!(
+                !p.env.iter().any(|e| e.eq_ignore_ascii_case(k)),
+                "reason: key_name_written {k} {t}"
+            );
+        }
+        assert!(
+            p.env.iter().any(|e| e == "HTTPS_PROXY"),
+            "reason: proxy_dropped {t}"
+        );
     }
 
     /// r3 at the lowest layer: even with the checks above it gone, the write itself never

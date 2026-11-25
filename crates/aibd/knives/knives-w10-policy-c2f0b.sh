@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix   # the act's own test is cfg(unix) (the seat-input harness); the lib tests run anywhere
-# WP1–WP7 (W-10, IFACE-w10-session-policy-c2f0b-1125 r5): the page writes the session policy only with native
+# WP1–WP8 (W-10, IFACE-w10-session-policy-c2f0b-1125 r5): the page writes the session policy only with native
 # programs found by aibd, after a fresh owner check, never over a file already there, from a body that names
 # nothing, and the policy is in force at once. Each, broken, turns its own test red. Run from the repo root.
 set -eu
@@ -38,3 +38,7 @@ wi '    if o.keys().any(|k| k != "type" && k != "ticket") {' \
 wi '    if o.keys().any(|k| k != "type" && k != "ticket") {' \
    '    if o.keys().any(|k| k != "type") { // knife' \
    the_page_writes_the_policy_once_after_a_fresh_owner_check
+# WP8 a key name aibd has set is written into the page's policy (Andy 11-26: use the login already there)
+wl '    let env = allowlist::prefill_env(|k| !is_key(k) && is_set(k));' \
+   '    let env = allowlist::prefill_env(|k| is_set(k) || is_key(k)); // knife' \
+   a_policy_the_page_writes_names_no_key
