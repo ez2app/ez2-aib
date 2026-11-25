@@ -243,3 +243,33 @@ python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '                let _ = d;' \
   --expect-fail 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started' \
   -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started'
+# c-keep-home (the seat's spawn env loses the home the gate made: it runs with the user's own ~/.copilot; 3e53b REVIEW-copilot e3d07aff L1)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '    req.env.extend(own_home);' \
+  '    req.env.extend(own_home.filter(|_| false));' \
+  --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
+  -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
+# c-seat-env-call (the gate makes the home but never puts it in the seat's env; 3e53b L1)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '                    copilot_seat_env(&mut req, &policy, &h);' \
+  '                    copilot_seat_env(&mut req, &policy, &h); req.env.retain(|(k, _)| k != "COPILOT_HOME");' \
+  --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
+  -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
+# c-clear-call (the homes an earlier aibd left stay after a start; 3e53b N3)
+python3 -I scripts/knife.py crates/aibd/src/server.rs \
+  '    let left = crate::copilot_wire::clear_homes(&dirs.data_dir().join(crate::copilot_wire::HOMES));' \
+  '    let left = crate::copilot_wire::clear_homes(&dirs.data_dir().join("not-the-homes"));' \
+  --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
+  -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
+# c-home-link (a link named like a home is taken as one and removed; 3e53b N3)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        let dir = std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir());' \
+  '        let dir = std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir());' \
+  --expect-fail 'copilot_wire::tests::the_homes_an_earlier_aibd_left_go_at_start' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::the_homes_an_earlier_aibd_left_go_at_start'
+# c-trust-real (a trusted link to the seat's folder is not seen: paths compared as written; 3e53b N2)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());' \
+  '    let real = |p: &Path| p.to_path_buf();' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'

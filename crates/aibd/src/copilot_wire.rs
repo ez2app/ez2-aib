@@ -191,6 +191,43 @@ fn user_ok(v: &Value) -> bool {
     v.get("host").and_then(Value::as_str) == Some("https://github.com") && login_ok
 }
 
+/// Is `cwd` the folder `f` or under it (3e53b REVIEW-copilot e3d07aff N2)? Both real paths
+/// (links followed); where the file system ignores case (macOS, Windows) the case too, so a
+/// trusted `/users/x` covers `/Users/X/repo`. Read wide: a wrong yes refuses a seat, a wrong
+/// no would run a trusted folder's hooks.
+fn folder_under(cwd: &Path, f: &Path) -> bool {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (c, f) = (real(cwd), real(f));
+    if c.starts_with(&f) {
+        return true;
+    }
+    let fold = |p: &Path| std::path::PathBuf::from(p.to_string_lossy().to_lowercase());
+    cfg!(any(target_os = "macos", windows)) && fold(&c).starts_with(fold(&f))
+}
+
+/// The seat homes an earlier aibd left (3e53b REVIEW-copilot e3d07aff N3: a home is removed
+/// when its seat's turn thread ends, so an aibd that died leaves its homes, with the
+/// conversations copilot wrote there). Called once at start, before any seat (a seat brought
+/// back gets a new home at its gate): every `c_<letters and digits>` folder under `homes` goes;
+/// a link or anything else named otherwise is left. How many went.
+pub fn clear_homes(homes: &Path) -> usize {
+    let Ok(list) = std::fs::read_dir(homes) else {
+        return 0;
+    };
+    let mut gone = 0;
+    for e in list.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let ours = name
+            .strip_prefix("c_")
+            .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric()));
+        let dir = std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir());
+        if ours && dir && std::fs::remove_dir_all(e.path()).is_ok() {
+            gone += 1;
+        }
+    }
+    gone
+}
+
 /// The seat's own copilot home (DESIGN-copilot-seat-home-08de5-1125, c2f0b PRE-READ): a new
 /// folder under `homes`, owner only, holding a `config.json` with the signed-in user copied
 /// from `user_config` (`loggedInUsers` / `lastLoggedInUser`, github.com only) and nothing
@@ -321,7 +358,7 @@ pub fn nothing_runs(
                 let Some(f) = f.as_str() else {
                     return Err(format!("{name} trustedFolders not read"));
                 };
-                if cwd.starts_with(f) {
+                if folder_under(cwd, Path::new(f)) {
                     return Err(
                         "the seat's folder is trusted by copilot: its repository hooks run"
                             .to_owned(),
@@ -496,6 +533,31 @@ mod tests {
             nothing_runs(&env(&[]), &cwd).is_err(),
             "reason: trusted_folder_opens"
         );
+        // N2: a link to it trusted, or the same folder in other letters where case is ignored
+        #[cfg(unix)]
+        {
+            let link = d.path().join("link");
+            std::os::unix::fs::symlink(&cwd, &link).unwrap();
+            cfg(&format!(
+                r#"{{"trustedFolders":[{:?}]}}"#,
+                link.to_string_lossy()
+            ));
+            assert!(
+                nothing_runs(&env(&[]), &cwd).is_err(),
+                "reason: trusted_link_opens"
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            cfg(&format!(
+                r#"{{"trustedFolders":[{:?}]}}"#,
+                cwd.to_string_lossy().to_uppercase()
+            ));
+            assert!(
+                nothing_runs(&env(&[]), &cwd).is_err(),
+                "reason: trusted_other_case_opens"
+            );
+        }
         cfg(r#"{"trustedFolders":"x"}"#);
         assert!(
             nothing_runs(&env(&[]), &cwd).is_err(),
@@ -622,6 +684,27 @@ mod tests {
             );
         }
         assert!(!env_dropped("COPILOT_HOME") && !env_dropped("HOME") && !env_dropped("PATH"));
+    }
+
+    /// N3: what an earlier aibd left goes at start; nothing else in the folder does.
+    #[test]
+    fn the_homes_an_earlier_aibd_left_go_at_start() {
+        let d = tempfile::tempdir().unwrap();
+        let homes = d.path().join(HOMES);
+        assert_eq!(clear_homes(&homes), 0, "no folder yet");
+        let left = homes.join("c_00ff");
+        std::fs::create_dir_all(left.join("session-state")).unwrap();
+        std::fs::write(left.join("session-state").join("s.jsonl"), "talk").unwrap();
+        std::fs::create_dir_all(homes.join("x_00ff")).unwrap();
+        std::fs::write(homes.join("c_file"), "").unwrap();
+        let outside = d.path().join("keep");
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, homes.join("c_link")).unwrap();
+        assert_eq!(clear_homes(&homes), 1, "reason: left_home_count");
+        assert!(!left.exists(), "reason: left_home_kept");
+        assert!(homes.join("x_00ff").exists() && homes.join("c_file").exists());
+        assert!(outside.exists(), "reason: link_followed");
     }
 
     #[test]

@@ -29,6 +29,12 @@
 //! text `hold`: no turn/completed). The text `ask` makes it send aibd a request first (an
 //! approval) and log aibd's answer. A turn/start before the thread exists ends it with rc 3.
 //!
+//! 08de5 11-25 (3e53b REVIEW-copilot e3d07aff L1): copied under the file name `copilot` it acts
+//! like copilot 1.0.115 for aibd's checks only: `--version` prints `GitHub Copilot CLI 1.0.115`,
+//! `mcp list --json` an empty list, and every start appends to `fake-copilot-env.log` in the
+//! current folder one JSON line: its args, the `COPILOT_HOME` it was given and the names in that
+//! folder (a test sees which home each probe and turn ran with). A turn reads stdin and ends.
+//!
 //! Never shipped: the release copies only `aibd` (aibd-release.yml).
 
 use std::io::{BufRead, Write};
@@ -194,6 +200,41 @@ fn hold_then_exit() -> ! {
     std::process::exit(0);
 }
 
+/// The `copilot` stand-in (see the file's head).
+fn copilot(args: &[String]) {
+    let home = std::env::var("COPILOT_HOME").ok();
+    let names: Vec<String> = home
+        .as_deref()
+        .and_then(|h| std::fs::read_dir(h).ok())
+        .map(|d| {
+            let mut v: Vec<String> = d
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("fake-copilot-env.log")
+    {
+        let line = serde_json::json!({"args": args, "COPILOT_HOME": home, "files": names});
+        let _ = writeln!(f, "{line}");
+    }
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("GitHub Copilot CLI 1.0.115");
+        return;
+    }
+    if args.ends_with(&["mcp".to_owned(), "list".to_owned(), "--json".to_owned()]) {
+        println!(r#"{{"mcpServers":{{}}}}"#);
+        return;
+    }
+    let mut sink = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut sink);
+}
+
 fn main() {
     if std::env::var("AIBD_PREVIEW").as_deref() == Ok("1") {
         preview_fake();
@@ -201,6 +242,14 @@ fn main() {
     }
     let pid = std::process::id();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let me = std::env::args().next().unwrap_or_default();
+    if std::path::Path::new(&me)
+        .file_stem()
+        .is_some_and(|n| n == "copilot")
+    {
+        copilot(&args);
+        return;
+    }
     if args.first().map(String::as_str) == Some("--version") {
         println!("codex-cli 0.167.0");
         return;
