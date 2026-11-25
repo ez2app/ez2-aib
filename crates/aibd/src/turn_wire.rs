@@ -66,6 +66,9 @@ pub struct Turns {
     /// anew and reads its set-up again every turn, so what was added after the seat opened (an
     /// MCP server, a hook, a plugin, another version) is found before that turn (3e53b M1).
     pub check: fn(&Spec) -> Result<(), String>,
+    /// A folder aibd made for this seat alone (copilot's own home, DESIGN-copilot-seat-home):
+    /// removed with everything in it when the seat ends.
+    pub own_dir: Option<PathBuf>,
 }
 
 /// Extract the plain user text from one Claude-style `stream-json` user line.
@@ -271,7 +274,7 @@ fn write_prompt_file(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
 }
 
 /// A new file at `path`, owner only: refused when anything is at that name, a link included.
-fn open_new_private(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_new_private(path: &Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -464,6 +467,9 @@ pub fn spawn(
                 }
                 turn += 1;
             }
+            if let Some(d) = turns.own_dir.as_deref() {
+                let _ = std::fs::remove_dir_all(d);
+            }
             let mut ex = locked(&st_bg.exit);
             if ex.is_none() {
                 *ex = Some(Exit::Code(0));
@@ -648,6 +654,7 @@ mod tests {
             lineage: None,
             prompt_dir: dir.join("turn-prompts"),
             check: folder_check,
+            own_dir: None,
         };
         let mut s = spawn(&spec, Some("CARD".into()), turns, Box::new(TestBrand(by))).unwrap();
         let mut input = s.take_input().unwrap();
@@ -737,7 +744,10 @@ mod tests {
             lineage: None,
             prompt_dir: d.path().join("turn-prompts"),
             check: folder_check,
+            own_dir: Some(d.path().join("own")),
         };
+        std::fs::create_dir(d.path().join("own")).unwrap();
+        std::fs::write(d.path().join("own").join("config.json"), "{}").unwrap();
         let brand = Box::new(TestBrand(PromptBy::Stdin));
         let mut s = spawn(&spec, None, turns, brand).unwrap();
         let mut input = s.take_input().unwrap();
@@ -768,6 +778,18 @@ mod tests {
             "reason: changed_set_up_started {r}"
         );
         assert_eq!(mine(d.path()).len(), 1, "reason: refused_turn_started");
+        // the seat's own folder goes with the seat (its input closed: the seat ends)
+        drop(turn);
+        drop(input);
+        let gone = (0..100).any(|_| {
+            let g = !d.path().join("own").exists();
+            if !g {
+                #[allow(clippy::disallowed_methods)] // a test's short poll, no timer to register
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            g
+        });
+        assert!(gone, "reason: own_dir_left");
     }
 
     /// Condition 4: a brand that takes its prompt on stdin gets the card and the words there,

@@ -195,3 +195,57 @@ python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
   '        code.is_some()' \
   --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
   -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
+# c-home-keys (the seat home takes the whole user config (hooks, trusted folders, plugins); DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    let mut cfg = json!({"loggedInUsers": users});' \
+  '    let mut cfg = v.clone();' \
+  --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
+# c-home-host (a signed-in user on another host opens; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    v.get("host").and_then(Value::as_str) == Some("https://github.com") && login_ok' \
+  '    login_ok' \
+  --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
+# c-env-dropped (a COPILOT_* name other than the home reaches the seat; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    (up.starts_with("COPILOT_") && up != "COPILOT_HOME") || DROPPED_ENV.contains(&up.as_str())' \
+  '    DROPPED_ENV.contains(&up.as_str())' \
+  --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
+# c-env-turn (a name that moves copilot set-up does not refuse the turn; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    if let Some((k, _)) = env.iter().find(|(k, _)| env_dropped(&k.to_string_lossy())) {' \
+  '    if let Some((k, _)) = env.iter().find(|(_, _)| false) {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
+# c-made-shape (any folder called c_<hex> is taken as aibd-made; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        .is_some_and(|n| n == HOMES)' \
+  '        .is_some_and(|_| true)' \
+  --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
+# c-seat-env (the request keeps a name that moves copilot set-up; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '        !crate::copilot_wire::env_dropped(k) && !k.eq_ignore_ascii_case("COPILOT_HOME")' \
+  '        !k.eq_ignore_ascii_case("COPILOT_HOME")' \
+  --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
+# c-seat-withhold (a policy name that moves copilot set-up is passed on; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '        .filter(|n| crate::copilot_wire::env_dropped(n) || n.eq_ignore_ascii_case("COPILOT_HOME"))' \
+  '        .filter(|n| n.eq_ignore_ascii_case("COPILOT_HOME"))' \
+  --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
+# c-own-home (any COPILOT_HOME passes the gate without a policy name; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '            .filter(|(k, v)| !own_home(k, v))' \
+  '            .filter(|(_, _)| true)' \
+  --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
+# c-own-dir (the seat home is left when the seat ends; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
+  '                let _ = std::fs::remove_dir_all(d);' \
+  '                let _ = d;' \
+  --expect-fail 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started'

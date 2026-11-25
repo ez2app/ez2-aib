@@ -439,8 +439,20 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
         program: name(argv0),
     };
     let real = allowlist::resolve(argv0, p).map_err(|r| refuse(r, argv0))?;
-    allowlist::env_allowed(p, req.env.iter().map(|(k, _)| k.as_str()))
-        .map_err(|r| refuse(r, argv0))?;
+    // a copilot seat's own home is aibd's to give ([`gate`] drops a request's), never a policy name
+    let own_home = |k: &str, v: &str| {
+        crate::copilot_wire::is_copilot(argv0)
+            && k == "COPILOT_HOME"
+            && crate::copilot_wire::made_by_aibd(std::path::Path::new(v))
+    };
+    allowlist::env_allowed(
+        p,
+        req.env
+            .iter()
+            .filter(|(k, v)| !own_home(k, v))
+            .map(|(k, _)| k.as_str()),
+    )
+    .map_err(|r| refuse(r, argv0))?;
     let real = real
         .into_os_string()
         .into_string()
@@ -1713,6 +1725,13 @@ impl Sessions {
                         .unwrap_or(&self.default_cwd)
                         .join("turn-prompts"),
                     check,
+                    // the copilot seat's own home goes with the seat
+                    own_dir: spec
+                        .env
+                        .iter()
+                        .find(|(k, _)| k == "COPILOT_HOME")
+                        .map(|(_, v)| std::path::PathBuf::from(v))
+                        .filter(|h| h.starts_with(copilot_homes(&self.default_cwd))),
                 };
                 crate::turn_wire::spawn(&spec, persona, turns, brand)
             }
@@ -2923,13 +2942,48 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
 /// is audited.
 pub(crate) async fn gate(
     st: &AppState,
-    req: Request,
+    mut req: Request,
 ) -> Result<(Request, Option<String>), ApiError> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
     let asked = req.argv.first().cloned();
+    let homes = copilot_homes(st.sessions.private_dir());
     let run = move || {
+        // a copilot seat runs in a home of its own, never the user's (DESIGN-copilot-seat-home)
+        let own = if asked
+            .as_deref()
+            .is_some_and(crate::copilot_wire::is_copilot)
+        {
+            let user = crate::workspace::seat_login_home()
+                .unwrap_or_default()
+                .join(".copilot")
+                .join("config.json");
+            match crate::copilot_wire::seat_home(&homes, &user) {
+                Ok(h) => {
+                    copilot_seat_env(&mut req, &policy, &h);
+                    Some(h)
+                }
+                Err(why) => {
+                    let program = asked.clone().unwrap_or_default();
+                    audit.record_rejection(
+                        Instant::now(),
+                        TOKEN_ID_STARTUP,
+                        ErrorCode::ProgramNotAllowed,
+                        &program,
+                    );
+                    return Err(ApiError::new(
+                        ErrorCode::ProgramNotAllowed,
+                        format!("copilot seat not started: {why} (copilot_home)"),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         admit(req, &policy).map(|r| (r, asked)).map_err(|r| {
+            if let Some(h) = own.as_deref() {
+                let _ = std::fs::remove_dir_all(h);
+            }
             audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
@@ -2938,6 +2992,36 @@ pub(crate) async fn gate(
         Ok(Ok(r)) => Ok(r),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error")),
+    }
+}
+
+/// Where each copilot seat's own home is made: beside aibd's private sessions folder.
+fn copilot_homes(private: &std::path::Path) -> std::path::PathBuf {
+    private
+        .parent()
+        .unwrap_or(private)
+        .join(crate::copilot_wire::HOMES)
+}
+
+/// A copilot seat's environment: `COPILOT_HOME` = its own `home`; nothing that moves
+/// copilot's set-up or token, whether the request or the policy brings it (c2f0b PRE-READ
+/// L1: the request's are dropped, the policy's are withheld from this session).
+fn copilot_seat_env(req: &mut Request, policy: &SessionPolicy, home: &std::path::Path) {
+    req.env.retain(|(k, _)| {
+        !crate::copilot_wire::env_dropped(k) && !k.eq_ignore_ascii_case("COPILOT_HOME")
+    });
+    req.env.push((
+        "COPILOT_HOME".to_owned(),
+        home.to_string_lossy().into_owned(),
+    ));
+    for name in policy
+        .env
+        .iter()
+        .filter(|n| crate::copilot_wire::env_dropped(n) || n.eq_ignore_ascii_case("COPILOT_HOME"))
+    {
+        if !req.withhold.contains(name) {
+            req.withhold.push(name.clone());
+        }
     }
 }
 
@@ -3613,6 +3697,26 @@ mod tests {
         let e = ask(argv.clone()).unwrap_err();
         assert!(e.contains("(copilot_hooks)"), "reason: hook_admitted {e}");
         std::fs::remove_file(home.join(".copilot").join("hooks").join("m.json")).unwrap();
+        // the home aibd made for the seat is admitted though no policy lists COPILOT_HOME;
+        // a home of any other shape is a name the request may not set
+        let own = d.path().join(crate::copilot_wire::HOMES).join("c_00ff");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("config.json"), "{}").unwrap();
+        for (h, ok) in [(own.clone(), true), (home.join(".copilot"), false)] {
+            let r = Request {
+                argv: argv.clone(),
+                cwd: Some(d.path().to_path_buf()),
+                env: vec![("COPILOT_HOME".to_owned(), h.to_string_lossy().into_owned())],
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            assert_eq!(
+                admit(r, &policy).is_ok(),
+                ok,
+                "reason: copilot_home_gate {h:?}"
+            );
+        }
         listing("not json");
         assert!(
             ask(argv.clone()).unwrap_err().contains("(copilot_mcp)"),
@@ -3625,6 +3729,71 @@ mod tests {
             e.contains("(copilot_version)") && e.contains("1.0.116"),
             "reason: unread_version_admitted {e}"
         );
+    }
+
+    /// DESIGN-copilot-seat-home + c2f0b PRE-READ L1: a copilot seat gets the home aibd made
+    /// for it, and nothing that moves copilot's set-up or token, from the request or the
+    /// policy; the gate admits that home only when aibd made it.
+    #[test]
+    fn a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it() {
+        let d = tempfile::tempdir().unwrap();
+        let homes = d.path().join(crate::copilot_wire::HOMES);
+        let home = homes.join("c_0123456789abcdef");
+        std::fs::create_dir_all(&home).unwrap();
+        let policy = SessionPolicy {
+            programs: Vec::new(),
+            env: vec!["GH_TOKEN".into(), "COPILOT_ALLOW_ALL".into(), "FOO".into()],
+            interpreters_ok: true,
+        };
+        let mut req = Request {
+            argv: vec!["copilot".into()],
+            cwd: None,
+            env: vec![
+                ("COPILOT_HOME".into(), "/elsewhere".into()),
+                ("GH_TOKEN".into(), "t".into()),
+                ("copilot_github_token".into(), "t".into()),
+                ("FOO".into(), "1".into()),
+            ],
+            timeout: None,
+            withhold: Vec::new(),
+            input: true,
+        };
+        copilot_seat_env(&mut req, &policy, &home);
+        assert_eq!(
+            req.env,
+            [
+                ("FOO".to_owned(), "1".to_owned()),
+                (
+                    "COPILOT_HOME".to_owned(),
+                    home.to_string_lossy().into_owned()
+                )
+            ],
+            "reason: copilot_env_kept {:?}",
+            req.env
+        );
+        for n in ["GH_TOKEN", "COPILOT_ALLOW_ALL"] {
+            assert!(
+                req.withhold.iter().any(|w| w == n),
+                "reason: policy_env_passed {n}"
+            );
+        }
+        assert!(
+            !req.withhold.iter().any(|w| w == "FOO"),
+            "reason: other_env_withheld"
+        );
+        assert!(crate::copilot_wire::made_by_aibd(&home));
+        for not in [
+            d.path().join("c_0123456789abcdef"),
+            homes.join("x_0123"),
+            homes.join("c_"),
+            homes.join("c_../x"),
+            homes.join("c_ffff"),
+        ] {
+            assert!(
+                !crate::copilot_wire::made_by_aibd(&not),
+                "reason: home_taken {not:?}"
+            );
+        }
     }
 
     /// 3e53b M1: the same gate runs on each turn's words with the turn's environment, so a

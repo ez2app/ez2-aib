@@ -126,6 +126,98 @@ pub fn uuid_shaped(s: &str) -> bool {
             .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// The folder under aibd's data dir holding each copilot seat's own home.
+pub const HOMES: &str = "copilot-home";
+
+/// Environment names a copilot seat never gets from aibd or its policy (c2f0b PRE-READ
+/// L1): they move copilot's set-up, state or token somewhere else. `COPILOT_HOME` is set by
+/// aibd itself to the seat's own home; any other `COPILOT_*` is dropped too.
+pub const DROPPED_ENV: &[&str] = &[
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+];
+
+/// Is `name` one a copilot seat must not get ([`DROPPED_ENV`], or any `COPILOT_*` but the
+/// home aibd sets)? Names compare without case (Windows reads them so).
+pub fn env_dropped(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    (up.starts_with("COPILOT_") && up != "COPILOT_HOME") || DROPPED_ENV.contains(&up.as_str())
+}
+
+/// Is `home` the shape of a seat home [`seat_home`] makes (`…/copilot-home/c_<hex>`, there)?
+pub fn made_by_aibd(home: &Path) -> bool {
+    home.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == HOMES)
+        && home
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("c_"))
+            .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric()))
+        && home.is_dir()
+}
+
+/// One signed-in user as copilot lists it, only on github.com and a GitHub login (c2f0b L2).
+fn user_ok(v: &Value) -> bool {
+    let login_ok = v.get("login").and_then(Value::as_str).is_some_and(|l| {
+        (1..=39).contains(&l.len())
+            && !l.starts_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    v.get("host").and_then(Value::as_str) == Some("https://github.com") && login_ok
+}
+
+/// The seat's own copilot home (DESIGN-copilot-seat-home-08de5-1125, c2f0b PRE-READ): a new
+/// folder under `homes`, owner only, holding a `config.json` with the signed-in user copied
+/// from `user_config` (`loggedInUsers` / `lastLoggedInUser`, github.com only) and nothing
+/// else: no hooks, plugins, settings or trusted folders. The token stays in the system
+/// credential store, which copilot reads with any home (measured, a launchd-started process
+/// too). Windows: refused until tried there (L3).
+pub fn seat_home(homes: &Path, user_config: &Path) -> Result<std::path::PathBuf, String> {
+    if cfg!(windows) {
+        return Err("copilot_home_unverified_on_windows".to_owned());
+    }
+    let s = std::fs::read_to_string(user_config).map_err(|_| "copilot config not read")?;
+    let body: Vec<&str> = s
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let v: Value = serde_json::from_str(&body.join("\n")).map_err(|_| "copilot config not read")?;
+    let users = v
+        .get("loggedInUsers")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .ok_or("copilot is not signed in")?;
+    if !users.iter().all(user_ok) {
+        return Err("a signed-in user is not a github.com login".to_owned());
+    }
+    let mut cfg = json!({"loggedInUsers": users});
+    if let Some(last) = v.get("lastLoggedInUser").filter(|x| !x.is_null()) {
+        if !user_ok(last) {
+            return Err("the last signed-in user is not a github.com login".to_owned());
+        }
+        cfg["lastLoggedInUser"] = last.clone();
+    }
+    crate::platform::create_private_dir(homes).map_err(|_| "copilot homes not made")?;
+    let name = crate::sessions::new_id("c_").map_err(|_| "copilot home not made")?;
+    let home = homes.join(name);
+    crate::platform::create_private_dir(&home).map_err(|_| "copilot home not made")?;
+    let written = crate::turn_wire::open_new_private(&home.join("config.json"))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, cfg.to_string().as_bytes()));
+    if written.is_err() {
+        let _ = std::fs::remove_dir_all(&home);
+        return Err("copilot home not made".to_owned());
+    }
+    Ok(home)
+}
+
 /// What copilot runs by itself, outside the seat's tools (3e53b REVIEW-copilot M1, measured
 /// 08de5 11-25 on 1.0.115 with the safe seat's words): hooks under `<COPILOT_HOME>/hooks`
 /// ran (sessionStart, userPromptSubmitted, sessionEnd), and `disableAllHooks` in the user
@@ -142,6 +234,12 @@ pub fn nothing_runs(
             .find(|(n, _)| n == k)
             .map(|(_, v)| v.to_string_lossy().into_owned())
     };
+    if let Some((k, _)) = env.iter().find(|(k, _)| env_dropped(&k.to_string_lossy())) {
+        return Err(format!(
+            "{} would move copilot's set-up or token",
+            k.to_string_lossy()
+        ));
+    }
     if var("COPILOT_ALLOW_ALL").is_some_and(|v| {
         let v = v.trim().to_ascii_lowercase();
         !(v.is_empty() || ["false", "0", "no", "off", "n"].contains(&v.as_str()))
@@ -419,6 +517,98 @@ mod tests {
             nothing_runs(&env(&[("COPILOT_HOME", other.to_str().unwrap())]), &cwd).is_err(),
             "reason: copilot_home_not_followed"
         );
+    }
+
+    /// DESIGN-copilot-seat-home + c2f0b PRE-READ L1 L2 L3: the seat's home holds the signed-in
+    /// user only (github.com logins), nothing else of the user's set-up; the names that move
+    /// copilot's set-up or token never reach the seat.
+    #[test]
+    fn a_copilot_seat_home_holds_the_signed_in_user_only() {
+        let d = tempfile::tempdir().unwrap();
+        let user = d.path().join("config.json");
+        let homes = d.path().join("homes");
+        let good = r#"{"loggedInUsers":[{"host":"https://github.com","login":"octo-cat"}],"lastLoggedInUser":{"host":"https://github.com","login":"octo-cat"},"trustedFolders":["/"],"hooks":{"x":1},"enabledPlugins":{"a@b":true}}"#;
+        std::fs::write(&user, format!("// managed\n{good}")).unwrap();
+        if cfg!(windows) {
+            assert_eq!(
+                seat_home(&homes, &user),
+                Err("copilot_home_unverified_on_windows".to_owned()),
+                "reason: windows_home_opens"
+            );
+            return;
+        }
+        let h = seat_home(&homes, &user).unwrap();
+        assert!(h.starts_with(&homes), "reason: home_elsewhere");
+        let names: Vec<String> = std::fs::read_dir(&h)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["config.json"], "reason: home_has_more {names:?}");
+        let cfg: Value =
+            serde_json::from_str(&std::fs::read_to_string(h.join("config.json")).unwrap()).unwrap();
+        let mut keys: Vec<&String> = cfg.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["lastLoggedInUser", "loggedInUsers"],
+            "reason: home_keys {keys:?}"
+        );
+        let env = vec![
+            ("HOME".into(), d.path().as_os_str().to_owned()),
+            ("COPILOT_HOME".into(), h.as_os_str().to_owned()),
+        ];
+        assert_eq!(
+            nothing_runs(&env, d.path()),
+            Ok(()),
+            "reason: own_home_refused"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&h), 0o700, "reason: home_not_private");
+            assert_eq!(
+                mode(&h.join("config.json")),
+                0o600,
+                "reason: config_not_private"
+            );
+        }
+        assert_ne!(seat_home(&homes, &user).unwrap(), h, "reason: home_reused");
+        // a user on another host, an odd login, no user at all: not opened
+        for bad in [
+            r#"{"loggedInUsers":[{"host":"https://evil.example","login":"u"}]}"#,
+            r#"{"loggedInUsers":[{"host":"https://github.com","login":"--allow-all"}]}"#,
+            r#"{"loggedInUsers":[{"host":"https://github.com","login":"a b"}]}"#,
+            r#"{"loggedInUsers":[{"host":"https://github.com","login":"u"}],"lastLoggedInUser":{"host":"https://x.example","login":"u"}}"#,
+            r#"{"loggedInUsers":[]}"#,
+            "not json",
+        ] {
+            std::fs::write(&user, bad).unwrap();
+            assert!(
+                seat_home(&homes, &user).is_err(),
+                "reason: bad_user_opens {bad}"
+            );
+        }
+        // the names that move copilot's set-up or token
+        for name in [
+            "COPILOT_GITHUB_TOKEN",
+            "copilot_allow_all",
+            "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_HOST",
+        ] {
+            assert!(env_dropped(name), "reason: env_kept {name}");
+            let mut e = env.clone();
+            e.push((name.into(), "x".into()));
+            assert!(
+                nothing_runs(&e, d.path()).is_err(),
+                "reason: env_opens {name}"
+            );
+        }
+        assert!(!env_dropped("COPILOT_HOME") && !env_dropped("HOME") && !env_dropped("PATH"));
     }
 
     #[test]

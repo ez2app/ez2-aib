@@ -2766,8 +2766,11 @@ pub(crate) async fn start_session(
     let (mut req, asked) = crate::sessions::gate(st, req)
         .await
         .map_err(|e| session_refused(&e))?;
-    // after the gate: a request may not set these, aibd does (allowlist::seat_owned)
+    // after the gate: a request may not set these, aibd does (allowlist::seat_owned); a
+    // copilot seat keeps the home of its own the gate made for it
+    let own_home = req.env.iter().find(|(k, _)| k == "COPILOT_HOME").cloned();
     req.env = seat_env(seat_id, card);
+    req.env.extend(own_home);
     let mut repo_note: Option<String> = None;
     if mode == "work" {
         req.env
