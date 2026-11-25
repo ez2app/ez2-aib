@@ -1826,19 +1826,21 @@ const relogChecks = (async () => {
   const src = a >= 0 && b > a ? ws.slice(a, b) : '';
   const esc = (x) => String(x).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   const css = read('apps/web/dist/ws.css');
-  const mk = (platform, clip) => { const c = vm.createContext({ S: { relog: null }, esc, FP_SEE: 'FP', FINGER_GONE: 'FG', render: () => {}, navigator: { platform, clipboard: clip }, errText: () => '' }); c.globalThis = c; vm.runInContext(src + '\nthis.html = relogHtml; this.copy = relogCopy; this.auto = relogAuto;', c); return c; };
+  const mk = (platform, clip) => { const c = vm.createContext({ S: { relog: null }, esc, FP_SEE: 'FP', FINGER_GONE: 'FG', render: () => {}, navigator: { platform, clipboard: clip }, errText: () => '' }); c.globalThis = c; vm.runInContext(src + '\nthis.html = relogHtml; this.copy = relogCopy; this.auto = relogAuto; this.card = relogCard;', c); return c; };
   const mac = mk('MacIntel'), win = mk('Win32');
   const dev = (o) => Object.assign({ provider: 'codex', id: 'L1', url: 'https://auth.example.test/device', mode: 'device', dcode: 'WXYZ-1234', msg: '' }, o || {});
   mac.S.relog = dev(); const h = mac.html('codex');
-  ok(/<div class="rlc">/.test(h) && h.includes('<div class="rlcode" aria-label="登入碼">WXYZ-1234</div>') && h.includes('data-relogcopy="1">複製碼</button>') && h.includes('共 2 步') && h.includes('打開登入頁,在輸入框按 ⌘V 貼上碼') && h.includes('href="https://auth.example.test/device"'), 'reason: relogcard_code_box_copy_steps ' + h.slice(0, 200));
-  ok(h.includes('有效時間:這一版 AIB 還沒給') && !h.includes('已複製'), 'reason: relogcard_ttl_not_given_and_not_copied_unasked');
-  win.S.relog = dev(); ok(win.html('codex').includes('打開登入頁,在輸入框按 Ctrl+V 貼上碼'), 'reason: relogcard_windows_says_ctrl_v');
+  ok(h.startsWith('<div class="rlc rlc-codex"><div class="rlcband"><span class="rlcmark">C</span><b>Codex</b><span class="rlcstep">共 3 步</span></div>') && h.includes('<h4>登入 Codex</h4>') && h.includes('<div class="rlcode" aria-label="登入碼">WXYZ-1234</div>') && h.includes('<button type="button" class="rlccp" data-relogcopy="1">複製碼</button><a class="rlcgo" href="https://auth.example.test/device" target="_blank" rel="noopener noreferrer">打開登入網頁 ↗</a>') && h.includes('<li>到登入網頁的輸入框按 ⌘V 貼上碼</li><li>按授權</li><li>授權完這裡會自己更新</li>'), 'reason: relogcard_code_box_copy_steps ' + h.slice(0, 200));
+  // 家別色只認名單裡的家(class 名不拿 provider 原字);名字跳脫
+  const hb = mac.card(dev({ provider: 'x" onclick="y' }), 'N', ''); ok(mac.card(dev({ provider: 'copilot' }), 'GitHub Copilot', '').includes('<span class="rlcmark">C</span>') && mac.card(dev({ provider: 'grok' }), 'Grok', '').includes('<span class="rlcmark">X</span>') && hb.includes('<span class="rlcmark">N</span>') && hb.startsWith('<div class="rlc rlc-other">') && !hb.includes('onclick="y'), 'reason: relogcard_brand_class_from_list ' + hb.slice(0, 60));
+  ok(h.includes('<div class="rlcfoot"><span class="rlct">有效時間:這一版 AIB 還沒給</span></div>') && !h.includes('已複製'), 'reason: relogcard_ttl_not_given_and_not_copied_unasked');
+  win.S.relog = dev(); ok(win.html('codex').includes('<li>到登入網頁的輸入框按 Ctrl+V 貼上碼</li>'), 'reason: relogcard_windows_says_ctrl_v');
   mac.S.relog = dev({ url: 'https://auth.example.test/device?user_code=WXYZ-1234' }); const ha = mac.html('codex');
-  ok(mac.auto(mac.S.relog) === true && !ha.includes('rlcode') && !ha.includes('data-relogcopy') && ha.includes('碼已經帶在網址裡') && ha.includes('<div class="rlcref">對照碼 <b>WXYZ-1234</b>(登入頁上應該一樣)</div>') && ha.includes('href="https://auth.example.test/device?user_code=WXYZ-1234"'), 'reason: relogcard_code_in_url_no_paste_step ' + ha.slice(0, 200));
+  ok(mac.auto(mac.S.relog) === true && !ha.includes('rlcode') && !ha.includes('data-relogcopy') && ha.includes('碼已經帶在網址裡') && ha.includes('<div class="rlcref">對照碼 <b>WXYZ-1234</b>(登入頁上應該一樣)</div><div class="rlcrow"><a class="rlcgo" href="https://auth.example.test/device?user_code=WXYZ-1234"') && ha.includes('共 2 步'), 'reason: relogcard_code_in_url_no_paste_step ' + ha.slice(0, 200));
   mac.S.relog = dev({ dcode: '<b>x</b>' }); ok(mac.html('codex').includes('&lt;b&gt;x&lt;/b&gt;') && !mac.html('codex').includes('<b>x</b>'), 'reason: relogcard_code_escaped');
   mac.S.relog = dev({ dcode: '<i>', url: 'https://auth.example.test/d?c=<i>' }); ok(mac.html('codex').includes('對照碼 <b>&lt;i&gt;</b>') && !mac.html('codex').includes('<b><i></b>'), 'reason: relogcard_ref_code_escaped');
   mac.S.relog = dev({ dcode: '' }); ok(mac.html('codex').includes('AIB 沒給登入碼') && !mac.html('codex').includes('data-relogcopy'), 'reason: relogcard_no_code_said');
-  mac.S.relog = dev({ copied: true }); ok(mac.html('codex').includes('已複製,到登入頁按 ⌘V 貼上') && mac.html('codex').includes('>再複製一次</button>'), 'reason: relogcard_copied_said');
+  mac.S.relog = dev({ copied: true }); ok(mac.html('codex').includes('<div class="rlcok" role="status">✓ 已複製,到登入網頁按 ⌘V 貼上</div>') && mac.html('codex').includes('>再複製一次</button>'), 'reason: relogcard_copied_said');
   mac.S.relog = dev({ copied: false }); ok(mac.html('codex').includes('沒複製到'), 'reason: relogcard_copy_failed_said');
   mac.S.relog = Object.assign(dev(), { mode: 'paste' }); ok(mac.html('codex').includes('data-relogcode="1"') && !mac.html('codex').includes('rlcode'), 'reason: relogcard_paste_mode_unchanged');
   // 複製:按了才寫剪貼簿;成功才算已複製;網址帶碼就不寫
@@ -1847,6 +1849,6 @@ const relogChecks = (async () => {
   okc.S.relog = dev({ url: 'https://auth.example.test/d?c=WXYZ-1234' }); await okc.copy(); ok(wrote.length === 1 && okc.S.relog.copied === undefined, 'reason: relogcard_no_copy_when_in_url');
   const bad = mk('MacIntel', { writeText: async () => { throw new Error('denied'); } }); bad.S.relog = dev(); await bad.copy(); ok(bad.S.relog.copied === false, 'reason: relogcard_copy_refused_not_copied');
   ok(ws.includes("    if (x.closest('[data-relogcopy]')) return relogCopy();") && ws.includes("const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend], .evact [data-relogcopy]');"), 'reason: relogcard_copy_wired');
-  ok(/\.rlcode\{[^}]*font-family:ui-monospace[^}]*text-align:center/.test(css), 'reason: relogcard_code_box_style');
+  ok(/\.rlcode\{font-family:"SF Mono",ui-monospace[^}]*font-size:clamp\(40px,10vw,76px\)[^}]*text-align:center/.test(css) && /\.rlc-copilot\{--rlb:#a98bf0;--rli:#140d24\}/.test(css) && /\.rlc-grok\{--rlb:#f2f2f2;--rli:#0c0d10\}/.test(css) && /\.rlccp,\.rlcgo\{flex:1 1 200px;min-height:56px;border-radius:14px;font-size:19px/.test(css), 'reason: relogcard_grok_design_style');
 })();
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks, relogChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

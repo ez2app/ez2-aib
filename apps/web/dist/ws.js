@@ -4580,14 +4580,19 @@
   const RELOG_TTL_NA = '有效時間:這一版 AIB 還沒給';
   const relogAuto = (R) => !!(R && R.dcode && String(R.url || '').includes(R.dcode));
   const relogKey = () => (/Mac/.test(String((globalThis.navigator && navigator.platform) || '')) ? '⌘V' : 'Ctrl+V');
-  function relogCard(R, N, link, msg) {
-    const auto = relogAuto(R), key = relogKey();
-    const said = R.copied === true ? `<span class="trs on" role="status">已複製,到登入頁按 ${key} 貼上</span>` : R.copied === false ? '<span class="bad" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</span>' : '';
+  // Andy 01:2x「需要大字碼卡的全照 grok 設計」:照 08de5 LOGIN-CARD-08de5-1126 同一份樣式(家別色頂條 + 字母圖示、大字碼框、綠字已複製、兩顆大鈕、編號步驟、底條)
+  const RELOG_BRAND = ['claude', 'codex', 'grok', 'copilot'], RELOG_MARK = { grok: 'X', copilot: 'C' };
+  function relogCard(R, N, msg) {
+    const auto = relogAuto(R), key = relogKey(), b = RELOG_BRAND.includes(R.provider) ? R.provider : 'other';
+    const said = R.copied === true ? `<div class="rlcok" role="status">✓ 已複製,到登入網頁按 ${key} 貼上</div>` : R.copied === false ? '<div class="rlcno" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</div>' : '';
+    const go = `<a class="rlcgo" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開登入網頁 ↗</a>`;
     // f163c REVIEW-relogcard N1(RFC 8628 5.4):網址帶碼也留一行對照碼,讓人核登入頁上的碼一樣(不給複製,不用貼)
-    const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div>` : !R.dcode ? '<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>' : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div><div class="rlcb"><button type="button" class="k g" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${said}</div>`;
-    const steps = auto ? ['打開登入頁,按授權(碼已經帶在網址裡,不用貼)', '授權完這裡會自己更新'] : ['打開登入頁,在輸入框按 ' + key + ' 貼上碼', '按授權;授權完這裡會自己更新'];
-    return `<div class="rlc"><div class="rlch"><b>登入 ${esc(N)}</b><span>共 ${steps.length} 步</span></div>${code}<div class="rlcb">${link}</div><ol class="rlcs">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol><div class="rlct">${RELOG_TTL_NA}</div></div>${msg}`;
+    const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div><div class="rlcrow">${go}</div>` : !R.dcode ? `<div class="rlcno">AIB 沒給登入碼,這一輪先取消再按一次</div><div class="rlcrow">${go}</div>` : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div>${said}<div class="rlcrow"><button type="button" class="rlccp" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${go}</div>`;
+    const sub = auto ? '碼已經帶在網址裡,打開登入網頁按授權就好。' : '打開登入網頁,在輸入框貼上這組碼,再按授權。';
+    const steps = auto ? ['打開登入網頁,按授權(不用貼碼)', '授權完這裡會自己更新'] : ['到登入網頁的輸入框按 ' + key + ' 貼上碼', '按授權', '授權完這裡會自己更新'];
+    return `<div class="rlc rlc-${b}"><div class="rlcband"><span class="rlcmark">${esc(RELOG_MARK[b] || String(N).slice(0, 1))}</span><b>${esc(N)}</b><span class="rlcstep">共 ${steps.length} 步</span></div><div class="rlcbody"><h4>登入 ${esc(N)}</h4><p class="rlcsub">${sub}</p>${code}<ol class="rlcs">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol></div><div class="rlcfoot"><span class="rlct">${RELOG_TTL_NA}</span></div></div>${msg}`;
   }
+
   async function relogCopy() {
     const R = S.relog; if (!R || R.done || !R.dcode || relogAuto(R)) return;
     try { await navigator.clipboard.writeText(R.dcode); R.copied = true; } catch (_) { R.copied = false; }
@@ -4600,7 +4605,7 @@
     if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="按這台的指紋,在瀏覽器重新登入 ${esc(N)}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
     if (!R.url) return `<span class="trs" data-relogwait>${FP_SEE}</span>${msg}`;
     const link = `<a class="k g" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開 ${esc(N)} 登入頁</a>`;
-    if (R.mode === 'device') return relogCard(R, N, link, msg);
+    if (R.mode === 'device') return relogCard(R, N, msg);
     const step = R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
     return link + step + msg;
   }

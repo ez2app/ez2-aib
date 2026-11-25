@@ -21,7 +21,7 @@ k 'catch (_) { R.copied = false; }' 'catch (_) { R.copied = true; }'
 # RLC7 網址帶碼也寫剪貼簿
 k 'if (!R || R.done || !R.dcode || relogAuto(R)) return;' 'if (!R || R.done || !R.dcode) return;'
 # RLC8 device 不走新卡
-k '    if (R.mode === '\''device'\'') return relogCard(R, N, link, msg);' ' '
+k '    if (R.mode === '\''device'\'') return relogCard(R, N, msg);' ' '
 # RLC9 主畫面複製鈕沒接
 k '    if (x.closest('\''[data-relogcopy]'\'')) return relogCopy();' ' '
 # RLC10 事件窗複製鈕沒接
@@ -29,10 +29,14 @@ k ', .evact [data-relogsend], .evact [data-relogcopy]'\'');' ', .evact [data-rel
 # RLC11 網址帶碼仍畫碼框
 k 'const code = auto ?' 'const code = false ?'
 # RLC12 沒碼不說
-k ''\''<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>'\''' ''\'''\'''
+k '<div class="rlcno">AIB 沒給登入碼,這一輪先取消再按一次</div>' '<div class="rlcno"></div>'
 # RLC13 按了不真的寫剪貼簿
 k 'try { await navigator.clipboard.writeText(R.dcode); R.copied = true; }' 'try { R.copied = true; }'
 # RLC14 網址帶碼時不給對照碼(f163c N1)
-k 'const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div>` :' 'const code = auto ? '\'''\'' :'
+k 'const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div><div class="rlcrow">${go}</div>` :' 'const code = auto ? `<div class="rlcrow">${go}</div>` :'
 # RLC15 對照碼不跳脫
 k '<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>' '<div class="rlcref">對照碼 <b>${R.dcode}</b>'
+# RLC16 家別色直接用 provider 原字
+k 'b = RELOG_BRAND.includes(R.provider) ? R.provider : '\''other'\'';' 'b = R.provider;'
+# RLC17 打開登入網頁不開新分頁
+k '<a class="rlcgo" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">' '<a class="rlcgo" href="${esc(R.url)}">'
