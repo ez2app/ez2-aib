@@ -4745,8 +4745,9 @@
   // 樣子照座艙右欄「用量」面板:每個時段一列 = 家別圖示 + 時段名 + 10 格方格條(一格 10%,四捨五入到格,同 render_lib.usage_bar)+ 百分比;第二行小字 = 量於多久前 · 重置。
   // 顏色門檻照抄 render_lib.CTX_TIERS(≥95 紅、≥75 橙、≥50 黃、其他藍),到上限整列紅;過期三態(fresh / counting / rolled_over / no_reset)由 aibd 算,頁面照 state 畫。
   // 連結只用這裡的常數(§10.3:不從 aibd 回應或席位輸出拿網址);數字只供參考,頁面不拿來判斷任何事。
-  // 出處:copilot = `copilot help billing`(08de5 FACTS-provider-quota r2);claude / codex / grok 是各家官方方案頁,沒有 CLI 出處,c2f0b 核字時一起核
-  const LC_PLAN_URL = { claude: 'https://claude.com/pricing', codex: 'https://chatgpt.com/pricing', copilot: 'https://github.com/settings/copilot', grok: 'https://x.ai/grok' };
+  // c2f0b REVIEW-words-2e03fbb2 N3(curl 實查):claude.com/pricing、chatgpt.com/pricing、github.com/features/copilot/plans 都 200;x.ai/grok 回 403(擋程式)未實查、先用
+  //(github.com/settings/copilot 要登入、不是方案頁,出自 copilot help billing,不用)
+  const LC_PLAN_URL = { claude: 'https://claude.com/pricing', codex: 'https://chatgpt.com/pricing', copilot: 'https://github.com/features/copilot/plans', grok: 'https://x.ai/grok' };
   const LC_Q_TIERS = [[95, 't3'], [75, 't2'], [50, 't1'], [0, 't0']];
   const LC_Q_CELLS = 10;
   const LC_QW = {
