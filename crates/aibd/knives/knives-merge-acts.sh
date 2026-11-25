@@ -77,14 +77,14 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # ma-before
 python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
-  '                            let b = &before["row"];' \
-  '                            let b = &before["none"];' \
+  '                        let b = &before["row"];' \
+  '                        let b = &before["none"];' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # ma-once
 python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   '                c.remove(plan_sha);' \
-  '                let _ = c.get(plan_sha);' \
+  '                c.remove(&plan_sha[..0]);' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # ma-settle

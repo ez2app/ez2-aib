@@ -1201,46 +1201,42 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                     settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                 }
             }
-            "alias" => {
-                if state != StepState::Undone {
-                    let did = st.messages.alias_remove_batch(batch_id).is_ok();
-                    settle(did, || undone(s.seq), &s.target, &mut kept_changed);
-                }
+            "alias" if state != StepState::Undone => {
+                let did = st.messages.alias_remove_batch(batch_id).is_ok();
+                settle(did, || undone(s.seq), &s.target, &mut kept_changed);
             }
-            "seat_next_persona" => {
-                if state == StepState::Done {
-                    let now = st.messages.seat_next(&s.target).ok().flatten();
-                    match now {
-                        Some(r)
-                            if r.batch_id == batch_id
-                                && r.persona_next.as_deref() == after["persona_next"].as_str() =>
+            "seat_next_persona" if state == StepState::Done => {
+                let now = st.messages.seat_next(&s.target).ok().flatten();
+                match now {
+                    Some(r)
+                        if r.batch_id == batch_id
+                            && r.persona_next.as_deref() == after["persona_next"].as_str() =>
+                    {
+                        let mut did = st
+                            .messages
+                            .seat_next_done(&s.target, batch_id, r.at)
+                            .is_ok();
+                        let b = &before["row"];
+                        if let (true, Some(pb), Some(pat)) =
+                            (did, b["batch_id"].as_str(), b["at"].as_i64())
                         {
-                            let mut did = st
+                            did = st
                                 .messages
-                                .seat_next_done(&s.target, batch_id, r.at)
+                                .seat_next_set(
+                                    &s.target,
+                                    b["persona_next"].as_str(),
+                                    b["brain_next"].as_str(),
+                                    pb,
+                                    pat,
+                                )
                                 .is_ok();
-                            let b = &before["row"];
-                            if let (true, Some(pb), Some(pat)) =
-                                (did, b["batch_id"].as_str(), b["at"].as_i64())
-                            {
-                                did = st
-                                    .messages
-                                    .seat_next_set(
-                                        &s.target,
-                                        b["persona_next"].as_str(),
-                                        b["brain_next"].as_str(),
-                                        pb,
-                                        pat,
-                                    )
-                                    .is_ok();
-                            }
-                            settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                         }
-                        _ => kept_changed.push(json!({
-                            "target": s.target,
-                            "why": "這位已經開會換過，或之後又排了別的換法",
-                        })),
+                        settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                     }
+                    _ => kept_changed.push(json!({
+                        "target": s.target,
+                        "why": "這位已經開會換過，或之後又排了別的換法",
+                    })),
                 }
             }
             "role_rename" => {
@@ -1269,33 +1265,29 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                     }
                 }
             }
-            "role_assign" => {
-                if state == StepState::Done {
-                    if undo_assignment(&before, &after) {
-                        settle(true, || undone(s.seq), &s.target, &mut kept_changed);
-                    } else {
-                        kept_changed.push(json!({
-                            "target": s.target,
-                            "why": "這個指派合併後改過，沒有動它",
-                        }));
-                    }
+            "role_assign" if state == StepState::Done => {
+                if undo_assignment(&before, &after) {
+                    settle(true, || undone(s.seq), &s.target, &mut kept_changed);
+                } else {
+                    kept_changed.push(json!({
+                        "target": s.target,
+                        "why": "這個指派合併後改過，沒有動它",
+                    }));
                 }
             }
-            "notes_copy" => {
-                if state == StepState::Done {
-                    if let Some(t) = undo_notes(&data, batch_id, s.seq) {
-                        if !t.changed.is_empty() {
-                            kept_changed.push(json!({
-                                "target": s.target,
-                                "why": "複製過去的筆記合併後改過，留在原地",
-                                "files": t.changed,
-                            }));
-                        }
-                        settle(true, || undone(s.seq), &s.target, &mut kept_changed);
-                    } else {
-                        // the manifest or the brain folder could not be read: nothing taken back
-                        settle(false, || undone(s.seq), &s.target, &mut kept_changed);
+            "notes_copy" if state == StepState::Done => {
+                if let Some(t) = undo_notes(&data, batch_id, s.seq) {
+                    if !t.changed.is_empty() {
+                        kept_changed.push(json!({
+                            "target": s.target,
+                            "why": "複製過去的筆記合併後改過，留在原地",
+                            "files": t.changed,
+                        }));
                     }
+                    settle(true, || undone(s.seq), &s.target, &mut kept_changed);
+                } else {
+                    // the manifest or the brain folder could not be read: nothing taken back
+                    settle(false, || undone(s.seq), &s.target, &mut kept_changed);
                 }
             }
             _ => {}

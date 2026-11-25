@@ -96,16 +96,6 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     });
     std::fs::write(data.join("registry.json"), reg.to_string()).unwrap();
 
-    // M2 (f163c REVIEW-macts): a seat assigned the role that is merged away
-    let (seat, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
-    let r = act(
-        &d,
-        &page,
-        json!({"type": "assign_add", "node_id": "G7", "seat_id": seat, "role": "r_two"}),
-    )
-    .await;
-    assert_eq!(r.code, 200, "{}", r.body);
-
     // User folder page is refused
     let r = act(
         &d,
@@ -123,6 +113,17 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     assert_eq!(groups.len(), 1, "{}", r.body);
     assert_eq!(groups[0]["keep"], "r_one");
     assert_eq!(groups[0]["sure"], true);
+
+    // M2 (f163c REVIEW-macts): a seat assigned the role that is merged away (after
+    // merge_find: an assignment makes r_two the one kept by default)
+    let (seat, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "assign_add", "node_id": "G7", "seat_id": seat, "role": "r_two"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
 
     // REVIEW-mpname N1: 21-char name refused; U+202E stripped in preview
     let r = act(
