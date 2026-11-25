@@ -1655,6 +1655,28 @@ const hsChecks = (async () => {
   ok(/if \(x\.closest\('\[data-ptnew\],\[data-ptfine\],\[data-ptedit\],\[data-ptdel\],\[data-ptdelno\],\[data-ptdelok\],\[data-ptbase\],\[data-ptit\],\[data-ptno\],\[data-ptok\],\[data-ptpick\],\[data-ptsa\],\[data-ptap\],\[data-ptrv\]'\) && await ptClick\(x\)\) return;/.test(mainClick), 'reason: pt_click_not_wired');
 })();
 
+// c2f0b 03:31:開席設定卡頂端照 GET /api/v1/owner-check 的 class 寫這台是哪一種;頁面照 class 選字、不印 words;no_hello / unknown 出設 PIN 三步 + 重新檢查(再 GET 一次)
+lateChecks.push((async () => {
+  const a = ws.indexOf('  const OC_CLASSES = ['), b = ws.indexOf('  async function spLoad() {', a), src = a >= 0 && b > a ? ws.slice(a, b) : '';
+  const st = {}, gets = [], sent = [], E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const c = vm.createContext({ S: st, esc: E, render: () => {}, lang: 'zh-TW', soft: (p) => p.catch((e) => (e && e.status === 404 ? null : Promise.reject(e))), get: async (u) => { sent.push(u); const r = gets.shift(); if (r instanceof Error) throw r; return r; } });
+  vm.runInContext('const askLang = () => lang;\n' + src + '\nthis.F = { ocLoad, ocHtml, OC_W };', c);
+  const F = c.F, load = async (r) => { gets.push(r); await F.ocLoad(); return F.ocHtml(); };
+  ok(src.length > 1000, 'reason: oc_block_found');
+  let h = await load({ platform: 'windows', class: 'no_hello', class_is_final: false, words: '<b>aibd 的字</b>' });
+  ok(sent[0] === '/api/v1/owner-check' && h.startsWith('<div class="occ warn" role="status"><b>這台還沒設 Windows Hello。設一個 PIN 就能用完整功能(不需要指紋或臉部辨識的硬體)。</b><ol class="ocsteps"><li>打開「設定」→「帳戶」→「登入選項」。</li><li>在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。</li><li>設好回到這頁按「重新檢查」。</li></ol>') && h.includes('沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。') && h.includes('data-ocre="1" >重新檢查</button>') && !h.includes('aibd 的字'), 'reason: oc_no_hello_pin_steps ' + h);
+  h = await load({ platform: 'windows', class: 'unknown' }); ok(h.includes('還不知道這台有沒有設 Windows Hello') && h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_unknown_pin_steps');
+  h = await load({ platform: 'windows', class: 'not_at_desk' }); ok(h.includes('不在你登入的桌面上') && !h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_not_at_desk_recheck');
+  h = await load({ platform: 'windows', class: 'hello_hardware' }); ok(h === '<div class="occ" role="status"><b>這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。</b></div>', 'reason: oc_hello_hardware_plain ' + h);
+  h = await load({ platform: 'windows', class: 'hello_software' }); ok(h.includes('沒有安全晶片(TPM)') && !h.includes('data-ocre'), 'reason: oc_hello_software');
+  for (const r of [{ platform: 'macos', class: null }, { platform: 'macos', class: 'no_hello' }, { platform: 'windows', class: 'constructor' }, { platform: 'windows', class: 'zz' }, null]) { const x = await load(r); ok(x === '', 'reason: oc_nothing_when_not_windows_class ' + JSON.stringify(r)); }
+  h = await load(Object.assign(new Error('nf'), { status: 404 })); ok(h === '', 'reason: oc_old_aibd_nothing');
+  c.lang = 'en'; h = await load({ platform: 'windows', class: 'no_hello' }); ok(h.includes('<li>Open Settings → Accounts → Sign-in options.</li>') && h.includes('>Check again</button>'), 'reason: oc_en');
+  c.lang = 'ja'; h = await load({ platform: 'windows', class: 'no_hello' }); ok(h.includes('PIN を設定するとすべての機能が使えます') && h.includes('<li>Open Settings → Accounts → Sign-in options.</li>') && h.includes('>再確認</button>'), 'reason: oc_ja_steps_fall_back_en');
+  c.lang = 'zh-TW';
+  ok(ws.includes("<div class=\"apn\">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${ocHtml()}${head}") && ws.includes("    const SP = S.sp = S.sp || {};\n    ocLoad();\n") && ws.includes("if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }"), 'reason: oc_wired');
+})());
+
 // AP26 W-7(c2f0b PAGE-WORDS-ap26-c2f0b-1125 r0 §2;ebab8 16:14):aibd 回的碼 → 頁面那一句,12 個碼字字照表;頁面只照碼選字、不顯示請求帶的字;
 // unavailable / cancel 只在本人驗證流程用(別的 act 也回 code unavailable,不能被蓋成「不在桌面上」);§1 分類還沒有 ⇒ 照實寫
 {

@@ -5974,15 +5974,42 @@
     const head = bad ? `<div class="aerr" role="alert">這台的開席設定檔讀不懂${pp}。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>` : d.policy === 'loaded' ? `<div class="aerr" role="alert">這台已經有開席設定${pp},但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。</div>` : '';
     const msg = SP.msg ? `<div class="${SP.msg.bad ? 'aerr' : 'aok'}" role="${SP.msg.bad ? 'alert' : 'status'}">${esc(SP.msg.text)}</div>` : '';
     return `<div class="spcard" role="region" aria-label="開席設定"><h4>還沒設定這台能開哪些 AI</h4>
-      <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${head}
+      <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${ocHtml()}${head}
       <ul class="anop">${F.length ? F.map(spRow).join('') : '<li>這台沒找到任何 AI 程式</li>'}</ul>
       ${spInstallHtml()}${msg}
       <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button><button type="button" class="k" data-spre="1" ${SP.busy ? 'disabled' : ''}>重新找</button>${canW ? `<button type="button" class="go" data-spok="1" ${SP.busy ? 'disabled' : ''}>核准並啟用</button>` : ''}</div></div>`;
   }
   // IFACE-provider-lifecycle §5:開席設定卡那句「官方安裝說明的連結:這一版 AIB 還沒有」換成同一張安裝 / 換版卡;讀不到 lifecycle(舊 aibd)照舊寫那句
   function spInstallHtml() { return S.lc && S.lc.d ? S.lc.d.providers.filter((p) => p && lcNeeds(p.name)).map((p) => lcCard(p.name)).join('') : `<div class="apn">${esc(SP_INSTALL_NA)}</div>`; }
+  // c2f0b 03:31(ebab8 03:28 派):GET /api/v1/owner-check(頁面憑證、不跳窗、不建金鑰)→ {platform, class, class_is_final, words};開席設定卡頂端照 class 寫這台是哪一種(W-7 §1)。
+  // 頁面照 class 選字、不印 words;no_hello / unknown 出設 PIN 三步;「重新檢查」= 再 GET 一次(不是 act)。舊 aibd 404 / 非 Windows / 不認得的 class ⇒ 不出
+  // ja / ko:設 PIN 三步的 Windows 介面原名沒核,退英文(同 AP26 pin)
+  const OC_CLASSES = ['hello_hardware', 'hello_software', 'hello_key_unknown', 'no_hello', 'not_at_desk', 'unknown'];
+  const OC_W = {
+    'zh-TW': { line: { hello_hardware: '這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。', hello_software: '這台用 Windows Hello 確認是你本人,但這台沒有安全晶片(TPM),金鑰存在一般檔案裡,所以高風險的動作不開放。', hello_key_unknown: '這台有 Windows Hello,還沒建配對金鑰;建好後才知道金鑰在不在安全晶片裡。', no_hello: '這台還沒設 Windows Hello。設一個 PIN 就能用完整功能(不需要指紋或臉部辨識的硬體)。', not_at_desk: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後按「重新檢查」。', unknown: '還不知道這台有沒有設 Windows Hello。還沒設的話,照下面三步設一個 PIN。' },
+      steps: ['打開「設定」→「帳戶」→「登入選項」。', '在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。', '設好回到這頁按「重新檢查」。'], nopw: '沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。', recheck: '重新檢查', checking: '檢查中…' },
+    en: { line: { hello_hardware: 'This computer uses Windows Hello to check that it is you (the key is kept in the security chip).', hello_software: 'This computer uses Windows Hello to check that it is you, but it has no security chip (TPM), so the key is kept in an ordinary file and high-risk actions are not available.', hello_key_unknown: 'This computer has Windows Hello but no pairing key yet; once the key is made we will know whether it is in the security chip.', no_hello: 'Windows Hello is not set up on this computer. Set up a PIN to use everything (no fingerprint or face hardware needed).', not_at_desk: 'AIB is not running on the desktop you signed in to (for example it was started over a remote connection), so it cannot show the confirmation window. Sign in at this computer, then press Check again.', unknown: 'We don\'t know yet whether Windows Hello is set up on this computer. If it isn\'t, set up a PIN with the three steps below.' },
+      steps: ['Open Settings → Accounts → Sign-in options.', 'Under PIN (Windows Hello), press Set up and follow the screens.', 'Come back to this page and press Check again.'], nopw: 'If this computer has no Windows sign-in password, set one first.', recheck: 'Check again', checking: 'Checking…' },
+    ja: { line: { hello_hardware: 'このパソコンは Windows Hello で本人を確認します(鍵はセキュリティチップに保存されています)。', hello_software: 'このパソコンは Windows Hello で本人を確認しますが、セキュリティチップ(TPM)がないため鍵は通常のファイルに保存され、高リスクの操作は使えません。', hello_key_unknown: 'このパソコンには Windows Hello がありますが、ペアリング鍵はまだありません。作成後に鍵がセキュリティチップにあるか分かります。', no_hello: 'このパソコンには Windows Hello が設定されていません。PIN を設定するとすべての機能が使えます(指紋や顔認証のハードウェアは不要です)。', not_at_desk: 'AIB はあなたがサインインしているデスクトップで動いていません(リモート接続から起動した場合など)。確認画面を出せません。このパソコンの前でサインインしてから「再確認」を押してください。', unknown: 'このパソコンに Windows Hello が設定されているかまだ分かりません。未設定なら、下の 3 つの手順で PIN を設定してください。' }, recheck: '再確認', checking: '確認中…' },
+    ko: { line: { hello_hardware: '이 컴퓨터는 Windows Hello로 본인을 확인합니다(키는 보안 칩에 저장됨).', hello_software: '이 컴퓨터는 Windows Hello로 본인을 확인하지만, 보안 칩(TPM)이 없어 키가 일반 파일에 저장되므로 고위험 작업은 쓸 수 없습니다.', hello_key_unknown: '이 컴퓨터에는 Windows Hello가 있지만 아직 페어링 키가 없습니다. 키를 만든 뒤에 보안 칩에 있는지 알 수 있습니다.', no_hello: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다. PIN을 설정하면 모든 기능을 쓸 수 있습니다(지문이나 얼굴 인식 하드웨어는 필요 없음).', not_at_desk: 'AIB가 로그인한 데스크톱에서 실행되고 있지 않아(예: 원격 연결로 시작) 확인 창을 띄울 수 없습니다. 이 컴퓨터 앞에서 로그인한 뒤 「다시 확인」을 누르세요.', unknown: '이 컴퓨터에 Windows Hello가 설정되어 있는지 아직 모릅니다. 설정되어 있지 않다면 아래 세 단계로 PIN을 설정하세요.' }, recheck: '다시 확인', checking: '확인하는 중…' },
+  };
+  const ocW = (k) => { const T = OC_W[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OC_W['zh-TW']; return Object.prototype.hasOwnProperty.call(T, k) ? T[k] : OC_W.en[k]; };
+  async function ocLoad() {
+    const O = S.oc = S.oc || {}; if (O.busy) return;
+    O.busy = true; render();
+    const r = await soft(get('/api/v1/owner-check')).catch(() => null);
+    O.busy = false; O.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
+  }
+  function ocHtml() {
+    const O = S.oc, d = O && O.d; if (!d || d.platform !== 'windows' || !OC_CLASSES.includes(d.class)) return '';
+    const c = d.class, pin = c === 'no_hello' || c === 'unknown', re = pin || c === 'not_at_desk';
+    const st = pin ? `<ol class="ocsteps">${ocW('steps').map((x) => `<li>${esc(x)}</li>`).join('')}</ol><div class="apn">${esc(ocW('nopw'))}</div>` : '';
+    const btn = re ? `<button type="button" class="k ocre" data-ocre="1" ${O.busy ? 'disabled' : ''}>${esc(O.busy ? ocW('checking') : ocW('recheck'))}</button>` : '';
+    return `<div class="occ${re ? ' warn' : ''}" role="status"><b>${esc(ocW('line')[c])}</b>${st}${btn}</div>`;
+  }
   async function spLoad() {
     const SP = S.sp = S.sp || {};
+    ocLoad();
     SP.busy = true; render();
     const r = await soft(get('/api/v1/session-policy')).catch(() => null);
     SP.busy = false; SP.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
@@ -7175,6 +7202,7 @@
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
+    if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列

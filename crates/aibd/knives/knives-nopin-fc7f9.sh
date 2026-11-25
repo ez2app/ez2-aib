@@ -15,4 +15,4 @@ k '2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。' ''
 # NP4 (英文少第 3 步)
 k '3. Come back to this page and press again. ' ''
 # NP5 (沒寫要先設密碼)
-k '沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。' ''
+k '設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。' '設好回到這頁再按一次。'
