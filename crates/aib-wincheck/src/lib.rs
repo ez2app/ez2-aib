@@ -79,6 +79,23 @@ pub fn extras(found: &[String], sums: &BTreeMap<String, String>) -> Vec<String> 
 /// ignores case, which Windows' and macOS' do, `TESTS` there is the source's `tests` folder).
 pub const TESTS_LIST: &str = "wincheck-tests.tsv";
 
+/// What `--help` prints (ebab8 11-25 18:37: an unknown `--help` left the person on site guessing).
+pub const USAGE: &str =
+    "aib-wincheck [--pack <folder>] [--root <folder>] [--out <file>] [--no-ask] [--help]
+
+  Double-click it in the unpacked folder: it checks every file against SHA256SUMS, puts the
+  tree back at C:\\aibw\\ez2-aib, runs the tests and the Windows Hello steps, and writes
+  %USERPROFILE%\\.ez2-aib\\pending\\WINCHECK-<machine>-<time>.txt.
+
+  --pack <folder>  the unpacked folder (default: the folder this program is in)
+  --root <folder>  where the tree goes (default on Windows: C:\\aibw\\ez2-aib)
+  --out <file>     where the result file goes
+  --no-ask         do not stop for questions (each one is recorded as unanswered = red)
+  --help           this text
+
+  Exit code: 0 all green, 1 something red (see the result file), 7 the result file could not
+  be written, 64 a wrong argument.";
+
 /// One test executable of the pack's [`TESTS_LIST`]: the executable and the package folder it
 /// runs in (cargo runs a test in its package's folder, with `CARGO_MANIFEST_DIR` set to it).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -919,6 +936,22 @@ mod tests {
         .to_vec();
         assert_eq!(extras(&found, &sums), ["target/debug/deps/version.dll"]);
         assert!(extras(&found[..3], &sums).is_empty());
+    }
+
+    #[test]
+    fn the_usage_names_every_option_and_the_exit_codes() {
+        for w in [
+            "--pack",
+            "--root",
+            "--out",
+            "--no-ask",
+            "--help",
+            "0 all green",
+            "1 something red",
+            "64",
+        ] {
+            assert!(USAGE.contains(w), "{w}");
+        }
     }
 
     #[test]
