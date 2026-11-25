@@ -742,7 +742,16 @@ mod tests {
             "reason: prompt_not_private {a:?}"
         );
         assert!(!started[0].input, "reason: turn_given_stdin");
-        assert!(!std::path::Path::new(&a[6]).exists(), "reason: prompt_left");
+        // the file goes when the turn is over, just after its result line was written
+        let gone = (0..100).any(|_| {
+            let g = !std::path::Path::new(&a[6]).exists();
+            if !g {
+                #[allow(clippy::disallowed_methods)] // a test's short poll, no timer to register
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            g
+        });
+        assert!(gone, "reason: prompt_left");
         let stop = s.stop(Duration::from_millis(10));
         assert_eq!(
             stop.status,
