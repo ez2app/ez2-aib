@@ -19,7 +19,7 @@ ps_() { python3 -I scripts/knife.py crates/aibd/src/personas.rs "$1" "$2" --expe
   -- cargo test -p aibd --locked --lib "personas::tests::$3"; }
 # PP1 the preview is started without the policy
 pe '    hand_policy(&data, parent_policy().as_deref())?;' \
-   '    hand_policy(&data, None)?; // knife' \
+   '    hand_policy(&data, parent_policy().filter(|_| false).as_deref())?; // knife' \
    the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and_data
 # PP2 aibd never says which policy it runs under
 se '    crate::preview::set_parent_policy(session_policy.clone());' \

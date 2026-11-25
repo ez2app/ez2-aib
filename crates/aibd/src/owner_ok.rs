@@ -487,8 +487,9 @@ pub const WIRED: &[&str] = &[
     crate::gh_token::OP,            // repo.gh_token_set (DESIGN-gh-token-card)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
-    crate::provider_login::OP,       // provider.login (重新登入)
-    crate::session_policy_setup::OP, // session_policy.init (W-10: no hold, a fresh check each time)
+    crate::provider_login::OP, // provider.login (重新登入)
+    // session_policy.init (W-10: no hold, a fresh check each time)
+    crate::session_policy_setup::OP,
     crate::merge_acts::OP_PERSONA,
     crate::merge_acts::OP_BRAIN,
     crate::drive_switch::OP,
