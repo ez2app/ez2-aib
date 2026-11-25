@@ -171,10 +171,21 @@ pub fn window_line(e: &Expanded, raised: &[&str]) -> String {
     s
 }
 
-/// pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): an open's window line with who it opens and which
-/// brand first — `{persona name}({uid})· {provider} · ` then [`window_line`]'s.
+/// The most of a persona's name an open's window line shows (c2f0b REVIEW-pa2ls L-a).
+pub const OPEN_NAME_SHOWN: usize = 8;
+
+/// pa2 L2 (c2f0b REVIEW-pa2-postmerge L2; REVIEW-pa2ls-993c0f9b L-a): an open's window line —
+/// the brand and the uid first, aibd's own words (the ticket is bound to both), then the
+/// persona's name cut to [`OPEN_NAME_SHOWN`] characters, then [`window_line`]'s. The window
+/// keeps only the start of a long line, and the name is a card's word an AI of the same account
+/// can write: put first, a long name pushed the brand and the uid out of the window, and a name
+/// written as 「小安(un0eba)· claude」 stood where the real ones should be.
 pub fn open_line(persona_name: &str, persona_uid: &str, provider: &str, line: &str) -> String {
-    format!("{persona_name}({persona_uid})· {provider} · {line}")
+    let mut name: String = persona_name.chars().take(OPEN_NAME_SHOWN).collect();
+    if persona_name.chars().count() > OPEN_NAME_SHOWN {
+        name.push('…');
+    }
+    format!("{provider} · {persona_uid} · {name} · {line}")
 }
 
 /// pa2 L3 L4 (c2f0b REVIEW-pa2-postmerge L3, L4): the template's name a take-back's window
@@ -188,7 +199,8 @@ pub fn revoke_name(tpl_uid: &str, now: Option<(&str, i64)>, then: i64) -> String
     }
     match now {
         Some((name, rev)) if rev == then => name.to_owned(),
-        Some((name, rev)) => format!("{name} · 當時 rev {then},現已改到 rev {rev}"),
+        // c2f0b REVIEW-pa2ls L-b: the warning first, before a long name the window cuts
+        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),
         None => format!("已刪的模板 · 當時 rev {then}"),
     }
 }
@@ -1062,10 +1074,27 @@ mod tests {
         assert_eq!(revoke_name("tpl_a", Some(("寫稿", 3)), 3), "寫稿");
         let changed = revoke_name("tpl_a", Some(("寫稿", 5)), 3);
         assert!(
-            changed.starts_with("寫稿")
-                && changed.contains("當時 rev 3")
-                && changed.contains("rev 5"),
+            changed.starts_with("(已改到 rev 5,收回到 rev 3)") && changed.ends_with("寫稿"),
             "reason: change_unsaid {changed}"
+        );
+        // L-b: a long name does not push the warning out of the window
+        let long = revoke_name(
+            "tpl_a",
+            Some(("一個非常非常非常非常非常長的模板名字", 5)),
+            3,
+        );
+        let e_long = Expanded {
+            tpl_uid: "tpl_a".into(),
+            rev: 3,
+            name: long,
+            base: "work".into(),
+            items: items(&["chat", "code", "own", "cmd", "brain"]),
+        };
+        let shown = crate::owner_ok::object_shown(&window_line(&e_long, &["push"]));
+        let head: String = shown.chars().take(24).collect();
+        assert!(
+            head.contains("已改到 rev 5"),
+            "reason: change_cut_off {shown}"
         );
         let gone = revoke_name("tpl_a", None, 3);
         assert!(
@@ -1104,16 +1133,28 @@ mod tests {
             base: "dgrs".into(),
             items: items(&["chat", "code", "own", "cmd", "brain", "net", "push"]),
         };
-        let l = open_line("小安", "un0eba", "claude", &window_line(&e, &["push"]));
-        assert!(
-            l.starts_with("小安(un0eba)· claude · 用權限模板"),
-            "reason: who_not_first {l}"
-        );
-        let shown = crate::owner_ok::object_shown(&l);
-        assert!(
-            shown.starts_with("小安(un0eba)· claude"),
-            "reason: who_cut_off {shown}"
-        );
+        let line = window_line(&e, &["push"]);
+        // the window keeps the start of a long line: the brand and the uid are in it whatever
+        // the name (c2f0b REVIEW-pa2ls L-a: a 13-character name, and a name copying a uid)
+        for name in ["小安", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let l = open_line(name, "un0eba", "claude", &line);
+            assert!(
+                l.starts_with("claude · un0eba · "),
+                "reason: who_not_first {l}"
+            );
+            let shown = crate::owner_ok::object_shown(&l);
+            let head: String = shown.chars().take(24).collect();
+            assert!(
+                head.starts_with("claude · un0eba · "),
+                "reason: who_cut_off {shown}"
+            );
+            assert!(
+                !head.contains("zz9zz9") && !head.contains("codex"),
+                "reason: name_stood_for_the_real_ones {shown}"
+            );
+        }
+        let l = open_line("AIB 本人核准安全工程師", "un0eba", "claude", &line);
+        assert!(l.contains("· AIB 本人核准… · "), "reason: name_not_cut {l}");
     }
 
     /// 7B-5: the window names every item held, what is not given, and what this turns on last.

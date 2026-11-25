@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pa2 L1–L4 (f163c REVIEW-pa2-postmerge L1; c2f0b REVIEW-pa2-postmerge L2 L3 L4): a take-back moves only aibd's own note of the row's seat; an open's window says who and which brand first; a take-back's window names the template as it is now and says when it changed or is gone. Each rule broken turns its test red.
+# pa2 L1–L4 (f163c REVIEW-pa2-postmerge L1; c2f0b REVIEW-pa2-postmerge L2 L3 L4): a take-back moves only aibd's own note of the row's seat; an open's window says who and which brand first (brand and uid before the name); a take-back's window names the template as it is now and says when it changed or is gone. Each rule broken turns its test red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -28,10 +28,10 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '    if false && !note_rel_ok(rel, code) {' \
   --expect-fail "$L1" \
   -- cargo test -p aibd --locked --lib "$L1"
-# pa2-l2-line (the open's line without who / which brand first)
+# pa2-l2-line (L-a: the name back before the brand and the uid, where a long or copied name pushes them out)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '    format!("{persona_name}({persona_uid})· {provider} · {line}")' \
-  '    format!("{line}{persona_name}{persona_uid}{provider}")' \
+  '    format!("{provider} · {persona_uid} · {name} · {line}")' \
+  '    format!("{name} · {provider} · {persona_uid} · {line}")' \
   --expect-fail 'perm_apply::tests::an_open_window_says_who_and_which_brand_first' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::an_open_window_says_who_and_which_brand_first'
 # pa2-l2-open (the template open's window is left as it was)
@@ -48,7 +48,7 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
 # pa2-l4-changed (a template changed since is not said so)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
-  '        Some((name, rev)) => format!("{name} · 當時 rev {then},現已改到 rev {rev}"),' \
+  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),' \
   '        Some((name, _rev)) => name.to_owned(),' \
   --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
@@ -58,3 +58,27 @@ python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '    if let Some(mode) = tpl_uid.strip_prefix("mode:") {' \
   --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
   -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
+# pa2-la-cut (L-a: the persona's name not cut)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '    let mut name: String = persona_name.chars().take(OPEN_NAME_SHOWN).collect();' \
+  '    let mut name: String = persona_name.chars().take(usize::MAX).collect();' \
+  --expect-fail 'perm_apply::tests::an_open_window_says_who_and_which_brand_first' \
+  -- cargo test -p aibd --locked --lib 'perm_apply::tests::an_open_window_says_who_and_which_brand_first'
+# pa2-lb-order (L-b: the change warning back after a name the window cuts)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),' \
+  '        Some((name, rev)) => format!("{name}(已改到 rev {rev},收回到 rev {then})"),' \
+  --expect-fail 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now' \
+  -- cargo test -p aibd --locked --lib 'perm_apply::tests::a_take_back_window_names_the_template_as_it_is_now'
+# pa2-lc-delete (L-c: the page's 收回 of a note moves a file its row's path does not let it)
+python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
+  '            library().and_then(|root| take_back_row(&root, &rel, &code, &sha, &keep))' \
+  '            library().and_then(|root| take_back_row(&root, &rel, &code, &sha, &keep).or_else(|_| take_back(&root, &rel, &sha, &keep)))' \
+  --expect-fail 'a_take_back_moves_only_aibds_own_note_of_the_rows_seat' \
+  -- cargo test -p aibd --locked --test brain_note_take_back_row 'a_take_back_moves_only_aibds_own_note_of_the_rows_seat'
+# pa2-lc-revoke (L-c: the take-back's window does not get the template's name as it is now)
+python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
+  '    e.name = match tokio::task::spawn_blocking(move || db.perm_template(&uid)).await {' \
+  '    e.tpl_uid = match tokio::task::spawn_blocking(move || db.perm_template(&uid)).await {' \
+  --expect-fail 'a_take_back_to_a_removed_template_says_so_in_the_window' \
+  -- cargo test -p aibd --locked --test perm_revoke_window 'a_take_back_to_a_removed_template_says_so_in_the_window'
