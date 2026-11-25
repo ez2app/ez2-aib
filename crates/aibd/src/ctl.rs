@@ -2562,14 +2562,67 @@ impl aibd::winsetup::Ops for SetupOps {
     fn open_page(&self) -> Result<(), String> {
         run(&["web"])
     }
+    fn settings_get(&self, name: &str) -> Result<Option<String>, String> {
+        aib_sys::winrun::uninstall_get(name).map_err(|e| e.to_string())
+    }
+    fn settings_set(&self, name: &str, value: &str) -> Result<(), String> {
+        aib_sys::winrun::uninstall_set(name, value).map_err(|e| e.to_string())
+    }
+    fn settings_delete_if(&self, name: &str, expected: &str) -> Result<bool, String> {
+        aib_sys::winrun::uninstall_delete_if(name, expected).map_err(|e| e.to_string())
+    }
+    fn remove_dir_if_empty(&self, dir: &Path) {
+        // remove_dir refuses a folder with anything in it
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
-/// `aibd setup [--uninstall]` (and `AIB-Setup.exe` with no arguments): Windows only. `pause`
-/// keeps the window open at the end when it was double-clicked, so the last lines can be read.
-pub fn setup(pause: bool, remove: bool) -> Result<(), String> {
-    let r = setup_inner(remove);
+/// What `aibd setup` was asked to do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SetupMode {
+    Install,
+    Uninstall,
+    Rollback,
+}
+
+/// Append `line` to `<AIB folder>\setup.log` (steps and error codes only, never keys or
+/// codes); a folder that is not there yet or a write that fails is skipped.
+fn setup_log(dir: &Path, line: &str) {
+    if !dir.is_dir() {
+        return;
+    }
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("setup.log"))
+    {
+        let _ = writeln!(f, "{at} {line}");
+    }
+}
+
+/// `aibd setup [--uninstall | --rollback]` (and `AIB-Setup.exe` with no arguments): Windows
+/// only. `pause` keeps the window open at the end when it was double-clicked, so the last lines
+/// can be read. Every line also goes to `setup.log` in the AIB folder.
+pub fn setup(pause: bool, mode: SetupMode) -> Result<(), String> {
+    let dir = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())
+        .map(|p| p.dir)
+        .ok();
+    let mut say = |l: &str| {
+        println!("{l}");
+        if let Some(d) = &dir {
+            setup_log(d, l);
+        }
+    };
+    let r = setup_inner(mode, &mut say);
     if let Err(e) = &r {
         eprintln!("aibd setup: {e}");
+        if let Some(d) = &dir {
+            setup_log(d, &format!("failed: {e}"));
+        }
     }
     if pause {
         println!("Press Enter to close this window.");
@@ -2579,21 +2632,25 @@ pub fn setup(pause: bool, remove: bool) -> Result<(), String> {
     r
 }
 
-fn setup_inner(remove: bool) -> Result<(), String> {
+fn setup_inner(mode: SetupMode, say: &mut dyn FnMut(&str)) -> Result<(), String> {
     if !cfg!(windows) {
         return Err("aibd setup is the Windows installer; on a Mac use `aibd install`".into());
     }
     let p = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())?;
-    if remove {
-        return aibd::winsetup::uninstall(&p, &SetupOps, &mut |l| println!("{l}"));
+    match mode {
+        SetupMode::Uninstall => return aibd::winsetup::uninstall(&p, &SetupOps, say),
+        SetupMode::Rollback => return aibd::winsetup::rollback(&p, &SetupOps, say),
+        SetupMode::Install => {}
     }
     let here = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
-    let done = aibd::winsetup::run(&p, &here, &SetupOps, &mut |l| println!("{l}"))?;
+    let done = aibd::winsetup::run(&p, &here, &SetupOps, say)?;
     if let Some(sha) = done.sha256 {
-        println!("Installed program SHA-256: {sha} (compare with SHA256SUMS on the release page)");
+        say(&format!(
+            "Installed program SHA-256: {sha} (compare with SHA256SUMS on the release page)"
+        ));
     }
     if done.already_running {
-        println!("AIB was already running.");
+        say("AIB was already running.");
     }
     Ok(())
 }

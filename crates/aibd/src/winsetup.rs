@@ -132,6 +132,47 @@ pub trait Ops {
     fn pace(&self, d: Duration);
     /// Open the page (`aibd ctl web`).
     fn open_page(&self) -> Result<(), String>;
+    /// One value of AIB's Settings > Apps entry, if any.
+    fn settings_get(&self, name: &str) -> Result<Option<String>, String>;
+    /// Write one value of AIB's Settings > Apps entry.
+    fn settings_set(&self, name: &str, value: &str) -> Result<(), String>;
+    /// Remove one value of that entry when it reads exactly `expected`.
+    fn settings_delete_if(&self, name: &str, expected: &str) -> Result<bool, String>;
+    /// Remove the folder `dir` if it is empty; anything in it keeps it.
+    fn remove_dir_if_empty(&self, dir: &Path);
+}
+
+/// This aibd's version, shown in Settings > Apps.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What Settings > Apps runs to remove AIB: the quoted program and `setup --uninstall`.
+pub fn uninstall_command(command: &str) -> String {
+    format!("{command} setup --uninstall")
+}
+
+/// AIB's Settings > Apps entry (COND r0 §4-1): written when there is none or it is ours (same
+/// UninstallString), left alone when it is somebody else's. Not being listed there does not
+/// stop the setup, so this says why instead of failing.
+fn settings_entry(p: &Places, command: &str, ops: &dyn Ops) -> Result<(), String> {
+    let ours = uninstall_command(command);
+    if let Some(u) = ops.settings_get("UninstallString")? {
+        if u != ours {
+            return Err(format!(
+                "Settings > Apps already has an AIB entry that is not ours ({u}); left as it is"
+            ));
+        }
+    }
+    let dir = p.dir.to_string_lossy();
+    for (name, value) in [
+        ("DisplayName", "AIB"),
+        ("DisplayVersion", VERSION),
+        ("Publisher", "Ez2"),
+        ("InstallLocation", dir.as_ref()),
+        ("UninstallString", ours.as_str()),
+    ] {
+        ops.settings_set(name, value)?;
+    }
+    Ok(())
 }
 
 /// The pairing key the setup finds (3e53b REVIEW-winsetup L1).
@@ -275,6 +316,9 @@ fn run_with(
     // 3. start at sign-in
     sign_in_entry(command, ops)?;
     say(&format!("3/5 starts at sign-in: {RUN_NAME} = {command}"));
+    if let Err(e) = settings_entry(p, command, ops) {
+        say(&format!("3/5 not listed in Settings > Apps: {e}"));
+    }
     // 4. running now
     if ops.healthy() {
         done.already_running = true;
@@ -301,8 +345,9 @@ fn run_with(
     Ok(done)
 }
 
-/// `aibd setup --uninstall`: remove the Run value when it is ours. The program folder and the
-/// data folder stay (deleting data needs Hello: not in this slice).
+/// `aibd setup --uninstall` (also what Settings > Apps runs): remove the Run value and the
+/// Settings entry when they are ours, and the program files when AIB is not running. The data
+/// folder always stays (deleting data needs Hello: not in this slice).
 pub fn uninstall(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) -> Result<(), String> {
     uninstall_with(p, ops, &run_command(p)?, say)
 }
@@ -313,6 +358,7 @@ fn uninstall_with(
     command: &str,
     say: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
+    check(p, ops)?;
     match ops.run_get(RUN_NAME)? {
         Some(v) if v == command => {
             ops.run_delete_if(RUN_NAME, command)?;
@@ -323,9 +369,62 @@ fn uninstall_with(
         )),
         None => say(&format!("no sign-in entry {RUN_NAME}")),
     }
+    let ours = uninstall_command(command);
+    let listed_ours = ops.settings_get("UninstallString")?.as_deref() == Some(ours.as_str());
+    if listed_ours {
+        for name in aib_sys::winrun::UNINSTALL_NAMES {
+            if let Some(v) = ops.settings_get(name)? {
+                ops.settings_delete_if(name, &v)?;
+            }
+        }
+        say("removed AIB from Settings > Apps");
+    }
+    let running = ops.healthy();
+    if running {
+        say(&format!(
+            "AIB is running, so the program in {} stays; sign out and back in, then delete it",
+            p.dir.display()
+        ));
+    } else {
+        for f in [&p.exe, &p.prev, &p.new] {
+            ops.remove(f);
+        }
+        ops.remove_dir_if_empty(&p.dir);
+        say(&format!("removed the program from {}", p.dir.display()));
+    }
+    say("kept: your data (pairing key, seats, settings)");
+    Ok(())
+}
+
+/// `aibd setup --rollback`: put the previous program (`aibd.exe.prev`) back, the current one
+/// becoming `.prev`. Not while AIB is running.
+pub fn rollback(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) -> Result<(), String> {
+    check(p, ops)?;
+    if !ops.exists(&p.prev) {
+        return Err(format!(
+            "installer_no_prev: there is no earlier program ({}) to go back to",
+            p.prev.display()
+        ));
+    }
+    let busy = ops.exists(&p.exe) && ops.healthy();
+    if busy {
+        return Err(format!(
+            "installer_running: AIB is running from {}; quit it (signing out and back in also works), then try again",
+            p.exe.display()
+        ));
+    }
+    ops.remove(&p.new);
+    if ops.exists(&p.exe) {
+        ops.rename(&p.exe, &p.new)?;
+    }
+    ops.rename(&p.prev, &p.exe)?;
+    if ops.exists(&p.new) {
+        ops.rename(&p.new, &p.prev)?;
+    }
     say(&format!(
-        "kept: the program in {} and your data; delete the folder yourself once AIB has quit",
-        p.dir.display()
+        "went back to the earlier program in {}; the newer one is kept as {}",
+        p.exe.display(),
+        p.prev.display()
     ));
     Ok(())
 }
@@ -350,6 +449,7 @@ mod tests {
         disk_sha: Option<String>,
         run: RefCell<BTreeMap<String, String>>,
         run_mangle: bool,
+        settings: RefCell<BTreeMap<String, String>>,
         healthy_after: Option<usize>,
         calls: RefCell<Vec<String>>,
         health_asks: RefCell<usize>,
@@ -444,6 +544,24 @@ mod tests {
         fn open_page(&self) -> Result<(), String> {
             self.log("open".into());
             Ok(())
+        }
+        fn settings_get(&self, name: &str) -> Result<Option<String>, String> {
+            Ok(self.settings.borrow().get(name).cloned())
+        }
+        fn settings_set(&self, name: &str, value: &str) -> Result<(), String> {
+            self.settings.borrow_mut().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn settings_delete_if(&self, name: &str, expected: &str) -> Result<bool, String> {
+            let mut s = self.settings.borrow_mut();
+            if s.get(name).map(String::as_str) == Some(expected) {
+                s.remove(name);
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        fn remove_dir_if_empty(&self, dir: &Path) {
+            self.log(format!("rmdir {}", dir.display()));
         }
     }
 
@@ -765,6 +883,131 @@ mod tests {
         assert!(uninstall_with(&p, &theirs, CMD, &mut |l| lines.push(l.to_string())).is_ok());
         assert!(!theirs.has("delete"), "reason: deleted_theirs");
         assert_eq!(theirs.run.borrow().len(), 1, "reason: removed_theirs");
+    }
+
+    #[test]
+    fn the_setup_lists_aib_in_settings_with_an_uninstall_command() {
+        let f = Fake {
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        let s = f.settings.borrow();
+        assert_eq!(
+            s.get("DisplayName").map(String::as_str),
+            Some("AIB"),
+            "reason: name"
+        );
+        assert_eq!(
+            s.get("UninstallString").cloned(),
+            Some(format!("{CMD} setup --uninstall")),
+            "reason: uninstall_string"
+        );
+        assert_eq!(s.len(), 5, "reason: values {s:?}");
+    }
+
+    #[test]
+    fn somebody_elses_settings_entry_is_left_and_the_setup_goes_on() {
+        let f = Fake {
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        f.settings
+            .borrow_mut()
+            .insert("UninstallString".into(), "\"C:\\x\\un.exe\"".into());
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert_eq!(
+            f.settings.borrow().len(),
+            1,
+            "reason: wrote {:?}",
+            f.settings.borrow()
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("not ours")),
+            "reason: said {lines:?}"
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_the_program_only_when_aib_is_not_running() {
+        let p = here();
+        let mut lines = Vec::new();
+        let idle = Fake::default();
+        assert!(uninstall_with(&p, &idle, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(
+            idle.has("rmdir"),
+            "reason: kept_idle {:?}",
+            idle.calls.borrow()
+        );
+        let busy = Fake {
+            healthy_after: Some(0),
+            files: RefCell::new(vec![p.exe.clone()]),
+            ..Fake::default()
+        };
+        assert!(uninstall_with(&p, &busy, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(
+            busy.exists(&p.exe) && !busy.has("rmdir"),
+            "reason: removed_running"
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_only_our_settings_entry() {
+        let p = here();
+        let mut lines = Vec::new();
+        let ours = Fake::default();
+        let _ = settings_entry(&p, CMD, &ours);
+        assert_eq!(ours.settings.borrow().len(), 5, "reason: setup");
+        assert!(uninstall_with(&p, &ours, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(
+            ours.settings.borrow().is_empty(),
+            "reason: left {:?}",
+            ours.settings.borrow()
+        );
+        let theirs = Fake::default();
+        theirs
+            .settings
+            .borrow_mut()
+            .insert("UninstallString".into(), "x".into());
+        theirs
+            .settings
+            .borrow_mut()
+            .insert("DisplayName".into(), "AIB".into());
+        assert!(uninstall_with(&p, &theirs, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert_eq!(theirs.settings.borrow().len(), 2, "reason: removed_theirs");
+    }
+
+    #[test]
+    fn rollback_swaps_in_the_previous_program_but_not_while_running() {
+        let p = here();
+        let mut lines = Vec::new();
+        let none = Fake::default();
+        assert!(rollback(&p, &none, &mut |l| lines.push(l.to_string()))
+            .is_err_and(|e| e.starts_with("installer_no_prev")));
+        let busy = Fake {
+            healthy_after: Some(0),
+            files: RefCell::new(vec![p.exe.clone(), p.prev.clone()]),
+            ..Fake::default()
+        };
+        assert!(rollback(&p, &busy, &mut |l| lines.push(l.to_string()))
+            .is_err_and(|e| e.starts_with("installer_running")));
+        assert!(!busy.has("rename"), "reason: swapped_running");
+        let idle = Fake {
+            files: RefCell::new(vec![p.exe.clone(), p.prev.clone()]),
+            ..Fake::default()
+        };
+        assert!(rollback(&p, &idle, &mut |l| lines.push(l.to_string())).is_ok());
+        assert_eq!(
+            *idle.calls.borrow(),
+            vec![
+                format!("rename {} {}", p.exe.display(), p.new.display()),
+                format!("rename {} {}", p.prev.display(), p.exe.display()),
+                format!("rename {} {}", p.new.display(), p.prev.display()),
+            ],
+            "reason: swap"
+        );
     }
 
     #[test]
