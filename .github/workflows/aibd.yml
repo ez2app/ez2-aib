@@ -3951,6 +3951,7 @@ jobs:
           fi
           # by id the files may land in winexe-check/<name>/ rather than winexe-check/
           d=winexe-check; [ -f "$d/SHA256SUMS" ] || d="winexe-check/$PACK"
+          [ -d "$d" ] || { echo "::error title=wincheck pack not checked::the download gave neither winexe-check/SHA256SUMS nor winexe-check/$PACK/"; ls -la winexe-check || true; exit 1; }
           cd "$d"
           [ -s SHA256SUMS ] || { echo "::error::the uploaded pack has no SHA256SUMS"; exit 1; }
           sha256sum --quiet -c SHA256SUMS || { echo "::error::files of the uploaded pack are missing or differ from SHA256SUMS (above)"; exit 1; }
