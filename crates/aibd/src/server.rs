@@ -215,8 +215,9 @@ pub async fn run(
 
     // pairing (ADR 0006 §7) is opt-in: the terminal confirmation is not an independent
     // channel against a same-account AI (see crate::pairing)
-    let channel = crate::pairing::ConfirmChannel::from_env_value(
+    let channel = crate::pairing::ConfirmChannel::from_env_here(
         std::env::var("AIBD_PAIRING").ok().as_deref(),
+        cfg!(windows),
     );
     if channel == crate::pairing::ConfirmChannel::TouchId {
         tracing::info!("pairing is on; the owner's fingerprint confirms it (crate::touch)");
@@ -252,7 +253,10 @@ pub async fn run(
         match tokio::task::spawn_blocking(move || crate::touch::presence_here(&d)).await {
             Ok(Ok(p)) => {
                 // a63 (Andy 11-20): the page's owner asks use the same key, only when switched on
-                if crate::owner_ok::switch_on(std::env::var(crate::owner_ok::SWITCH).ok()) {
+                if crate::owner_ok::switch_on_here(
+                    std::env::var(crate::owner_ok::SWITCH).ok(),
+                    cfg!(windows),
+                ) {
                     crate::owner_ok::set_presence(p.clone(), pairing.clone());
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
