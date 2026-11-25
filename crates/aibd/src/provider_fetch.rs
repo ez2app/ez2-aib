@@ -238,7 +238,8 @@ fn watch(
             Err(_) => return stopped(child, ERR_OFFLINE),
         }
         progress.set(0, std::fs::metadata(out).map_or(0, |m| m.len()));
-        if cancel.load(Ordering::SeqCst) {
+        let cancelled = cancel.load(Ordering::SeqCst);
+        if cancelled {
             return stopped(child, ERR_CANCELLED);
         }
         if !tick() {
