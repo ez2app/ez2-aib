@@ -51,35 +51,54 @@ pub fn attrs_say_cloud_only(attrs: u32) -> bool {
         != 0
 }
 
-#[cfg(windows)]
-fn cloud_only(m: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    attrs_say_cloud_only(m.file_attributes())
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// What one folder entry is to a merge copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry {
+    /// iCloud's `.name.icloud`, or cloud-only Windows attributes: the copy is refused.
+    Placeholder,
+    /// A link, or (Windows) any other reparse point: a junction, a directory link; skipped.
+    Link,
+    Plain,
 }
 
-#[cfg(not(windows))]
-fn cloud_only(_m: &std::fs::Metadata) -> bool {
-    false
+/// N1 (f163c REVIEW-macts ddb16d16): the placeholder is asked before the link, on every
+/// platform: a OneDrive cloud-only file is a reparse point too, and must refuse the copy, not
+/// be skipped as a link. Pure (name, Windows attributes, is a symlink) so both orders are
+/// tested on Mac and Windows alike.
+pub fn entry_kind(name: &str, attrs: u32, symlink: bool) -> Entry {
+    if (name.starts_with('.') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs) {
+        return Entry::Placeholder;
+    }
+    if symlink || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Entry::Link;
+    }
+    Entry::Plain
 }
 
-/// A cloud placeholder: iCloud's `.name.icloud`, or (Windows) cloud-only attributes.
-pub fn is_cloud_placeholder(name: &str, m: &std::fs::Metadata) -> bool {
-    (name.starts_with('.') && name.ends_with(".icloud")) || cloud_only(m)
-}
-
-/// A link, or on Windows any reparse point (a junction or a directory link too; 6770f
-/// follows brain_note's fsops). Ask [`is_cloud_placeholder`] first: a cloud-only file is a
-/// reparse point as well, and must refuse the copy, not be skipped as a link.
-fn is_link(m: &std::fs::Metadata) -> bool {
+/// The entry's Windows attributes; 0 elsewhere.
+fn attrs_of(m: &std::fs::Metadata) -> u32 {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
+        m.file_attributes()
     }
-    m.file_type().is_symlink()
+    #[cfg(not(windows))]
+    {
+        let _ = m;
+        0
+    }
+}
+
+fn classify(name: &str, m: &std::fs::Metadata) -> Entry {
+    entry_kind(name, attrs_of(m), m.file_type().is_symlink())
+}
+
+/// A link or a reparse point that is not a cloud placeholder (brain_note's fsops does the
+/// same); for files already known not to be placeholders (what a copy made).
+fn is_link(m: &std::fs::Metadata) -> bool {
+    m.file_type().is_symlink() || attrs_of(m) & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// Count a brain folder: regular files, bytes, placeholders; links are not followed.
@@ -96,11 +115,12 @@ pub fn scan(root: &Path) -> NotesCheck {
                 continue;
             };
             let name = e.file_name().to_string_lossy().into_owned();
-            if is_cloud_placeholder(&name, &meta) {
+            let kind = classify(&name, &meta);
+            if kind == Entry::Placeholder {
                 check.cloud_placeholders += 1;
                 continue;
             }
-            if is_link(&meta) {
+            if kind == Entry::Link {
                 continue;
             }
             if meta.is_dir() {
@@ -199,11 +219,12 @@ fn copy_tree(src: &Path, to: &Path) -> Result<Vec<(String, String)>, &'static st
             let meta = std::fs::symlink_metadata(&p).map_err(|_| "notes_copy_failed")?;
             let name_os = e.file_name();
             let name = name_os.to_string_lossy().into_owned();
-            let cloud = is_cloud_placeholder(&name, &meta);
+            let kind = classify(&name, &meta);
+            let cloud = kind == Entry::Placeholder;
             if cloud {
                 return Err("notes_cloud_placeholder");
             }
-            if is_link(&meta) {
+            if kind == Entry::Link {
                 continue;
             }
             let r = if rel.is_empty() {
@@ -543,6 +564,21 @@ mod tests {
         let inner = src.join("sub");
         assert_eq!(copy_into(&src, &inner, "k"), Err("notes_nested"));
         assert_eq!(copy_into(&inner, &src, "k"), Err("notes_nested"));
+    }
+
+    #[test]
+    fn a_placeholder_is_asked_before_a_link_on_every_platform() {
+        const RECALL: u32 = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+        const REPARSE: u32 = FILE_ATTRIBUTE_REPARSE_POINT;
+        // a OneDrive cloud-only file is a reparse point too: refused, not skipped
+        assert_eq!(
+            entry_kind("a.md", REPARSE | RECALL, false),
+            Entry::Placeholder
+        );
+        assert_eq!(entry_kind(".a.md.icloud", 0, true), Entry::Placeholder);
+        assert_eq!(entry_kind("jdir", REPARSE, false), Entry::Link);
+        assert_eq!(entry_kind("l.md", 0, true), Entry::Link);
+        assert_eq!(entry_kind("a.md", 0, false), Entry::Plain);
     }
 
     #[test]

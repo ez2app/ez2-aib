@@ -14,8 +14,8 @@ python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
   -- cargo test -p aibd --locked --lib 'merge_notes::tests::mg13_a_placeholder_or_too_much_refuses_the_whole_copy_and_leaves_nothing'
 # mn-count
 python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
-  '            if is_cloud_placeholder(&name, &meta) {' \
-  '            if is_cloud_placeholder(&name, &meta) && false {' \
+  '            if kind == Entry::Placeholder {' \
+  '            if kind == Entry::Placeholder && false {' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # mn-limit
@@ -66,3 +66,9 @@ python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
   '            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),' \
   --expect-fail 'merge_notes::tests::an_empty_folder_already_there_is_never_renamed_over' \
   -- cargo test -p aibd --locked --lib 'merge_notes::tests::an_empty_folder_already_there_is_never_renamed_over'
+# mn-order (f163c REVIEW-macts ddb16d16 N1: a placeholder before a link)
+python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
+  '    if (name.starts_with('\''.'\'') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs) {' \
+  '    if ((name.starts_with('\''.'\'') && name.ends_with(".icloud")) || attrs_say_cloud_only(attrs)) && !(symlink || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0) {' \
+  --expect-fail 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform' \
+  -- cargo test -p aibd --locked --lib 'merge_notes::tests::a_placeholder_is_asked_before_a_link_on_every_platform'
