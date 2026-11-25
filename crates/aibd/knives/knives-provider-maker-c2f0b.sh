@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# PM3–PM8 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
+# PM3-PM9 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
 # interface): a table row becomes the same fetch row.
 set -euo pipefail
 umask 022
@@ -21,4 +21,7 @@ python3 -I scripts/knife.py crates/aibd/src/provider_login.rs 'use std::collecti
 pm '            + code.matches(&format!("{m}::*")).count()' '            + 0' every_way_of_naming_the_download_is_counted
 # PM8 another module renames the download's module (f163c REVIEW-l2-c2f0b-f163c-50ce45a5 N1)
 python3 -I scripts/knife.py crates/aibd/src/provider_login.rs 'use std::collections::HashMap;' 'use std::collections::HashMap; #[allow(unused_imports)] use crate::provider_fetch as _pf;' --expect-fail "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer" \
+        -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer"
+# PM9 provider_fetch gets another child module, which would see run (3e53b r3)
+python3 -I scripts/knife.py crates/aibd/src/provider_fetch.rs 'pub mod maker;' 'pub mod maker; mod extra {}' --expect-fail "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer" \
         -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer"

@@ -258,6 +258,26 @@ mod tests {
             !fetch.contains("\npub(crate) fn run("),
             "reason: run_public"
         );
+        // every child of provider_fetch sees run: the only ones are this file and the tests
+        // (3e53b r3)
+        let mut kids: Vec<String> = Vec::new();
+        for l in fetch.lines().map(str::trim_start) {
+            if l.starts_with("//") {
+                continue;
+            }
+            for piece in l.split([';', '{']) {
+                let p = piece.trim_start();
+                let p = p
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| p.strip_prefix("pub(super) "))
+                    .or_else(|| p.strip_prefix("pub "))
+                    .unwrap_or(p);
+                if let Some(name) = p.strip_prefix("mod ") {
+                    kids.push(name.trim().to_owned());
+                }
+            }
+        }
+        assert_eq!(kids, ["maker", "tests"], "reason: another_child");
         // every aibd source file: only this one names the download, once (3e53b Nb)
         let mut callers = Vec::new();
         let mut dirs = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
