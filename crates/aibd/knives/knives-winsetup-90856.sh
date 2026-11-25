@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS18, WS22–WS23, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WS22–WS24, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -114,3 +114,7 @@ ws '            .filter(|f| ops.exists(f))' \
 ws '        let back = ops.rename(&p.new, &p.exe);' \
    '        let back: Result<(), String> = Ok(());' \
    a_rollback_that_fails_half_way_puts_the_current_program_back
+# WS24 (3e53b Na, 80d4c947) a rollback with no aibd.exe before says the program is in a .new that is not there
+ws '        if !moved {' \
+   '        if !moved && false {' \
+   a_rollback_with_no_program_before_does_not_point_at_a_missing_copy
