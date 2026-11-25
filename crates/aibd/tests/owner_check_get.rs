@@ -28,8 +28,11 @@ async fn a_paired_page_reads_the_owner_check_class_and_nothing_else_does() {
     );
     assert_eq!(r.json["class_is_final"], false, "{}", r.body);
 
-    let r = d.call("GET", "/api/v1/owner-check", None, None).await;
-    assert_eq!(r.code, 401, "reason: read_without_a_token {}", r.body);
+    // (the harness sends its start-up token when given none: a wrong one is the case here)
+    let r = d
+        .call("GET", "/api/v1/owner-check", Some("not-a-token"), None)
+        .await;
+    assert_eq!(r.code, 401, "reason: read_with_a_wrong_token {}", r.body);
     let r = d
         .call("POST", "/api/v1/owner-check", Some(&page), Some("{}"))
         .await;
