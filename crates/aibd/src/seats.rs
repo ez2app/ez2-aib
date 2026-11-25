@@ -1157,6 +1157,18 @@ struct RawOpen {
 #[derive(Debug)]
 struct Refusal(&'static str, &'static str);
 
+/// 409 `not_logged_in` for `provider` (fc7f9 f40246bf6b reads `code`): no seat, no window.
+fn not_logged_in(provider: &str) -> Response {
+    let body = serde_json::json!({
+        "code": "not_logged_in",
+        "reason": "not_logged_in",
+        "provider": provider,
+        "message": "this brand has no login where the seats read it; log in, then open again; no seat was made",
+        "request_id": crate::guard::request_id(),
+    });
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
 impl Refusal {
     fn into_response(self) -> Response {
         let body = serde_json::json!({
@@ -1705,6 +1717,19 @@ pub async fn page_open(
             "a codex work seat opens in its own folder only for now (no with_seat, repo or folder); no seat was made",
         )
         .into_response();
+    }
+    // 08de5 11-26 (Andy 02:0x「過期或沒有一樣彈出綁定視窗」, c2f0b W-10 e, fc7f9 f40246bf6b):
+    // a brand with no login where the seats read it is refused before any fingerprint window
+    // (the dgrs / template / repo asks below), so the page shows its login card and opens
+    // again after it; the same reading `GET /api/v1/version` gives (`open: false`)
+    let brand = req.provider.clone();
+    if !tokio::task::spawn_blocking(move || crate::workspace::login_now(&brand))
+        .await
+        // a reading that could not run opens as before: the seat then ends for its login
+        // and gets the relogin card (this is the page's shortcut, not a guard)
+        .unwrap_or(true)
+    {
+        return not_logged_in(&req.provider);
     }
     let brain_route = match req.brain.as_deref() {
         None => None,

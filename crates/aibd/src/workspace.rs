@@ -180,7 +180,7 @@ pub fn seat_login_home() -> Option<std::path::PathBuf> {
     handed.or_else(|| crate::seats::home_dir(|k| std::env::var(k).ok()))
 }
 
-fn login_now(brand: &str) -> bool {
+pub fn login_now(brand: &str) -> bool {
     let codex_home = std::env::var("CODEX_HOME")
         .ok()
         .map(std::path::PathBuf::from);

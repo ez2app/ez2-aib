@@ -16,11 +16,15 @@
 //! The address, the code and the output live in memory for the round only: never a file, a log
 //! line or an event. Events are `provider.login_started` / `provider.login_ended` with
 //! `{provider, login_id, ok?, reason?}`. A preview aibd refuses (`login_in_parent`): its seats
-//! use the parent's login (`AIBD_SEAT_HOME`). Windows refuses until it is tried there
-//! (5d33a N5).
+//! use the parent's login (`AIBD_SEAT_HOME`). On Windows only claude logs in from the page
+//! (Andy 11-26 02:0x「用那台既有的登入,過期或沒有一樣彈出綁定視窗」, c2f0b W-10: the native
+//! exe the policy lists, run in the user's profile, the round in its own Job); the others
+//! refuse until each is tried there (5d33a N5).
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::{Child, ChildStdin, Command, Stdio};
+#[cfg(unix)]
+use std::process::Child;
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -205,6 +209,9 @@ fn rounds() -> &'static Rounds {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The providers whose login runs from the page on Windows (ebab8 11-26 02:08: claude only).
+pub const WINDOWS_LOGINS: [&str; 1] = ["claude"];
+
 /// May a round for `provider` start now? `(status, reason)` of the refusal.
 pub fn gate(
     provider: &str,
@@ -218,7 +225,7 @@ pub fn gate(
     if in_preview {
         return Err((StatusCode::CONFLICT, "login_in_parent"));
     }
-    if on_windows {
+    if on_windows && !WINDOWS_LOGINS.contains(&p) {
         return Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here"));
     }
     let g = rounds()
@@ -285,7 +292,7 @@ fn command(
     c.args(args)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k, v)));
-    if let Some(home) = env.iter().find(|(k, _)| k == "HOME").map(|(_, v)| v) {
+    if let Some(home) = home_of(env, cfg!(windows)) {
         c.current_dir(home);
     }
     #[cfg(unix)]
@@ -297,18 +304,123 @@ fn command(
     c
 }
 
-fn kill_all(child: &mut Child) {
+/// Where the login runs: `HOME`; on Windows `USERPROFILE` (c2f0b W-10 b: the user's profile,
+/// where claude keeps its login), names read as Windows reads them (any case).
+pub fn home_of(
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+    windows: bool,
+) -> Option<&std::ffi::OsString> {
+    let name = if windows { "USERPROFILE" } else { "HOME" };
+    env.iter()
+        .find(|(k, _)| {
+            if windows {
+                k.to_str().is_some_and(|k| k.eq_ignore_ascii_case(name))
+            } else {
+                k == name
+            }
+        })
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty())
+}
+
+/// The login program and everything it starts (c2f0b W-10 c): on unix its own process group,
+/// killed whole; on Windows its own Job ([`aib_sys::session::SessionTree`], KILL_ON_JOB_CLOSE,
+/// inside aibd's J0, as a seat is), so nothing of a round outlives it on either.
+pub struct Proc {
     #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
+    child: Child,
+    #[cfg(windows)]
+    tree: aib_sys::session::SessionTree,
+}
+
+/// How long a Windows kill waits for the round's Job to empty.
+#[cfg(windows)]
+const KILL_LIMIT: Duration = Duration::from_secs(5);
+
+impl Proc {
+    /// Start `prog args` with exactly `env`, stdin / stdout / stderr piped; the output pipes
+    /// are handed to [`read_into`].
+    fn spawn(
+        prog: &std::path::Path,
+        args: &[&str],
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+        out: &Out,
+    ) -> Result<(Proc, Option<ChildStdin>), &'static str> {
+        #[cfg(unix)]
+        {
+            let mut cmd = command(prog, args, env);
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|_| "login_not_started")?;
+            if let Some(o) = child.stdout.take() {
+                read_into(o, out.clone());
+            }
+            if let Some(e) = child.stderr.take() {
+                read_into(e, out.clone());
+            }
+            let input = child.stdin.take();
+            Ok((Proc { child }, input))
+        }
+        #[cfg(windows)]
+        {
+            // a path that is not text is not guessed at: the policy's exe is a plain path
+            let exe = prog.to_str().ok_or("login_not_started")?;
+            let spec = aib_sys::session::Spec {
+                argv: std::iter::once(exe.to_owned())
+                    .chain(args.iter().map(|a| (*a).to_owned()))
+                    .collect(),
+                cwd: home_of(env, true).map(std::path::PathBuf::from),
+                env: env.to_vec(),
+                clear_env: true,
+                stdin: true,
+            };
+            let mut tree =
+                aib_sys::session::SessionTree::spawn(&spec).map_err(|_| "login_not_started")?;
+            if let Some((o, e)) = tree.take_output() {
+                read_into(o, out.clone());
+                read_into(e, out.clone());
+            }
+            let input = tree.take_input();
+            Ok((Proc { tree }, input))
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+
+    /// `Some(exit code)` once the program ended (`Some(None)`: ended with no code); not reaped
+    /// on unix, so the group's number stays ours for [`Proc::kill`].
+    fn ended(&mut self) -> Option<Option<i32>> {
+        #[cfg(unix)]
+        {
+            crate::gh_view::ended_unreaped(&mut self.child)
+        }
+        #[cfg(windows)]
+        {
+            match self.tree.try_exit() {
+                Ok(Some(c)) => Some(Some(c)),
+                Ok(None) => None,
+                Err(_) => Some(None),
+            }
+        }
+    }
+
+    /// Kill the program and whatever it started.
+    fn kill(&mut self) {
+        #[cfg(unix)]
+        {
+            if let Ok(pid) = i32::try_from(self.child.id()) {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.tree.kill(KILL_LIMIT);
+        }
+    }
 }
 
 /// The program's output so far, in memory, at most [`OUT_MAX`] bytes.
@@ -347,20 +459,9 @@ pub fn start(
     provider: &str,
     args: &[&str],
     env: &[(std::ffi::OsString, std::ffi::OsString)],
-) -> Result<(Child, Option<ChildStdin>, Started), &'static str> {
-    let mut cmd = command(prog, args, env);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|_| "login_not_started")?;
+) -> Result<(Proc, Option<ChildStdin>, Started), &'static str> {
     let out: Out = Arc::new(Mutex::new(Vec::new()));
-    if let Some(o) = child.stdout.take() {
-        read_into(o, out.clone());
-    }
-    if let Some(e) = child.stderr.take() {
-        read_into(e, out.clone());
-    }
-    let input = child.stdin.take();
+    let (mut child, input) = Proc::spawn(prog, args, env, &out)?;
     let op = crate::timers::PROVIDER_LOGIN_URL_WAIT.begin(None);
     loop {
         let text = {
@@ -377,7 +478,7 @@ pub fn start(
             let code = device_code(&text);
             if whole && (!matches!(provider, "codex" | "grok" | "copilot") || code.is_some()) {
                 let Some(url) = url_ok(&a, provider) else {
-                    kill_all(&mut child);
+                    child.kill();
                     return Err("url_host_refused");
                 };
                 return Ok((
@@ -390,8 +491,8 @@ pub fn start(
                 ));
             }
         }
-        if crate::gh_view::ended_unreaped(&mut child).is_some() || !op.tick() {
-            kill_all(&mut child);
+        if child.ended().is_some() || !op.tick() {
+            child.kill();
             return Err("no_url");
         }
     }
@@ -447,7 +548,7 @@ pub fn grok_says_logged_in(out: &[u8]) -> bool {
 /// Wait for the program's end (at most [`crate::timers::PROVIDER_LOGIN_WAIT`]), then ask the
 /// status. The reason code when it did not log in.
 pub fn finish(
-    mut child: Child,
+    mut child: Proc,
     prog: &std::path::Path,
     provider: &str,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
@@ -455,16 +556,16 @@ pub fn finish(
     let op = crate::timers::PROVIDER_LOGIN_WAIT.begin(None);
     let code = loop {
         // seen without being reaped: the group's number stays ours for the kill below
-        if let Some(c) = crate::gh_view::ended_unreaped(&mut child) {
+        if let Some(c) = child.ended() {
             break c;
         }
         if !op.tick() {
-            kill_all(&mut child);
+            child.kill();
             return Err("timeout");
         }
     };
-    // what it started may still hold the group: nothing of it outlives the round
-    kill_all(&mut child);
+    // what it started may still hold the group (Job): nothing of it outlives the round
+    child.kill();
     if code != Some(0) {
         return Err("exit_not_0");
     }
@@ -891,10 +992,20 @@ mod tests {
             Err((StatusCode::CONFLICT, "login_in_parent")),
             "reason: preview_logs_in"
         );
-        assert_eq!(
+        // 11-26: on Windows claude logs in from the page; the others not yet (another test's
+        // claude round may be running or cooling here, so only "not refused for Windows" is read)
+        assert_ne!(
             gate("claude", false, true, now),
-            Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here"))
+            Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here")),
+            "reason: windows_claude_refused"
         );
+        for p in ["codex", "grok", "copilot"] {
+            assert_eq!(
+                gate(p, false, true, now),
+                Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here")),
+                "reason: windows_{p}_let_through"
+            );
+        }
         assert_eq!(
             gate("bash", false, false, now),
             Err((StatusCode::BAD_REQUEST, "provider"))
@@ -976,6 +1087,32 @@ mod tests {
         }
     }
 
+    /// c2f0b W-10 b: the login runs in HOME on unix and in the user's profile on Windows, the
+    /// name read in any case there; an empty one is no folder.
+    #[test]
+    fn the_login_runs_in_the_users_profile_on_windows() {
+        let env: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("HOME".into(), "/Users/u".into()),
+            ("UserProfile".into(), r"C:\Users\u".into()),
+        ];
+        assert_eq!(
+            home_of(&env, false).map(|v| v.to_string_lossy().into_owned()),
+            Some("/Users/u".into()),
+            "reason: unix_not_home"
+        );
+        assert_eq!(
+            home_of(&env, true).map(|v| v.to_string_lossy().into_owned()),
+            Some(r"C:\Users\u".into()),
+            "reason: windows_not_profile"
+        );
+        let bare: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("HOME".into(), "/Users/u".into()),
+            ("USERPROFILE".into(), "".into()),
+        ];
+        assert_eq!(home_of(&bare, true), None, "reason: windows_used_home");
+        assert_eq!(home_of(&[], false), None);
+    }
+
     /// RL10: the login runs with the seats' HOME and without a browser of its own; aibd's own
     /// keys and the session marker are not given.
     #[test]
@@ -1029,7 +1166,7 @@ mod tests {
         ] {
             let p = script(d.path(), body);
             let (mut child, _input, s) = start(&p, provider, &[], &env).unwrap();
-            kill_all(&mut child);
+            child.kill();
             assert_eq!(s.url, url, "reason: {provider}_url");
             assert_eq!(s.device_code.as_deref(), Some(code), "reason: {provider}_code");
             let handed = format!("{} {:?}", s.url, s.device_code);
