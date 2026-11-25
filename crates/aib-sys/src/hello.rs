@@ -397,6 +397,15 @@ mod tests {
             src[probe.min(src.len())..end].contains("gesture_required("),
             "reason: probe_reads_gesture"
         );
+        // 3e53b REVIEW fc543b4b L1: every signature reads it again, before the window
+        let sign = src.find("pub fn sign(").unwrap_or(usize::MAX);
+        let body = &src[sign.min(src.len())..];
+        let read = body.find("gesture_required(");
+        let ctx = body.find("NCRYPT_USE_CONTEXT_PROPERTY");
+        assert!(
+            matches!((read, ctx), (Some(r), Some(c)) if r < c),
+            "reason: sign_reads_gesture_first"
+        );
     }
 
     #[test]

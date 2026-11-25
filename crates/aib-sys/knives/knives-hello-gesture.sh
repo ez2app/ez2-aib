@@ -21,3 +21,9 @@ python3 -I scripts/knife.py crates/aib-sys/src/hello_ncrypt.rs \
   '            NCRYPT_USE_CONTEXT_PROPERTY, // knife' \
   --expect-fail the_passport_key_is_made_and_probed_with_the_gesture_required \
   -- cargo test -p aib-sys --locked --lib the_passport_key_is_made_and_probed_with_the_gesture_required
+# GR4 a signature no longer reads the gesture flag first (3e53b REVIEW fc543b4b L1)
+python3 -I scripts/knife.py crates/aib-sys/src/hello_ncrypt.rs \
+  '    gesture_required(gesture)?;' \
+  '    let _ = gesture; // knife' \
+  --expect-fail the_passport_key_is_made_and_probed_with_the_gesture_required \
+  -- cargo test -p aib-sys --locked --lib the_passport_key_is_made_and_probed_with_the_gesture_required
