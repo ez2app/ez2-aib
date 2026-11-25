@@ -17,9 +17,13 @@
 //!   is removed. At start-up [`clean_downloads`] removes what a crash left, a link only as
 //!   the link (N2).
 //!
-//! Not here: the act, the owner check and the one-job-per-provider rule (L2); the time limit
-//! through timers and stopping curl midway (Job Object / killpg) (L1c); the Windows signer
-//! (WinVerifyTrust, L1b). The Windows read-only lock is here ([`open_locked`]).
+//! - Waiting on curl (L1c): the registered timer `provider.fetch_wait` (500 ms, 30 min at
+//!   most); on cancel or at the limit curl is killed and reaped at once. curl starts nothing
+//!   of its own, so killing it is enough (no Job Object / process group: `claude install` is
+//!   no longer run, r1-1).
+//!
+//! Not here: the act, the owner check and the one-job-per-provider rule (L2); the Windows
+//! signer (WinVerifyTrust, L1b). The Windows read-only lock is here ([`open_locked`]).
 
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -47,6 +51,7 @@ pub const ERR_VERIFY: &str = "lifecycle_verify_failed";
 pub const ERR_UNSIGNED: &str = "lifecycle_unsigned";
 pub const ERR_CANCELLED: &str = "lifecycle_cancelled";
 pub const ERR_PLACE: &str = "lifecycle_place_failed";
+pub const ERR_TIMEOUT: &str = "lifecycle_timeout";
 
 /// Each provider's one download prefix (IFACE r1 補 2). Only Claude is fetched in L1.
 const SOURCES: &[(&str, &str)] = &[(
@@ -170,14 +175,27 @@ impl Progress {
 
 /// Gets the bytes of `row` into `out` (a new file). The real one runs curl; tests write bytes.
 pub trait Fetch {
-    fn fetch(&self, row: &FetchRow, out: &Path) -> Result<(), &'static str>;
+    /// Stops at once on `cancel` ([`ERR_CANCELLED`]); counts bytes into `progress`.
+    fn fetch(
+        &self,
+        row: &FetchRow,
+        out: &Path,
+        cancel: &AtomicBool,
+        progress: &Progress,
+    ) -> Result<(), &'static str>;
 }
 
 /// The system curl, empty environment (Windows keeps only `SystemRoot`, which its TLS needs).
 pub struct Curl;
 
 impl Fetch for Curl {
-    fn fetch(&self, row: &FetchRow, out: &Path) -> Result<(), &'static str> {
+    fn fetch(
+        &self,
+        row: &FetchRow,
+        out: &Path,
+        cancel: &AtomicBool,
+        progress: &Progress,
+    ) -> Result<(), &'static str> {
         let curl = curl_path().ok_or(ERR_OFFLINE)?;
         let mut c = std::process::Command::new(&curl);
         c.args(curl_args(row, out))
@@ -189,9 +207,43 @@ impl Fetch for Curl {
         if let Some(root) = curl.parent().and_then(Path::parent) {
             c.env("SystemRoot", root);
         }
-        match c.status() {
-            Ok(s) if s.success() => Ok(()),
-            _ => Err(ERR_OFFLINE),
+        let mut child = c.spawn().map_err(|_| ERR_OFFLINE)?;
+        let op = crate::timers::PROVIDER_FETCH_WAIT.begin(None);
+        watch(&mut child, out, cancel, progress, &mut || op.tick())
+    }
+}
+
+/// Kill `child` (curl starts nothing of its own) and reap it; `why` back.
+fn stopped(child: &mut std::process::Child, why: &'static str) -> Result<(), &'static str> {
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(why)
+}
+
+/// Until `child` ends: its exit (0 = fetched, else offline), or it is stopped on `cancel`
+/// ([`ERR_CANCELLED`]) or when `tick` says the time is up ([`ERR_TIMEOUT`], L1c; also the
+/// stop for an old curl whose --max-filesize cannot stop a reply without a length, 3e53b N4).
+fn watch(
+    child: &mut std::process::Child,
+    out: &Path,
+    cancel: &AtomicBool,
+    progress: &Progress,
+    tick: &mut dyn FnMut() -> bool,
+) -> Result<(), &'static str> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) if s.success() => return Ok(()),
+            Ok(Some(_)) => return Err(ERR_OFFLINE),
+            Ok(None) => {}
+            Err(_) => return stopped(child, ERR_OFFLINE),
+        }
+        progress.set(0, std::fs::metadata(out).map_or(0, |m| m.len()));
+        let cancelled = cancel.load(Ordering::SeqCst);
+        if cancelled {
+            return stopped(child, ERR_CANCELLED);
+        }
+        if !tick() {
+            return stopped(child, ERR_TIMEOUT);
         }
     }
 }
@@ -334,7 +386,7 @@ fn run_in(
     let name = program_name(&row.provider);
     let got = dl.join(&name);
     progress.set(0, 0);
-    fetch.fetch(row, &got)?;
+    fetch.fetch(row, &got, cancel, progress)?;
     if cancel.load(Ordering::SeqCst) {
         return Err(ERR_CANCELLED);
     }
@@ -490,7 +542,13 @@ mod tests {
     /// Writes `bytes` where curl would, counting its calls.
     struct Bytes(Vec<u8>, std::cell::Cell<u32>);
     impl Fetch for Bytes {
-        fn fetch(&self, _: &FetchRow, out: &Path) -> Result<(), &'static str> {
+        fn fetch(
+            &self,
+            _: &FetchRow,
+            out: &Path,
+            _: &AtomicBool,
+            _: &Progress,
+        ) -> Result<(), &'static str> {
             self.1.set(self.1.get() + 1);
             std::fs::write(out, &self.0).map_err(|_| ERR_OFFLINE)
         }
@@ -500,7 +558,13 @@ mod tests {
     }
     struct Offline;
     impl Fetch for Offline {
-        fn fetch(&self, _: &FetchRow, _: &Path) -> Result<(), &'static str> {
+        fn fetch(
+            &self,
+            _: &FetchRow,
+            _: &Path,
+            _: &AtomicBool,
+            _: &Progress,
+        ) -> Result<(), &'static str> {
             Err(ERR_OFFLINE)
         }
     }
@@ -691,6 +755,51 @@ mod tests {
         );
         assert!(File::options().write(true).open(&p).is_err());
         drop(held);
+    }
+
+    /// L1c: curl is stopped at once on cancel or at the time limit, not left to run.
+    #[cfg(unix)]
+    #[test]
+    fn a_download_stops_at_once_on_cancel_or_at_the_time_limit() {
+        use std::time::{Duration, Instant};
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("out");
+        let p = Progress::default();
+        let long = || {
+            std::process::Command::new("sleep")
+                .arg("5")
+                .spawn()
+                .unwrap()
+        };
+        // cancel
+        let mut c = long();
+        let t0 = Instant::now();
+        let r = watch(&mut c, &out, &AtomicBool::new(true), &p, &mut || true);
+        assert_eq!(r, Err(ERR_CANCELLED), "reason: cancel_not_stopped");
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "reason: cancel_waited"
+        );
+        assert!(c.try_wait().unwrap().is_some(), "reason: curl_left_running");
+        // the time limit
+        let mut c = long();
+        let t0 = Instant::now();
+        let none = AtomicBool::new(false);
+        let r = watch(&mut c, &out, &none, &p, &mut || false);
+        assert_eq!(r, Err(ERR_TIMEOUT), "reason: timeout_not_stopped");
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "reason: timeout_waited"
+        );
+        // its own end: 0 fetched, else offline
+        let op = crate::timers::PROVIDER_FETCH_WAIT.begin(None);
+        let mut ok = std::process::Command::new("true").spawn().unwrap();
+        assert_eq!(watch(&mut ok, &out, &none, &p, &mut || op.tick()), Ok(()));
+        let mut bad = std::process::Command::new("false").spawn().unwrap();
+        assert_eq!(
+            watch(&mut bad, &out, &none, &p, &mut || op.tick()),
+            Err(ERR_OFFLINE)
+        );
     }
 
     #[test]
