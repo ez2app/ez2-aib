@@ -244,7 +244,7 @@ pub fn version_body_with(
 }
 
 pub async fn version(State(st): State<AppState>) -> Response {
-    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.session_policy);
+    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.policy());
     // N-web-worktree: the registered repos a dgrs seat may be opened with, names only
     let p = st.sessions.private_dir();
     body["repos"] = Value::Array(crate::repos::names(p.parent().unwrap_or(p)));

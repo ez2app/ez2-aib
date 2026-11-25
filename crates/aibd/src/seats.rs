@@ -2779,7 +2779,7 @@ pub(crate) async fn start_session(
         }));
     }
     let listed = st
-        .session_policy
+        .policy()
         .programs
         .iter()
         .find(|p| p.name == argv[0])

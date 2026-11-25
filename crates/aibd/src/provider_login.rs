@@ -496,7 +496,7 @@ struct Look {
 
 /// The listed program for `provider`, resolved now.
 fn program(st: &AppState, provider: &str) -> Option<std::path::PathBuf> {
-    let p = st.session_policy.as_ref();
+    let p = st.policy();
     p.programs
         .iter()
         .find(|e| e.name == provider)
@@ -551,7 +551,7 @@ pub async fn relogin(st: AppState, body: Value, by: String) -> Response {
             },
         );
     }
-    let env = env_of(&st.session_policy.env);
+    let env = env_of(&st.policy().env);
     let args = args_of(provider).unwrap_or_default();
     let (p2, e2) = (prog.clone(), env.clone());
     let started = tokio::task::spawn_blocking(move || start(&p2, provider, args, &e2))

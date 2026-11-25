@@ -132,6 +132,7 @@ pub mod send_back;
 pub mod sent_trail;
 pub mod server;
 pub mod session_output;
+pub mod session_policy_setup;
 pub mod sessions;
 pub mod slots;
 pub mod static_files;
