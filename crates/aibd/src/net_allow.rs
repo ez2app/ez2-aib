@@ -345,7 +345,38 @@ mod tests {
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_some());
         assert!(db.net_allow_revoke("tk_rev", now as i64).unwrap());
         assert!(holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_none());
-        assert!(!db.net_allow_add(ok).unwrap());
+        assert!(!db.net_allow_add(ok.clone()).unwrap());
+
+        // Put back straight into the table, not through net_allow_add (which refuses a
+        // revoked ticket): a same-account AI can write the file. The signature is still
+        // right, so the revoked list in holds is the only thing left (c2f0b L2a).
+        let raw = rusqlite::Connection::open(d.path().join("m.db")).unwrap();
+        raw.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        raw.execute(
+            "INSERT INTO net_allow_always (ticket, by_key, resource, params, sig, approved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                ok.ticket,
+                ok.by_key,
+                ok.resource,
+                ok.params,
+                ok.sig,
+                ok.approved_at
+            ],
+        )
+        .unwrap();
+        drop(raw);
+        assert!(
+            db.net_allow_list()
+                .unwrap()
+                .iter()
+                .any(|r| r.ticket == "tk_rev"),
+            "reason: row_not_put_back"
+        );
+        assert!(
+            holds(&db, "un0eba", addr, &own_ips(), now, true, &test_verify).is_none(),
+            "reason: revoked_ticket_put_back_by_sql_held"
+        );
     }
 
     #[test]
