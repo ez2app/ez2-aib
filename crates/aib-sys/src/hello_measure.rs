@@ -84,30 +84,40 @@ fn judge(mut typed: Vec<u16>) -> &'static str {
 /// One screenshot of the user's desktop: whether the copy worked, and the share of
 /// near-black pixels (a secure or other desktop reads black or stale).
 fn shot() -> (bool, f64) {
-    // SAFETY: GDI calls on handles made here and released here, a buffer sized for the bitmap
-    unsafe {
-        let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        if w <= 0 || h <= 0 {
-            return (false, -1.0);
-        }
-        let screen = GetDC(null_mut());
-        if screen.is_null() {
-            return (false, -1.0);
-        }
-        let mem = CreateCompatibleDC(screen);
-        let bmp = CreateCompatibleBitmap(screen, w, h);
-        let old = SelectObject(mem, bmp);
-        let copied = BitBlt(mem, 0, 0, w, h, screen, 0, 0, SRCCOPY | CAPTUREBLT) != 0;
-        SelectObject(mem, old);
-        let mut info: BITMAPINFO = std::mem::zeroed();
-        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        info.bmiHeader.biWidth = w;
-        info.bmiHeader.biHeight = -h;
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = BI_RGB;
-        let mut px = vec![0u8; w as usize * h as usize * 4];
-        let lines = GetDIBits(
+    // SAFETY: (each block) GDI calls on handles made here and released here
+    let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    if w <= 0 || h <= 0 {
+        return (false, -1.0);
+    }
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let screen = unsafe { GetDC(null_mut()) };
+    if screen.is_null() {
+        return (false, -1.0);
+    }
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let mem = unsafe { CreateCompatibleDC(screen) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let bmp = unsafe { CreateCompatibleBitmap(screen, w, h) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let old = unsafe { SelectObject(mem, bmp) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let copied = unsafe { BitBlt(mem, 0, 0, w, h, screen, 0, 0, SRCCOPY | CAPTUREBLT) } != 0;
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { SelectObject(mem, old) };
+    // SAFETY: BITMAPINFO is plain data; all-zero is a valid value
+    let mut info: BITMAPINFO = unsafe { std::mem::zeroed() };
+    info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = w;
+    info.bmiHeader.biHeight = -h;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut px = vec![0u8; w as usize * h as usize * 4];
+    // SAFETY: a buffer of w*h 32-bit pixels for a top-down 32-bit DIB of the same size
+    let lines = unsafe {
+        GetDIBits(
             mem,
             bmp,
             0,
@@ -115,16 +125,21 @@ fn shot() -> (bool, f64) {
             px.as_mut_ptr().cast(),
             &mut info,
             DIB_RGB_COLORS,
-        );
-        DeleteObject(bmp);
-        DeleteDC(mem);
-        ReleaseDC(null_mut(), screen);
-        let dark = px
-            .chunks_exact(4)
-            .filter(|p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]) < 30)
-            .count();
-        (copied && lines > 0, dark as f64 / (w as f64 * h as f64))
-    }
+        )
+    };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { DeleteObject(bmp) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { DeleteDC(mem) };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { ReleaseDC(null_mut(), screen) };
+    let dark = px
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]) < 30)
+        .count();
+    (copied && lines > 0, dark as f64 / (w as f64 * h as f64))
 }
 
 /// Synthetic key presses of `text` from this thread's desktop; how many events Windows took.
@@ -250,36 +265,42 @@ struct Back {
 
 impl Drop for Back {
     fn drop(&mut self) {
-        // SAFETY: two desktop handles that stay open until here
-        unsafe {
-            SwitchDesktop(self.user);
-            CloseDesktop(self.ours);
-        }
+        // SAFETY: (both) desktop handles that stay open until here
+        unsafe { SwitchDesktop(self.user) };
+        // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+        unsafe { CloseDesktop(self.ours) };
     }
 }
 
 /// The M2 window on a desktop of its own; returns (typed word, capture excluded, switched).
 fn m2_window(name: &str, user: HDESK) -> (&'static str, bool, bool) {
     let n = wide(name);
-    // SAFETY: Win32 calls on handles made here; strings live across each call
-    unsafe {
-        let ours = CreateDesktopW(n.as_ptr(), null(), null(), 0, GENERIC_ALL, null());
-        if ours.is_null() {
-            return ("create_failed", false, false);
-        }
-        let _back = Back { user, ours };
-        if SetThreadDesktop(ours) == 0 {
-            return ("set_thread_failed", false, false);
-        }
-        let class = wide("AibW4M2");
-        let hinst = GetModuleHandleW(null());
-        let mut wc: WNDCLASSW = std::mem::zeroed();
-        wc.lpfnWndProc = Some(DefWindowProcW);
-        wc.hInstance = hinst;
-        wc.lpszClassName = class.as_ptr();
-        RegisterClassW(&wc);
-        let title = wide("AIB 量測 M2:請打 test1234 後按 Enter(這是測試字，不要打你的密碼)");
-        let main: HWND = CreateWindowExW(
+    // SAFETY: (each block below) Win32 calls on handles made here; strings live across each
+    // call; out-structures are our own locals
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let ours = unsafe { CreateDesktopW(n.as_ptr(), null(), null(), 0, GENERIC_ALL, null()) };
+    if ours.is_null() {
+        return ("create_failed", false, false);
+    }
+    let _back = Back { user, ours };
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    if unsafe { SetThreadDesktop(ours) } == 0 {
+        return ("set_thread_failed", false, false);
+    }
+    let class = wide("AibW4M2");
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let hinst = unsafe { GetModuleHandleW(null()) };
+    // SAFETY: WNDCLASSW is plain data; all-zero is a valid value
+    let mut wc: WNDCLASSW = unsafe { std::mem::zeroed() };
+    wc.lpfnWndProc = Some(DefWindowProcW);
+    wc.hInstance = hinst;
+    wc.lpszClassName = class.as_ptr();
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { RegisterClassW(&wc) };
+    let title = wide("AIB 量測 M2:請打 test1234 後按 Enter(這是測試字，不要打你的密碼)");
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let main: HWND = unsafe {
+        CreateWindowExW(
             0,
             class.as_ptr(),
             title.as_ptr(),
@@ -292,9 +313,12 @@ fn m2_window(name: &str, user: HDESK) -> (&'static str, bool, bool) {
             null_mut(),
             hinst,
             null(),
-        );
-        let edit_class = wide("EDIT");
-        let edit = CreateWindowExW(
+        )
+    };
+    let edit_class = wide("EDIT");
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let edit = unsafe {
+        CreateWindowExW(
             0,
             edit_class.as_ptr(),
             null(),
@@ -307,41 +331,51 @@ fn m2_window(name: &str, user: HDESK) -> (&'static str, bool, bool) {
             null_mut(),
             hinst,
             null(),
-        );
-        if main.is_null() || edit.is_null() {
-            return ("window_failed", false, false);
-        }
-        let excluded = SetWindowDisplayAffinity(main, WDA_EXCLUDEFROMCAPTURE) != 0;
-        let switched = SwitchDesktop(ours) != 0;
-        SetFocus(edit);
-        let deadline = Instant::now() + Duration::from_secs(150);
-        let mut entered = false;
-        let mut msg: MSG = std::mem::zeroed();
-        while Instant::now() < deadline {
-            if PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) == 0 {
-                pause(20);
-                continue;
-            }
-            if msg.message == WM_KEYDOWN && msg.wParam == usize::from(VK_RETURN) {
-                entered = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        let mut buf = [0u16; 64];
-        let got = GetWindowTextW(edit, buf.as_mut_ptr(), 64).max(0) as usize;
-        let word = if entered {
-            judge(buf[..got.min(64)].to_vec())
-        } else {
-            "timeout"
-        };
-        for x in buf.iter_mut() {
-            std::ptr::write_volatile(x, 0);
-        }
-        DestroyWindow(main);
-        (word, excluded, switched)
+        )
+    };
+    if main.is_null() || edit.is_null() {
+        return ("window_failed", false, false);
     }
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let excluded = unsafe { SetWindowDisplayAffinity(main, WDA_EXCLUDEFROMCAPTURE) } != 0;
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let switched = unsafe { SwitchDesktop(ours) } != 0;
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { SetFocus(edit) };
+    let deadline = Instant::now() + Duration::from_secs(150);
+    let mut entered = false;
+    // SAFETY: MSG is plain data; all-zero is a valid value
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    while Instant::now() < deadline {
+        // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+        if unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) } == 0 {
+            pause(20);
+            continue;
+        }
+        if msg.message == WM_KEYDOWN && msg.wParam == usize::from(VK_RETURN) {
+            entered = true;
+            break;
+        }
+        // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+        unsafe { TranslateMessage(&msg) };
+        // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+        unsafe { DispatchMessageW(&msg) };
+    }
+    let mut buf = [0u16; 64];
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    let got = unsafe { GetWindowTextW(edit, buf.as_mut_ptr(), 64) }.max(0) as usize;
+    let word = if entered {
+        judge(buf[..got.min(64)].to_vec())
+    } else {
+        "timeout"
+    };
+    for x in buf.iter_mut() {
+        // SAFETY: a live u16 of our own array
+        unsafe { std::ptr::write_volatile(x, 0) };
+    }
+    // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+    unsafe { DestroyWindow(main) };
+    (word, excluded, switched)
 }
 
 /// W sheet step 6 · M2: a window on a desktop of our own, excluded from capture.
@@ -364,16 +398,15 @@ fn w4_m2_own_desktop_window() {
     let n3 = name.clone();
     let named = std::thread::spawn(move || {
         let w = wide(&n3);
-        // SAFETY: a desktop opened by name and set on this short-lived thread only
-        unsafe {
-            let d = OpenDesktopW(w.as_ptr(), 0, 0, GENERIC_ALL);
-            if d.is_null() {
-                return (false, false, 0);
-            }
-            let set = SetThreadDesktop(d) != 0;
-            let sent = if set { send("yy") } else { 0 };
-            (true, set, sent)
+        // SAFETY: (both) a desktop opened by name, set on this short-lived thread only
+        let d = unsafe { OpenDesktopW(w.as_ptr(), 0, 0, GENERIC_ALL) };
+        if d.is_null() {
+            return (false, false, 0);
         }
+        // SAFETY: a Win32 call on handles, strings and buffers owned and live here
+        let set = unsafe { SetThreadDesktop(d) } != 0;
+        let sent = if set { send("yy") } else { 0 };
+        (true, set, sent)
     })
     .join()
     .unwrap_or((false, false, 0));
