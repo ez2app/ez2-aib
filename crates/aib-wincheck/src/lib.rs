@@ -476,6 +476,7 @@ pub struct Report {
     lines: Vec<String>,
     red: Vec<String>,
     skipped: Vec<String>,
+    needs: usize,
 }
 
 impl Report {
@@ -507,11 +508,21 @@ impl Report {
     }
     /// The whole file: `WINCHECK-RED <n>`, else `WINCHECK-INCOMPLETE <n>` (parts that need a
     /// person were skipped), else `WINCHECK-OK`; then `WINCHECK-SHA256 <sum of the text above>`.
+    /// A red test that only this machine's missing cargo / bash made red: listed, not red, and
+    /// counted on its own line above the verdict (f163c 3cfd7eb29e N1: an OK with such tests
+    /// in it did not check them).
+    pub fn needs_toolchain(&mut self, l: impl Into<String>) {
+        self.needs += 1;
+        self.lines.push(l.into());
+    }
     pub fn finish(&self) -> String {
         let mut t = String::new();
         for l in &self.lines {
             t.push_str(l);
             t.push('\n');
+        }
+        if self.needs > 0 {
+            t.push_str(&format!("NEEDS-TOOLCHAIN-COUNT {}\n", self.needs));
         }
         if !self.red.is_empty() {
             t.push_str(&format!("WINCHECK-RED {}\n", self.red.len()));
@@ -1201,6 +1212,20 @@ mod tests {
         assert!(
             failure_output(out, "a::on", 10).is_empty(),
             "a prefix is not the name"
+        );
+    }
+
+    #[test]
+    fn tests_that_need_a_missing_tool_are_counted_above_the_verdict() {
+        let mut r = Report::default();
+        assert!(!r.finish().contains("NEEDS-TOOLCHAIN-COUNT"));
+        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo is not on PATH)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash is not on PATH)");
+        let t = r.finish();
+        assert!(!r.is_red());
+        assert!(
+            t.contains("\nNEEDS-TOOLCHAIN-COUNT 2\nWINCHECK-OK\n"),
+            "{t}"
         );
     }
 

@@ -95,3 +95,7 @@ wl '        } else if !self.skipped.is_empty() {' \
 wl '        self.red.is_empty() && !self.skipped.is_empty()' \
    '        !self.skipped.is_empty() // knife' \
    a_skipped_step_makes_the_result_incomplete_not_ok_and_red_still_wins
+# WCK23 tests that need a missing tool are not counted above the verdict (f163c 3cfd N1)
+wl '        if self.needs > 0 {' \
+   '        if self.needs > 9999 { // knife' \
+   tests_that_need_a_missing_tool_are_counted_above_the_verdict
