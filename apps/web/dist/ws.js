@@ -5103,6 +5103,8 @@
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
   // c2f0b PAGE-WORDS-ap26 §1 (b)「怎麼設 PIN」三步照抄;第 3 步的「重新檢查」要 W-3 分類上 API 才有那顆鈕 ⇒ 先寫「再按一次」(ebab8 03:10:沒 PIN 時頁面要引導,Windows 今天上線)
+  // f163c DECISION-w2 驗收面附條件 1:沒 TPM 的軟體 Hello 已經有 PIN,回的也是 too_weak ⇒ 照 owner-check class 分,hello_software 不接 PIN 三步
+  const OWNER_NO_TPM = '這台沒有安全晶片(TPM),這類動作在這台不開放;設 PIN 也解決不了。';
   const OWNER_PIN_HOW = '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。';
   const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
   const OWNER_LOCK_NA = '解鎖時間:這一版 AIB 還沒有。';
@@ -5130,6 +5132,7 @@
       policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
       pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
       class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      no_tpm: 'This computer has no security chip (TPM), so this kind of action is not available here; setting a PIN will not change that.',
       lock_at: 'You can try again after {t}.',
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
     },
@@ -5151,6 +5154,7 @@
       policy_write_failed: 'AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
       policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
       class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
+      no_tpm: 'このパソコンにはセキュリティチップ(TPM)がないため、この種類の操作はここでは使えません。PIN を設定しても変わりません。',
       lock_at: '{t} 以降にもう一度試せます。',
       lock_na: 'ロック解除の時刻:この AIB のバージョンにはまだありません。',
     },
@@ -5172,6 +5176,7 @@
       policy_write_failed: 'AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
       policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
       class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
+      no_tpm: '이 컴퓨터에는 보안 칩(TPM)이 없어 이런 작업은 여기서 쓸 수 없습니다. PIN을 설정해도 바뀌지 않습니다.',
       lock_at: '{t} 이후에 다시 시도할 수 있습니다.',
       lock_na: '잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.',
     },
@@ -5185,7 +5190,8 @@
     const word = (k, zh) => (L === 'zh-TW' ? zh : has(OWNER_WHY_L[L], k) ? OWNER_WHY_L[L][k] : OWNER_WHY_L.en[k]);
     const w = word(c, OWNER_WHY[c]), sp = L === 'zh-TW' || L === 'ja' ? '' : ' ';
     const isWin = /Win/.test(String((globalThis.navigator && navigator.platform) || ''));
-    if (c === 'owner_check_too_weak') return w + sp + (isWin ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    const ocCls = typeof S === 'object' && S && S.oc && S.oc.d && S.oc.d.platform === 'windows' ? String(S.oc.d.class || '') : '';
+    if (c === 'owner_check_too_weak') return w + sp + (isWin ? (ocCls === 'hello_software' ? word('no_tpm', OWNER_NO_TPM) : word('pin', OWNER_PIN_HOW)) : word('class_na', OWNER_CLASS_NA));
     if (c === 'no_biometry' && isWin) return w + sp + word('pin', OWNER_PIN_HOW); // 沒設 Hello:不能只說沒有,要說怎麼設
     if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + sp + (/^\d\d:\d\d:\d\d$/.test(t) ? word('lock_at', '{t} 後可以再試。').replace('{t}', () => t) : word('lock_na', OWNER_LOCK_NA)); }
     return w;
@@ -6000,12 +6006,12 @@
   // ja / ko:設 PIN 三步的 Windows 介面原名沒核,退英文(同 AP26 pin)
   const OC_CLASSES = ['hello_hardware', 'hello_software', 'hello_key_unknown', 'no_hello', 'not_at_desk', 'unknown'];
   const OC_W = {
-    'zh-TW': { line: { hello_hardware: '這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。', hello_software: '這台用 Windows Hello 確認是你本人,但這台沒有安全晶片(TPM),金鑰存在一般檔案裡,所以高風險的動作不開放。', hello_key_unknown: '這台有 Windows Hello,還沒建配對金鑰;建好後才知道金鑰在不在安全晶片裡。', no_hello: '這台還沒設 Windows Hello。設一個 PIN 就能用完整功能(不需要指紋或臉部辨識的硬體)。', not_at_desk: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後按「重新檢查」。', unknown: '還不知道這台有沒有設 Windows Hello。還沒設的話,照下面三步設一個 PIN。' },
+    'zh-TW': { line: { hello_hardware: '這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。', hello_software: '這台用 Windows Hello 確認是你本人,但這台沒有安全晶片(TPM),金鑰存在一般檔案裡。', hello_key_unknown: '這台有 Windows Hello,還沒建配對金鑰;建好後才知道金鑰在不在安全晶片裡。', no_hello: '這台還沒設 Windows Hello。設一個 PIN,這台就能用 Windows Hello 確認是你本人(不需要指紋或臉部辨識的硬體)。', not_at_desk: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後按「重新檢查」。', unknown: '還不知道這台有沒有設 Windows Hello。還沒設的話,照下面三步設一個 PIN。' },
       steps: ['打開「設定」→「帳戶」→「登入選項」。', '在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。', '設好回到這頁按「重新檢查」。'], nopw: '沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。', recheck: '重新檢查', checking: '檢查中…' },
-    en: { line: { hello_hardware: 'This computer uses Windows Hello to check that it is you (the key is kept in the security chip).', hello_software: 'This computer uses Windows Hello to check that it is you, but it has no security chip (TPM), so the key is kept in an ordinary file and high-risk actions are not available.', hello_key_unknown: 'This computer has Windows Hello but no pairing key yet; once the key is made we will know whether it is in the security chip.', no_hello: 'Windows Hello is not set up on this computer. Set up a PIN to use everything (no fingerprint or face hardware needed).', not_at_desk: 'AIB is not running on the desktop you signed in to (for example it was started over a remote connection), so it cannot show the confirmation window. Sign in at this computer, then press Check again.', unknown: 'We don\'t know yet whether Windows Hello is set up on this computer. If it isn\'t, set up a PIN with the three steps below.' },
+    en: { line: { hello_hardware: 'This computer uses Windows Hello to check that it is you (the key is kept in the security chip).', hello_software: 'This computer uses Windows Hello to check that it is you, but it has no security chip (TPM), so the key is kept in an ordinary file.', hello_key_unknown: 'This computer has Windows Hello but no pairing key yet; once the key is made we will know whether it is in the security chip.', no_hello: 'Windows Hello is not set up on this computer. Set up a PIN and this computer can use Windows Hello to check that it is you (no fingerprint or face hardware needed).', not_at_desk: 'AIB is not running on the desktop you signed in to (for example it was started over a remote connection), so it cannot show the confirmation window. Sign in at this computer, then press Check again.', unknown: 'We don\'t know yet whether Windows Hello is set up on this computer. If it isn\'t, set up a PIN with the three steps below.' },
       steps: ['Open Settings → Accounts → Sign-in options.', 'Under PIN (Windows Hello), press Set up and follow the screens.', 'Come back to this page and press Check again.'], nopw: 'If this computer has no Windows sign-in password, set one first.', recheck: 'Check again', checking: 'Checking…' },
-    ja: { line: { hello_hardware: 'このパソコンは Windows Hello で本人を確認します(鍵はセキュリティチップに保存されています)。', hello_software: 'このパソコンは Windows Hello で本人を確認しますが、セキュリティチップ(TPM)がないため鍵は通常のファイルに保存され、高リスクの操作は使えません。', hello_key_unknown: 'このパソコンには Windows Hello がありますが、ペアリング鍵はまだありません。作成後に鍵がセキュリティチップにあるか分かります。', no_hello: 'このパソコンには Windows Hello が設定されていません。PIN を設定するとすべての機能が使えます(指紋や顔認証のハードウェアは不要です)。', not_at_desk: 'AIB はあなたがサインインしているデスクトップで動いていません(リモート接続から起動した場合など)。確認画面を出せません。このパソコンの前でサインインしてから「再確認」を押してください。', unknown: 'このパソコンに Windows Hello が設定されているかまだ分かりません。未設定なら、下の 3 つの手順で PIN を設定してください。' }, recheck: '再確認', checking: '確認中…' },
-    ko: { line: { hello_hardware: '이 컴퓨터는 Windows Hello로 본인을 확인합니다(키는 보안 칩에 저장됨).', hello_software: '이 컴퓨터는 Windows Hello로 본인을 확인하지만, 보안 칩(TPM)이 없어 키가 일반 파일에 저장되므로 고위험 작업은 쓸 수 없습니다.', hello_key_unknown: '이 컴퓨터에는 Windows Hello가 있지만 아직 페어링 키가 없습니다. 키를 만든 뒤에 보안 칩에 있는지 알 수 있습니다.', no_hello: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다. PIN을 설정하면 모든 기능을 쓸 수 있습니다(지문이나 얼굴 인식 하드웨어는 필요 없음).', not_at_desk: 'AIB가 로그인한 데스크톱에서 실행되고 있지 않아(예: 원격 연결로 시작) 확인 창을 띄울 수 없습니다. 이 컴퓨터 앞에서 로그인한 뒤 「다시 확인」을 누르세요.', unknown: '이 컴퓨터에 Windows Hello가 설정되어 있는지 아직 모릅니다. 설정되어 있지 않다면 아래 세 단계로 PIN을 설정하세요.' }, recheck: '다시 확인', checking: '확인하는 중…' },
+    ja: { line: { hello_hardware: 'このパソコンは Windows Hello で本人を確認します(鍵はセキュリティチップに保存されています)。', hello_software: 'このパソコンは Windows Hello で本人を確認しますが、セキュリティチップ(TPM)がないため鍵は通常のファイルに保存されます。', hello_key_unknown: 'このパソコンには Windows Hello がありますが、ペアリング鍵はまだありません。作成後に鍵がセキュリティチップにあるか分かります。', no_hello: 'このパソコンには Windows Hello が設定されていません。PIN を設定すると、このパソコンで Windows Hello による本人確認ができます(指紋や顔認証のハードウェアは不要です)。', not_at_desk: 'AIB はあなたがサインインしているデスクトップで動いていません(リモート接続から起動した場合など)。確認画面を出せません。このパソコンの前でサインインしてから「再確認」を押してください。', unknown: 'このパソコンに Windows Hello が設定されているかまだ分かりません。未設定なら、下の 3 つの手順で PIN を設定してください。' }, recheck: '再確認', checking: '確認中…' },
+    ko: { line: { hello_hardware: '이 컴퓨터는 Windows Hello로 본인을 확인합니다(키는 보안 칩에 저장됨).', hello_software: '이 컴퓨터는 Windows Hello로 본인을 확인하지만, 보안 칩(TPM)이 없어 키가 일반 파일에 저장됩니다.', hello_key_unknown: '이 컴퓨터에는 Windows Hello가 있지만 아직 페어링 키가 없습니다. 키를 만든 뒤에 보안 칩에 있는지 알 수 있습니다.', no_hello: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다. PIN을 설정하면 이 컴퓨터에서 Windows Hello로 본인을 확인할 수 있습니다(지문이나 얼굴 인식 하드웨어는 필요 없음).', not_at_desk: 'AIB가 로그인한 데스크톱에서 실행되고 있지 않아(예: 원격 연결로 시작) 확인 창을 띄울 수 없습니다. 이 컴퓨터 앞에서 로그인한 뒤 「다시 확인」을 누르세요.', unknown: '이 컴퓨터에 Windows Hello가 설정되어 있는지 아직 모릅니다. 설정되어 있지 않다면 아래 세 단계로 PIN을 설정하세요.' }, recheck: '다시 확인', checking: '확인하는 중…' },
   };
   const ocW = (k) => { const T = OC_W[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OC_W['zh-TW']; return Object.prototype.hasOwnProperty.call(T, k) ? T[k] : OC_W.en[k]; };
   async function ocLoad() {

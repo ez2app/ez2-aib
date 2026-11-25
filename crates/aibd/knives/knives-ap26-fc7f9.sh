@@ -15,7 +15,7 @@ k '    passphrase_locked: '\''密語打錯太多次,暫時鎖住。'\'',' '    p
 # PGOW4 (AP26 W-7 §2 碼 → 頁面字)
 k 'if (!Object.prototype.hasOwnProperty.call(OWNER_WHY, c)) return '\'''\'';' 'if (!(c in OWNER_WHY)) return '\'''\'';'
 # PGOW5 (AP26 W-7 §2 碼 → 頁面字)
-k '(isWin ? word('\''pin'\'', OWNER_PIN_HOW) : word('\''class_na'\'', OWNER_CLASS_NA))' '(word('\''pin'\'', OWNER_PIN_HOW))'
+k '(isWin ? (ocCls === '\''hello_software'\''' '(true ? (ocCls === '\''hello_software'\'''
 # PGOW6 (AP26 W-7 §2 碼 → 頁面字)
 k '/^\d\d:\d\d:\d\d$/.test(t) ? word('\''lock_at'\''' 't ? word('\''lock_at'\'''
 # PGOW7 (AP26 W-7 §2 碼 → 頁面字)
