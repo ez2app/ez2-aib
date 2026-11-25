@@ -389,8 +389,9 @@ fn w4_m2_own_desktop_window() {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let name = format!("aib-w4-m2-{}-{stamp}", std::process::id());
-    // SAFETY: (both) this thread's id and its own desktop handle (not to be closed)
+    // SAFETY: reads this thread's id
     let tid = unsafe { GetCurrentThreadId() };
+    // SAFETY: this thread's own desktop handle (not to be closed)
     let user = unsafe { GetThreadDesktop(tid) } as usize;
     let before = shot();
     let n2 = name.clone();
