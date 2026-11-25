@@ -155,7 +155,13 @@ fn placed_check(
     let dir = provider_fetch::placed_dir(data, &row);
     let want = dir.join(provider_fetch::program_name(&row.provider));
     let same = program == want && std::fs::canonicalize(&want).is_ok_and(|w| w == real);
-    let steps = [root.clone(), root.join(&row.provider), dir];
+    // <data> itself too (3e53b r8 N1)
+    let steps = [
+        data.to_path_buf(),
+        root.clone(),
+        root.join(&row.provider),
+        dir,
+    ];
     let no_link = steps.iter().all(|d| {
         std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
     });
