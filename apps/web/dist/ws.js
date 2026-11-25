@@ -4795,6 +4795,36 @@
     if (box.dataset.k === k && sec && fg) { sec.textContent = '還有 ' + left + ' 秒'; fg.style.strokeDashoffset = (FP_C * (1 - left / o.total)).toFixed(1); return; }
     box.dataset.k = k; box.innerHTML = fpcHtml(o);
   }
+  // AP26 W-7(c2f0b PAGE-WORDS-ap26-c2f0b-1125 r0 §2;ebab8 16:14,Andy:Windows 與沒有生物辨識的方案先上):aibd 回的碼 → 頁面那一句。
+  // 頁面只照碼選字,不顯示請求或回應裡帶的任何字(唯一例外:解鎖時間只收 HH:MM:SS 形狀)。碼不存在就不會出現。
+  // §1 機器分類頂端那一行、§3 密語窗:等 3e53b W-3 / W-5 給欄位名再接(見 OWNER_CLASS_NA)。
+  const OWNER_WHY = {
+    owner_check_too_weak: '這台的本人驗證方式不夠強,這個動作不開放。',
+    owner_check_unmeasured: '這台的 Windows Hello 還沒做過實機檢查,高風險動作先不開放。',
+    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認窗。請在這台電腦前登入後再按。',
+    no_biometry: '這台沒有設定 Windows Hello。',
+    cancel: '你按了取消,這次沒做。',
+    pair_touch_timeout: '確認窗等太久沒有回應,這次沒做。可以再按一次。',
+    auth_failed: '驗證沒通過,這次沒做。',
+    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重新配對。',
+    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
+    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
+    pair_key_missing: '這台還沒配對。請先配對。',
+    pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
+    passphrase_locked: '密語打錯太多次,暫時鎖住。',
+  };
+  // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
+  const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
+  const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
+  // 只認 aibd 的碼(字串、表裡有的);不讀 message / words 等任何帶字的欄位
+  function ownerWhy(code, e) {
+    const c = typeof code === 'string' ? code : '';
+    if (!Object.prototype.hasOwnProperty.call(OWNER_WHY, c)) return '';
+    const w = OWNER_WHY[c];
+    if (c === 'owner_check_too_weak') return w + (/Win/.test(String((globalThis.navigator && navigator.platform) || '')) ? OWNER_PIN_HOW : OWNER_CLASS_NA);
+    if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + (/^\d\d:\d\d:\d\d$/.test(t) ? t + ' 後可以再試。' : '解鎖時間:這一版 AIB 還沒給。'); }
+    return w;
+  }
   const FP_NO = { finger_cancel: '你按了取消這次', finger_denied: '系統視窗按了拒絕', finger_expired: '時間到了', finger_timeout: '時間到了', owner_check_unavailable: '這台現在叫不出驗證視窗' };
   async function fingerAct(type, body, wait, extra) {
     let r = await act(type, body);
@@ -4806,7 +4836,7 @@
     const left = () => Math.max(0, Math.ceil((until - Date.now()) / 1000));
     const card = fpcOpen(type, body, first, until);
     try { const out = await fingerWait(); fpcDone(card, true); return out; }
-    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(card, false, FP_NO[rs] || (rs === 'owner_check_not_approved' ? '沒按到' : '沒有完成')); throw e; }
+    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || (rs === 'owner_check_not_approved' ? '沒按到' : '沒有完成')); throw e; }
     async function fingerWait() {
     if (wait) wait(ticket, left(), first);
     // 7b81e 06:2x:G2 會有 GET /api/v1/owner/tickets/{ticket} ⇒ {state: pending|approved|denied|expired};有就先問狀態、過了才帶單重送一次(分得出拒絕);沒有(404)⇒ 照舊帶單重送
@@ -4820,8 +4850,8 @@
         const t = await soft(get('/api/v1/owner/tickets/' + encodeURIComponent(ticket))).catch(() => null);
         const st = t && String(t.state || '');
         if (!t || !st) probe = false;
-        else if (st === 'unavailable') { const why = String(t.reason || 'owner_check_unavailable'); throw Object.assign(new Error(why), { code: 'owner_check_unavailable', reason: REPO_WHY[why] ? why : 'owner_check_unavailable' }); }
-        else if (st === 'denied' || st === 'expired') throw Object.assign(new Error('finger_' + st), { code: 'finger_' + st, reason: 'finger_' + st, ticket });
+        else if (st === 'unavailable') { const why = String(t.reason || 'owner_check_unavailable'); throw Object.assign(new Error(why), { code: 'owner_check_unavailable', reason: REPO_WHY[why] ? why : 'owner_check_unavailable', why, pageMsg: ownerWhy(why, t) || undefined }); }
+        else if (st === 'denied' || st === 'expired') throw Object.assign(new Error('finger_' + st), { code: 'finger_' + st, reason: 'finger_' + st, ticket, why: t.reason, pageMsg: ownerWhy(t.reason, t) || undefined });
         else if (st !== 'approved') { if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout', ticket }); continue; }
       }
       try { r = await act(type, Object.assign({}, body, more, { ticket })); if (!(r && r.__status === 202)) return r; }
@@ -6248,6 +6278,7 @@
     if (!e) return '出錯了';
     if (gateWhy(e)) return gateWhy(e);
     if (e.pageMsg) return e.pageMsg;
+    { const rc = e.reason || (e.body && e.body.reason) || e.code; if (rc !== 'unavailable' && rc !== 'cancel') { const ow = ownerWhy(rc, e); if (ow) return ow; } }
     if (e.code === 'finger_cancel') return '你按了取消這次,沒有執行';
     if (e.status === 0) return '連不上 AIB';
     if (e.code === 'user_page_safe_seats_only') return '用戶資料夾的頁只能對安全模式的席送字';
