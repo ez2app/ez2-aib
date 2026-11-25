@@ -188,6 +188,23 @@ pub fn object_shown(s: &str) -> String {
     format!("{head}…{tail}")
 }
 
+/// The most of an AI-writable name a window's object shows after aibd's fixed words.
+pub const NAME_SHOWN: usize = 8;
+
+/// A window's object with aibd's fixed words first (brand, uid, what is opened) and a name an
+/// AI of the same account can write (a persona card's name) after them, cut to [`NAME_SHOWN`]
+/// characters (c2f0b REVIEW-pa2ls L-a; ebab8 11-25 13:37). The window keeps only the first
+/// [`OBJECT_HEAD`] characters of a long object: a name put first pushed the fixed words out,
+/// and a name written to look like them stood where the real ones should be.
+pub fn fixed_then_name(fixed: &[&str], name: &str) -> String {
+    let mut n: String = name.chars().take(NAME_SHOWN).collect();
+    if name.chars().count() > NAME_SHOWN {
+        n.push('…');
+    }
+    let fixed = fixed.join(" · ");
+    format!("{fixed} · {n}")
+}
+
 /// One part of a plain sentence: a name, a branch or `owner/name` as aibd already checked it
 /// when the ask was made. Read again here so that the sentence can only ever hold this shape.
 fn piece(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -1134,6 +1151,36 @@ pub fn record_matches(rec: &Record, ticket: &str, ask: &Ask, now: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// c2f0b REVIEW-pa2ls L-a (ebab8 11-25 13:37): aibd's fixed words come first and stay in
+    /// the part of a long object the window keeps, whatever the name: a long one, or one
+    /// written to look like a uid and a brand.
+    #[test]
+    fn fixed_words_come_first_and_a_name_is_cut() {
+        let tail = "用權限模板 很長很長很長很長很長很長很長很長很長的模板名字 底 dgrs:對話、寫程式、自己資料夾、名單指令、第二大腦";
+        for name in ["小安", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let o = fixed_then_name(&["claude", "un0eba"], name);
+            assert!(
+                o.starts_with("claude · un0eba · "),
+                "reason: fixed_not_first {o}"
+            );
+            let shown = object_shown(&format!("{o} · {tail}"));
+            let head: String = shown.chars().take(OBJECT_HEAD).collect();
+            assert!(
+                head.starts_with("claude · un0eba · "),
+                "reason: fixed_cut_off {shown}"
+            );
+            assert!(
+                !head.contains("zz9zz9") && !head.contains("codex"),
+                "reason: name_stood_for_the_fixed {shown}"
+            );
+        }
+        assert_eq!(
+            fixed_then_name(&["claude", "un0eba"], "AIB 本人核准安全工程師"),
+            "claude · un0eba · AIB 本人核准…"
+        );
+        assert_eq!(fixed_then_name(&["claude"], "小安"), "claude · 小安");
+    }
 
     fn a() -> Ask {
         Ask {

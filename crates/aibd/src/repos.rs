@@ -309,7 +309,12 @@ pub fn open_ask_plain(
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP_OPEN,
-        resource: format!("{persona_name}({persona_uid})· {provider} · 完全權限,不帶倉"),
+        // c2f0b REVIEW-pa2ls L-a (ebab8 11-25 13:37): the brand, the uid and what is opened
+        // first; the persona's name (a card's word an AI can write) after them, cut short
+        resource: crate::owner_ok::fixed_then_name(
+            &[provider, persona_uid, "完全權限,不帶倉"],
+            persona_name,
+        ),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
     }
@@ -726,6 +731,15 @@ mod tests {
             "reason: no_persona_name {}",
             o.resource
         );
+        // c2f0b REVIEW-pa2ls L-a: the fixed words first, whatever the persona's name
+        for name in ["架構師", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let o = open_ask_plain("claude", "un0eba", name, "page:p".into());
+            assert!(
+                o.resource.starts_with("claude · un0eba · 完全權限"),
+                "reason: name_before_the_fixed {}",
+                o.resource
+            );
+        }
         let r = restart_ask("seat_ab12cdef", "claude", "un0eba", "page:p".into());
         assert_eq!(
             crate::owner_ok::plain_words(r.operation, &r.params).as_deref(),
