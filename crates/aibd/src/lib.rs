@@ -93,6 +93,7 @@ pub mod preview_tree;
 pub mod preview_up;
 pub mod provider_fetch;
 pub mod provider_login;
+pub mod provider_maker;
 pub mod proxy;
 pub mod receipt_bundle;
 pub mod receipt_check;
