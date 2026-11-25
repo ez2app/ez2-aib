@@ -616,7 +616,7 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
         let ask = ["mcp", "list", "--json"].map(String::from);
         let listed = probe_listed(&real, &ask, req.cwd.as_deref(), &env);
         match crate::copilot_wire::mcp_off(&listed) {
-            Ok(off) => req.argv.extend(off),
+            Ok(off_words) => req.argv.extend(off_words),
             Err(why) => return Err(refuse_copilot(format!("{why} (copilot_mcp)"))),
         }
     }
@@ -3455,6 +3455,104 @@ mod tests {
         assert!(
             e.contains("(grok_version)") && e.contains("1.0.71"),
             "reason: unmeasured_version_admitted {e}"
+        );
+    }
+
+    /// 08de5 11-25, ebab8 q_cd554b24 condition 1 for copilot: checked at the gate, not only
+    /// where pipe_argv builds the words. A safe flag missing, a word giving a tool back or the
+    /// prompt in argv, a version not read, or an MCP list not read: refused, saying which;
+    /// every listed MCP server turned off by name on the seat's words. A stand-in `copilot`
+    /// (a script, so interpreters are let through here) prints the version and the list.
+    #[cfg(unix)]
+    #[test]
+    fn a_copilot_seat_is_checked_at_the_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("copilot");
+        let script = |version: &str| {
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; mcp) cat '{}';; esac\n",
+                d.path().join("mcp.json").display()
+            )
+        };
+        let listing = |body: &str| std::fs::write(d.path().join("mcp.json"), body).unwrap();
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.115.")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        listing(r#"{"mcpServers":{"computer-use":{"source":"builtin"},"mine":{"source":"user"}}}"#);
+        let policy = SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "copilot".into(),
+                path: bin.clone(),
+                signer: None,
+            }],
+            env: Vec::new(),
+            interpreters_ok: true,
+        };
+        let mut argv = aib_seatopen::pipe_argv(
+            "copilot",
+            "safe",
+            None,
+            "0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+        .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        let ask = |argv: Vec<String>| {
+            let r = Request {
+                argv,
+                cwd: Some(d.path().to_path_buf()),
+                env: Vec::new(),
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            admit(r, &policy).map(|r| r.argv).map_err(|e| e.error.1)
+        };
+        let got = ask(argv.clone()).expect("reason: safe_copilot_refused");
+        assert_eq!(
+            &got[argv.len()..],
+            [
+                "--disable-mcp-server",
+                "computer-use",
+                "--disable-mcp-server",
+                "mine"
+            ],
+            "reason: listed_mcp_left_on {got:?}"
+        );
+        let i = argv
+            .iter()
+            .position(|w| w == "--disable-builtin-mcps")
+            .unwrap();
+        let mut short = argv.clone();
+        short.remove(i);
+        let e = ask(short).unwrap_err();
+        assert!(
+            e.contains("missing:--disable-builtin-mcps (copilot_safety_flags)"),
+            "reason: flag_missing_admitted {e}"
+        );
+        for more in [["--allow-all-tools", ""], ["-p", "CARD"]] {
+            let mut b = argv.clone();
+            b.extend(
+                more.iter()
+                    .filter(|w| !w.is_empty())
+                    .map(|w| (*w).to_owned()),
+            );
+            let e = ask(b).unwrap_err();
+            assert!(
+                e.contains(&format!("forbidden:{}", more[0])),
+                "reason: forbidden_admitted {e}"
+            );
+        }
+        listing("not json");
+        assert!(
+            ask(argv.clone()).unwrap_err().contains("(copilot_mcp)"),
+            "reason: unread_mcp_list_admitted"
+        );
+        listing(r#"{"mcpServers":{}}"#);
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.116.")).unwrap();
+        let e = ask(argv).unwrap_err();
+        assert!(
+            e.contains("(copilot_version)") && e.contains("1.0.116"),
+            "reason: unread_version_admitted {e}"
         );
     }
 

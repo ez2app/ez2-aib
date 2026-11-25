@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Grok safe seat (08de5 11-25, ebab8 q_cd554b24 conditions 1-3; TAKEOVER-brands-08de5-1125 §1): checked at the gate (flags, version, the user's own set-up), every turn through aibd's spawn with its stop reported, the prompt file new / private / removed. Each rule broken turns its test red. Run from the repo root.
+# Grok safe seat (08de5 11-25, ebab8 q_cd554b24 conditions 1-3; TAKEOVER-brands-08de5-1125 §1): checked at the gate (flags, version, the user's own set-up), every turn through aibd's spawn with its stop reported, the prompt file new / private / removed. The turn shell is shared with copilot since 08de5 11-25 (crates/aibd/src/turn_wire.rs). Each rule broken turns its test red. Run from the repo root.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
@@ -17,8 +17,8 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
   -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::a_grok_safe_seat_missing_any_flag_is_refused'
 # g-forbid (a word that gives a tool back opens)
 python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
-  '        if GROK_SAFE_FORBIDDEN.contains(&name(w).as_str()) {' \
-  '        if GROK_SAFE_FORBIDDEN.contains(&name(w).as_str()) && w.is_empty() {' \
+  '        if forbidden.contains(&name(w).as_str()) {' \
+  '        if forbidden.contains(&name(w).as_str()) && w.is_empty() {' \
   --expect-fail 'pipe::tests::a_grok_safe_seat_missing_any_flag_is_refused' \
   -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::a_grok_safe_seat_missing_any_flag_is_refused'
 # g-version (another 1.0.7x version is taken)
@@ -52,44 +52,44 @@ python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
   --expect-fail 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused' \
   -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused'
 # g-spawn (a turn started around aibd's own spawn)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '    let mut run = (turns.spawn)(&turn_spec, turns.lineage.clone())' \
   '    let mut run = crate::platform::default_spawn()(&turn_spec, turns.lineage.clone())' \
-  --expect-fail 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
+  --expect-fail 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
 # g-stop (a stop says clean whatever the turn left)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '        turn.or(left).unwrap_or_else(idle_stop)' \
   '        turn.or(left).map(|_| idle_stop()).unwrap_or_else(idle_stop)' \
-  --expect-fail 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
+  --expect-fail 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
 # g-left (a finished turn's unclean stop forgotten)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '            if !matches!(s.status, StopStatus::Clean) {' \
   '            if !matches!(s.status, StopStatus::Clean) && s.survivors.is_empty() {' \
-  --expect-fail 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
+  --expect-fail 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
 # g-prompt-left (the prompt file left after the turn)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
-  '                let _guard = PromptGuard(path.clone());' \
-  '                let _guard = PromptGuard(path.with_extension("x"));' \
-  --expect-fail 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
+  '                            (args, Some(PromptGuard(path)), None)' \
+  '                            (args, Some(PromptGuard(path.with_extension("x"))), None)' \
+  --expect-fail 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
 # g-prompt-excl (a file already at the name written over)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '    opts.write(true).create_new(true);' \
   '    opts.write(true).create(true).truncate(true);' \
-  --expect-fail 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
+  --expect-fail 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
 # g-prompt-mode (the prompt file readable by others)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '        opts.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);' \
   '        opts.mode(0o644).custom_flags(nix::libc::O_NOFOLLOW);' \
-  --expect-fail 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
+  --expect-fail 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
 # g-prompt-dir (the prompt folder not owner only)
-python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '    crate::platform::create_private_dir(dir)?;' \
   '    std::fs::create_dir_all(dir)?;' \
-  --expect-fail 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
-  -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
+  --expect-fail 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'

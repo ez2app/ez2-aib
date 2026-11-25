@@ -123,7 +123,7 @@ impl Brand for Copilot {
         "copilot"
     }
     fn prompt_by(&self) -> PromptBy {
-        PromptBy::Stdin
+        PromptBy::Stdin // the prompt never in argv (condition 4)
     }
     fn turn_args(&mut self, base: &[String], _turn: usize, _file: Option<&Path>) -> Vec<String> {
         turn_args(base, self.session_id.as_deref())
@@ -217,6 +217,29 @@ mod tests {
             r#"{"mcpServers":{"--allow-all":{}}}"#,
         ] {
             assert!(mcp_off(bad).is_err(), "reason: bad_list_started {bad}");
+        }
+    }
+
+    /// Condition 4: copilot takes its prompt on stdin, and its words carry no prompt.
+    #[test]
+    fn the_copilot_prompt_goes_on_stdin_never_in_its_words() {
+        let mut b = brand();
+        assert_eq!(
+            b.prompt_by(),
+            PromptBy::Stdin,
+            "reason: prompt_not_on_stdin"
+        );
+        let base = [
+            "copilot".to_owned(),
+            "--output-format".to_owned(),
+            "json".to_owned(),
+        ];
+        for turn in [0, 1] {
+            let a = b.turn_args(&base, turn, None);
+            assert!(
+                !a.iter().any(|w| w == "-p" || w == "--prompt" || w == "-i"),
+                "reason: prompt_flag_in_words {a:?}"
+            );
         }
     }
 }
