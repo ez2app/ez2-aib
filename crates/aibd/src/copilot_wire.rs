@@ -632,8 +632,22 @@ mod tests {
         let cfg = |body: &str| {
             std::fs::write(cp.join("config.json"), format!("// managed\n{body}")).unwrap();
         };
-        cfg(r#"{"loggedInUsers":[{"login":"u"}],"trustedFolders":["/elsewhere"]}"#);
+        // an absolute folder elsewhere, in this platform's form ("/elsewhere" has no drive on
+        // Windows, so it is not absolute there and reads as the seat's folder, as L2 wants)
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        cfg(&format!(
+            r#"{{"loggedInUsers":[{{"login":"u"}}],"trustedFolders":[{:?}]}}"#,
+            elsewhere.to_string_lossy()
+        ));
         assert_eq!(nothing_runs(&env(&[]), &cwd), Ok(()));
+        cfg(r#"{"trustedFolders":["/elsewhere"]}"#);
+        assert_eq!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            cfg!(windows),
+            "reason: rooted_no_drive_read_wrong"
+        );
+        cfg(r#"{"loggedInUsers":[{"login":"u"}]}"#);
         // a hook file
         std::fs::create_dir(cp.join("hooks")).unwrap();
         std::fs::write(cp.join("hooks").join("m.json"), "{}").unwrap();
@@ -737,8 +751,6 @@ mod tests {
             );
         }
         // and an absolute folder elsewhere still opens
-        let elsewhere = d.path().join("elsewhere");
-        std::fs::create_dir_all(&elsewhere).unwrap();
         cfg(&format!(
             r#"{{"trustedFolders":[{:?}]}}"#,
             elsewhere.to_string_lossy()
