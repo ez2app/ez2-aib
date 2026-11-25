@@ -392,6 +392,8 @@ pub const KEY_MISMATCH: &str = "owner_check_key_mismatch";
 
 /// Whether this aibd has read "fingerprint" since it started (3e53b REVIEW-s102b L1). Kept in
 /// aibd's memory only: a file would be one more thing an AI of the same account writes.
+/// macOS only: Touch ID is read there alone, so elsewhere nothing would set it.
+#[cfg(target_os = "macos")]
 static SEEN_FINGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What the owner check reads now, remembering a fingerprint seen since aibd started: once
