@@ -318,6 +318,19 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// created private when missing; on Windows the file takes that folder's owner-only ACL, on
 /// POSIX it is 0600. `AlreadyExists` means something was there.
 pub fn write_new(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_new_with(path, contents, |p| std::fs::remove_file(p))
+}
+
+/// [`write_new`] with the temporary file's removal handed in (tests make it fail). Once the
+/// hard link is made the policy is written: a temporary file that cannot be removed (on
+/// Windows an antivirus often holds a file just made) is logged and left, never a failure,
+/// or the page would say nothing was written while the file is there and the next try
+/// answers `policy_exists` (f163c REVIEW-w10-c2f0b-f163c-42d83daf L1).
+pub(crate) fn write_new_with(
+    path: &Path,
+    contents: &[u8],
+    remove: impl Fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
     #[cfg(unix)]
@@ -346,9 +359,12 @@ pub fn write_new(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         .and_then(|_| file.sync_all())
         .and_then(|_| std::fs::hard_link(&temporary, path));
     drop(file);
-    let removed = std::fs::remove_file(&temporary);
+    let removed = remove(&temporary);
     written?;
-    removed
+    if let Err(e) = removed {
+        tracing::warn!(error = %e, file = %temporary.display(), "policy written; its temporary file is left");
+    }
+    Ok(())
 }
 
 /// Write the policy and read it back the way aibd reads it at start. Never replaces a file
@@ -723,6 +739,20 @@ mod tests {
             let mode = std::fs::metadata(&q).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "reason: policy_readable_by_others");
         }
+    }
+
+    #[test]
+    fn a_temporary_file_held_by_someone_else_is_no_failure() {
+        // f163c L1: on Windows an antivirus often holds the file just made
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("session-policy.json");
+        let held = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        write_new_with(&p, b"ours", held).expect("reason: written_policy_reported_failed");
+        assert_eq!(std::fs::read(&p).unwrap(), b"ours");
+        // the link already there still refuses, whatever the removal does
+        let e = write_new_with(&p, b"again", held).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+        assert_eq!(std::fs::read(&p).unwrap(), b"ours", "reason: replaced");
     }
 
     #[test]

@@ -50,3 +50,7 @@ wi '        params: text.clone().into_bytes(),' \
 wl '    let same = std::fs::read(path).is_ok_and(|b| b == text.as_bytes());' \
    '    let same = std::fs::read(path).is_ok(); // knife' \
    only_the_approved_text_is_put_in_force
+# WP11 (f163c L1) a temporary file that cannot be removed after the link is made fails the whole write
+wl '    if let Err(e) = removed {' \
+   '    if let Err(e) = removed { return Err(e); } if let Err(e) = std::io::Result::<()>::Ok(()) {' \
+   a_temporary_file_held_by_someone_else_is_no_failure
