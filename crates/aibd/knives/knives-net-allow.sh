@@ -158,7 +158,7 @@ python3 -I scripts/knife.py crates/aibd/src/net_card_web.rs \
 # na-rp-uid (AP23 revoke_persona takes back only that persona's rows)
 python3 -I scripts/knife.py crates/aibd/src/net_allow.rs \
   '        if uid == persona_uid && db.net_allow_revoke(&row.ticket, now as i64)? {' \
-  '        if !uid.is_empty() && db.net_allow_revoke(&row.ticket, now as i64)? {' \
+  '        if uid != persona_uid && db.net_allow_revoke(&row.ticket, now as i64)? {' \
   --expect-fail net_allow::tests::revoke_persona_takes_back_only_that_personas_rows_for_good \
   -- cargo test -p aibd --locked --lib net_allow::tests::revoke_persona_takes_back_only_that_personas_rows_for_good
 # na-rp-count
