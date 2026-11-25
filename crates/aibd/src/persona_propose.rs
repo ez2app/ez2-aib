@@ -44,6 +44,11 @@ pub const WITHDRAW: &str = "persona_propose_withdraw";
 /// The built-in page's acts.
 pub const LIST: &str = "persona_proposals";
 pub const DENY: &str = "persona_propose_deny";
+/// The built-in page approves one proposal: the owner's fingerprint (or login password) for
+/// [`OP_WRITE_BACK`], then [`crate::persona_write::write`] (S2-2 part 2; waits for A12).
+pub const APPROVE: &str = "persona_propose_approve";
+/// The owner_ok operation of writing a proposal back to its card.
+pub const OP_WRITE_BACK: &str = "persona.write_back";
 
 /// How long a proposal waits (owner-request r4 §3b: 30 minutes).
 pub const TTL_SECS: u64 = 30 * 60;
@@ -58,6 +63,11 @@ pub enum Stand {
     Withdrawn,
     Denied,
     Expired,
+    /// Approved and being written (not swept, not withdrawn, not denied).
+    Writing,
+    Written,
+    /// Approved but the write was refused; the code is in the journal and the answer.
+    Failed,
 }
 
 impl Stand {
@@ -67,6 +77,9 @@ impl Stand {
             Stand::Withdrawn => "withdrawn",
             Stand::Denied => "denied",
             Stand::Expired => "expired",
+            Stand::Writing => "writing",
+            Stand::Written => "written",
+            Stand::Failed => "failed",
         }
     }
 }
@@ -309,6 +322,48 @@ impl Book {
         Ok(p.clone())
     }
 
+    /// The owner said yes: a waiting proposal whose diff is still `diff_sha` goes to
+    /// [`Stand::Writing`] (one write at a time per proposal; a seat can no longer withdraw it).
+    pub fn begin_write(
+        &self,
+        id: &str,
+        diff_sha: &str,
+        now: u64,
+    ) -> Result<Proposal, &'static str> {
+        let mut l = self.list();
+        Self::sweep(&mut l, now);
+        let p = l
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("request_not_found")?;
+        if p.stand != Stand::Waiting {
+            return Err("request_not_waiting");
+        }
+        if p.diff_sha != diff_sha {
+            return Err("request_changed");
+        }
+        p.stand = Stand::Writing;
+        Ok(p.clone())
+    }
+
+    /// The write came back: [`Stand::Written`] or [`Stand::Failed`]; only from Writing.
+    pub fn end_write(&self, id: &str, written: bool) -> Result<Proposal, &'static str> {
+        let mut l = self.list();
+        let p = l
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("request_not_found")?;
+        if p.stand != Stand::Writing {
+            return Err("request_not_writing");
+        }
+        p.stand = if written {
+            Stand::Written
+        } else {
+            Stand::Failed
+        };
+        Ok(p.clone())
+    }
+
     /// Every waiting proposal, oldest first (the page's list).
     pub fn waiting(&self, now: u64) -> Vec<Proposal> {
         let mut l = self.list();
@@ -353,6 +408,8 @@ pub fn page_view(p: &Proposal) -> Value {
         "base12": &p.base_sha[..12.min(p.base_sha.len())],
         "new12": &p.new_sha[..12],
         "diff12": &p.diff_sha[..12],
+        // the page sends it back with APPROVE: the yes is for the text the owner saw
+        "diff_sha": p.diff_sha,
         "added": p.diff.added,
         "removed": p.diff.removed,
         "why": p.why,
@@ -369,11 +426,22 @@ fn refuse(code: &str) -> Response {
         "request_too_often" => StatusCode::TOO_MANY_REQUESTS,
         "persona_proposal_open"
         | "request_not_waiting"
+        | "request_not_writing"
+        | "request_changed"
         | "persona_changed"
         | "persona_unreadable"
-        | "persona_none" => StatusCode::CONFLICT,
+        | "persona_none"
+        | "persona_archived"
+        | "persona_aliased"
+        | "persona_registry_edited"
+        | "persona_registry_changed"
+        | "persona_write_mismatch" => StatusCode::CONFLICT,
+        "persona_path_outside" | "persona_path_symlink" => StatusCode::CONFLICT,
         "persona_built_in_page_only" | "item_off" => StatusCode::FORBIDDEN,
-        "internal" => StatusCode::INTERNAL_SERVER_ERROR,
+        // the card could not be written on this machine: not the page's request (f163c N1)
+        "internal" | "persona_write_io" => StatusCode::INTERNAL_SERVER_ERROR,
+        // the new text is not this persona's card or too long: the request, not the card (08de5 36a0a080bf)
+        "persona_text_invalid" => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_REQUEST,
     };
     (
@@ -521,8 +589,145 @@ fn hex8(d: &[u8]) -> String {
     d.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// The built-in page's list and no; a no leaves `persona_propose.denied` in the journal.
+/// The owner_ok ask for writing `p` back (DECISION 第十六節: the window says the persona's name,
+/// the lines added and removed and a matching code; the whole text is on the page card only,
+/// the seat's reason nowhere in the window). The parameters bind the very text: another text,
+/// another base or another proposal is another ask.
+pub fn owner_ask(p: &Proposal, by: String) -> crate::owner_ok::Ask {
+    let resource = crate::owner_ok::clean_resource(&format!(
+        "{} · +{} −{} 行 · 對照碼 {}",
+        p.persona_name,
+        p.diff.added,
+        p.diff.removed,
+        p.diff_sha.get(..12).unwrap_or_default()
+    ));
+    let params = json!({
+        "request_id": p.id,
+        "persona_uid": p.persona_uid,
+        "base_sha": p.base_sha,
+        "new_sha": p.new_sha,
+        "diff_sha": p.diff_sha,
+    });
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_WRITE_BACK,
+        resource,
+        params: serde_json::to_vec(&params).unwrap_or_default(),
+        by,
+    }
+}
+
+/// What an APPROVE comes to before anything is written.
+#[derive(Debug)]
+pub enum Step {
+    Refuse(&'static str),
+    /// No ticket yet: raise the owner's window for this ask.
+    Ask(crate::owner_ok::Ask),
+    /// A ticket: check it is approved for this very ask, then write.
+    Write {
+        p: Proposal,
+        ask: crate::owner_ok::Ask,
+        ticket: String,
+        by: String,
+    },
+}
+
+/// `{type: APPROVE, request_id, diff_sha, ticket?}` from the built-in page in this pairing:
+/// the proposal must still be waiting with the diff the owner saw; without a ticket it only
+/// asks. Nothing is written here.
+pub async fn approve_step(
+    book: &Book,
+    page: &crate::pairing::PageAccess,
+    body: &Value,
+    now: u64,
+) -> Step {
+    let user_page = crate::seat_input::held_as_user_page(page).await;
+    if page.carried || user_page {
+        return Step::Refuse("persona_built_in_page_only");
+    }
+    let (Some(id), Some(diff_sha)) = (
+        body.get("request_id").and_then(Value::as_str),
+        body.get("diff_sha").and_then(Value::as_str),
+    ) else {
+        return Step::Refuse("invalid_request");
+    };
+    let Some(p) = book.get(None, id, now) else {
+        return Step::Refuse("request_not_found");
+    };
+    if !matches!(p.stand, Stand::Waiting) {
+        return Step::Refuse("request_not_waiting");
+    }
+    if diff_sha != p.diff_sha {
+        return Step::Refuse("request_changed");
+    }
+    let by = format!("page:{}", hex8(&page.digest));
+    let ask = owner_ask(&p, by.clone());
+    match body.get("ticket").and_then(Value::as_str) {
+        None => Step::Ask(ask),
+        Some(t) => Step::Write {
+            p,
+            ask,
+            ticket: t.to_owned(),
+            by,
+        },
+    }
+}
+
+/// [`approve_step`], then: the ticket approved for this very ask (used up), the proposal moved
+/// to Writing, [`crate::persona_write::write`] against the base the proposal was made on (a
+/// card changed since is `persona_changed` there), Written or Failed, one journal line.
+pub async fn approve(st: &AppState, page: &crate::pairing::PageAccess, body: &Value) -> Response {
+    let (p, ask, ticket, by) =
+        match approve_step(&BOOK, page, body, crate::owner_ok::unix_now()).await {
+            Step::Refuse(code) => return refuse(code),
+            Step::Ask(ask) => return crate::repos::asked(&ask),
+            Step::Write { p, ask, ticket, by } => (p, ask, ticket, by),
+        };
+    if !crate::owner_ok::approved_for(&ticket, &ask) {
+        return crate::repos::not_approved();
+    }
+    let p = match BOOK.begin_write(&p.id, &p.diff_sha, crate::owner_ok::unix_now()) {
+        Ok(p) => p,
+        Err(code) => return refuse(code),
+    };
+    let r = crate::persona_write::write(
+        st,
+        &p.persona_uid,
+        &p.base_sha,
+        p.new_text.clone().into_bytes(),
+        &by,
+    )
+    .await;
+    let _ = BOOK.end_write(&p.id, r.is_ok());
+    let mut line = json!({"request_id": p.id, "seat": p.seat_id, "persona_uid": p.persona_uid,
+        "base12": p.base_sha.get(..12).unwrap_or_default(),
+        "diff12": p.diff_sha.get(..12).unwrap_or_default(), "by": by});
+    match r {
+        Ok(w) => {
+            line["new12"] = json!(w.new_sha.get(..12).unwrap_or_default());
+            // the card is written; the 1.x card list could not follow and is tried again (08de5)
+            line["list_behind"] = json!(w.list_behind);
+            crate::seats::side_event(st, "persona_propose", "persona_propose.written", line).await;
+            Json(
+                json!({"request_id": p.id, "state": Stand::Written.word(), "new_sha": w.new_sha,
+                "list_behind": w.list_behind}),
+            )
+            .into_response()
+        }
+        Err(e) => {
+            line["code"] = json!(e.code());
+            crate::seats::side_event(st, "persona_propose", "persona_propose.write_failed", line)
+                .await;
+            refuse(e.code())
+        }
+    }
+}
+
+/// The built-in page's list, no and approve; a no leaves `persona_propose.denied` in the journal.
 pub async fn page_act(st: &AppState, page: &crate::pairing::PageAccess, body: Value) -> Response {
+    if body.get("type").and_then(Value::as_str) == Some(APPROVE) {
+        return approve(st, page, &body).await;
+    }
     let (r, denied) = page_answer(page, body).await;
     for d in denied {
         crate::seats::side_event(st, "persona_propose", "persona_propose.denied", d).await;
@@ -838,6 +1043,191 @@ mod tests {
         assert!(keys_of(PROPOSE).contains(&"card_text"));
         assert!(!keys_of(PROPOSE).contains(&"persona_uid"));
         assert!(!keys_of(STATUS).contains(&"seat_id"));
+    }
+
+    fn waiting_one(b: &Book) -> Proposal {
+        let t = new_text("規則三");
+        b.propose(&card(), &ask("seat_ab", &t), &mut ids(), 100)
+            .unwrap()
+            .0
+    }
+
+    fn built_in() -> crate::pairing::PageAccess {
+        crate::pairing::PageAccess {
+            digest: [7; 32],
+            confirmed: true,
+            user_page: false,
+            carried: false,
+        }
+    }
+
+    /// PA1: without a ticket an approve only asks; with one it goes on to the check and write.
+    #[tokio::test]
+    async fn approve_without_a_ticket_writes_nothing() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        let body = json!({"type": APPROVE, "request_id": p.id, "diff_sha": p.diff_sha});
+        assert!(matches!(
+            approve_step(&b, &built_in(), &body, 101).await,
+            Step::Ask(_)
+        ));
+        let mut body = body;
+        body["ticket"] = json!("ot_1");
+        assert!(matches!(
+            approve_step(&b, &built_in(), &body, 101).await,
+            Step::Write { ref ticket, .. } if ticket == "ot_1"
+        ));
+        assert_eq!(b.get(None, &p.id, 101).unwrap().stand, Stand::Waiting);
+    }
+
+    /// PA2: the ask binds the very text — another diff, base or new text is another ask.
+    #[test]
+    fn a_ticket_for_another_text_writes_nothing() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        let a0 = owner_ask(&p, "page:1".into());
+        let changes: [fn(&mut Proposal); 4] = [
+            |q: &mut Proposal| q.diff_sha = "0".repeat(64),
+            |q: &mut Proposal| q.base_sha = "1".repeat(64),
+            |q: &mut Proposal| q.new_sha = "2".repeat(64),
+            |q: &mut Proposal| q.id = "pp_9".into(),
+        ];
+        for f in changes {
+            let mut q = p.clone();
+            f(&mut q);
+            assert_ne!(
+                crate::owner_ok::params_sha256(&owner_ask(&q, "page:1".into()).params),
+                crate::owner_ok::params_sha256(&a0.params)
+            );
+        }
+        assert_eq!(a0.operation, OP_WRITE_BACK);
+        assert!(crate::owner_ok::WIRED.contains(&OP_WRITE_BACK));
+    }
+
+    /// PA3 / PA8: only a waiting proposal with the diff the owner saw goes on.
+    #[tokio::test]
+    async fn only_a_waiting_proposal_is_written() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        let body =
+            json!({"type": APPROVE, "request_id": p.id, "diff_sha": p.diff_sha, "ticket": "t"});
+        let other =
+            json!({"type": APPROVE, "request_id": p.id, "diff_sha": "0".repeat(64), "ticket": "t"});
+        assert!(matches!(
+            approve_step(&b, &built_in(), &other, 101).await,
+            Step::Refuse("request_changed")
+        ));
+        assert_eq!(
+            b.begin_write(&p.id, &"0".repeat(64), 101).err(),
+            Some("request_changed")
+        );
+        b.deny(&p.id, 101).unwrap();
+        assert!(matches!(
+            approve_step(&b, &built_in(), &body, 102).await,
+            Step::Refuse("request_not_waiting")
+        ));
+        assert_eq!(
+            b.begin_write(&p.id, &p.diff_sha, 102).err(),
+            Some("request_not_waiting")
+        );
+        let b = Book::default();
+        let p = waiting_one(&b);
+        assert!(matches!(
+            approve_step(&b, &built_in(), &body, p.expires_at).await,
+            Step::Refuse("request_not_waiting")
+        ));
+    }
+
+    /// PA4: the window says the persona's name, the counts and the matching code — never the
+    /// text or the seat's reason.
+    #[test]
+    fn the_window_says_name_counts_and_code_only() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        let a = owner_ask(&p, "page:1".into());
+        assert_eq!(
+            a.resource,
+            format!(
+                "AIB 本人核准安全工程師 · +1 −0 行 · 對照碼 {}",
+                &p.diff_sha[..12]
+            )
+        );
+        let params = String::from_utf8(a.params.clone()).unwrap();
+        for s in [&a.resource, &params] {
+            assert!(
+                !s.contains("規則三") && !s.contains("請在") && !s.contains("12:30"),
+                "{s}"
+            );
+        }
+    }
+
+    /// PA5: approved once is approved once — Writing can be neither approved again, withdrawn
+    /// nor denied, and Written stays.
+    #[test]
+    fn every_write_refusal_has_its_status() {
+        use crate::persona_write::WriteError as E;
+        for (e, want) in [
+            (E::Changed, StatusCode::CONFLICT),
+            (E::Unreadable, StatusCode::CONFLICT),
+            (E::Outside, StatusCode::CONFLICT),
+            (E::Symlink, StatusCode::CONFLICT),
+            (E::Mismatch, StatusCode::CONFLICT),
+            (E::Io, StatusCode::INTERNAL_SERVER_ERROR),
+            (E::Archived, StatusCode::CONFLICT),
+            (E::Aliased, StatusCode::CONFLICT),
+            (E::RegistryEdited, StatusCode::CONFLICT),
+            (E::RegistryChanged, StatusCode::CONFLICT),
+            (E::TextInvalid, StatusCode::BAD_REQUEST),
+        ] {
+            assert_eq!(refuse(e.code()).status(), want, "{}", e.code());
+        }
+    }
+
+    #[test]
+    fn a_written_proposal_cannot_be_written_again() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        assert_eq!(
+            b.begin_write(&p.id, &p.diff_sha, 101).unwrap().stand,
+            Stand::Writing
+        );
+        assert_eq!(
+            b.begin_write(&p.id, &p.diff_sha, 101).err(),
+            Some("request_not_waiting")
+        );
+        assert!(b.withdraw("seat_ab", &p.id, 101).is_err());
+        assert!(b.deny(&p.id, 101).is_err());
+        // not swept while writing
+        assert_eq!(
+            b.get(None, &p.id, p.expires_at + 1).unwrap().stand,
+            Stand::Writing
+        );
+        assert_eq!(b.end_write(&p.id, true).unwrap().stand, Stand::Written);
+        assert_eq!(b.end_write(&p.id, true).err(), Some("request_not_writing"));
+        assert_eq!(
+            b.begin_write(&p.id, &p.diff_sha, 102).err(),
+            Some("request_not_waiting")
+        );
+        assert!(b.waiting(102).is_empty());
+    }
+
+    /// PA6: approve is the built-in page's in this pairing only.
+    #[tokio::test]
+    async fn approve_is_the_built_in_pages_only() {
+        let b = Book::default();
+        let p = waiting_one(&b);
+        let body = json!({"type": APPROVE, "request_id": p.id, "diff_sha": p.diff_sha});
+        for (carried, user_page) in [(true, false), (false, true)] {
+            let page = crate::pairing::PageAccess {
+                carried,
+                user_page,
+                ..built_in()
+            };
+            assert!(matches!(
+                approve_step(&b, &page, &body, 101).await,
+                Step::Refuse("persona_built_in_page_only")
+            ));
+        }
     }
 
     /// PW10: the list and the no are the built-in page's in this pairing only.

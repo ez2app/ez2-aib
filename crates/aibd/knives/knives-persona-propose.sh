@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP14, PD1–PD2: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
+# PP1–PP14, PD1–PD2, PA1–PA6, PA8–PA14: a seat only proposes a new text for its own persona card — no persona named by the seat, the identity and hidden characters refused, one waiting per card, the hour counts withdrawn ones, expired ones swept first, a seat sees and withdraws only its own, the same text is the same proposal, the page's list and no are the built-in page's only (DESIGN-persona-propose-osverify-c2f0b-1123 r2 §1; f163c PREREAD r0/r1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pp() { python3 -I scripts/knife.py crates/aibd/src/persona_propose.rs "$1" "$2" --expect-fail "persona_propose::tests::$3" \
@@ -69,5 +69,61 @@ pd crates/aibd/src/persona_propose.rs \
    '    if page.carried {'
 # PD2 the page's arm is gone (list and no never reach persona_propose)
 pd crates/aibd/src/seat_input.rs \
-   '        Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {' \
-   '        Some("persona_proposals_gone") => {'
+   '            crate::persona_propose::LIST' \
+   '            "persona_proposals_gone"'
+# ---- S2-2 part 2: the owner's approve wires to persona_write (waits for A12 in the integration line)
+# PA1 an approve without a ticket goes on to write
+pp '        None => Step::Ask(ask),' \
+   '        None => Step::Write { p, ask, ticket: String::new(), by },' \
+   approve_without_a_ticket_writes_nothing
+# PA2 the ask does not bind the base the text was proposed on
+pp '        "base_sha": p.base_sha,' \
+   '        "base_sha": "",' \
+   a_ticket_for_another_text_writes_nothing
+# PA3 a proposal no longer waiting is approved
+pp '    if !matches!(p.stand, Stand::Waiting) {' \
+   '    if false {' \
+   only_a_waiting_proposal_is_written
+# PA4 the window carries the seat's reason
+pp '        "{} · +{} −{} 行 · 對照碼 {}",' \
+   '        "{} · +{} −{} 行 · 對照碼 {} {}", p.why,' \
+   the_window_says_name_counts_and_code_only
+# PA5 an approved proposal stays waiting (it can be approved, withdrawn or denied again)
+pp '        p.stand = Stand::Writing;' \
+   '        p.stand = Stand::Waiting;' \
+   a_written_proposal_cannot_be_written_again
+# PA6 a user folder page or a carried pairing approves
+pp '        return Step::Refuse("persona_built_in_page_only");' \
+   '        let _ = "persona_built_in_page_only";' \
+   approve_is_the_built_in_pages_only
+# PA8 (f163c e5f942dd N1) the diff the owner saw is not compared (a card changed after the proposal)
+pp '    if diff_sha != p.diff_sha {' \
+   '    if diff_sha.is_empty() && false {' \
+   only_a_waiting_proposal_is_written
+# PA9 begin_write does not compare the diff either
+pp '    if p.diff_sha != diff_sha {' \
+   '    if diff_sha.is_empty() && false {' \
+   only_a_waiting_proposal_is_written
+# PA10 (f163c 1000abaa N1) a card outside its path or behind a symlink is answered as a bad request
+pp '        "persona_path_outside" | "persona_path_symlink" => StatusCode::CONFLICT,' \
+   '        "persona_path_outside_x" => StatusCode::CONFLICT,' \
+   every_write_refusal_has_its_status
+# PA11 (f163c 08:44) a card that could not be written on this machine is answered as the page's bad request
+pp '        "internal" | "persona_write_io" => StatusCode::INTERNAL_SERVER_ERROR,' \
+   '        "internal" => StatusCode::INTERNAL_SERVER_ERROR,' \
+   every_write_refusal_has_its_status
+# ---- the owner's approve at the door (ebab8 11-23 09:11 常設規則: the gate bites a test that sends the request)
+pa() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "approve_is_the_built_in_pages_with_the_owners_own_ticket_only" \
+        -- cargo test -p aibd --locked --test persona_approve_door; }
+# PA12 a made-up ticket is taken (the owner's check is skipped; ticket and ask still read)
+pa crates/aibd/src/persona_propose.rs \
+   '    if !crate::owner_ok::approved_for(&ticket, &ask) {' \
+   '    if crate::owner_ok::approved_for(&ticket, &ask) && false {'
+# PA13 the page's approve arm is gone (approve never reaches persona_propose)
+pa crates/aibd/src/seat_input.rs \
+   '            | crate::persona_propose::APPROVE,' \
+   '            | "persona_approve_gone",'
+# PA14 a user folder page approves (user_page still read)
+pa crates/aibd/src/persona_propose.rs \
+   '    if page.carried || user_page {' \
+   '    if page.carried || (user_page && false) {'

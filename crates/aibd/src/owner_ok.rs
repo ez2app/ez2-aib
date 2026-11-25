@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 14] = [
+pub const ACTIONS: [(&str, &str); 15] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -126,6 +126,7 @@ pub const ACTIONS: [(&str, &str); 14] = [
     (crate::gh_token::OP, "存 GitHub 權杖"),
     (crate::provider_login::OP, "重新登入 AI"),
     (crate::drive_switch::OP, "打開自動推進派工"),
+    (crate::persona_propose::OP_WRITE_BACK, "改寫人格卡"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -418,6 +419,9 @@ pub const WIRED: &[&str] = &[
     crate::perm_tpl::OP,
     crate::perm_apply::OP_OPEN,
     crate::perm_apply::OP_APPLY,
+    // a seat's proposal written back to its persona card (S2-2 part 2; DECISION 第十六節 short
+    // window: name, lines added / removed, matching code — the whole text on the page card)
+    crate::persona_propose::OP_WRITE_BACK,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
