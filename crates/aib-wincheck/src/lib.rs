@@ -472,7 +472,12 @@ pub fn place_tree(
 ) -> Vec<String> {
     if let Some(base) = root.parent() {
         let made = if base.exists() {
-            (g.check)(base).map_err(|e| format!("ROOT-NOT-OURS {}: {e}", base.display()))
+            (g.check)(base)
+                .map_err(|e| format!("ROOT-NOT-OURS {}: {e}", base.display()))
+                .and_then(|()| {
+                    // taken over as well: its owner could change the rights at any time
+                    (g.lock)(base).map_err(|e| format!("ROOT-ACL {}: {e}", base.display()))
+                })
         } else {
             std::fs::create_dir_all(base)
                 .map_err(|e| format!("ROOT-MAKE {}: {e}", base.display()))
@@ -601,36 +606,63 @@ pub fn icacls_lock_args(path: &str, sid: &str) -> Vec<String> {
     ]
 }
 
-/// `icacls <path>`'s listing grants only `me` (compared without case, as Windows does) and
-/// nothing else: the first entry follows the path on its first line, more entries follow on
-/// indented lines, a blank line ends them.
-pub fn acl_only(listing: &str, path: &str, me: &str) -> Result<(), String> {
-    let mut lines = listing.lines().map(|l| l.trim_end_matches('\r'));
-    let first = lines
-        .find(|l| !l.trim().is_empty())
-        .ok_or("icacls listed nothing")?;
-    let first = first
-        .strip_prefix(path)
-        .ok_or_else(|| format!("icacls listed another path: {first:?}"))?;
-    let mut entries = vec![first.trim().to_string()];
-    for l in lines {
-        if l.trim().is_empty() {
-            break;
+/// icacls arguments that make this account's SID the owner of `path` (c2f0b REVIEW f0c0df9a L1:
+/// an owner can change the rights at any time, so a folder that was already there is taken over;
+/// full control includes the right to do so, and when it fails the check is red).
+pub fn icacls_owner_args(path: &str, sid: &str) -> Vec<String> {
+    vec![path.to_string(), "/setowner".to_string(), format!("*{sid}")]
+}
+
+/// What `icacls <path> /save <file>` wrote, as text: UTF-16LE (how icacls writes it), else UTF-8.
+pub fn decode_saved(b: &[u8]) -> String {
+    let b = b.strip_prefix(&[0xFF, 0xFE]).unwrap_or(b);
+    if b.len() >= 2 && b.len() % 2 == 0 && b[1] == 0 {
+        let u: Vec<u16> = b
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&u)
+    } else {
+        String::from_utf8_lossy(b).into_owned()
+    }
+}
+
+/// The access list `icacls /save` wrote (SDDL, `D:<flags>(<ace>)…`) is this account's alone: not
+/// inheriting (`P`), and every entry an allow entry (`A`) for `me`'s SID, one of them full
+/// control (`FA`). SIDs are compared, not names: icacls prints names in the console code page,
+/// where two non-ASCII names can read the same (c2f0b REVIEW f0c0df9a L2); a deny entry is never
+/// taken for full control (N1).
+pub fn sddl_only(saved: &str, me: &str) -> Result<(), String> {
+    let d = saved
+        .lines()
+        .map(|l| l.trim_matches(|c: char| c == '\r' || c == '\0' || c == '\u{feff}' || c == ' '))
+        .find_map(|l| l.strip_prefix("D:"))
+        .ok_or("icacls /save wrote no access list")?;
+    let (flags, aces) = d.split_at(d.find('(').unwrap_or(d.len()));
+    if !flags.contains('P') {
+        return Err(format!("the folder still inherits rights (D:{flags})"));
+    }
+    let mut full = false;
+    let mut n = 0;
+    for ace in aces.split('(').filter(|a| !a.is_empty()) {
+        let ace = ace
+            .strip_suffix(')')
+            .ok_or_else(|| format!("cannot read entry ({ace}"))?;
+        let f: Vec<&str> = ace.split(';').collect();
+        let [kind, _, rights, _, _, sid] = f[..] else {
+            return Err(format!("cannot read entry ({ace})"));
+        };
+        if kind != "A" {
+            return Err(format!("an entry that is not an allow entry: ({ace})"));
         }
-        entries.push(l.trim().to_string());
-    }
-    let mut others = Vec::new();
-    for e in &entries {
-        let who = e.split_once(":(").map_or(e.as_str(), |(w, _)| w);
-        if !who.eq_ignore_ascii_case(me) {
-            others.push(e.clone());
+        if !sid.eq_ignore_ascii_case(me) {
+            return Err(format!("another account has rights: ({ace})"));
         }
+        full |= rights == "FA";
+        n += 1;
     }
-    if !others.is_empty() {
-        return Err(format!("others have rights: {}", others.join("; ")));
-    }
-    if !entries.iter().any(|e| e.contains("(F)")) {
-        return Err(format!("{me} has no full control: {}", entries.join("; ")));
+    if n == 0 || !full {
+        return Err(format!("{me} has no full control: D:{d}"));
     }
     Ok(())
 }
@@ -805,22 +837,44 @@ mod tests {
                 "*S-1-5-21-9:(OI)(CI)F"
             ]
         );
-        let p = r"C:\aibw";
-        let only = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(F)\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n";
-        assert_eq!(acl_only(only, p, "desktop-7q\\andy"), Ok(()));
-        let child = "C:\\aibw\\ez2-aib DESKTOP-7Q\\Andy:(I)(OI)(CI)(F)\n\n";
         assert_eq!(
-            acl_only(child, r"C:\aibw\ez2-aib", "desktop-7q\\andy"),
-            Ok(())
+            icacls_owner_args(r"C:\aibw", "S-1-5-21-9"),
+            [r"C:\aibw", "/setowner", "*S-1-5-21-9"]
         );
-        let shared = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(F)\n        NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n\n";
-        assert!(acl_only(shared, p, "desktop-7q\\andy")
-            .unwrap_err()
-            .contains("Authenticated Users"));
-        let read_only = "C:\\aibw DESKTOP-7Q\\Andy:(OI)(CI)(RX)\n\n";
-        assert!(acl_only(read_only, p, "desktop-7q\\andy").is_err());
-        assert!(acl_only("C:\\other X:(F)\n", p, "x").is_err());
-        assert!(acl_only("", p, "x").is_err());
+        let me = "S-1-5-21-1-2-3-1001";
+        // as icacls /save writes it: UTF-16LE, the folder's name, then its SDDL
+        let saved: Vec<u8> = "aibw\r\nD:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(sddl_only(&decode_saved(&saved), me), Ok(()));
+        // a name that is not ASCII does not matter: the SID is compared
+        let zh = "測試 專案\nD:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)\n";
+        assert_eq!(sddl_only(&decode_saved(zh.as_bytes()), me), Ok(()));
+        for (bad, why) in [
+            ("aibw\nD:AI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)\n", "inherits"),
+            (
+                "aibw\nD:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICIIO;0x1301bf;;;AU)\n",
+                "another account",
+            ),
+            (
+                "aibw\nD:PAI(D;OICI;FA;;;S-1-5-21-1-2-3-1001)\n",
+                "not an allow",
+            ),
+            (
+                "aibw\nD:PAI(A;OICI;0x1200a9;;;S-1-5-21-1-2-3-1001)\n",
+                "no full control",
+            ),
+            (
+                "aibw\nD:PAI(A;OICI;FA;;S-1-5-21-1-2-3-1001)\n",
+                "cannot read",
+            ),
+            ("aibw\n", "no access list"),
+            ("aibw\nD:P\n", "no full control"),
+        ] {
+            let e = sddl_only(bad, me).unwrap_err();
+            assert!(e.contains(why), "{bad:?}: {e}");
+        }
     }
 
     #[test]

@@ -1,63 +1,73 @@
 #!/usr/bin/env bash
-# aib-wincheck: the Windows hands-on check's pure rules (PLAN-windows-onsite-90856-1125 §3 A;
-# c2f0b REVIEW-wincheck-gnu-rust M1)
-set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
-f=crates/aib-wincheck/src/lib.rs
-k() { python3 -I scripts/knife.py "$f" "$1" "$2" --expect-fail "$3" -- cargo test -p aib-wincheck --locked --lib "$3"; }
-# WC1 a variable of the person's own setup (a rustup mirror, RUSTFLAGS) reaches the child
-k '        .filter(|(k, _)| KEPT_ENV.contains(&k.as_str()))' \
-  '        .filter(|_| true) // knife' \
-  a_child_keeps_only_the_listed_variables
-# WC2 a sums line naming a file outside the pack is taken
-k '        if leaves {' \
-  '        if false && leaves {' \
-  the_sums_file_is_read_strictly
-# WC3 a file of the pack the sums do not name is run
-k '        if !sums.contains_key(name) {' \
-  '        if false {' \
-  every_file_of_the_pack_must_be_the_one_in_the_sums
-# WC4 a file that differs from its sum is run
-k '            Some(h) if h != want => problems.push(format!("SUMS-DIFFER {name}")),' \
-  '            Some(h) if false && h != want => problems.push(format!("SUMS-DIFFER {name}")),' \
-  every_file_of_the_pack_must_be_the_one_in_the_sums
-# WC5 a person-check step does not run its #[ignore] tests
-k '    if s.ignored {' \
-  '    if !s.ignored {' \
-  a_step_passes_its_filter_exactly_and_runs_ignored_tests_only_when_asked
-# WC6 a red check is written as OK
-k '        if self.red.is_empty() {' \
-  '        if true {' \
-  the_result_file_ends_with_the_verdict_and_the_sum_of_what_is_above
-# WC7 failed tests are not counted
-k '                "failed" => c.failed += n,' \
-  '                "failed" => {}' \
-  libtest_results_are_added_up_and_failed_names_read
-# WC8 a folder someone else made at the root is emptied (c2f0b REVIEW M1)
-k '        (true, false) => Err("ROOT-NOT-OURS"),' \
-  '        (true, false) => Ok(true),' \
-  a_root_is_emptied_only_when_it_is_ours
-# WC9 an executable changed after the check is run (c2f0b REVIEW M1)
-k '        (Some(b), Some(w)) => *w == sha256_hex(b),' \
-  '        (Some(_), Some(_)) => true,' \
-  an_executable_runs_only_while_it_is_the_one_in_the_sums
-# WC10 a DLL put beside a test executable is not seen (c2f0b REVIEW L1)
-k '                && !sums.contains_key(&format!("{TREE}{f}"))' \
-  '                && false' \
-  a_file_in_the_root_the_pack_did_not_bring_is_found
-# WC11 placing the tree ignores whose the root is: a folder someone else made is emptied (f163c REVIEW L1)
-k '    match may_clear(root.exists(), root.join(MARK).is_file()) {' \
-  '    match may_clear(root.exists(), true) {' \
-  a_root_someone_else_made_is_left_as_it_was
-# WC12 a placed executable changed after the check is run (f163c REVIEW L1)
-k '    if !still_same(&root.join(exe), &format!("{TREE}{exe}"), sums) {' \
-  '    if false {' \
-  a_placed_executable_changed_or_given_a_neighbour_is_not_run
-# WC13 the root's rights are not checked again before a run (f163c REVIEW L2)
-k '    if let Err(e) = (g.check)(root) {' \
-  '    if let Err(e) = Ok::<(), String>(()) {' \
-  a_folder_that_cannot_be_made_ours_stops_everything
-# WC14 another account's entry in the icacls listing is let through (f163c REVIEW L2)
-k '        if !who.eq_ignore_ascii_case(me) {' \
-  '        if false {' \
-  whoami_and_icacls_are_read_strictly
+# aib-wincheck knives WCK1–WCK16 (90856 PLAN-windows-onsite §3 A; c2f0b / f163c REVIEW-wincheck): the
+# Windows hands-on check's rules, each broken, turns its own test red.
+set -eo pipefail
+set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+# knife-spec reads only $1..$9 of a function (no default-value form): one wrapper per test target
+wl() { python3 -I scripts/knife.py crates/aib-wincheck/src/lib.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-wincheck --locked --lib "tests::$3"; }
+# WCK1 a variable of the person's own setup (a rustup mirror, RUSTFLAGS) reaches the child (c2f0b gnu-rust M1)
+wl '        .filter(|(k, _)| KEPT_ENV.contains(&k.as_str()))' \
+   '        .filter(|(k, _)| !k.is_empty()) // knife' \
+   a_child_keeps_only_the_listed_variables
+# WCK2 a sums line naming a file outside the pack is taken
+wl '        if leaves {' \
+   '        if false && leaves { // knife' \
+   the_sums_file_is_read_strictly
+# WCK3 a file of the pack the sums do not name is run
+wl '        if !sums.contains_key(name) {' \
+   '        if sums.is_empty() && !sums.contains_key(name) { // knife' \
+   every_file_of_the_pack_must_be_the_one_in_the_sums
+# WCK4 a file that differs from its sum is run
+wl '            Some(h) if h != want => problems.push(format!("SUMS-DIFFER {name}")),' \
+   '            Some(h) if false && h != want => problems.push(format!("SUMS-DIFFER {name}")), // knife' \
+   every_file_of_the_pack_must_be_the_one_in_the_sums
+# WCK5 a person-check step does not run its #[ignore] tests
+wl '    if s.ignored {' \
+   '    if !s.ignored { // knife' \
+   a_step_passes_its_filter_exactly_and_runs_ignored_tests_only_when_asked
+# WCK6 a red check is written as OK
+wl '        if self.red.is_empty() {' \
+   '        if self.red.is_empty() || true { // knife' \
+   the_result_file_ends_with_the_verdict_and_the_sum_of_what_is_above
+# WCK7 failed tests are not counted
+wl '                "failed" => c.failed += n,' \
+   '                "failed" => c.failed += 0 * n, // knife' \
+   libtest_results_are_added_up_and_failed_names_read
+# WCK8 a folder someone else made at the root is emptied (c2f0b REVIEW M1)
+wl '        (true, false) => Err("ROOT-NOT-OURS"),' \
+   '        (true, false) => Ok(true), // knife' \
+   a_root_is_emptied_only_when_it_is_ours
+# WCK9 an executable changed after the check is run (c2f0b REVIEW M1)
+wl '        (Some(b), Some(w)) => *w == sha256_hex(b),' \
+   '        (Some(b), Some(w)) => !b.is_empty() || !w.is_empty(), // knife' \
+   an_executable_runs_only_while_it_is_the_one_in_the_sums
+# WCK10 a DLL put beside a test executable is not seen (c2f0b REVIEW L1)
+wl '                && !sums.contains_key(&format!("{TREE}{f}"))' \
+   '                && sums.is_empty() // knife' \
+   a_file_in_the_root_the_pack_did_not_bring_is_found
+# WCK11 placing the tree ignores whose the root is: a folder someone else made is emptied (f163c REVIEW L1)
+wl '    match may_clear(root.exists(), root.join(MARK).is_file()) {' \
+   '    match may_clear(root.exists(), true) { // knife' \
+   a_root_someone_else_made_is_left_as_it_was
+# WCK12 a placed executable changed after the check is run (f163c REVIEW L1)
+wl '    if !still_same(&root.join(exe), &format!("{TREE}{exe}"), sums) {' \
+   '    if sums.is_empty() && !still_same(&root.join(exe), &format!("{TREE}{exe}"), sums) { // knife' \
+   a_placed_executable_changed_or_given_a_neighbour_is_not_run
+# WCK13 the root's rights are not checked again before a run (f163c REVIEW L2)
+wl '    if let Err(e) = (g.check)(root) {' \
+   '    if let Err(e) = (g.check)(root).or(Ok::<(), String>(())) { // knife' \
+   a_folder_that_cannot_be_made_ours_stops_everything
+# WCK14 another account's entry in the saved access list is let through (f163c REVIEW L2; c2f0b f0c0df9a L2: by SID)
+wl '        if !sid.eq_ignore_ascii_case(me) {' \
+   '        if false && !sid.eq_ignore_ascii_case(me) { // knife' \
+   whoami_and_icacls_are_read_strictly
+# WCK15 a deny entry is read as this account's full control (c2f0b REVIEW f0c0df9a N1)
+wl '        if kind != "A" {' \
+   '        if false && kind != "A" { // knife' \
+   whoami_and_icacls_are_read_strictly
+# WCK16 a folder that still inherits rights (C:\ gives Authenticated Users modify) is let through
+wl '    if !flags.contains('\''P'\'') {' \
+   '    if false && !flags.contains('\''P'\'') { // knife' \
+   whoami_and_icacls_are_read_strictly

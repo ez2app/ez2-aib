@@ -5,9 +5,10 @@
 //! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    acl_only, check_pack, failed_names, icacls_lock_args, kept_env, may_run, parse_results,
-    parse_sums, parse_tests, place_tree, sha256_hex, step_args, suite_name, whoami_user, Counts,
-    Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, WINDOWS_ROOT,
+    check_pack, decode_saved, failed_names, icacls_lock_args, icacls_owner_args, kept_env, may_run,
+    parse_results, parse_sums, parse_tests, place_tree, sddl_only, sha256_hex, step_args,
+    suite_name, whoami_user, Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST,
+    WINDOWS_ROOT,
 };
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -235,7 +236,9 @@ fn main() -> ExitCode {
     let lock = |d: &Path| -> Result<(), String> {
         match &who {
             Some(Ok((_, sid))) => {
-                system_tool("icacls.exe", &icacls_lock_args(&d.to_string_lossy(), sid)).map(|_| ())
+                let p = d.to_string_lossy();
+                system_tool("icacls.exe", &icacls_lock_args(&p, sid))?;
+                system_tool("icacls.exe", &icacls_owner_args(&p, sid)).map(|_| ())
             }
             Some(Err(e)) => Err(e.clone()),
             None => Ok(()),
@@ -243,9 +246,20 @@ fn main() -> ExitCode {
     };
     let check = |d: &Path| -> Result<(), String> {
         match &who {
-            Some(Ok((name, _))) => {
-                let p = d.to_string_lossy().into_owned();
-                acl_only(&system_tool("icacls.exe", &[p.clone()])?, &p, name)
+            Some(Ok((_, sid))) => {
+                // the user's own temp folder; SIDs, not names (c2f0b REVIEW f0c0df9a L2)
+                let f = std::env::temp_dir()
+                    .join(format!("aib-wincheck-acl-{}.txt", std::process::id()));
+                let _ = std::fs::remove_file(&f);
+                let args = [
+                    d.to_string_lossy().into_owned(),
+                    "/save".into(),
+                    f.to_string_lossy().into_owned(),
+                ];
+                system_tool("icacls.exe", &args)?;
+                let b = std::fs::read(&f).map_err(|e| format!("{}: {e}", f.display()));
+                let _ = std::fs::remove_file(&f);
+                sddl_only(&decode_saved(&b?), sid)
             }
             Some(Err(e)) => Err(e.clone()),
             None => Ok(()),
