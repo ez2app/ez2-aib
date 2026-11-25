@@ -82,3 +82,9 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '    symlink || attrs & 0x400 != 0 // not attrs & 0x400 alone' \
   --expect-fail 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point' \
   -- cargo test -p aibd --locked --lib 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point'
+# bn-symlink (3e53b REVIEW-bnreparse L1: a link or a junction is still refused; runs on Mac)
+python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
+  '    symlink // not attrs & 0x400 alone' \
+  '    symlink && false // not attrs & 0x400 alone' \
+  --expect-fail 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point'
