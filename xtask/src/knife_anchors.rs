@@ -590,10 +590,32 @@ pub fn script_owners(
     scripts: &[String],
     loop_jobs: &BTreeMap<String, String>,
 ) -> (BTreeMap<String, (String, String)>, Vec<String>) {
+    script_owners_os(workflows, scripts, loop_jobs, &BTreeMap::new())
+}
+
+/// [`script_owners`], and a `run-knives.sh <job>` step whose env (or the same line) sets
+/// `AIB_KNIVES_ONLY_OS=<os>[,<os>…]` (E3: the Linux cells `unix,any`, the macOS cells `macos`)
+/// owns only the scripts whose header os ([`knives_os`]; `loop_os`, not there = `macos`) is
+/// listed — the same rule run-knives.sh applies, so a script is owned by the cell that runs it.
+pub fn script_owners_os(
+    workflows: &[(String, String)],
+    scripts: &[String],
+    loop_jobs: &BTreeMap<String, String>,
+    loop_os: &BTreeMap<String, String>,
+) -> (BTreeMap<String, (String, String)>, Vec<String>) {
     let mut own: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut twice = Vec::new();
+    let only_list = |v: &str| -> Vec<String> {
+        v.trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .split(',')
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty())
+            .collect()
+    };
     for (name, text) in workflows {
         let (mut job, mut step, mut in_jobs) = (String::new(), String::new(), false);
+        let mut step_only: Option<Vec<String>> = None;
         for (n, line) in text.lines().enumerate() {
             if !line.starts_with(' ') && !line.trim().is_empty() && !line.starts_with('#') {
                 in_jobs = line.trim_end() == "jobs:";
@@ -606,19 +628,35 @@ pub fn script_owners(
             }
             if starts_step(line) {
                 step = step_name(line).unwrap_or_default();
+                step_only = None;
             }
             if step.is_empty() || line.trim_start().starts_with('#') {
                 continue;
             }
+            if let Some(v) = line.trim_start().strip_prefix("AIB_KNIVES_ONLY_OS:") {
+                step_only = Some(only_list(v));
+                continue;
+            }
             let seps = |c: char| c.is_whitespace() || matches!(c, ';' | '"' | '\'' | '(' | ')');
             let toks: Vec<&str> = line.split(seps).filter(|t| !t.is_empty()).collect();
+            let mut only = step_only.clone();
             for (i, tok) in toks.iter().enumerate() {
+                if let Some(v) = tok.strip_prefix("AIB_KNIVES_ONLY_OS=") {
+                    only = Some(only_list(v));
+                    continue;
+                }
                 let tok = tok.strip_prefix("./").unwrap_or(tok);
                 let hits: Vec<&String> = match tok.strip_suffix("*.sh") {
                     _ if tok == RUN_KNIVES => match toks.get(i + 1) {
                         Some(want) => scripts
                             .iter()
                             .filter(|s| loop_jobs.get(*s).is_some_and(|j| j.as_str() == *want))
+                            .filter(|s| {
+                                only.as_ref().is_none_or(|l| {
+                                    let os = loop_os.get(*s).map_or("macos", String::as_str);
+                                    l.iter().any(|o| o == os)
+                                })
+                            })
                             .collect(),
                         None => Vec::new(),
                     },
@@ -694,6 +732,25 @@ pub fn knives_job(text: &str) -> Result<String, String> {
     Ok(job)
 }
 
+/// The os a crate knife script runs on, from its header (first 10 lines,
+/// `# aib-knives: os=<os>`; not written = `macos`), read like run-knives.sh reads it.
+/// The header's values are checked by [`knives_job`].
+pub fn knives_os(text: &str) -> String {
+    let mut os = "macos".to_string();
+    for line in text.lines().take(10) {
+        if let Some(kv) = line.strip_prefix("# aib-knives: ") {
+            if let Some(v) = kv
+                .split_whitespace()
+                .next()
+                .and_then(|kv| kv.strip_prefix("os="))
+            {
+                os = v.to_string();
+            }
+        }
+    }
+    os
+}
+
 /// Run the check under `root`; prints one line per knife and a summary.
 /// rc 0 = every anchor exactly once (and at least one knife), 1 = some
 /// anchor not exactly once, 2 = something could not be read.
@@ -724,6 +781,7 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
     let mut workflows = Vec::new();
     let mut scripts = Vec::new();
     let mut loop_jobs = BTreeMap::new();
+    let mut loop_os = BTreeMap::new();
     for f in &files {
         // `/` on every platform, so the two cells print the same lines
         let rel = f
@@ -745,6 +803,7 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
                         match knives_job(&t) {
                             Ok(j) => {
                                 loop_jobs.insert(rel.clone(), j);
+                                loop_os.insert(rel.clone(), knives_os(&t));
                             }
                             Err(e) => unresolved.push(format!("{rel}: {e}")),
                         }
@@ -758,7 +817,7 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
     // a script's knives belong to the step that runs the script (S66-shared piece 1)
     // a script a second step also runs would have its knives' results kept under the first
     // step: unresolved, so knife-anchors is red (1ced7 kspec M1)
-    let (own, twice) = script_owners(&workflows, &scripts, &loop_jobs);
+    let (own, twice) = script_owners_os(&workflows, &scripts, &loop_jobs, &loop_os);
     unresolved.extend(twice);
     for k in knives.iter_mut().filter(|k| k.step.is_empty()) {
         let file = k.at.rsplit_once(':').map_or(k.at.as_str(), |(f, _)| f);
@@ -1219,6 +1278,91 @@ mod tests {
             "{unresolved:?}"
         );
         assert_eq!(rc, 2, "unresolved is rc 2, like a line it cannot read");
+    }
+
+    /// E3: the Linux cells (`AIB_KNIVES_ONLY_OS: "unix,any"`) and the macOS cells (`macos`) both
+    /// call run-knives.sh rust; each owns only the scripts of its header os, so none is run twice.
+    #[test]
+    fn a_run_knives_step_with_only_os_owns_only_the_scripts_of_those_oses() {
+        let wf = concat!(
+            "jobs:\n  crate-knives:\n    steps:\n      - name: crate knives\n        env:\n",
+            "          AIB_KNIVES_ONLY_OS: \"unix,any\"\n        run: |\n",
+            "          AIB_KNIVES_LIST=1 bash crates/aib-knife/run-knives.sh rust\n",
+            "          bash crates/aib-knife/run-knives.sh rust\n",
+            "  crate-knives-macos:\n    steps:\n      - name: crate knives (macOS-only)\n        env:\n",
+            "          AIB_KNIVES_ONLY_OS: macos\n        run: bash crates/aib-knife/run-knives.sh rust\n",
+            "  other:\n    steps:\n      - name: x knives\n        run: bash crates/aib-knife/run-knives.sh x\n",
+        );
+        let scripts: Vec<String> = [
+            "crates/a/knives/u.sh",
+            "crates/a/knives/n.sh",
+            "crates/a/knives/m.sh",
+            "crates/a/knives/x.sh",
+        ]
+        .map(String::from)
+        .to_vec();
+        let pairs = |v: &[(&str, &str)]| -> BTreeMap<String, String> {
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        let jobs = pairs(&[
+            ("crates/a/knives/u.sh", "rust"),
+            ("crates/a/knives/n.sh", "rust"),
+            ("crates/a/knives/m.sh", "rust"),
+            ("crates/a/knives/x.sh", "x"),
+        ]);
+        let unix = "#!/usr/bin/env bash\n# aib-knives: os=unix\n";
+        let any = "#!/usr/bin/env bash\n# aib-knives: os=any   # why\n";
+        let none = "#!/usr/bin/env bash\necho\n";
+        let os = pairs(&[
+            ("crates/a/knives/u.sh", &knives_os(unix)),
+            ("crates/a/knives/n.sh", &knives_os(any)),
+            ("crates/a/knives/m.sh", &knives_os(none)),
+            ("crates/a/knives/x.sh", &knives_os(unix)),
+        ]);
+        assert_eq!(
+            os["crates/a/knives/m.sh"], "macos",
+            "not written = macos, as run-knives.sh reads it"
+        );
+        let wfs = [("w.yml".to_string(), wf.to_string())];
+        let (own, twice) = script_owners_os(&wfs, &scripts, &jobs, &os);
+        let at = |s: &str| own.get(s).map(|(j, st)| format!("{j}/{st}"));
+        assert!(twice.is_empty(), "{twice:?}");
+        assert_eq!(
+            at("crates/a/knives/u.sh").as_deref(),
+            Some("crate-knives/crate knives")
+        );
+        assert_eq!(
+            at("crates/a/knives/n.sh").as_deref(),
+            Some("crate-knives/crate knives")
+        );
+        assert_eq!(
+            at("crates/a/knives/m.sh").as_deref(),
+            Some("crate-knives-macos/crate knives (macOS-only)")
+        );
+        // a step without the list (the next job's) owns every script of its job again
+        assert_eq!(
+            at("crates/a/knives/x.sh").as_deref(),
+            Some("other/x knives")
+        );
+        // the same list on the command line instead of the step's env
+        let inline = "jobs:\n  mac:\n    steps:\n      - name: m\n        run: AIB_KNIVES_ONLY_OS=macos bash crates/aib-knife/run-knives.sh rust\n  lin:\n    steps:\n      - name: l\n        run: AIB_KNIVES_ONLY_OS=unix,any bash crates/aib-knife/run-knives.sh rust\n";
+        let (own, twice) =
+            script_owners_os(&[("i.yml".into(), inline.into())], &scripts, &jobs, &os);
+        assert!(twice.is_empty(), "{twice:?}");
+        assert_eq!(
+            own.get("crates/a/knives/m.sh").map(|(j, _)| j.as_str()),
+            Some("mac")
+        );
+        assert_eq!(
+            own.get("crates/a/knives/u.sh").map(|(j, _)| j.as_str()),
+            Some("lin")
+        );
+        // without the lists both cells would take every rust script: each one reported
+        let bare = wf.replace("AIB_KNIVES_ONLY_OS", "OTHER_VAR");
+        let (_, twice) = script_owners_os(&[("w.yml".into(), bare)], &scripts, &jobs, &os);
+        assert_eq!(twice.len(), 3, "{twice:?}");
     }
 
     /// S66-1: `knife run` needs the whole call, filled in, and the step it sits in.

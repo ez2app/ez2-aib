@@ -53,6 +53,7 @@ fn run_env(root: &Path, job: &str, shard: Option<&str>, env: &[(&str, &str)]) ->
         .env_remove("AIB_KNIVES_LIST")
         .env_remove("AIB_KNIVES_LIMITS")
         .env_remove("AIB_SKIP_FILES")
+        .env_remove("AIB_KNIVES_ONLY_OS")
         .env_remove("AIB_KNIVES_SHARD");
     if let Some(s) = shard {
         c.env("AIB_KNIVES_SHARD", s);
@@ -691,4 +692,54 @@ fn skip_files_skips_unaffected_scripts_and_does_not_leak() {
     );
     assert_eq!(rc_all, 1, "{out_all}");
     assert!(out_all.contains("KNIVES-NONE"), "{out_all}");
+}
+
+/// E3: AIB_KNIVES_ONLY_OS=<os>[,<os>…] keeps the scripts whose header os is listed, so the Linux
+/// cells (unix,any) and the macOS cells (macos) never take the same script; not set = as before.
+#[test]
+fn only_os_keeps_the_listed_oses_and_does_not_reach_the_scripts() {
+    let files = [
+        (
+            "crates/a/knives/k-any.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\necho only=${AIB_KNIVES_ONLY_OS:-unset}\n",
+        ),
+        (
+            "crates/a/knives/k-unix.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=unix\necho u\n",
+        ),
+        ("crates/a/knives/k-mac.sh", "#!/usr/bin/env bash\necho m\n"),
+    ];
+    let listed = |only: Option<&str>| -> Vec<String> {
+        let mut env = vec![("AIB_KNIVES_LIST", "1")];
+        if let Some(o) = only {
+            env.push(("AIB_KNIVES_ONLY_OS", o));
+        }
+        let (rc, out) = run_env(&repo(&files), "rust", None, &env);
+        assert_eq!(rc, 0, "{out}");
+        out.lines()
+            .filter_map(|l| l.strip_prefix("KNIVES-ELIGIBLE crates/a/knives/"))
+            .map(str::to_string)
+            .collect()
+    };
+    let mac_here: Vec<String> = if here_os() == "macos" {
+        vec!["k-mac.sh".into()]
+    } else {
+        vec![]
+    };
+    let mut all = vec!["k-any.sh".to_string()];
+    all.extend(mac_here.clone());
+    all.push("k-unix.sh".into());
+    assert_eq!(listed(None), all);
+    assert_eq!(listed(Some("unix,any")), vec!["k-any.sh", "k-unix.sh"]);
+    assert_eq!(listed(Some("any")), vec!["k-any.sh"]);
+    assert_eq!(listed(Some("macos")), mac_here);
+    // the cell's list is not passed on to the scripts it runs
+    let (rc, out) = run_env(
+        &repo(&files[..1]),
+        "rust",
+        None,
+        &[("AIB_KNIVES_ONLY_OS", "any")],
+    );
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("only=unset"), "{out}");
 }
