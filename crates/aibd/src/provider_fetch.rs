@@ -294,7 +294,25 @@ pub fn run(
     cancel: &AtomicBool,
     progress: &Progress,
 ) -> Result<PathBuf, &'static str> {
+    run_on(this_platform(), data, row, fetch, signer, cancel, progress)
+}
+
+/// [`run`] for the platform `platform` (tests give one; [`run`] gives this build's).
+fn run_on(
+    platform: Option<&str>,
+    data: &Path,
+    row: &FetchRow,
+    fetch: &dyn Fetch,
+    signer: Signer<'_>,
+    cancel: &AtomicBool,
+    progress: &Progress,
+) -> Result<PathBuf, &'static str> {
     if !source_ok(row) {
+        return Err(ERR_SOURCE);
+    }
+    // 3e53b REVIEW-pfetch N1: only this machine's row, so the url's file name and the placed
+    // name cannot part (a win32 row on a Mac, or another arch's program)
+    if platform != Some(row.platform.as_str()) {
         return Err(ERR_SOURCE);
     }
     let dl = downloads_dir(data).join(random_name()?);
@@ -505,7 +523,15 @@ mod tests {
         f: &dyn Fetch,
         s: Signer<'_>,
     ) -> Result<PathBuf, &'static str> {
-        run(data, r, f, s, &AtomicBool::new(false), &Progress::default())
+        run_on(
+            Some(&r.platform),
+            data,
+            r,
+            f,
+            s,
+            &AtomicBool::new(false),
+            &Progress::default(),
+        )
     }
 
     fn dl_empty(data: &Path) -> bool {
@@ -628,6 +654,46 @@ mod tests {
     }
 
     #[test]
+    fn only_this_machines_row_is_fetched() {
+        let d = tempfile::tempdir().unwrap();
+        let mac = row("darwin-arm64");
+        let f = bytes(BODY);
+        let none = AtomicBool::new(false);
+        let p = Progress::default();
+        for on in [Some("win32-x64"), Some("darwin-x64"), None] {
+            assert_eq!(
+                run_on(on, d.path(), &mac, &f, &signed, &none, &p),
+                Err(ERR_SOURCE),
+                "reason: other_platform_fetched {on:?}"
+            );
+        }
+        assert_eq!(f.1.get(), 0, "reason: other_platform_fetched");
+        assert!(run_on(Some("darwin-arm64"), d.path(), &mac, &f, &signed, &none, &p).is_ok());
+    }
+
+    /// 3e53b REVIEW-pfetch N3: the seat's program still starts while L2 holds the checked
+    /// handle (FILE_SHARE_READ): CreateProcess only reads and maps the image.
+    #[cfg(windows)]
+    #[test]
+    fn a_program_still_runs_while_its_checked_handle_is_held() {
+        let d = tempfile::tempdir().unwrap();
+        let sys = aib_sys::sysdir::system_dir().unwrap();
+        let p = d.path().join("w.exe");
+        std::fs::copy(sys.join("whoami.exe"), &p).unwrap();
+        let held = open_locked(&p).unwrap();
+        let st = std::process::Command::new(&p)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert!(
+            st.as_ref().is_ok_and(|s| s.success()),
+            "reason: run_refused_while_held {st:?}"
+        );
+        assert!(File::options().write(true).open(&p).is_err());
+        drop(held);
+    }
+
+    #[test]
     fn curl_gets_one_fixed_argument_list_that_stops_at_the_measured_size() {
         let r = row("win32-x64");
         let a: Vec<String> = curl_args(&r, Path::new("out"))
@@ -662,7 +728,15 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let p = Progress::default();
         assert_eq!(
-            run(d.path(), &r, &bytes(BODY), &signed, &cancel, &p),
+            run_on(
+                Some(&r.platform),
+                d.path(),
+                &r,
+                &bytes(BODY),
+                &signed,
+                &cancel,
+                &p
+            ),
             Err(ERR_CANCELLED)
         );
         assert!(nothing_placed(d.path(), &r), "reason: cancelled_placed");
@@ -757,7 +831,8 @@ mod tests {
         let r = here();
         let p = Progress::default();
         assert_eq!(p.phase(), "download");
-        run(
+        run_on(
+            Some(&r.platform),
             d.path(),
             &r,
             &bytes(BODY),

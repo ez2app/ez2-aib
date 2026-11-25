@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# PF1-PF13 L1a provider_fetch (IFACE-provider-lifecycle-c2f0b-1126 r1 §3, r1-1, r1-5 N2;
+# PF1-PF14 L1a provider_fetch (IFACE-provider-lifecycle-c2f0b-1126 r1 §3, r1-1, r1-5 N2;
 # ebab8 11-26 03:16 → 6770f): only the measured https path is fetched, curl's fixed arguments,
 # P (hash, size) before S, S before anything is kept, the copy hashed again, the placed file
 # checked on every seat open, a cancel stops the hash, a failed job leaves no download folder,
@@ -36,3 +36,5 @@ pf '        "--max-redirs",' '        "--max-time",' curl_gets_one_fixed_argumen
 pf '    a.push(row.size.to_string().into());' '    a.push((row.size * 2).to_string().into());' curl_gets_one_fixed_argument_list_that_stops_at_the_measured_size
 # PF13 curl may use a protocol other than https
 pf '        "--proto",' '        "--proto-default",' curl_gets_one_fixed_argument_list_that_stops_at_the_measured_size
+# PF14 another platform's row is fetched (3e53b REVIEW-pfetch N1)
+pf '    if platform != Some(row.platform.as_str()) {' '    if platform != Some(row.platform.as_str()) && false {' only_this_machines_row_is_fetched
