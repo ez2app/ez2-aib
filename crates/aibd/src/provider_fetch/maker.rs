@@ -202,11 +202,25 @@ mod tests {
             + code.matches(&format!("{m}::*")).count()
             + code.matches(&format!("{m}as")).count();
         for (i, _) in code.match_indices(&format!("{m}::{{")) {
-            let inner = code.get(i + m.len() + 3..).unwrap_or("");
-            let inner = inner.split('}').next().unwrap_or("");
-            n += inner
-                .split(',')
-                .filter(|t| *t == "run" || t.starts_with("runas"))
+            // the whole list up to its own closing brace, nested lists included
+            let rest = code.get(i + m.len() + 3..).unwrap_or("");
+            let mut depth = 1usize;
+            let end = rest
+                .char_indices()
+                .find(|&(_, c)| {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map_or(rest.len(), |(k, _)| k);
+            n += rest
+                .get(..end)
+                .unwrap_or("")
+                .split([',', '{', '}'])
+                .filter(|t| *t == "run" || t.starts_with("runas") || t.starts_with("selfas"))
                 .count();
         }
         n
@@ -221,19 +235,29 @@ mod tests {
             (format!("use crate::{m}::{{\n    self,\n    run,\n}};"), 1),
             (format!("use crate::{m}::{{run as go}};"), 1),
             (format!("let f = crate::{m} :: run;"), 1),
+            (format!("use crate::{m}::{{self as pf}};\npf::run(a);"), 1),
+            (
+                format!("use crate::{m}::{{maker::{{fetch_measured}}, run}};"),
+                1,
+            ),
             (format!("// {m}::run\nuse crate::{m}::{{self, Fetch}};"), 0),
         ] {
             assert_eq!(names_of_the_download(&src), want, "reason: missed {src}");
         }
     }
 
-    /// Outside tests nothing but `fetch_measured` can call `provider_fetch::run` (3e53b
-    /// REVIEW-l2-maker N1): it is crate-only, and in aibd's sources this file is its one caller.
+    /// Nothing but `fetch_measured` can call `provider_fetch::run`: it is private to that module,
+    /// this file is its child, and in aibd's sources this file is its one caller (the scan is a
+    /// second guard; 3e53b / f163c REVIEW-l2-maker r3).
     #[test]
     fn only_fetch_measured_calls_the_download_with_a_signer() {
-        let fetch = include_str!("provider_fetch.rs");
-        assert!(fetch.contains("\npub(crate) fn run("), "reason: run_public");
+        let fetch = include_str!("../provider_fetch.rs");
+        assert!(fetch.contains("\nfn run("), "reason: run_public");
         assert!(!fetch.contains("\npub fn run("), "reason: run_public");
+        assert!(
+            !fetch.contains("\npub(crate) fn run("),
+            "reason: run_public"
+        );
         // every aibd source file: only this one names the download, once (3e53b Nb)
         let mut callers = Vec::new();
         let mut dirs = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
@@ -254,7 +278,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(callers, ["provider_maker.rs"], "reason: more_callers");
+        assert_eq!(callers, ["maker.rs"], "reason: more_callers");
     }
 
     /// The production path refuses a file whose hash is measured but which the maker did not
