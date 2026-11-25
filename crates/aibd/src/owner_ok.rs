@@ -1406,6 +1406,17 @@ mod tests {
     fn at(t: u64) {
         NOW.store(t, std::sync::atomic::Ordering::SeqCst);
     }
+    /// The tests here share one fake clock ([`NOW`]): one at a time, each starting at 1000
+    /// (ebab8 11-25: in the whole suite `the_owners_yes_approves_one_act_for_one_page_once`
+    /// read the time another test had set and went red; alone it passed).
+    static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn clock() -> std::sync::MutexGuard<'static, ()> {
+        let g = CLOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        at(1000);
+        g
+    }
     fn reg() -> Ask {
         let mut x = a();
         x.operation = crate::repos::OP_REGISTER;
@@ -1429,6 +1440,7 @@ mod tests {
 
     #[test]
     fn the_owners_yes_approves_one_act_for_one_page_once() {
+        let _clock = clock();
         at(1000);
         assert!(switch_on(Some("1".into())));
         for off in [
@@ -1508,6 +1520,7 @@ mod tests {
 
     #[test]
     fn a_no_cools_the_window_and_an_hour_holds_six() {
+        let _clock = clock();
         // the owner windows pass pairing's own gate (5d33a L1): a no cools both kinds
         let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());
         let o = std::sync::Arc::new(Owner::new(
@@ -1628,6 +1641,7 @@ mod tests {
     /// aibd's window is as it was.
     #[test]
     fn a_previews_window_says_preview_first_and_the_real_ones_does_not() {
+        let _clock = clock();
         assert_eq!(mark_for(true), PREVIEW_MARK, "reason: preview_unmarked");
         assert_eq!(mark_for(false), "", "reason: real_marked");
         struct Said(std::sync::Mutex<Vec<String>>);
@@ -1671,6 +1685,7 @@ mod tests {
     /// leaves the gate free for the next ask at once.
     #[test]
     fn a_window_nobody_answers_closes_with_the_ticket_and_is_not_a_no() {
+        let _clock = clock();
         struct Limit(std::sync::Mutex<Option<std::time::Duration>>);
         impl crate::touch::Presence for Limit {
             fn ask(&self, _reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
@@ -1724,6 +1739,7 @@ mod tests {
     /// after it approves nothing.
     #[test]
     fn a_yes_after_the_tickets_end_approves_nothing() {
+        let _clock = clock();
         static LATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(50_000);
         struct Slow;
         impl crate::touch::Presence for Slow {
@@ -1758,6 +1774,7 @@ mod tests {
     /// what the owner approves; a page that asks again with another hold has no approval.
     #[test]
     fn the_hold_is_in_the_window_and_in_what_was_approved() {
+        let _clock = clock();
         at(5000);
         let x = held(crate::grants::OP_FS_OPEN, "min15");
         // the words are the third line's (3e53b), never the first line's too
@@ -1804,6 +1821,7 @@ mod tests {
     /// none, raises no window.
     #[test]
     fn a_hold_not_given_raises_no_window() {
+        let _clock = clock();
         at(6000);
         let o = owner(Ok(()));
         for (x, why) in [
