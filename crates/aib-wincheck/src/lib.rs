@@ -125,11 +125,57 @@ pub struct Step {
     pub ignored: bool,
     /// a question the person answers y / n after the step (what only eyes can see)
     pub ask: Option<&'static str>,
+    /// a sentence shown before the step runs (what the person is about to be asked to do);
+    /// with someone there, the step waits for Enter after it
+    pub say: Option<&'static str>,
 }
 
 /// The steps, in order. Changing a step is a change of code and goes through review; nothing
 /// is read from a file the person (or an AI on that machine) could edit.
-pub const STEPS: &[Step] = &[];
+/// c2f0b W-8 (11-25 16:28): aib-sys' Windows Hello checks, all #[ignore], in the lib test
+/// target. W0-1 to W0-3 run in one go and in this order (W0-3 deletes the key W0-1 made).
+pub const STEPS: &[Step] = &[
+    Step {
+        name: "W0-1",
+        exe: "aib_sys",
+        filter: Some("hello_ncrypt::w0::w0_1_create_a_p256_passport_key"),
+        ignored: true,
+        ask: None,
+        say: None,
+    },
+    Step {
+        name: "W0-2",
+        exe: "aib_sys",
+        filter: Some("hello_ncrypt::w0::w0_2_the_window_shows_the_reason"),
+        ignored: true,
+        ask: Some("剛剛的 Windows Hello 窗裡,有沒有看到『W0-2 測試』那行字?"),
+        say: None,
+    },
+    Step {
+        name: "W0-3",
+        exe: "aib_sys",
+        filter: Some("hello_ncrypt::w0::w0_3_cancel_is_cancel"),
+        ignored: true,
+        ask: None,
+        say: Some("下一個 Hello 窗請按取消。"),
+    },
+    Step {
+        name: "W4-M1",
+        exe: "aib_sys",
+        filter: Some("hello_measure::w4_m1_credui_secure_prompt"),
+        ignored: true,
+        ask: None,
+        say: Some("畫面會變暗,請打 test1234 按確定,不要打你的密碼。"),
+    },
+    Step {
+        name: "W4-M2",
+        exe: "aib_sys",
+        filter: Some("hello_measure::w4_m2_own_desktop_window"),
+        ignored: true,
+        ask: None,
+        say: Some("會切到另一個畫面,請打 test1234 按 Enter。"),
+    },
+];
 
 /// The questions about the workbench page asked at the end (G1 §1 step 4).
 pub const SCREEN_ASKS: &[&str] = &[
@@ -372,6 +418,7 @@ mod tests {
             filter: Some("w0_1_a_window_opens"),
             ignored: true,
             ask: None,
+            say: None,
         };
         assert_eq!(
             step_args(&s),
@@ -389,6 +436,18 @@ mod tests {
             ..s
         };
         assert_eq!(step_args(&all), ["--nocapture", "--test-threads=1"]);
+    }
+
+    #[test]
+    fn the_steps_have_unique_names_and_w0_runs_in_order() {
+        let names: Vec<_> = STEPS.iter().map(|s| s.name).collect();
+        let mut u = names.clone();
+        u.sort_unstable();
+        u.dedup();
+        assert_eq!(u.len(), names.len());
+        let w0: Vec<_> = names.iter().filter(|n| n.starts_with("W0-")).collect();
+        assert_eq!(w0, [&"W0-1", &"W0-2", &"W0-3"]);
+        assert!(STEPS.iter().all(|s| s.filter.is_some() && s.ignored));
     }
 
     #[test]

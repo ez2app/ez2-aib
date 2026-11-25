@@ -331,6 +331,16 @@ fn main() -> ExitCode {
                 ));
                 continue;
             }
+            if let Some(say) = s.say {
+                println!("\n{say}");
+                r.line(format!("SAY {} shown", s.name));
+                if a.ask {
+                    print!("  準備好了按 Enter:");
+                    let _ = std::io::stdout().flush();
+                    let mut l = String::new();
+                    let _ = std::io::stdin().lock().read_line(&mut l);
+                }
+            }
             r.line(format!("STEP-BEGIN {}", s.name));
             let (rc, out, ms) = run(&exe, &step_args(s), &root.join(&t.package));
             for l in out.lines() {
