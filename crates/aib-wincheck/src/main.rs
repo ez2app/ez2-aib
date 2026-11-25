@@ -343,7 +343,7 @@ fn main() -> ExitCode {
                 // not red, so the reds left are real; each red test's own output is kept
                 if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &tool_runs) {
                     r.needs_toolchain(format!(
-                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} is not on PATH)"
+                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} does not run here)"
                     ));
                     for l in failure_output(&out, &n, 8) {
                         r.line(format!("| {l}"));
@@ -489,13 +489,25 @@ fn tool_runs(tool: &str) -> bool {
     else {
         return false;
     };
-    std::process::Command::new(found)
+    let Ok(mut child) = std::process::Command::new(found)
         .args(run_probe(tool))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .spawn()
+    else {
+        return false;
+    };
+    // f163c f05a1623a3 N1: a probe that hangs must not stop wincheck: 20 s and it does not run
+    // (the probe is left behind then; stdin / out / err are null). A named exception to ADR 0005:
+    // wincheck is a one-shot tool on the laptop, not aibd, and has no timer registry.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait().is_ok_and(|s| s.success()));
+    });
+    #[allow(clippy::disallowed_methods)]
+    let ran = rx.recv_timeout(std::time::Duration::from_secs(20));
+    ran.unwrap_or(false)
 }
 
 /// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red. With nobody at

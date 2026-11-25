@@ -1261,8 +1261,8 @@ mod tests {
     fn tests_that_need_a_missing_tool_are_counted_above_the_verdict() {
         let mut r = Report::default();
         assert!(!r.finish().contains("NEEDS-TOOLCHAIN-COUNT"));
-        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo is not on PATH)");
-        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash is not on PATH)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo does not run here)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash does not run here)");
         let t = r.finish();
         assert!(!r.is_red());
         assert!(

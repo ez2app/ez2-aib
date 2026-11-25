@@ -3918,6 +3918,13 @@ jobs:
       # (ebab8 19:37, run 45603042778: by name, 0.3 s after the upload, the download said "Artifact
       #   not found" while the pack was fine. Download by the id the upload step gave; one more try
       #   after 30 s; both failing is said as "not checked", not as a broken pack.)
+      # (#890 run 45606782157: by id too, the first try 0 s after the upload said "None of the provided
+      #   artifact IDs were found" and the second, 30 s later, worked; wait first so the usual run
+      #   shows no failure note.)
+      - name: wait for the uploaded pack to be listed
+        if: steps.winup.outcome == 'success'
+        shell: bash
+        run: sleep 20
       - uses: actions/download-artifact@v4
         id: winget
         if: steps.winup.outcome == 'success'
