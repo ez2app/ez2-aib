@@ -1914,6 +1914,16 @@ const relogChecks = (async () => {
   mac.S.relog = dev({ copied: true }); ok(mac.html('codex').includes('<div class="rlcok" role="status">✓ 已複製,到登入網頁按 ⌘V 貼上</div>') && mac.html('codex').includes('>再複製一次</button>'), 'reason: relogcard_copied_said');
   mac.S.relog = dev({ copied: false }); ok(mac.html('codex').includes('沒複製到'), 'reason: relogcard_copy_failed_said');
   mac.S.relog = Object.assign(dev(), { mode: 'paste' }); ok(mac.html('codex').includes('data-relogcode="1"') && !mac.html('codex').includes('rlcode'), 'reason: relogcard_paste_mode_unchanged');
+  {
+    // 08de5 03:45(讀 87d4dc308 碼、沒有實機樣本):Windows 上 Claude 回 paste、device_code null、網址主機 claude.com;Codex / Grok / Copilot 在本人驗證前就 501 login_not_tried_here
+    const ra = ws.indexOf('  async function relogin(pv) {'), rb = ws.indexOf('  async function relogPoll(', ra), rsrc = ws.slice(ra, rb);
+    const run = async (resp) => { const S = { relog: null }, opened = []; const c = vm.createContext({ S, render: () => {}, relogPoll: () => {}, relogWhy: (e) => 'WHY:' + (e.body && e.body.reason || e.reason), window: { open: (u) => opened.push(u) },
+      fingerAct: async () => { if (resp instanceof Error) throw resp; return resp; } }); vm.runInContext(rsrc + '\nthis.go = relogin;', c); await c.go(resp instanceof Error ? 'codex' : 'claude'); return { S, opened }; };
+    const w = await run({ done: true, login_id: 'L9', provider: 'claude', mode: 'paste', url: 'https://claude.com/cai/oauth/authorize?x=1', device_code: null });
+    ok(w.S.relog.mode === 'paste' && w.S.relog.dcode === '' && w.S.relog.id === 'L9' && w.opened[0] === 'https://claude.com/cai/oauth/authorize?x=1', 'reason: relog_windows_claude_paste_shape ' + JSON.stringify(w.S.relog));
+    win.S.relog = Object.assign({}, w.S.relog); const hw = win.html('claude'); ok(hw.includes('data-relogcode="1"') && !hw.includes('rlcode') && !hw.includes('null'), 'reason: relog_windows_claude_paste_card');
+    const n = await run(Object.assign(new Error('501'), { status: 501, body: { reason: 'login_not_tried_here' } })); ok(n.S.relog.bad === true && n.S.relog.msg === 'WHY:login_not_tried_here', 'reason: relog_windows_other_brand_501 ' + JSON.stringify(n.S.relog));
+  }
   // 複製:按了才寫剪貼簿;成功才算已複製;網址帶碼就不寫
   const wrote = []; const okc = mk('MacIntel', { writeText: async (t) => { wrote.push(t); } });
   okc.S.relog = dev(); await okc.copy(); ok(wrote.join() === 'WXYZ-1234' && okc.S.relog.copied === true, 'reason: relogcard_copy_writes_code ' + wrote.join());

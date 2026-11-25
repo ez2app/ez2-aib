@@ -54,3 +54,7 @@ k '  const RELOG_LOGO_PX = { codex: 56, grok: 34 };' '  const RELOG_LOGO_PX = { 
 k 'width="${RELOG_LOGO_PX[b] || 28}"' 'width="${RELOG_LOGO_PX[b] || 44}"'
 # RLC24 Grok 扁形不加大
 k '  const RELOG_LOGO_PX = { codex: 56, grok: 34 };' '  const RELOG_LOGO_PX = { codex: 56 };'
+# RC25 (Windows Claude 回 paste 被當 device;08de5 03:45 Windows 回應形狀)
+k 'mode: r.mode === '\''device'\'' ? '\''device'\'' : '\''paste'\''' 'mode: r.mode === '\''paste'\'' ? '\''device'\'' : '\''paste'\'''
+# RC26 (device_code null 印成字;08de5 03:45 Windows 回應形狀)
+k 'dcode: r.device_code ? String(r.device_code) : '\'''\''' 'dcode: String(r.device_code)'
