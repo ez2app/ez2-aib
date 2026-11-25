@@ -2767,8 +2767,13 @@ pub(crate) async fn start_session(
         .await
         .map_err(|e| session_refused(&e))?;
     // after the gate: a request may not set these, aibd does (allowlist::seat_owned); a
-    // copilot seat keeps the home of its own the gate made for it
-    let own_home = req.env.iter().find(|(k, _)| k == "COPILOT_HOME").cloned();
+    // copilot seat keeps the home of its own the gate made for it, and its pin (3e53b 11-26)
+    let own_home: Vec<(String, String)> = req
+        .env
+        .iter()
+        .filter(|(k, _)| crate::copilot_wire::OWN_ENV.contains(&k.as_str()))
+        .cloned()
+        .collect();
     req.env = seat_env(seat_id, card);
     req.env.extend(own_home);
     let mut repo_note: Option<String> = None;

@@ -442,8 +442,8 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
     // a copilot seat's own home is aibd's to give ([`gate`] drops a request's), never a policy name
     let own_home = |k: &str, v: &str| {
         crate::copilot_wire::is_copilot(argv0)
-            && k == "COPILOT_HOME"
-            && crate::copilot_wire::made_by_aibd(std::path::Path::new(v))
+            && ((k == "COPILOT_HOME" && crate::copilot_wire::made_by_aibd(std::path::Path::new(v)))
+                || crate::copilot_wire::pin_entry(k, v))
     };
     allowlist::env_allowed(
         p,
@@ -635,6 +635,7 @@ fn copilot_gate(
     cwd: Option<&std::path::Path>,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<Vec<String>, String> {
+    crate::copilot_wire::pinned(env).map_err(|why| format!("{why} (copilot_pin)"))?;
     let printed = probe_listed(real, &["--version".to_owned()], cwd, env);
     if !aib_seatopen::copilot_version_ok(&printed) {
         let said: String = printed
@@ -646,7 +647,8 @@ fn copilot_gate(
             .take(60)
             .collect();
         return Err(format!(
-            "version not read for aibd (1.0.115 only): {said} (copilot_version)"
+            "Copilot is now {said:?}, not measured by AIB yet (AIB runs {} only) (copilot_version)",
+            aib_seatopen::COPILOT_PINNED
         ));
     }
     if let Some(why) = aib_seatopen::copilot_safe_refusal(argv) {
@@ -2961,7 +2963,10 @@ pub(crate) async fn gate(
             match crate::copilot_wire::seat_home(&homes, &user) {
                 Ok(h) => {
                     crate::copilot_wire::set_homes(&homes);
-                    copilot_seat_env(&mut req, &policy, &h);
+                    let pin = crate::copilot_wire::pin_dir(
+                        crate::workspace::seat_login_home().as_deref(),
+                    );
+                    copilot_seat_env(&mut req, &policy, &h, pin.as_deref());
                     Some(h)
                 }
                 Err(why) => {
@@ -3004,22 +3009,35 @@ fn copilot_homes(private: &std::path::Path) -> std::path::PathBuf {
         .join(crate::copilot_wire::HOMES)
 }
 
-/// A copilot seat's environment: `COPILOT_HOME` = its own `home`; nothing that moves
-/// copilot's set-up or token, whether the request or the policy brings it (c2f0b PRE-READ
-/// L1: the request's are dropped, the policy's are withheld from this session).
-fn copilot_seat_env(req: &mut Request, policy: &SessionPolicy, home: &std::path::Path) {
-    req.env.retain(|(k, _)| {
-        !crate::copilot_wire::env_dropped(k) && !k.eq_ignore_ascii_case("COPILOT_HOME")
-    });
+/// A copilot seat's environment: `COPILOT_HOME` = its own `home`, pinned to the measured
+/// version (3e53b 11-26: no update and the package at `pin`; a `pin` not known is left out and
+/// the gate refuses); nothing that moves copilot's set-up or token, whether the request or the
+/// policy brings it (c2f0b PRE-READ L1: the request's are dropped, the policy's are withheld
+/// from this session). The names aibd writes are aibd's alone: a request's or policy's go.
+fn copilot_seat_env(
+    req: &mut Request,
+    policy: &SessionPolicy,
+    home: &std::path::Path,
+    pin: Option<&str>,
+) {
+    let aibds = |k: &str| {
+        crate::copilot_wire::env_dropped(k)
+            || crate::copilot_wire::OWN_ENV
+                .iter()
+                .any(|o| k.eq_ignore_ascii_case(o))
+    };
+    req.env.retain(|(k, _)| !aibds(k));
     req.env.push((
         "COPILOT_HOME".to_owned(),
         home.to_string_lossy().into_owned(),
     ));
-    for name in policy
-        .env
-        .iter()
-        .filter(|n| crate::copilot_wire::env_dropped(n) || n.eq_ignore_ascii_case("COPILOT_HOME"))
-    {
+    let (update, off) = crate::copilot_wire::PIN_UPDATE;
+    req.env.push((update.to_owned(), off.to_owned()));
+    if let Some(p) = pin {
+        req.env
+            .push((crate::copilot_wire::PIN_DIST.to_owned(), p.to_owned()));
+    }
+    for name in policy.env.iter().filter(|n| aibds(n)) {
         if !req.withhold.contains(name) {
             req.withhold.push(name.clone());
         }
@@ -3618,7 +3636,20 @@ mod tests {
         let home = d.path().join("h");
         std::fs::create_dir_all(home.join(".copilot")).unwrap();
         std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
-        let home_env = vec![("HOME".to_owned(), home.to_string_lossy().into_owned())];
+        let pin = d
+            .path()
+            .join("pkg")
+            .join("darwin-arm64")
+            .join(aib_seatopen::COPILOT_PINNED);
+        std::fs::create_dir_all(&pin).unwrap();
+        let home_env = vec![
+            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+            (
+                "COPILOT_CLI_DIST_DIR".to_owned(),
+                pin.to_string_lossy().into_owned(),
+            ),
+        ];
         let script = |version: &str| {
             format!(
                 "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; mcp) cat '{}';; esac\n",
@@ -3626,7 +3657,7 @@ mod tests {
             )
         };
         let listing = |body: &str| std::fs::write(d.path().join("mcp.json"), body).unwrap();
-        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.115.")).unwrap();
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.116.")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         listing(r#"{"mcpServers":{"computer-use":{"source":"builtin"},"mine":{"source":"user"}}}"#);
         let policy = SessionPolicy {
@@ -3647,18 +3678,42 @@ mod tests {
         )
         .unwrap();
         argv[0] = bin.to_string_lossy().into_owned();
-        let ask = |argv: Vec<String>| {
+        let ask_with = |argv: Vec<String>, env: Vec<(String, String)>| {
             let r = Request {
                 argv,
                 cwd: Some(d.path().to_path_buf()),
-                env: home_env.clone(),
+                env,
                 timeout: None,
                 withhold: Vec::new(),
                 input: true,
             };
             admit(r, &policy).map(|r| r.argv).map_err(|e| e.error.1)
         };
+        let ask = |argv: Vec<String>| ask_with(argv, home_env.clone());
         let got = ask(argv.clone()).expect("reason: safe_copilot_refused");
+        // 3e53b 11-26: pinned, or not started. No update off: refused; the pinned package gone
+        // from copilot's cache: refused, saying so
+        let no_update = vec![home_env[0].clone(), home_env[2].clone()];
+        let e = ask_with(argv.clone(), no_update).unwrap_err();
+        assert!(
+            e.contains("COPILOT_AUTO_UPDATE is not false (copilot_pin)"),
+            "reason: auto_update_left_on_admitted {e}"
+        );
+        let e = ask_with(argv.clone(), home_env[..2].to_vec()).unwrap_err();
+        assert!(e.contains("(copilot_pin)"), "reason: unpinned_admitted {e}");
+        for off in ["true", "FALSE", ""] {
+            let mut env = home_env.clone();
+            env[1].1 = off.to_owned();
+            let e = ask_with(argv.clone(), env).unwrap_err();
+            assert!(!e.is_empty(), "reason: update_on_admitted {off}");
+        }
+        std::fs::remove_dir(&pin).unwrap();
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(
+            e.contains("no longer on this computer") && e.contains("(copilot_pin)"),
+            "reason: cleared_pin_admitted {e}"
+        );
+        std::fs::create_dir(&pin).unwrap();
         assert_eq!(
             &got[argv.len()..],
             [
@@ -3727,7 +3782,11 @@ mod tests {
             let r = Request {
                 argv: argv.clone(),
                 cwd: Some(d.path().to_path_buf()),
-                env: vec![("COPILOT_HOME".to_owned(), h.to_string_lossy().into_owned())],
+                env: vec![
+                    ("COPILOT_HOME".to_owned(), h.to_string_lossy().into_owned()),
+                    home_env[1].clone(),
+                    home_env[2].clone(),
+                ],
                 timeout: None,
                 withhold: Vec::new(),
                 input: true,
@@ -3744,10 +3803,10 @@ mod tests {
             "reason: unread_mcp_list_admitted"
         );
         listing(r#"{"mcpServers":{}}"#);
-        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.116.")).unwrap();
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.117.")).unwrap();
         let e = ask(argv).unwrap_err();
         assert!(
-            e.contains("(copilot_version)") && e.contains("1.0.116"),
+            e.contains("(copilot_version)") && e.contains("1.0.117"),
             "reason: unread_version_admitted {e}"
         );
     }
@@ -3763,7 +3822,13 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let policy = SessionPolicy {
             programs: Vec::new(),
-            env: vec!["GH_TOKEN".into(), "COPILOT_ALLOW_ALL".into(), "FOO".into()],
+            env: vec![
+                "GH_TOKEN".into(),
+                "COPILOT_ALLOW_ALL".into(),
+                "FOO".into(),
+                "COPILOT_CLI_DIST_DIR".into(),
+                "copilot_auto_update".into(),
+            ],
             interpreters_ok: true,
         };
         let mut req = Request {
@@ -3773,26 +3838,47 @@ mod tests {
                 ("COPILOT_HOME".into(), "/elsewhere".into()),
                 ("GH_TOKEN".into(), "t".into()),
                 ("copilot_github_token".into(), "t".into()),
+                ("COPILOT_AUTO_UPDATE".into(), "true".into()),
+                ("copilot_cli_dist_dir".into(), "/elsewhere".into()),
+                (
+                    "COPILOT_CLI_ENABLED_FEATURE_FLAGS".into(),
+                    "DECISIONS_API".into(),
+                ),
                 ("FOO".into(), "1".into()),
             ],
             timeout: None,
             withhold: Vec::new(),
             input: true,
         };
-        copilot_seat_env(&mut req, &policy, &home);
+        let pin = "/u/Library/Caches/copilot/pkg/darwin-arm64/1.0.116";
+        let bare = req.clone();
+        copilot_seat_env(&mut req, &policy, &home, Some(pin));
+        let ours = [
+            (
+                "COPILOT_HOME".to_owned(),
+                home.to_string_lossy().into_owned(),
+            ),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+        ];
+        let mut want = vec![("FOO".to_owned(), "1".to_owned())];
+        want.extend(ours.clone());
+        want.push(("COPILOT_CLI_DIST_DIR".to_owned(), pin.to_owned()));
+        assert_eq!(req.env, want, "reason: copilot_env_kept {:?}", req.env);
+        // a pin not known: no package named (the gate then refuses), the rest the same
+        let mut unknown = bare;
+        copilot_seat_env(&mut unknown, &policy, &home, None);
         assert_eq!(
-            req.env,
-            [
-                ("FOO".to_owned(), "1".to_owned()),
-                (
-                    "COPILOT_HOME".to_owned(),
-                    home.to_string_lossy().into_owned()
-                )
-            ],
-            "reason: copilot_env_kept {:?}",
-            req.env
+            unknown.env[1..],
+            ours,
+            "reason: unknown_pin_env {:?}",
+            unknown.env
         );
-        for n in ["GH_TOKEN", "COPILOT_ALLOW_ALL"] {
+        for n in [
+            "GH_TOKEN",
+            "COPILOT_ALLOW_ALL",
+            "COPILOT_CLI_DIST_DIR",
+            "copilot_auto_update",
+        ] {
             assert!(
                 req.withhold.iter().any(|w| w == n),
                 "reason: policy_env_passed {n}"
@@ -3864,12 +3950,25 @@ mod tests {
         let home = d.path().join("h");
         std::fs::create_dir_all(home.join(".copilot")).unwrap();
         std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
-        let home_env = vec![("HOME".to_owned(), home.to_string_lossy().into_owned())];
+        let pin = d
+            .path()
+            .join("pkg")
+            .join("darwin-arm64")
+            .join(aib_seatopen::COPILOT_PINNED);
+        std::fs::create_dir_all(&pin).unwrap();
+        let home_env = vec![
+            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+            (
+                "COPILOT_CLI_DIST_DIR".to_owned(),
+                pin.to_string_lossy().into_owned(),
+            ),
+        ];
         let listing = d.path().join("mcp.json");
         std::fs::write(
             &bin,
             format!(
-                "#!/bin/sh\ncase \"$1\" in --version) echo 'GitHub Copilot CLI 1.0.115.';; mcp) cat '{}';; esac\n",
+                "#!/bin/sh\ncase \"$1\" in --version) echo 'GitHub Copilot CLI 1.0.116.';; mcp) cat '{}';; esac\n",
                 listing.display()
             ),
         )

@@ -50,6 +50,20 @@ async fn a_copilot_seat_runs_in_the_home_aibd_made_for_it() {
     )
     .unwrap();
     std::env::set_var("HOME", &user);
+    // 3e53b 11-26: the pinned package in the user's copilot cache (the seat runs that one)
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let pin = user
+        .join("Library")
+        .join("Caches")
+        .join("copilot")
+        .join("pkg")
+        .join(format!("darwin-{arch}"))
+        .join(aib_seatopen::COPILOT_PINNED);
+    std::fs::create_dir_all(&pin).unwrap();
     let names: Vec<String> = std::env::vars()
         .map(|(k, _)| k)
         .filter(|k| {
@@ -117,6 +131,15 @@ async fn a_copilot_seat_runs_in_the_home_aibd_made_for_it() {
             "reason: copilot_ran_with_the_users_home {line}"
         );
         assert_eq!(home, first, "reason: copilot_home_changed {line}");
+        assert_eq!(
+            line["COPILOT_AUTO_UPDATE"], "false",
+            "reason: copilot_ran_unpinned {line}"
+        );
+        assert_eq!(
+            line["COPILOT_CLI_DIST_DIR"].as_str(),
+            pin.to_str(),
+            "reason: copilot_ran_unpinned {line}"
+        );
         let real = canon(home);
         assert_eq!(
             real.parent(),

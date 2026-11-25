@@ -144,11 +144,160 @@ pub const DROPPED_ENV: &[&str] = &[
     "GH_HOST",
 ];
 
-/// Is `name` one a copilot seat must not get ([`DROPPED_ENV`], or any `COPILOT_*` but the
-/// home aibd sets)? Names compare without case (Windows reads them so).
+/// The `COPILOT_*` names a copilot seat gets, each written by aibd alone (3e53b 11-26): its
+/// own home, and the two that pin it to [`aib_seatopen::COPILOT_PINNED`]. Exact names only:
+/// every other `COPILOT_*`, whatever it starts with, is dropped.
+pub const OWN_ENV: [&str; 3] = ["COPILOT_HOME", PIN_UPDATE.0, PIN_DIST];
+
+/// Copilot downloads no update and runs no newer one it has in its cache (copilot 1.0.116
+/// `help environment`).
+pub const PIN_UPDATE: (&str, &str) = ("COPILOT_AUTO_UPDATE", "false");
+
+/// The package copilot runs: the folder of the pinned version in copilot's own cache.
+pub const PIN_DIST: &str = "COPILOT_CLI_DIST_DIR";
+
+/// Is `name` one a copilot seat must not get ([`DROPPED_ENV`], or any `COPILOT_*` but
+/// [`OWN_ENV`])? Names compare without case (Windows reads them so).
 pub fn env_dropped(name: &str) -> bool {
     let up = name.to_ascii_uppercase();
-    (up.starts_with("COPILOT_") && up != "COPILOT_HOME") || DROPPED_ENV.contains(&up.as_str())
+    (up.starts_with("COPILOT_") && !OWN_ENV.contains(&up.as_str()))
+        || DROPPED_ENV.contains(&up.as_str())
+}
+
+/// Which system a pinned package folder is for (the folder and its separator differ).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinOs {
+    /// `$HOME/Library/Caches/copilot/pkg/darwin-<arch>/<version>` (measured 08de5 11-26).
+    Mac,
+    /// `%LOCALAPPDATA%\copilot\pkg\win32-<arch>\<version>` (UNVERIFIED: not measured on
+    /// Windows; a copilot seat is refused there before this is read).
+    Windows,
+}
+
+/// Where the pinned version's package is in copilot's own cache, from the seat's
+/// environment (`var`), for `os` on `arch` (Rust's names: `aarch64`, `x86_64`); `None` when
+/// the base folder is not known or not absolute, or the arch is not one copilot ships.
+pub fn pin_dir_of(os: PinOs, arch: &str, var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let arch = match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        _ => return None,
+    };
+    let (base, sep, parts) = match os {
+        PinOs::Mac => (
+            var("HOME")?,
+            '/',
+            ["Library", "Caches", "copilot", "pkg"].as_slice(),
+        ),
+        PinOs::Windows => (var("LOCALAPPDATA")?, '\\', ["copilot", "pkg"].as_slice()),
+    };
+    let base = base.trim_end_matches(['/', '\\']);
+    let absolute = match os {
+        PinOs::Mac => base.starts_with('/'),
+        PinOs::Windows => {
+            let b = base.as_bytes();
+            b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
+        }
+    };
+    if !absolute {
+        return None;
+    }
+    let plat = match os {
+        PinOs::Mac => format!("darwin-{arch}"),
+        PinOs::Windows => format!("win32-{arch}"),
+    };
+    let mut out = base.to_owned();
+    for p in parts
+        .iter()
+        .copied()
+        .chain([plat.as_str(), aib_seatopen::COPILOT_PINNED])
+    {
+        out.push(sep);
+        out.push_str(p);
+    }
+    Some(out)
+}
+
+/// [`pin_dir_of`] for this machine, with the HOME the seat's copilot runs with
+/// (`seat_home`) and this process's `LOCALAPPDATA` on Windows.
+pub fn pin_dir(seat_home: Option<&Path>) -> Option<String> {
+    let os = if cfg!(windows) {
+        PinOs::Windows
+    } else {
+        PinOs::Mac
+    };
+    pin_dir_of(os, std::env::consts::ARCH, |k| match k {
+        "HOME" => seat_home.map(|h| h.to_string_lossy().into_owned()),
+        _ => std::env::var(k).ok(),
+    })
+}
+
+/// Is `(k, v)` one of the pin entries aibd writes for a copilot seat ([`PIN_UPDATE`], or
+/// [`PIN_DIST`] at a pinned package that is there)? The gate lets these through though no
+/// policy lists them, as it does the home aibd made.
+pub fn pin_entry(k: &str, v: &str) -> bool {
+    if k == PIN_UPDATE.0 {
+        return v == PIN_UPDATE.1;
+    }
+    k == PIN_DIST
+        && pinned(&[
+            (PIN_UPDATE.0.into(), PIN_UPDATE.1.into()),
+            (PIN_DIST.into(), v.into()),
+        ])
+        .is_ok()
+}
+
+/// Is the seat's environment pinned (3e53b 11-26): [`PIN_UPDATE`] exactly, and [`PIN_DIST`]
+/// a folder that is there, named `pkg/<platform>/<pinned version>`? Not a guard (the user's
+/// AI can write that folder too): it keeps a copilot that updated itself from changing what a
+/// seat runs, and says so when the pinned version is gone.
+pub fn pinned(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> Result<(), String> {
+    // a name given twice (in another case) is not read as either value
+    let var = |k: &str| {
+        let mut all = env
+            .iter()
+            .filter(|(n, _)| n.to_string_lossy().eq_ignore_ascii_case(k))
+            .map(|(_, v)| v.to_string_lossy().into_owned());
+        match (all.next(), all.next()) {
+            (Some(v), None) => Some(v),
+            _ => None,
+        }
+    };
+    if var(PIN_UPDATE.0).as_deref() != Some(PIN_UPDATE.1) {
+        return Err(format!("{} is not {}", PIN_UPDATE.0, PIN_UPDATE.1));
+    }
+    let dir = var(PIN_DIST).unwrap_or_default();
+    let mut tail = dir.rsplit(['/', '\\']);
+    let shaped = tail.next() == Some(aib_seatopen::COPILOT_PINNED)
+        && tail
+            .next()
+            .is_some_and(|p| p.starts_with("darwin-") || p.starts_with("win32-"))
+        && tail.next() == Some("pkg");
+    if !shaped {
+        return Err(format!("{PIN_DIST} is not the pinned package"));
+    }
+    if !Path::new(&dir).is_dir() {
+        return Err(format!(
+            "Copilot {} that AIB measured is no longer on this computer (its cache was cleared)",
+            aib_seatopen::COPILOT_PINNED
+        ));
+    }
+    Ok(())
+}
+
+/// A copilot login's environment, pinned as a seat's is (3e53b 11-26: the login runs copilot
+/// in the user's HOME, where it would download an update into the user's cache): whatever
+/// `env` had under the pin's names goes, [`PIN_UPDATE`] is written, and [`PIN_DIST`] when the
+/// pinned package `pin` is there (not there: copilot runs the version built into it).
+pub fn pin_login(env: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>, pin: Option<String>) {
+    env.retain(|(k, _)| {
+        let k = k.to_string_lossy();
+        !k.eq_ignore_ascii_case(PIN_UPDATE.0) && !k.eq_ignore_ascii_case(PIN_DIST)
+    });
+    env.push((PIN_UPDATE.0.into(), PIN_UPDATE.1.into()));
+    if let Some(p) = pin.filter(|p| Path::new(p).is_dir()) {
+        env.push((PIN_DIST.into(), p.into()));
+    }
 }
 
 /// Where this aibd makes seat homes, set by the gate before it admits a copilot seat
@@ -722,6 +871,145 @@ mod tests {
             );
         }
         assert!(!env_dropped("COPILOT_HOME") && !env_dropped("HOME") && !env_dropped("PATH"));
+    }
+
+    /// 3e53b 11-26: the pin's two names and the home pass by their exact names alone; a name
+    /// that only starts like them is dropped as any other `COPILOT_*`.
+    #[test]
+    fn only_the_exact_pin_names_pass() {
+        for name in [
+            "COPILOT_HOME",
+            "COPILOT_AUTO_UPDATE",
+            "copilot_cli_dist_dir",
+        ] {
+            assert!(!env_dropped(name), "reason: own_env_dropped {name}");
+        }
+        for name in [
+            "COPILOT_CLI_ENABLED_FEATURE_FLAGS",
+            "COPILOT_CLI_VERSION",
+            "COPILOT_CLI_DIST_DIRS",
+            "COPILOT_AUTO_UPDATE_URL",
+            "COPILOT_HOMEX",
+            "COPILOT_OFFLINE",
+        ] {
+            assert!(env_dropped(name), "reason: prefix_env_kept {name}");
+        }
+    }
+
+    /// 3e53b 11-26: the pinned package's folder on each system, with its own separator; a
+    /// base not known or not absolute, or an arch copilot does not ship, gives none.
+    #[test]
+    fn the_pinned_package_is_found_on_mac_and_windows() {
+        let v = aib_seatopen::COPILOT_PINNED;
+        let mac = |h: &'static str| move |k: &str| (k == "HOME").then(|| h.to_owned());
+        let win = |h: &'static str| move |k: &str| (k == "LOCALAPPDATA").then(|| h.to_owned());
+        assert_eq!(
+            pin_dir_of(PinOs::Mac, "aarch64", mac("/Users/a/")),
+            Some(format!(
+                "/Users/a/Library/Caches/copilot/pkg/darwin-arm64/{v}"
+            ))
+        );
+        assert_eq!(
+            pin_dir_of(PinOs::Mac, "x86_64", mac("/Users/a")),
+            Some(format!(
+                "/Users/a/Library/Caches/copilot/pkg/darwin-x64/{v}"
+            ))
+        );
+        assert_eq!(
+            pin_dir_of(PinOs::Windows, "x86_64", win(r"C:\Users\a\AppData\Local\")),
+            Some(format!(
+                r"C:\Users\a\AppData\Local\copilot\pkg\win32-x64\{v}"
+            ))
+        );
+        assert_eq!(
+            pin_dir_of(PinOs::Windows, "aarch64", win(r"D:\L")),
+            Some(format!(r"D:\L\copilot\pkg\win32-arm64\{v}"))
+        );
+        for none in [
+            pin_dir_of(PinOs::Mac, "aarch64", mac("rel/home")),
+            pin_dir_of(PinOs::Mac, "aarch64", |_| None),
+            pin_dir_of(PinOs::Mac, "riscv64", mac("/Users/a")),
+            pin_dir_of(PinOs::Windows, "x86_64", win(r"\\server\share")),
+            pin_dir_of(PinOs::Windows, "x86_64", win("/Users/a")),
+            pin_dir_of(PinOs::Windows, "x86_64", |_| None),
+        ] {
+            assert_eq!(none, None, "reason: unknown_base_pinned");
+        }
+    }
+
+    /// 3e53b 11-26: pinned = no update, and the package of the pinned version that is there
+    /// (either separator); anything else says what is wrong.
+    #[test]
+    fn a_seat_runs_only_pinned() {
+        let d = tempfile::tempdir().unwrap();
+        let v = aib_seatopen::COPILOT_PINNED;
+        let pkg = d.path().join("pkg").join("darwin-arm64").join(v);
+        std::fs::create_dir_all(&pkg).unwrap();
+        let other = d.path().join("pkg").join("darwin-arm64").join("1.0.115");
+        std::fs::create_dir_all(&other).unwrap();
+        let env = |u: &str, dir: &Path| {
+            vec![
+                (PIN_UPDATE.0.into(), u.into()),
+                (PIN_DIST.into(), dir.as_os_str().to_owned()),
+            ]
+        };
+        assert_eq!(pinned(&env("false", &pkg)), Ok(()));
+        assert!(pin_entry(PIN_DIST, &pkg.to_string_lossy()));
+        assert!(pin_entry(PIN_UPDATE.0, "false") && !pin_entry(PIN_UPDATE.0, "true"));
+        for (u, dir) in [
+            ("true", pkg.as_path()),
+            ("", pkg.as_path()),
+            ("false", other.as_path()),
+            ("false", d.path()),
+            ("false", Path::new("")),
+        ] {
+            assert!(
+                pinned(&env(u, dir)).is_err(),
+                "reason: unpinned_ok {u} {dir:?}"
+            );
+            assert!(!pin_entry(PIN_DIST, &dir.to_string_lossy()) || dir == pkg);
+        }
+        assert!(pinned(&[(PIN_DIST.into(), pkg.as_os_str().to_owned())]).is_err());
+        // the shape is read with either separator (a Windows path, not there on this machine)
+        let win = format!(r"C:\L\copilot\pkg\win32-x64\{v}");
+        let e = pinned(&[
+            (PIN_UPDATE.0.into(), "false".into()),
+            (PIN_DIST.into(), win.into()),
+        ])
+        .unwrap_err();
+        assert!(
+            e.contains("no longer on this computer"),
+            "reason: win_shape {e}"
+        );
+        // a name given twice, in another case, is read as neither
+        let mut twice = env("false", &pkg);
+        twice.push(("copilot_auto_update".into(), "true".into()));
+        assert!(pinned(&twice).is_err(), "reason: twice_named_pinned");
+
+        // the login is pinned as the seat: the user's own pin names go, aibd's are written
+        let mut login = vec![
+            ("HOME".into(), "/u".into()),
+            ("copilot_auto_update".into(), "true".into()),
+            (PIN_DIST.into(), "/elsewhere".into()),
+        ];
+        pin_login(&mut login, Some(pkg.to_string_lossy().into_owned()));
+        let want: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("HOME".into(), "/u".into()),
+            (PIN_UPDATE.0.into(), PIN_UPDATE.1.into()),
+            (PIN_DIST.into(), pkg.as_os_str().to_owned()),
+        ];
+        assert_eq!(login, want, "reason: login_unpinned {login:?}");
+        assert_eq!(pinned(&login), Ok(()));
+
+        std::fs::remove_dir(&pkg).unwrap();
+        let e = pinned(&env("false", &pkg)).unwrap_err();
+        assert!(
+            e.contains("no longer on this computer"),
+            "reason: cleared_ok {e}"
+        );
+        // the package gone: the login still downloads nothing, and names no package
+        pin_login(&mut login, Some(pkg.to_string_lossy().into_owned()));
+        assert_eq!(login, want[..2], "reason: login_gone_pin {login:?}");
     }
 
     /// N3: what an earlier aibd left goes at start; nothing else in the folder does.

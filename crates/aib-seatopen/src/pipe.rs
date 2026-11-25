@@ -138,13 +138,18 @@ pub fn safe_refusal(
     None
 }
 
-/// The copilot versions aibd starts: only the one this seat's words were read against
-/// (`copilot --help` of 1.0.115, 08de5 11-25); its tools-off run, MCP servers and hooks were
-/// measured on that version (EVIDENCE-brand-copilot-08de5-1125, condition 6).
+/// The one copilot version aibd starts (3e53b 11-26): conditions 1-5 read again on it without
+/// a login, and its tools-off turn, MCP servers and hooks measured on it
+/// (EVIDENCE-copilot-116-08de5-1126). aibd pins each seat to it (`COPILOT_CLI_DIST_DIR`), so a
+/// copilot that updated itself does not change what a seat runs.
+pub const COPILOT_PINNED: &str = "1.0.116";
+
+/// Is `out` (what `copilot --version` printed) the pinned version, [`COPILOT_PINNED`]?
 pub fn copilot_version_ok(out: &str) -> bool {
     out.lines().any(|l| {
         l.trim()
-            .strip_prefix("GitHub Copilot CLI 1.0.115")
+            .strip_prefix("GitHub Copilot CLI ")
+            .and_then(|r| r.strip_prefix(COPILOT_PINNED))
             .is_some_and(|r| r.is_empty() || r == ".")
     })
 }
@@ -741,11 +746,14 @@ mod tests {
     #[test]
     fn only_the_read_copilot_version_starts() {
         assert!(copilot_version_ok(
-            "GitHub Copilot CLI 1.0.115.\nRun 'copilot update'"
+            "GitHub Copilot CLI 1.0.116.\nRun 'copilot update'"
         ));
+        assert!(copilot_version_ok("GitHub Copilot CLI 1.0.116"));
         for v in [
-            "GitHub Copilot CLI 1.0.116.",
-            "GitHub Copilot CLI 1.0.1150.",
+            "GitHub Copilot CLI 1.0.115.",
+            "GitHub Copilot CLI 1.0.117.",
+            "GitHub Copilot CLI 1.0.1160.",
+            "GitHub Copilot CLI 1.0.116.1",
             "GitHub Copilot CLI 1.0.103.",
             "",
         ] {

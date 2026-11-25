@@ -30,9 +30,9 @@
 //! approval) and log aibd's answer. A turn/start before the thread exists ends it with rc 3.
 //!
 //! 08de5 11-25 (3e53b REVIEW-copilot e3d07aff L1): copied under the file name `copilot` it acts
-//! like copilot 1.0.115 for aibd's checks only: `--version` prints `GitHub Copilot CLI 1.0.115`,
+//! like copilot 1.0.116 for aibd's checks only: `--version` prints `GitHub Copilot CLI 1.0.116`,
 //! `mcp list --json` an empty list, and every start appends to `fake-copilot-env.log` in the
-//! current folder one JSON line: its args, the `COPILOT_HOME` it was given and the names in that
+//! current folder one JSON line: its args, the `COPILOT_HOME` it was given (and the pin's two names) and the names in that
 //! folder (a test sees which home each probe and turn ran with). A turn reads stdin and ends.
 //!
 //! Never shipped: the release copies only `aibd` (aibd-release.yml).
@@ -220,11 +220,13 @@ fn copilot(args: &[String]) {
         .append(true)
         .open("fake-copilot-env.log")
     {
-        let line = serde_json::json!({"args": args, "COPILOT_HOME": home, "files": names});
+        let pin = |k: &str| std::env::var(k).ok();
+        let line = serde_json::json!({"args": args, "COPILOT_HOME": home, "files": names,
+            "COPILOT_AUTO_UPDATE": pin("COPILOT_AUTO_UPDATE"), "COPILOT_CLI_DIST_DIR": pin("COPILOT_CLI_DIST_DIR")});
         let _ = writeln!(f, "{line}");
     }
     if args.first().map(String::as_str) == Some("--version") {
-        println!("GitHub Copilot CLI 1.0.115");
+        println!("GitHub Copilot CLI {}", aib_seatopen::COPILOT_PINNED);
         return;
     }
     if args.ends_with(&["mcp".to_owned(), "list".to_owned(), "--json".to_owned()]) {

@@ -246,6 +246,19 @@ pub fn ask_of(provider: &str, by: String) -> crate::owner_ok::Ask {
     }
 }
 
+/// [`env_of`] for `provider`'s login; a copilot login pinned as its seats are (3e53b 11-26:
+/// it runs in the user's HOME, where it would download an update into the user's cache).
+fn login_env(provider: &str, pass: &[String]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = env_of(pass);
+    if crate::copilot_wire::is_copilot(provider) {
+        crate::copilot_wire::pin_login(
+            &mut env,
+            crate::copilot_wire::pin_dir(crate::workspace::seat_login_home().as_deref()),
+        );
+    }
+    env
+}
+
 /// The environment the login runs in: what a seat's session gets from aibd (the same HOME, so
 /// the login lands where the seats read it), and [`NO_BROWSER`].
 pub fn env_of(pass: &[String]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -580,7 +593,7 @@ pub async fn relogin(st: AppState, body: Value, by: String) -> Response {
             },
         );
     }
-    let env = env_of(&st.session_policy.env);
+    let env = login_env(provider, &st.session_policy.env);
     let args = args_of(provider).unwrap_or_default();
     let (p2, e2) = (prog.clone(), env.clone());
     let started = tokio::task::spawn_blocking(move || start(&p2, provider, args, &e2))
@@ -937,6 +950,30 @@ mod tests {
         let a = ask_of("claude", "page:a".into());
         assert_eq!(a.operation, OP);
         assert!(!a.resource.contains("http"));
+    }
+
+    /// 3e53b 11-26: a copilot login is pinned (no update downloaded into the user's cache);
+    /// another provider's login gets no copilot names.
+    #[test]
+    fn a_copilot_login_is_pinned() {
+        let get = |env: &[(std::ffi::OsString, std::ffi::OsString)], k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        let cp = login_env("copilot", &[]);
+        assert_eq!(
+            get(&cp, "COPILOT_AUTO_UPDATE").as_deref(),
+            Some("false"),
+            "reason: copilot_login_unpinned"
+        );
+        for other in ["codex", "grok", "claude"] {
+            let env = login_env(other, &[]);
+            assert!(
+                get(&env, "COPILOT_AUTO_UPDATE").is_none(),
+                "reason: pin_given_to {other}"
+            );
+        }
     }
 
     /// RL10: the login runs with the seats' HOME and without a browser of its own; aibd's own

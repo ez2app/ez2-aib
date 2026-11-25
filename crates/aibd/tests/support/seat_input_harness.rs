@@ -60,7 +60,7 @@ impl Daemon {
     }
 
     /// `start` with `copilot` listed too: the same fake under the file name `copilot` (it acts
-    /// like copilot 1.0.115 for aibd's checks, 3e53b REVIEW-copilot e3d07aff L1).
+    /// like copilot 1.0.116 for aibd's checks, 3e53b REVIEW-copilot e3d07aff L1).
     pub async fn start_copilot(dir: &Path) -> Daemon {
         Self::start_inner(dir, 4, &["copilot"]).await
     }

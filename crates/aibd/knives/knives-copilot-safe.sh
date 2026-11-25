@@ -203,8 +203,8 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
 # c-env-dropped (a COPILOT_* name other than the home reaches the seat; DESIGN-copilot-seat-home / c2f0b PRE-READ)
 python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
-  '    (up.starts_with("COPILOT_") && up != "COPILOT_HOME") || DROPPED_ENV.contains(&up.as_str())' \
-  '    DROPPED_ENV.contains(&up.as_str())' \
+  '    (up.starts_with("COPILOT_") && !OWN_ENV.contains(&up.as_str()))' \
+  '    (up.starts_with("COPILOT_") && false)' \
   --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
 # c-env-turn (a name that moves copilot set-up does not refuse the turn; DESIGN-copilot-seat-home / c2f0b PRE-READ)
@@ -221,14 +221,14 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-seat-env (the request keeps a name that moves copilot set-up; DESIGN-copilot-seat-home / c2f0b PRE-READ)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        !crate::copilot_wire::env_dropped(k) && !k.eq_ignore_ascii_case("COPILOT_HOME")' \
-  '        !k.eq_ignore_ascii_case("COPILOT_HOME")' \
+  '    req.env.retain(|(k, _)| !aibds(k));' \
+  '    req.env.retain(|(k, _)| !k.eq_ignore_ascii_case("COPILOT_HOME"));' \
   --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
 # c-seat-withhold (a policy name that moves copilot set-up is passed on; DESIGN-copilot-seat-home / c2f0b PRE-READ)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        .filter(|n| crate::copilot_wire::env_dropped(n) || n.eq_ignore_ascii_case("COPILOT_HOME"))' \
-  '        .filter(|n| n.eq_ignore_ascii_case("COPILOT_HOME"))' \
+  '    for name in policy.env.iter().filter(|n| aibds(n)) {' \
+  '    for name in policy.env.iter().filter(|n| n.eq_ignore_ascii_case("COPILOT_HOME")) {' \
   --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
 # c-own-home (any COPILOT_HOME passes the gate without a policy name; DESIGN-copilot-seat-home / c2f0b PRE-READ)
@@ -251,8 +251,8 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
 # c-seat-env-call (the gate makes the home but never puts it in the seat's env; 3e53b L1)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '                    copilot_seat_env(&mut req, &policy, &h);' \
-  '                    copilot_seat_env(&mut req, &policy, &h); req.env.retain(|(k, _)| k != "COPILOT_HOME");' \
+  '                    copilot_seat_env(&mut req, &policy, &h, pin.as_deref());' \
+  '                    copilot_seat_env(&mut req, &policy, &h, pin.as_deref()); req.env.retain(|(k, _)| k != "COPILOT_HOME");' \
   --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
   -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
 # c-clear-call (the homes an earlier aibd left stay after a start; 3e53b N3)

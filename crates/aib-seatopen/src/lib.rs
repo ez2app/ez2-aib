@@ -41,7 +41,7 @@ pub mod pipe;
 pub use pipe::{
     add_persona_file, claude_project_dir, codex_version_ok, codex_work_args, copilot_safe_refusal,
     copilot_version_ok, grok_safe_refusal, grok_version_ok, pipe_argv, pipe_modes, resume_argv,
-    PipeRefused, PIPE_PROVIDERS, RESUME_FLAG,
+    PipeRefused, COPILOT_PINNED, PIPE_PROVIDERS, RESUME_FLAG,
 };
 
 /// The AIs a seat can open with (1.x `PROVIDERS`, :147).
