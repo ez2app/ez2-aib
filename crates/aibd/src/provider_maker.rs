@@ -187,6 +187,46 @@ mod tests {
         );
     }
 
+    /// How many times `text` (a Rust file) names `provider_fetch::run` outside comments: by
+    /// path, through a glob or a renamed module, or in a `use` list, across lines and spaces
+    /// (3e53b REVIEW-l2-maker r2 N).
+    fn names_of_the_download(text: &str) -> usize {
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .flat_map(str::chars)
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let m = concat!("provider_", "fetch");
+        let mut n = code.matches(&format!("{m}::run")).count()
+            + code.matches(&format!("{m}::*")).count()
+            + code.matches(&format!("{m}as")).count();
+        for (i, _) in code.match_indices(&format!("{m}::{{")) {
+            let inner = code.get(i + m.len() + 3..).unwrap_or("");
+            let inner = inner.split('}').next().unwrap_or("");
+            n += inner
+                .split(',')
+                .filter(|t| *t == "run" || t.starts_with("runas"))
+                .count();
+        }
+        n
+    }
+
+    #[test]
+    fn every_way_of_naming_the_download_is_counted() {
+        let m = concat!("provider_", "fetch");
+        for (src, want) in [
+            (format!("use crate::{m}::*;\nrun(a);"), 1),
+            (format!("use crate::{m} as pf;\npf::run(a);"), 1),
+            (format!("use crate::{m}::{{\n    self,\n    run,\n}};"), 1),
+            (format!("use crate::{m}::{{run as go}};"), 1),
+            (format!("let f = crate::{m} :: run;"), 1),
+            (format!("// {m}::run\nuse crate::{m}::{{self, Fetch}};"), 0),
+        ] {
+            assert_eq!(names_of_the_download(&src), want, "reason: missed {src}");
+        }
+    }
+
     /// Outside tests nothing but `fetch_measured` can call `provider_fetch::run` (3e53b
     /// REVIEW-l2-maker N1): it is crate-only, and in aibd's sources this file is its one caller.
     #[test]
@@ -208,15 +248,9 @@ mod tests {
                     continue;
                 }
                 let text = std::fs::read_to_string(&p).unwrap();
-                for l in text.lines().map(str::trim_start) {
-                    if l.starts_with("//") {
-                        continue;
-                    }
-                    let named = l.contains(concat!("provider_fetch::", "run"))
-                        || (l.contains(concat!("provider_fetch", "::{")) && l.contains("run"));
-                    if named {
-                        callers.push(p.file_name().unwrap().to_string_lossy().into_owned());
-                    }
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                for _ in 0..names_of_the_download(&text) {
+                    callers.push(name.clone());
                 }
             }
         }
