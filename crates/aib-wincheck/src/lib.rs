@@ -90,11 +90,12 @@ pub const USAGE: &str =
   --pack <folder>  the unpacked folder (default: the folder this program is in)
   --root <folder>  where the tree goes (default on Windows: C:\\aibw\\ez2-aib)
   --out <file>     where the result file goes
-  --no-ask         do not stop for questions (each one is recorded as unanswered = red)
+  --no-ask         nobody at the screen: the Windows Hello steps and the questions are skipped
+                   (SKIPPED-NO-HUMAN); the result is then WINCHECK-INCOMPLETE at best
   --help           this text
 
-  Exit code: 0 all green, 1 something red (see the result file), 7 the result file could not
-  be written, 64 a wrong argument.";
+  Exit code: 0 all green, 1 something red (see the result file), 2 nothing red but the steps
+  that need a person were skipped, 7 the result file could not be written, 64 a wrong argument.";
 
 /// One test executable of the pack's [`TESTS_LIST`]: the executable and the package folder it
 /// runs in (cargo runs a test in its package's folder, with `CARGO_MANIFEST_DIR` set to it).
@@ -394,6 +395,90 @@ pub fn failed_names(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// A test that needs a tool the laptop does not have (ebab8 11-25 19:04, first run on the laptop:
+/// these were red there only because `cargo` / `bash` is not installed, and hid the real reds).
+pub struct Needs {
+    /// the test executable's package folder, as in [`TESTS_LIST`]
+    pub package: &'static str,
+    pub suite: &'static str,
+    pub test: &'static str,
+    /// the program it runs, looked up on `PATH`
+    pub tool: &'static str,
+}
+
+/// Every test known to need a tool. A red one of these on a machine without that tool is written
+/// `NEEDS-TOOLCHAIN` (listed, not red); with the tool present, or green, it counts as usual.
+pub const NEEDS_TOOLCHAIN: &[Needs] = &[
+    Needs {
+        package: "crates/aib-cloud",
+        suite: "boundary",
+        test: "cargo_view_catches_every_target_spelling",
+        tool: "cargo",
+    },
+    Needs {
+        package: "crates/aib-cloud",
+        suite: "boundary",
+        test: "cloud_sources_do_no_io",
+        tool: "cargo",
+    },
+    Needs {
+        package: "crates/aib-public-leak",
+        suite: "local",
+        test: "install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone",
+        tool: "bash",
+    },
+];
+
+/// A folder whose `bash.exe` is only Windows' launcher for WSL, not a bash that runs a script:
+/// `C:\Windows\System32` and any `…\WindowsApps` (ebab8 19:50, the laptop's second run: the
+/// aib-public-leak test was red, not NEEDS-TOOLCHAIN, because those two were on `PATH`).
+/// Either separator, any case.
+pub fn is_launcher_only_dir(dir: &str) -> bool {
+    let d = dir
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase();
+    d.ends_with("\\windows\\system32") || d.ends_with("\\windowsapps")
+}
+
+/// What a tool is asked to do to show it really runs: `bash -c "exit 0"`, `cargo --version`.
+pub fn run_probe(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "bash" => &["-c", "exit 0"],
+        _ => &["--version"],
+    }
+}
+
+/// `Some(tool)` when the red test `test` of `suite` in `package` is one of [`NEEDS_TOOLCHAIN`]
+/// and `has(tool)` says this machine does not have it.
+pub fn needs_missing_tool(
+    package: &str,
+    suite: &str,
+    test: &str,
+    has: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    NEEDS_TOOLCHAIN
+        .iter()
+        .find(|n| n.package == package && n.suite == suite && n.test == test)
+        .filter(|n| !has(n.tool))
+        .map(|n| n.tool)
+}
+
+/// What libtest printed for the failed test `name`: the lines after `---- <name> stdout ----`
+/// up to the next `---- ` header or the `failures:` list, at most `max` of them (ebab8 11-25
+/// 19:04: the result file had only the names, so each red test had to be run again by hand).
+pub fn failure_output<'a>(out: &'a str, name: &str, max: usize) -> Vec<&'a str> {
+    let head = format!("---- {name} stdout ----");
+    let mut lines = out.lines().skip_while(|l| l.trim_end() != head);
+    if lines.next().is_none() {
+        return Vec::new();
+    }
+    lines
+        .take_while(|l| !l.starts_with("---- ") && l.trim_end() != "failures:")
+        .take(max)
+        .collect()
+}
+
 /// A test executable's suite name: `aibd-0123abcd.exe` / `tree-0123abcd.exe` → `aibd` /
 /// `tree` (cargo's `-<16 hex>` dropped).
 pub fn suite_name(file: &str) -> &str {
@@ -410,6 +495,8 @@ pub fn suite_name(file: &str) -> &str {
 pub struct Report {
     lines: Vec<String>,
     red: Vec<String>,
+    skipped: Vec<String>,
+    needs: usize,
 }
 
 impl Report {
@@ -425,21 +512,44 @@ impl Report {
     pub fn is_red(&self) -> bool {
         !self.red.is_empty()
     }
+    /// A line for a part that needs a person and was not done (`--no-ask`, ebab8 11-25 19:04):
+    /// not red, but the check is not complete either.
+    pub fn skip(&mut self, l: impl Into<String>) {
+        let l = l.into();
+        self.skipped.push(l.clone());
+        self.lines.push(l);
+    }
+    /// Nothing red, but a part that needs a person was skipped.
+    pub fn is_incomplete(&self) -> bool {
+        self.red.is_empty() && !self.skipped.is_empty()
+    }
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
-    /// The whole file: `WINCHECK-OK` or `WINCHECK-RED <n>`, then `WINCHECK-SHA256 <sum of the
-    /// text above>`.
+    /// A red test that only this machine's missing cargo / bash made red: listed, not red, and
+    /// counted on its own line above the verdict (f163c 3cfd7eb29e N1: an OK with such tests
+    /// in it did not check them).
+    pub fn needs_toolchain(&mut self, l: impl Into<String>) {
+        self.needs += 1;
+        self.lines.push(l.into());
+    }
+    /// The whole file: `WINCHECK-RED <n>`, else `WINCHECK-INCOMPLETE <n>` (parts that need a
+    /// person were skipped), else `WINCHECK-OK`; then `WINCHECK-SHA256 <sum of the text above>`.
     pub fn finish(&self) -> String {
         let mut t = String::new();
         for l in &self.lines {
             t.push_str(l);
             t.push('\n');
         }
-        if self.red.is_empty() {
-            t.push_str("WINCHECK-OK\n");
-        } else {
+        if self.needs > 0 {
+            t.push_str(&format!("NEEDS-TOOLCHAIN-COUNT {}\n", self.needs));
+        }
+        if !self.red.is_empty() {
             t.push_str(&format!("WINCHECK-RED {}\n", self.red.len()));
+        } else if !self.skipped.is_empty() {
+            t.push_str(&format!("WINCHECK-INCOMPLETE {}\n", self.skipped.len()));
+        } else {
+            t.push_str("WINCHECK-OK\n");
         }
         let sum = sha256_hex(t.as_bytes());
         t.push_str(&format!("WINCHECK-SHA256 {sum}\n"));
@@ -948,6 +1058,7 @@ mod tests {
             "--help",
             "0 all green",
             "1 something red",
+            "2 nothing red",
             "64",
         ] {
             assert!(USAGE.contains(w), "{w}");
@@ -1065,6 +1176,111 @@ mod tests {
         assert_eq!(suite_name("a-b-0123456789abcdef"), "a-b");
         assert_eq!(suite_name("plain.exe"), "plain");
         assert_eq!(suite_name("x-0123.exe"), "x-0123");
+    }
+
+    #[test]
+    fn a_red_test_that_needs_a_missing_tool_is_named_not_counted() {
+        let none = |_: &str| false;
+        let all = |_: &str| true;
+        let b = "crates/aib-cloud";
+        assert_eq!(
+            needs_missing_tool(b, "boundary", "cloud_sources_do_no_io", &none),
+            Some("cargo")
+        );
+        assert_eq!(
+            needs_missing_tool(b, "boundary", "cloud_sources_do_no_io", &all),
+            None,
+            "with cargo there it is an ordinary red"
+        );
+        assert_eq!(
+            needs_missing_tool("crates/aibd", "boundary", "cloud_sources_do_no_io", &none),
+            None,
+            "the same names in another package are not it"
+        );
+        assert_eq!(
+            needs_missing_tool(b, "boundary", "something_else", &none),
+            None
+        );
+        let only_bash = |t: &str| t == "bash";
+        assert_eq!(
+            needs_missing_tool(
+                "crates/aib-public-leak",
+                "local",
+                "install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone",
+                &only_bash
+            ),
+            None
+        );
+        for n in NEEDS_TOOLCHAIN {
+            assert!(n.package.starts_with("crates/") && !n.test.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_red_tests_own_output_is_taken_from_libtests_report() {
+        let out =
+            "running 2 tests\ntest a::one ... FAILED\ntest a::two ... FAILED\n\nfailures:\n\n\
+                   ---- a::one stdout ----\nleft: 1\nright: 2\n\n---- a::two stdout ----\n\
+                   program not found\n\nfailures:\n    a::one\n    a::two\n";
+        assert_eq!(
+            failure_output(out, "a::one", 10),
+            ["left: 1", "right: 2", ""]
+        );
+        assert_eq!(failure_output(out, "a::two", 10), ["program not found", ""]);
+        assert_eq!(failure_output(out, "a::one", 1), ["left: 1"]);
+        assert!(failure_output(out, "a::three", 10).is_empty());
+        assert!(
+            failure_output(out, "a::on", 10).is_empty(),
+            "a prefix is not the name"
+        );
+    }
+
+    #[test]
+    fn the_wsl_launcher_folders_do_not_count_as_having_bash() {
+        for d in [
+            r"C:\Windows\System32",
+            r"c:\windows\system32\",
+            "C:/Windows/System32",
+            r"C:\Users\a\AppData\Local\Microsoft\WindowsApps",
+        ] {
+            assert!(is_launcher_only_dir(d), "{d}");
+        }
+        for d in [
+            r"C:\Program Files\Git\usr\bin",
+            r"C:\Windows",
+            "/usr/bin",
+            r"C:\Windows\System32\OpenSSH",
+        ] {
+            assert!(!is_launcher_only_dir(d), "{d}");
+        }
+        assert_eq!(run_probe("bash"), ["-c", "exit 0"]);
+        assert_eq!(run_probe("cargo"), ["--version"]);
+    }
+
+    #[test]
+    fn tests_that_need_a_missing_tool_are_counted_above_the_verdict() {
+        let mut r = Report::default();
+        assert!(!r.finish().contains("NEEDS-TOOLCHAIN-COUNT"));
+        r.needs_toolchain("NEEDS-TOOLCHAIN boundary a::b (cargo does not run here)");
+        r.needs_toolchain("NEEDS-TOOLCHAIN local c::d (bash does not run here)");
+        let t = r.finish();
+        assert!(!r.is_red());
+        assert!(
+            t.contains("\nNEEDS-TOOLCHAIN-COUNT 2\nWINCHECK-OK\n"),
+            "{t}"
+        );
+    }
+
+    #[test]
+    fn a_skipped_step_makes_the_result_incomplete_not_ok_and_red_still_wins() {
+        let mut r = Report::default();
+        r.skip("STEP-SKIPPED-NO-HUMAN W0-1");
+        assert!(!r.is_red() && r.is_incomplete());
+        assert!(r.finish().contains("\nWINCHECK-INCOMPLETE 1\n"));
+        assert!(!r.finish().contains("WINCHECK-OK"));
+        r.red("TEST-RED a::b");
+        assert!(!r.is_incomplete());
+        assert!(r.finish().contains("\nWINCHECK-RED 1\n"));
     }
 
     #[test]

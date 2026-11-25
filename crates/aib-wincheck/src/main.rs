@@ -5,10 +5,10 @@
 //! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    check_pack, decode_saved, failed_names, icacls_lock_args, icacls_owner_args, kept_env, may_run,
-    parse_results, parse_sums, parse_tests, place_tree, sddl_only, sha256_hex, step_args,
-    suite_name, whoami_user, Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, USAGE,
-    WINDOWS_ROOT,
+    check_pack, decode_saved, failed_names, failure_output, icacls_lock_args, icacls_owner_args,
+    is_launcher_only_dir, kept_env, may_run, needs_missing_tool, parse_results, parse_sums,
+    parse_tests, place_tree, run_probe, sddl_only, sha256_hex, step_args, suite_name, whoami_user,
+    Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, USAGE, WINDOWS_ROOT,
 };
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -97,6 +97,9 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
         .env_clear()
         .envs(kept_env(std::env::vars()))
         .env("CARGO_MANIFEST_DIR", manifest)
+        // the pack carries target/debug/aib-fixture-tree.exe built by CI; the aibd session tests
+        // use it instead of building it with cargo, which the laptop does not have (ebab8 19:04)
+        .env("AIB_FIXTURE_PREBUILT", "1")
         .stdin(Stdio::null())
         .output();
     let ms = t.elapsed().as_millis();
@@ -336,8 +339,22 @@ fn main() -> ExitCode {
                 c.ignored
             ));
             for n in failed_names(&out) {
+                // ebab8 11-25 19:04: red only because this machine has no cargo / bash ⇒ listed,
+                // not red, so the reds left are real; each red test's own output is kept
+                if let Some(tool) = needs_missing_tool(&t.package, suite, &n, &tool_runs) {
+                    r.needs_toolchain(format!(
+                        "NEEDS-TOOLCHAIN {suite} {n} ({tool} does not run here)"
+                    ));
+                    for l in failure_output(&out, &n, 8) {
+                        r.line(format!("| {l}"));
+                    }
+                    continue;
+                }
                 suite_red = true;
                 r.red(format!("TEST-RED {suite} {n}"));
+                for l in failure_output(&out, &n, 40) {
+                    r.line(format!("| {l}"));
+                }
             }
             if rc != Some(0) && c.failed == 0 {
                 suite_red = true;
@@ -356,6 +373,12 @@ fn main() -> ExitCode {
 
         // 3. the named steps (c2f0b W-8), output kept whole
         for s in STEPS {
+            // ebab8 11-25 19:04: every step waits for a person at Windows Hello (W4-M2 sat 150 s
+            // over ssh); with --no-ask they are skipped and the result says so
+            if !a.ask {
+                r.skip(format!("STEP-SKIPPED-NO-HUMAN {}", s.name));
+                continue;
+            }
             let Some(t) = tests
                 .iter()
                 .find(|t| suite_name(t.exe.rsplit('/').next().unwrap_or(&t.exe)) == s.exe)
@@ -430,6 +453,8 @@ fn main() -> ExitCode {
         "{}",
         if r.is_red() {
             "有紅的項目,結果已記下,不用重試。"
+        } else if r.is_incomplete() {
+            "沒有紅的,但要真人的步驟這次跳過了(--no-ask)。"
         } else {
             "全部通過。"
         }
@@ -441,14 +466,61 @@ fn main() -> ExitCode {
     }
     if r.is_red() {
         ExitCode::from(1)
+    } else if r.is_incomplete() {
+        ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     }
 }
 
-/// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red.
+/// Does `tool` (or `tool.exe`) in a folder of this process's `PATH` really run? The first one
+/// found outside the WSL launcher folders ([`is_launcher_only_dir`]) is started with
+/// [`run_probe`] and must exit 0 (ebab8 19:50: found is not enough, System32's bash.exe is only
+/// the WSL launcher). The children get the same `PATH` (it is one of the kept variables).
+fn tool_runs(tool: &str) -> bool {
+    let Some(p) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exe = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+    let Some(found) = std::env::split_paths(&p)
+        .filter(|d| !is_launcher_only_dir(&d.to_string_lossy()))
+        .flat_map(|d| [d.join(tool), d.join(&exe)])
+        .find(|f| f.is_file())
+    else {
+        return false;
+    };
+    let Ok(mut child) = std::process::Command::new(found)
+        .args(run_probe(tool))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    // f163c f05a1623a3 N1: a probe that hangs must not stop wincheck: 20 s and it does not run
+    // (the probe is left behind then; stdin / out / err are null). A named exception to ADR 0005:
+    // wincheck is a one-shot tool on the laptop, not aibd, and has no timer registry.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait().is_ok_and(|s| s.success()));
+    });
+    #[allow(clippy::disallowed_methods)]
+    let ran = rx.recv_timeout(std::time::Duration::from_secs(20));
+    ran.unwrap_or(false)
+}
+
+/// Ask `q` and write `ASK <name> yes|no|unanswered`; no and unanswered are red. With nobody at
+/// the screen (`--no-ask`) it is `ASK <name> SKIPPED-NO-HUMAN` instead, which makes the result
+/// INCOMPLETE (c2f0b 3cfd7eb29e N1).
 fn answer(r: &mut Report, can_ask: bool, name: &str, q: &str) {
-    match can_ask.then(|| ask(q)).flatten() {
+    // ebab8 11-25 19:04: with nobody at the screen a question is skipped, not red; the result
+    // then ends WINCHECK-INCOMPLETE, never OK
+    if !can_ask {
+        r.skip(format!("ASK {name} SKIPPED-NO-HUMAN"));
+        return;
+    }
+    match ask(q) {
         Some(true) => r.line(format!("ASK {name} yes")),
         Some(false) => r.red(format!("ASK {name} no")),
         None => r.red(format!("ASK {name} unanswered")),
