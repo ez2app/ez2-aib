@@ -3857,7 +3857,7 @@
         const mw = e.target.closest('.evact [data-msw], .evact [data-mswgo], .evact [data-mswx]');
         if (mw) { const r = onMainClick(e); renderCard(); const i = dlg.querySelector('[data-mswin]'); if (i && mw.matches('[data-msw]')) i.focus(); Promise.resolve(r).then(() => { if (!S.card) return; if (!S.mswap && mw.matches('[data-mswgo]')) { S.card = null; dlg.close(); } else renderCard(); }); return; }
         // 重新登入在這個視窗裡就地做(按指紋、開登入頁、貼碼),不關視窗
-        const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend]');
+        const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend], .evact [data-relogcopy]');
         if (rl) { const r = onMainClick(e); renderCard(); Promise.resolve(r).then(() => { if (S.card) renderCard(); }); return; }
         const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later], .evact [data-resume]');
         if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer], [data-resume]')) { S.card = null; dlg.close(); } return onMainClick(e); }
@@ -4575,6 +4575,23 @@
     timeout: '10 分鐘內沒登入完,這一輪結束了', exit_not_0: '登入沒成功(登入程式回報失敗)', not_logged_in: '登入程式結束了,但這台還是沒有登入', code: '碼要 8–512 個字、不能有空白,只能送一次', login_id: '這一輪登入找不到了',
   };
   const relogWhy = (e) => { const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code); return RELOG_WHY[rs] || (typeof e === 'string' ? e : errText(e)); };
+  // 08de5 新登入卡(SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126):大字碼框、按了才複製、頂條寫家別 + 共幾步;
+  // Andy 01:04:登入網址已帶碼(url 含 device_code)⇒ 不顯示碼框 / 複製,只留打開登入頁;有效時間 aibd 沒給 ⇒ 照實寫
+  const RELOG_TTL_NA = '有效時間:這一版 AIB 還沒給';
+  const relogAuto = (R) => !!(R && R.dcode && String(R.url || '').includes(R.dcode));
+  const relogKey = () => (/Mac/.test(String((globalThis.navigator && navigator.platform) || '')) ? '⌘V' : 'Ctrl+V');
+  function relogCard(R, N, link, msg) {
+    const auto = relogAuto(R), key = relogKey();
+    const said = R.copied === true ? `<span class="trs on" role="status">已複製,到登入頁按 ${key} 貼上</span>` : R.copied === false ? '<span class="bad" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</span>' : '';
+    const code = auto ? '' : !R.dcode ? '<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>' : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div><div class="rlcb"><button type="button" class="k g" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${said}</div>`;
+    const steps = auto ? ['打開登入頁,按授權(碼已經帶在網址裡,不用貼)', '授權完這裡會自己更新'] : ['打開登入頁,在輸入框按 ' + key + ' 貼上碼', '按授權;授權完這裡會自己更新'];
+    return `<div class="rlc"><div class="rlch"><b>登入 ${esc(N)}</b><span>共 ${steps.length} 步</span></div>${code}<div class="rlcb">${link}</div><ol class="rlcs">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol><div class="rlct">${RELOG_TTL_NA}</div></div>${msg}`;
+  }
+  async function relogCopy() {
+    const R = S.relog; if (!R || R.done || !R.dcode || relogAuto(R)) return;
+    try { await navigator.clipboard.writeText(R.dcode); R.copied = true; } catch (_) { R.copied = false; }
+    render();
+  }
   function relogHtml(pv) {
     if (!RELOG_NAME[pv]) return '';
     const R = S.relog && S.relog.provider === pv ? S.relog : null, N = RELOG_NAME[pv];
@@ -4582,9 +4599,8 @@
     if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="按這台的指紋,在瀏覽器重新登入 ${esc(N)}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
     if (!R.url) return `<span class="trs" data-relogwait>${FP_SEE}</span>${msg}`;
     const link = `<a class="k g" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開 ${esc(N)} 登入頁</a>`;
-    const step = R.mode === 'device'
-      ? `<span class="trs">在登入頁輸入這組碼:<b class="mono">${esc(R.dcode || '')}</b></span>`
-      : R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
+    if (R.mode === 'device') return relogCard(R, N, link, msg);
+    const step = R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
     return link + step + msg;
   }
   async function relogin(pv) {
@@ -6703,6 +6719,7 @@
     if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
     const rlb = x.closest('[data-relogin]'); if (rlb && !(S.relog && !S.relog.done)) return relogin(rlb.dataset.relogin);
     if (x.closest('[data-relogsend]')) return relogSend();
+    if (x.closest('[data-relogcopy]')) return relogCopy();
     const mvb = x.closest('[data-move]'); if (mvb) { S.moveAsk = mvb.dataset.move; S.moveCode = ''; S.moveMsg = null; render(); const ci = document.querySelector('[data-movecode]'); if (ci) ci.focus(); return; }
     if (x.closest('[data-moveno]')) { S.moveAsk = null; render(); return; }
     const mvg = x.closest('[data-movego]'); if (mvg && !S.moveF) { const ci = document.querySelector('[data-movecode]'); mvg.disabled = true; return seatMove(mvg.dataset.movego, String(ci ? ci.value : S.moveCode || '').trim()); }
