@@ -46,6 +46,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::registry::PERSONA_ADD,
     crate::registry::BRAIN_ADD,
     crate::registry::RENAME,
+    crate::owner_batch::KIND,
     crate::persona_edit::PERSONA_READ,
     crate::persona_edit::PERSONA_SET,
     crate::persona_edit::BRAIN_SET,
@@ -532,6 +533,18 @@ pub async fn act(
         // N-ws-open-bind: the page's 「+ 新增」 on the role / persona / brain lists (5d33a
         // CHECK-ws-open-bind: the built-in page in this pairing only; persona and brain need the
         // owner's fingerprint)
+        // 指紋批次簽 (DESIGN-ownerbatch-impl-08de5-1123, r4 §2b): a list signed in one window,
+        // then sent again by aibd itself; the built-in page in this pairing only (r4 §1e)
+        Some(crate::owner_batch::KIND) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a batch is signed from the built-in page in this pairing only",
+                );
+            }
+            return crate::owner_batch::open(st, page, body).await;
+        }
         // A1 (DESIGN-a1-edit-archive-08de5-1123 r0): read / change a persona's three sections
         // (the owner's fingerprint), rename a brain or a role the person added, archive and
         // restore; the built-in page in this pairing only, as the adds above
