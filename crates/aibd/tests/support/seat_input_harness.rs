@@ -56,16 +56,22 @@ impl Daemon {
     /// `start` with room for `max` running sessions (a test that opens more seats than four and
     /// needs the later ones running, not queued).
     pub async fn start_max(dir: &Path, max: usize) -> Daemon {
-        Self::start_inner(dir, max, false).await
+        Self::start_inner(dir, max, &[]).await
     }
 
     /// `start` with `copilot` listed too: the same fake under the file name `copilot` (it acts
     /// like copilot 1.0.115 for aibd's checks, 3e53b REVIEW-copilot e3d07aff L1).
     pub async fn start_copilot(dir: &Path) -> Daemon {
-        Self::start_inner(dir, 4, true).await
+        Self::start_inner(dir, 4, &["copilot"]).await
     }
 
-    async fn start_inner(dir: &Path, max: usize, with_copilot: bool) -> Daemon {
+    /// `start` with `grok` listed too: the same fake under the file name `grok`, a grok of a
+    /// version aibd did not measure (3e53b REVIEW-grok 4733597f N1).
+    pub async fn start_grok(dir: &Path) -> Daemon {
+        Self::start_inner(dir, 4, &["grok"]).await
+    }
+
+    async fn start_inner(dir: &Path, max: usize, also: &[&str]) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
         let cards = dir.join("cards.json");
@@ -92,12 +98,18 @@ impl Daemon {
                 signer: None,
             },
         ];
-        if with_copilot {
-            let copilot = dir.join("bin").join("copilot");
-            std::fs::copy(FAKE, &copilot).unwrap();
+        // the same fake under each of these names (its file name picks what it acts as)
+        for name in also {
+            let file = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                (*name).to_owned()
+            };
+            let path = dir.join("bin").join(file);
+            std::fs::copy(FAKE, &path).unwrap();
             programs.push(aibd::allowlist::Program {
-                name: "copilot".into(),
-                path: copilot,
+                name: (*name).into(),
+                path,
                 signer: None,
             });
         }

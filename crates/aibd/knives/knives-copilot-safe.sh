@@ -279,3 +279,15 @@ python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '            let _ = d;' \
   --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
   -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
+# c-stop-race (a stop that comes while a turn starts leaves the folder the program made again: the thread goes back to waiting; 3e53b REVIEW-copilot 02622f46 L1)
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
+  '                if stopped {' \
+  '                if stopped && turn == usize::MAX {' \
+  --expect-fail 'turn_wire::tests::a_stop_while_a_turn_starts_leaves_no_folder' \
+  -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_stop_while_a_turn_starts_leaves_no_folder'
+# c-trust-relative (a trusted value that is not an absolute path, ~/repo or relative, is read as not the seat folder; 3e53b REVIEW-copilot 02622f46 L2)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    if !f.is_absolute() {' \
+  '    if !f.is_absolute() && f.as_os_str().is_empty() {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'

@@ -468,6 +468,14 @@ pub fn spawn(
                     &err_w,
                 );
                 drop(file);
+                // 3e53b REVIEW-copilot 02622f46 L1: a stop that came while this turn was
+                // starting (after the check above, before the turn was kept) removed the seat's
+                // folder before the program ran, and the program may have made it again; the
+                // thread ends here so the folder goes below, not at aibd's next start
+                let stopped = st_bg.stopping.load(Ordering::SeqCst);
+                if stopped {
+                    break;
+                }
                 if let Err(why) = ran {
                     write_line(&mut out_w, &error_line(&why));
                     continue;
@@ -731,6 +739,84 @@ mod tests {
             "reason: unclean_turn_said_clean"
         );
         assert_eq!(stop.survivors, vec![4243]);
+    }
+
+    /// L1's spawn: it says it is starting, waits until the test has stopped the seat, then
+    /// makes the seat's own folder again with a conversation in it (as copilot may) and starts.
+    fn racing_spawn(spec: &Spec, l: Option<Arc<Lineage>>) -> Result<Box<dyn Running>, SpawnFail> {
+        std::fs::write(spec.cwd.join("spawning"), "").unwrap();
+        for _ in 0..500 {
+            if spec.cwd.join("stopped").exists() {
+                break;
+            }
+            #[allow(clippy::disallowed_methods)] // a test's short poll, no timer to register
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let talk = spec.cwd.join("own").join("session-state");
+        std::fs::create_dir_all(&talk).unwrap();
+        std::fs::write(talk.join("s.jsonl"), "talk").unwrap();
+        fake_spawn(spec, l)
+    }
+
+    /// 3e53b REVIEW-copilot 02622f46 L1: a stop that comes while a turn is starting (checked,
+    /// not yet kept) finds no turn and removes the seat's folder; the program then starts and
+    /// makes the folder again. The folder still goes with the seat, not at aibd's next start.
+    #[test]
+    fn a_stop_while_a_turn_starts_leaves_no_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let spec = Spec {
+            id: "s_0123456789abcd01".into(),
+            argv: vec!["/bin/brand".into(), "--safe".into()],
+            cwd: d.path().into(),
+            env: Vec::new(),
+            pass: Vec::new(),
+            input: true,
+        };
+        let turns = Turns {
+            spawn: racing_spawn,
+            lineage: None,
+            prompt_dir: d.path().join("turn-prompts"),
+            check: folder_check,
+            own_dir: Some(d.path().join("own")),
+        };
+        std::fs::create_dir(d.path().join("own")).unwrap();
+        let brand = Box::new(TestBrand(PromptBy::Stdin));
+        let mut s = spawn(&spec, None, turns, brand).unwrap();
+        let mut input = s.take_input().unwrap();
+        let _out = s.take_output();
+        writeln!(
+            input,
+            "{}",
+            json!({"type":"user","message":{"role":"user","content":"one"}})
+        )
+        .unwrap();
+        let poll = |f: &dyn Fn() -> bool| {
+            (0..250).any(|_| {
+                let g = f();
+                if !g {
+                    #[allow(clippy::disallowed_methods)]
+                    // a test's short poll, no timer to register
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                g
+            })
+        };
+        assert!(
+            poll(&|| d.path().join("spawning").exists()),
+            "reason: turn_not_starting"
+        );
+        let _ = s.stop(Duration::from_millis(10));
+        assert!(!d.path().join("own").exists(), "reason: stop_left_folder");
+        std::fs::write(d.path().join("stopped"), "").unwrap();
+        // the turn was started (the folder made again), then stopped
+        assert!(
+            poll(&|| mine(d.path()).len() == 1),
+            "reason: turn_not_started"
+        );
+        assert!(
+            poll(&|| !d.path().join("own").exists()),
+            "reason: own_dir_left_after_racing_stop"
+        );
     }
 
     /// 3e53b M1: the gate runs again before every turn; a turn after something was added to

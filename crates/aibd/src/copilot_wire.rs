@@ -194,8 +194,13 @@ fn user_ok(v: &Value) -> bool {
 /// Is `cwd` the folder `f` or under it (3e53b REVIEW-copilot e3d07aff N2)? Both real paths
 /// (links followed); where the file system ignores case (macOS, Windows) the case too, so a
 /// trusted `/users/x` covers `/Users/X/repo`. Read wide: a wrong yes refuses a seat, a wrong
-/// no would run a trusted folder's hooks.
+/// no would run a trusted folder's hooks. A value that is not an absolute path (`~/repo`,
+/// `$HOME/repo`, `repo`, empty) counts as the seat's folder (3e53b REVIEW-copilot 02622f46 L2:
+/// aibd does not know how copilot would expand it, and the file is one an AI can write).
 fn folder_under(cwd: &Path, f: &Path) -> bool {
+    if !f.is_absolute() {
+        return true;
+    }
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let (c, f) = (real(cwd), real(f));
     if c.starts_with(&f) {
@@ -558,6 +563,39 @@ mod tests {
                 "reason: trusted_other_case_opens"
             );
         }
+        // 3e53b REVIEW-copilot 02622f46 N1: the same on Windows (a drive letter and path in
+        // capitals)
+        #[cfg(windows)]
+        {
+            cfg(&format!(
+                r#"{{"trustedFolders":[{:?}]}}"#,
+                cwd.to_string_lossy().to_uppercase()
+            ));
+            assert!(
+                nothing_runs(&env(&[]), &cwd).is_err(),
+                "reason: trusted_other_case_opens_windows"
+            );
+        }
+        // L2: a value that is not an absolute path is read as the seat's folder
+        for f in ["~/repo", "$HOME/repo", "repo", "./repo", ""] {
+            cfg(&format!(r#"{{"trustedFolders":[{f:?}]}}"#));
+            assert!(
+                nothing_runs(&env(&[]), &cwd).is_err(),
+                "reason: relative_trust_opens {f}"
+            );
+        }
+        // and an absolute folder elsewhere still opens
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        cfg(&format!(
+            r#"{{"trustedFolders":[{:?}]}}"#,
+            elsewhere.to_string_lossy()
+        ));
+        assert_eq!(
+            nothing_runs(&env(&[]), &cwd),
+            Ok(()),
+            "reason: other_trusted_refused"
+        );
         cfg(r#"{"trustedFolders":"x"}"#);
         assert!(
             nothing_runs(&env(&[]), &cwd).is_err(),
