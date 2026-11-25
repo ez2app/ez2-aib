@@ -1525,7 +1525,16 @@ impl Sessions {
         timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
         let id = spec.id.clone();
-        let res = (self.spawn)(&spec, self.lineage.clone());
+        let res = if spec
+            .argv
+            .first()
+            .is_some_and(|p| crate::copilot_wire::is_copilot(p))
+        {
+            let persona = seat_id.as_deref().and_then(|s| self.take_persona(s));
+            crate::copilot_wire::spawn(&spec, persona)
+        } else {
+            (self.spawn)(&spec, self.lineage.clone())
+        };
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         g.started(seat_id.as_ref());

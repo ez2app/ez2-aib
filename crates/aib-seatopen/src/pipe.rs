@@ -40,7 +40,7 @@ impl fmt::Display for PipeRefused {
 impl std::error::Error for PipeRefused {}
 
 /// The providers [`pipe_argv`] can start.
-pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex"];
+pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex", "copilot"];
 
 /// The modes each of [`PIPE_PROVIDERS`] starts in (GET version's capabilities).
 pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
@@ -50,6 +50,8 @@ pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
         // seat start-up it then runs); only a seat CODEX_HOME keeps it out, and how that
         // home shares the login is not measured yet. A safe seat has no tool to run it with.
         "codex" => CODEX_MODES,
+        // AP30 (andymini 11-25 probe on copilot 1.0.103): safe-only.
+        "copilot" => &["safe"],
         _ => &[],
     }
 }
@@ -355,6 +357,28 @@ fn argv_with(
             }
             Ok(a)
         }
+        "copilot" => {
+            if !pipe_modes("copilot").contains(&mode) {
+                return Err(PipeRefused::ProviderMode("copilot".into(), mode.into()));
+            }
+            let mut a = vec![
+                "copilot".to_owned(),
+                "--output-format".to_owned(),
+                "json".to_owned(),
+                "--available-tools".to_owned(),
+                "nonexistent_tool".to_owned(),
+                "--disable-builtin-mcps".to_owned(),
+                "--disallow-temp-dir".to_owned(),
+                "--deny-url".to_owned(),
+                "*".to_owned(),
+                "--no-custom-instructions".to_owned(),
+            ];
+            if let Some(m) = model {
+                a.push("--model".into());
+                a.push(m.into());
+            }
+            Ok(a)
+        }
         other => Err(PipeRefused::Provider(other.to_owned())),
     }
 }
@@ -364,9 +388,8 @@ fn argv_with(
 /// without its persona). The text never goes in argv (seen by `ps`; Windows' command line
 /// is 32 K), only the file's path.
 pub fn add_persona_file(provider: &str, argv: &mut Vec<String>, file: &str) -> bool {
-    // codex: aibd hands the card over in the protocol (thread/start developerInstructions,
-    // codex_wire), so nothing goes in argv
-    if provider == "codex" {
+    // codex / copilot: aibd hands the card over in the turn protocol / prompt, so nothing goes in argv
+    if provider == "codex" || provider == "copilot" {
         return true;
     }
     // appended to Claude Code's own system prompt: the tools and rules stay
@@ -462,14 +485,44 @@ mod tests {
 
     #[test]
     fn a_provider_not_measured_is_refused() {
-        for p in ["agy", "grok", "copilot", "nope"] {
+        for p in ["agy", "grok", "nope"] {
             assert_eq!(
                 pipe_argv(p, "dgrs", None, ID),
                 Err(PipeRefused::Provider(p.into())),
                 "{p}"
             );
         }
-        assert_eq!(PIPE_PROVIDERS, ["claude", "codex"]);
+        assert_eq!(PIPE_PROVIDERS, ["claude", "codex", "copilot"]);
+    }
+
+    #[test]
+    fn copilot_safe_has_all_safety_flags_and_refuses_other_modes() {
+        let a = pipe_argv("copilot", "safe", Some("gpt-5"), ID).unwrap();
+        assert_eq!(
+            words(&a),
+            [
+                "copilot",
+                "--output-format",
+                "json",
+                "--available-tools",
+                "nonexistent_tool",
+                "--disable-builtin-mcps",
+                "--disallow-temp-dir",
+                "--deny-url",
+                "*",
+                "--no-custom-instructions",
+                "--model",
+                "gpt-5",
+            ]
+        );
+        assert_eq!(
+            pipe_argv("copilot", "dgrs", None, ID),
+            Err(PipeRefused::ProviderMode("copilot".into(), "dgrs".into()))
+        );
+        assert_eq!(
+            pipe_argv("copilot", "work", None, ID),
+            Err(PipeRefused::ProviderMode("copilot".into(), "work".into()))
+        );
     }
 
     #[test]

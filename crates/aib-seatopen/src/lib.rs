@@ -64,7 +64,7 @@ pub const PROVIDERS: &[&str] = &[
 /// The brands AIB 2.0 opens a seat with (SPEC-workspace-multiseat §22, Andy 11-18 22:2x):
 /// the ones aibd drives through a pipe. `agy` and `grok` join when their pipe is done.
 /// [`PROVIDERS`] stays the 1.x list the old command line reads; it is never shown on a page.
-pub const AIB2_BRANDS: &[&str] = &["claude", "codex"];
+pub const AIB2_BRANDS: &[&str] = &["claude", "codex", "copilot"];
 
 /// 1.x `MODES` (:148): `dgrs` = the AI changes files and runs commands without asking.
 pub const MODES: &[&str] = &["dgrs", "safe"];

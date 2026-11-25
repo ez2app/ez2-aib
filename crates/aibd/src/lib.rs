@@ -17,6 +17,7 @@ pub mod config;
 pub mod consent_cards;
 pub mod contacts;
 pub mod contacts_api;
+pub mod copilot_wire;
 pub mod default_model;
 pub mod display;
 pub mod dm_cards;
