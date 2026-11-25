@@ -90,7 +90,7 @@ fn set_sz(key: Key, name: &str, value: &str) -> Result<(), crate::SysError> {
     let bytes = u32::try_from(data.len() * 2).map_err(|_| crate::SysError::Unknown)?;
     // SAFETY: every pointer is a NUL-terminated UTF-16 buffer that lives for the whole call;
     // `bytes` is the size of `data` in bytes, terminator included, as REG_SZ wants. A missing
-    // subkey is created by this same call (no RegCreateKeyEx).
+    // subkey is created by this same call (no separate key-creating call).
     let rc = unsafe {
         RegSetKeyValueW(
             HKEY_CURRENT_USER,
