@@ -28,3 +28,5 @@ k 'fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || ' 'fpcDone(card, false,
 k 'if (rc !== '\''unavailable'\'' && rc !== '\''cancel'\'') { const ow = ownerWhy(rc, e); if (ow) return ow; }' '{ const ow = ownerWhy(rc, e); if (ow) return ow; }'
 # PGOW11 (AP26 W-7 §2 碼 → 頁面字)
 k '「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」' '「設定」→「登入選項」'
+# PGOW12 (c2f0b 18:00:Touch ID 現在讀不到 = 蓋子蓋著 / 鍵盤沒接)
+k '    owner_check_finger_not_now: '\''這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。'\'',' '    owner_check_finger_not_now: '\''Touch ID 讀不到。'\'','

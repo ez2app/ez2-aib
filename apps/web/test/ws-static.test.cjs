@@ -1605,8 +1605,9 @@ const hsChecks = (async () => {
     owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
     pair_key_missing: '這台還沒配對。請先配對。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
+    owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
   };
-  ok(src.length > 500 && Object.keys(win.W).length === 13, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
+  ok(src.length > 500 && Object.keys(win.W).length === 14, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
   for (const [k, v] of Object.entries(want)) ok(win.f(k) === v && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
   const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
   ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
