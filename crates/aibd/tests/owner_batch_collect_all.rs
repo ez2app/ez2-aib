@@ -205,7 +205,7 @@ async fn collecting_all_seven_acts_writes_nothing_and_existing_repo_stops_withou
         assert_eq!(r.code, 201, "{}", r.body);
         r
     };
-    let db = aib_store::Store::open(&data.join("db.sqlite")).unwrap();
+    let db = aib_store::Store::open(&data.join("aibd.sqlite")).unwrap();
     let seat_obj = r.json.get("seat").unwrap_or(&r.json);
     let repo_seat = seat_obj["seat_id"].as_str().unwrap().to_owned();
     let repo_tree = PathBuf::from(db.seat_meta(&repo_seat).unwrap().unwrap().cwd);
