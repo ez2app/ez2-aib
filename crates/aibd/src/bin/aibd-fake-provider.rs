@@ -235,6 +235,22 @@ fn copilot(args: &[String]) {
     let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut sink);
 }
 
+/// Called as `grok` (08de5 11-25, 3e53b REVIEW-grok 4733597f N1): a grok of a version aibd did
+/// not measure (1.0.71). It writes each call's args to `fake-grok-calls.log` in its folder and
+/// does nothing else, so a seat started on it shows as a line other than `--version`.
+fn grok(args: &[String]) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("fake-grok-calls.log")
+    {
+        let _ = writeln!(f, "{}", serde_json::json!(args));
+    }
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("grok 1.0.71 (test)");
+    }
+}
+
 fn main() {
     if std::env::var("AIBD_PREVIEW").as_deref() == Ok("1") {
         preview_fake();
@@ -248,6 +264,13 @@ fn main() {
         .is_some_and(|n| n == "copilot")
     {
         copilot(&args);
+        return;
+    }
+    if std::path::Path::new(&me)
+        .file_stem()
+        .is_some_and(|n| n == "grok")
+    {
+        grok(&args);
         return;
     }
     if args.first().map(String::as_str) == Some("--version") {

@@ -129,3 +129,9 @@ python3 -I scripts/knife.py apps/web/dist/ws.js \
   'pv.key === '\''grok'\'' ? '\'''\'' : '\'''\''' \
   --expect-fail 'the_page_is_checked_without_a_browser' \
   -- cargo test -p aibd --locked --test page_static 'the_page_is_checked_without_a_browser'
+# g-open-version (3e53b REVIEW-grok 4733597f N1: a seat opened end to end on a grok of a version not measured starts it)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '    if !aib_seatopen::grok_version_ok(&printed) {' \
+  '    if !aib_seatopen::grok_version_ok(&printed) && printed.is_empty() {' \
+  --expect-fail 'a_grok_of_a_version_not_measured_is_refused_and_never_run' \
+  -- cargo test -p aibd --locked --test seat_grok_version 'a_grok_of_a_version_not_measured_is_refused_and_never_run'
