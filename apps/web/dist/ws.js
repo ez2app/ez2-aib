@@ -6821,19 +6821,19 @@
   const OPEN_RF = {
     'zh-TW': { lifecycle_verify_failed: ['AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。', '按「重新安裝」,AIB 會重新下載、驗過再放好。', '重新安裝'],
       provider_unmeasured: ['這個 AI 程式的版本不在 AIB 驗過的清單上,不開這一席。', '按「安裝驗過的版本」,AIB 會裝清單上的版本。', '安裝驗過的版本'],
-      provider_path_linked: ['AIB 的資料夾(或裡面放 AI 程式的資料夾)被換成了捷徑,AIB 只從自己的資料夾啟動 AI 程式。', '把 AIB 的資料夾設回實際位置(不要用捷徑);如果是你自己搬過資料夾,搬回來或請我們協助。', ''],
+      provider_path_linked: ['AIB 的資料夾(或裡面放 AI 程式的資料夾)被換成了連結(symlink / junction),AIB 只從自己的資料夾啟動 AI 程式。', '把 AIB 的資料夾設回實際位置(不要用連結);如果是你自己搬過資料夾,搬回來或請我們協助。', ''],
       done: '裝好了,再按一次「開」。', busy: '安裝中…' },
     en: { lifecycle_verify_failed: ['The AI program AIB placed has been changed and no longer matches the measured copy, so this seat was not opened for safety.', 'Press Reinstall and AIB will download it again, check it and put it back.', 'Reinstall'],
       provider_unmeasured: ['This version of the AI program is not on the list AIB has verified, so this seat was not opened.', 'Press Install the verified version and AIB will install the version on the list.', 'Install the verified version'],
-      provider_path_linked: ["AIB's folder (or the folder inside it that holds the AI program) has been replaced with a shortcut; AIB only starts AI programs from its own folder.", "Put AIB's folder back in its real location (not a shortcut). If you moved the folder yourself, move it back or ask us for help.", ''],
+      provider_path_linked: ["AIB's folder (or the folder inside it that holds the AI program) has been replaced with a link (symlink / junction); AIB only starts AI programs from its own folder.", "Put AIB's folder back in its real location (not a link). If you moved the folder yourself, move it back or ask us for help.", ''],
       done: 'Installed. Press Open again.', busy: 'Installing…' },
     ja: { lifecycle_verify_failed: ['AIB が置いた AI プログラムが変更されていて、計測したものと一致しないため、安全のためこの席は開きませんでした。', '「再インストール」を押すと、AIB がもう一度ダウンロードし、確認してから置き直します。', '再インストール'],
       provider_unmeasured: ['この AI プログラムのバージョンは AIB が検証した一覧にないため、この席は開きませんでした。', '「検証済みのバージョンを入れる」を押すと、AIB が一覧にあるバージョンを入れます。', '検証済みのバージョンを入れる'],
-      provider_path_linked: ['AIB のフォルダ(またはその中の AI プログラムを置くフォルダ)がショートカットに置き換えられています。AIB は自分のフォルダからしか AI プログラムを起動しません。', 'AIB のフォルダを実際の場所に戻してください(ショートカットは使わないでください)。ご自身でフォルダを移動した場合は、元に戻すか、私たちにご相談ください。', ''],
+      provider_path_linked: ['AIB のフォルダ(またはその中の AI プログラムを置くフォルダ)がリンク(symlink / junction)に置き換えられています。AIB は自分のフォルダからしか AI プログラムを起動しません。', 'AIB のフォルダを実際の場所に戻してください(リンクは使わないでください)。ご自身でフォルダを移動した場合は、元に戻すか、私たちにご相談ください。', ''],
       done: '入れました。もう一度「開く」を押してください。', busy: 'インストール中…' },
     ko: { lifecycle_verify_failed: ['AIB가 놓아 둔 AI 프로그램이 바뀌어 측정한 것과 달라서, 안전을 위해 이 좌석을 열지 않았습니다.', '「다시 설치」를 누르면 AIB가 다시 내려받아 확인한 뒤 다시 놓습니다.', '다시 설치'],
       provider_unmeasured: ['이 AI 프로그램 버전은 AIB가 검증한 목록에 없어 이 좌석을 열지 않았습니다.', '「검증된 버전 설치」를 누르면 AIB가 목록에 있는 버전을 설치합니다.', '검증된 버전 설치'],
-      provider_path_linked: ['AIB 폴더(또는 그 안의 AI 프로그램 폴더)가 바로 가기로 바뀌었습니다. AIB는 자기 폴더에서만 AI 프로그램을 시작합니다.', 'AIB 폴더를 실제 위치로 되돌려 주세요(바로 가기는 쓰지 마세요). 직접 폴더를 옮겼다면 되돌리거나 저희에게 도움을 요청하세요.', ''],
+      provider_path_linked: ['AIB 폴더(또는 그 안의 AI 프로그램 폴더)가 링크(symlink / junction)로 바뀌었습니다. AIB는 자기 폴더에서만 AI 프로그램을 시작합니다.', 'AIB 폴더를 실제 위치로 되돌려 주세요(링크는 쓰지 마세요). 직접 폴더를 옮겼다면 되돌리거나 저희에게 도움을 요청하세요.', ''],
       done: '설치했습니다. 「열기」를 다시 눌러 주세요.', busy: '설치하는 중…' },
   };
   const rfT = () => OPEN_RF[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OPEN_RF['zh-TW'];
