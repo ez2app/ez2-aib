@@ -3857,7 +3857,7 @@
         const mw = e.target.closest('.evact [data-msw], .evact [data-mswgo], .evact [data-mswx]');
         if (mw) { const r = onMainClick(e); renderCard(); const i = dlg.querySelector('[data-mswin]'); if (i && mw.matches('[data-msw]')) i.focus(); Promise.resolve(r).then(() => { if (!S.card) return; if (!S.mswap && mw.matches('[data-mswgo]')) { S.card = null; dlg.close(); } else renderCard(); }); return; }
         // 重新登入在這個視窗裡就地做(按指紋、開登入頁、貼碼),不關視窗
-        const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend]');
+        const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend], .evact [data-relogcopy]');
         if (rl) { const r = onMainClick(e); renderCard(); Promise.resolve(r).then(() => { if (S.card) renderCard(); }); return; }
         const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later], .evact [data-resume]');
         if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer], [data-resume]')) { S.card = null; dlg.close(); } return onMainClick(e); }
@@ -3955,14 +3955,14 @@
     return ADD_BRANDS.filter(([k]) => got[k]).map(([k, name, b]) => {
       const p = got[k];
       // b4297 1c335b166:不能開時 reason = not_built(aibd 還不驅動)/ not_set_up(這台政策沒列)/ not_installed(列了但程式不在)
-      const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台還沒登入' };
+      const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台的登入沒有或已過期' };
       // Andy 11-20 00:2x 親打「先把 codex 選項灰掉」:codex 席叫不出 aibd 工具、話進不了串(0eed7 VERIFY-realentry ea0885a7 H1)⇒ aibd 修好前頁面不讓開
       const held = HOLD_BRANDS[k] || null;
       const npm = !(p && p.open) && typeof spNpm === 'function' && typeof S !== 'undefined' ? spNpm(k) : ''; // W-10 c2f0b 第 5 點
       const why = (held && held.block) || npm || (!p ? '這版還不能開' : p.open ? (held && held.note) || '' : R[p.reason] || '這台還不能開');
       const modes = ((p && p.modes) || ['safe']).filter((m) => !held || !held.modes || held.modes.includes(m));
       const ms = p && Array.isArray(p.models) ? p.models.filter((m) => m && typeof m.id === 'string' && m.id && MODEL_RE.test(m.id)).slice(0, 40).map((m) => ({ id: m.id, label: String(m.label || m.id).slice(0, 80), dflt: m.default === true, used: m.used === true })) : null;
-      return { id: p ? p.id : k, key: k, name, b, open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
+      return { id: p ? p.id : k, key: k, name, b, nl: !!(p && !p.open && p.reason === 'not_logged_in'), open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
     });
   }
   function personas() {
@@ -4566,7 +4566,7 @@
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
   const RELOG_NAME = { claude: 'Claude', codex: 'Codex', grok: 'Grok', copilot: 'Copilot' };
   const RELOG_WHY = {
-    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請在這台的終端機先登入它',
+    provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這一版 AIB 在 Windows 先只支援 Claude,這一家要等下一版',
     login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
     login_not_started: '登入程式開不起來', url_host_refused: '登入程式給的網址不是官方登入頁,沒有轉給你', no_url: '登入程式 20 秒內沒給登入網址',
     relogin_built_in_page_only: '只有這台內建的頁面能重新登入', unknown_act_type: '這版 AIB 還不能從頁面重新登入',
@@ -4574,7 +4574,53 @@
     finger_denied: '指紋取消了,沒有開始', finger_expired: FINGER_GONE + ';沒有開始,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開始',
     timeout: '10 分鐘內沒登入完,這一輪結束了', exit_not_0: '登入沒成功(登入程式回報失敗)', not_logged_in: '登入程式結束了,但這台還是沒有登入', code: '碼要 8–512 個字、不能有空白,只能送一次', login_id: '這一輪登入找不到了',
   };
-  const relogWhy = (e) => { const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code); return RELOG_WHY[rs] || (typeof e === 'string' ? e : errText(e)); };
+  // ebab8 03:34(08de5 核對 H、Andy「不要讓客戶自己執行」):Windows 上 Codex / Grok / Copilot 回 501 login_not_tried_here ⇒ 說這一版只支援 Claude,不叫人開終端機;四語
+  const RELOG_WHY_L = {
+    en: { login_not_tried_here: 'This version of AIB supports only Claude on Windows for now; this one comes in a later version' },
+    ja: { login_not_tried_here: 'この版の AIB は Windows ではまず Claude だけに対応しています。こちらは次の版で対応します' },
+    ko: { login_not_tried_here: '이번 버전의 AIB는 Windows에서 우선 Claude만 지원합니다. 이 서비스는 다음 버전에서 지원합니다' },
+  };
+  const relogWhy = (e) => {
+    const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code), L = RELOG_WHY_L[typeof askLang === 'function' ? askLang() : ''];
+    if (typeof rs === 'string' && L && Object.prototype.hasOwnProperty.call(L, rs)) return L[rs];
+    return (typeof rs === 'string' && Object.prototype.hasOwnProperty.call(RELOG_WHY, rs) ? RELOG_WHY[rs] : '') || (typeof e === 'string' ? e : errText(e));
+  };
+  // 08de5 新登入卡(SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126):大字碼框、按了才複製、頂條寫家別 + 共幾步;
+  // Andy 01:04:登入網址已帶碼(url 含 device_code)⇒ 不顯示碼框 / 複製,只留打開登入頁;有效時間 aibd 沒給 ⇒ 照實寫
+  const RELOG_TTL_NA = '有效時間:這一版 AIB 還沒給';
+  const relogAuto = (R) => !!(R && R.dcode && String(R.url || '').includes(R.dcode));
+  const relogKey = () => (/Mac/.test(String((globalThis.navigator && navigator.platform) || '')) ? '⌘V' : 'Ctrl+V');
+  // Andy 01:2x「需要大字碼卡的全照 grok 設計」:照 08de5 LOGIN-CARD-08de5-1126 同一份樣式(家別色頂條 + 字母圖示、大字碼框、綠字已複製、兩顆大鈕、編號步驟、底條)
+  const RELOG_BRAND = ['claude', 'codex', 'grok', 'copilot'];
+  // 四家標誌未取得書面同意,依 Andy 11-26 01:3x 決定放入(「B+直接找他們的logo 放」);來源、取得日期、sha256 見 docs/design/BRAND-LOGOS-login-card.md。
+  // 檔案原樣(base64 = 官方檔逐位元組),只放在中性小方塊上(深色;Grok 原檔是 currentColor、在 img 裡畫成黑 ⇒ 白方塊),不染家色;旁邊照舊寫家名。
+  // Andy 11-26 01:4x「logo 要適當的大小, codex 就太小」:以標誌本體可見範圍對齊,長邊 28px(方塊 44px 的 64%)。
+  // 本體佔原檔外框:OpenAI Blossom 354.67/716 ≈ 49.5% ⇒ 整檔等比放大到 56px(留白由方塊邊遮住,路徑與顏色不動);GitHub / Claude 本體 ≈ 外框 ⇒ 28px;Grok 是 2.6:1 扁形,長邊 28px 看起來小一圈 ⇒ 34px(高約 13px)。
+  const RELOG_LOGO_PX = { codex: 56, grok: 34 };
+  const RELOG_LOGO = {
+    codex: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzE2IiBoZWlnaHQ9IjcxNiIgdmlld0JveD0iMCAwIDcxNiA3MTYiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik01MDguNzQ5IDMxNy4zOTlDNTE2Ljc3NyAyODcuMzE0IDUwOC45OTEgMjUzLjg4NCA0ODUuMzg5IDIzMC4yODJDNDYxLjc4OCAyMDYuNjgxIDQyOC4zNiAxOTguODk1IDM5OC4yNzMgMjA2LjkyM0MzNzYuMjMxIDE4NC45MjggMzQzLjM5IDE3NC45NTYgMzExLjE0OCAxODMuNTk2QzI3OC45MDYgMTkyLjIzNCAyNTUuNDUgMjE3LjI5MiAyNDcuMzYgMjQ3LjM2MUMyMTcuMjkxIDI1NS40NTEgMTkyLjIzMyAyNzguOTEgMTgzLjU5NSAzMTEuMTQ5QzE3NC45NTcgMzQzLjM5MSAxODQuOTI3IDM3Ni4yMzIgMjA2LjkyNCAzOTguMjc0QzE5OC44OTYgNDI4LjM1OSAyMDYuNjgzIDQ2MS43ODkgMjMwLjI4NCA0ODUuMzkxQzI1My44ODUgNTA4Ljk5MiAyODcuMzEzIDUxNi43NzkgMzE3LjQwMSA1MDguNzVDMzM5LjQ0MiA1MzAuNzQ1IDM3Mi4yODYgNTQwLjcxNyA0MDQuNTI1IDUzMi4wNzlDNDM2Ljc2NyA1MjMuNDQxIDQ2MC4yMjMgNDk4LjM4NCA0NjguMzEzIDQ2OC4zMTVDNDk4LjM4MyA0NjAuMjI0IDUyMy40NCA0MzYuNzY2IDUzMi4wNzggNDA0LjUyNkM1NDAuNzE2IDM3Mi4yODUgNTMwLjc0NyAzMzkuNDQzIDUwOC43NDkgMzE3LjQwMlYzMTcuMzk5Wk00NzAuODk5IDI0NC43NzZDNDg2Ljg5MiAyNjAuNzcgNDkzLjQ4OCAyODIuNjAxIDQ5MC42ODcgMzAzLjQxMkw0MTUuNTc3IDI2MC4wNDZDNDEyLjQxMSAyNTguMjE4IDQwOC41MDkgMjU4LjIxOCA0MDUuMzQ1IDI2MC4wNDZMMzE3LjQwMSAzMTAuODJWMjc3LjUyNkMzMTcuNDAxIDI3NS4xOTEgMzE4LjY1MiAyNzMuMDA1IDMyMC42NzYgMjcxLjgzN0wzODcuNjQ0IDIzMy4xNzRDNDE0LjE3OCAyMTguMzUzIDQ0OC4zNDYgMjIyLjIyMyA0NzAuOTAxIDI0NC43NzZINDcwLjg5OVpNMzU3LjgzNyAzMTEuMTQ0TDM5OC4yNzUgMzM0LjQ5MVYzODEuMTg1TDM1Ny44MzcgNDA0LjUzMkwzMTcuMzk4IDM4MS4xODVWMzM0LjQ5MUwzNTcuODM3IDMxMS4xNDRaTTI2NC43NzYgMjY5LjY5M0MyNjUuMjA3IDIzOS4zMDUgMjg1LjY0NCAyMTEuNjQ5IDMxNi40NTMgMjAzLjM5M0MzMzguMyAxOTcuNTQgMzYwLjUwNSAyMDIuNzQ0IDM3Ny4xMjcgMjE1LjU3M0wzMDIuMDE0IDI1OC45MzdDMjk4Ljg0OCAyNjAuNzY0IDI5Ni44OTggMjY0LjE0NCAyOTYuODk4IDI2Ny43OThWMzY5LjM0NkwyNjguMDY1IDM1Mi42OTlDMjY2LjA0MyAzNTEuNTMxIDI2NC43NzYgMzQ5LjM1MyAyNjQuNzc2IDM0Ny4wMTdWMjY5LjY5MVYyNjkuNjkzWk0yMDMuMzkxIDMxNi40NTRDMjA5LjI0NCAyOTQuNjA4IDIyNC44NTQgMjc3Ljk3OCAyNDQuMjc2IDI2OS45OTlWMzU2LjczQzI0NC4yNzYgMzYwLjM4NCAyNDYuMjI2IDM2My43NjMgMjQ5LjM5MiAzNjUuNTkxTDMzNy4zMzcgNDE2LjM2NUwzMDguNTAzIDQzMy4wMTNDMzA2LjQ4MSA0MzQuMTgxIDMwMy45NjEgNDM0LjE4OCAzMDEuOTM5IDQzMy4wMkwyMzQuOTcxIDM5NC4zNTdDMjA4Ljg2OCAzNzguNzg5IDE5NS4xMzggMzQ3LjI2MSAyMDMuMzkxIDMxNi40NTRaTTI0NC43NzUgNDcwLjlDMjI4Ljc4MSA0NTQuOTA2IDIyMi4xODYgNDMzLjA3NSAyMjQuOTg2IDQxMi4yNjRMMzAwLjA5NiA0NTUuNjNDMzAzLjI2MyA0NTcuNDU3IDMwNy4xNjQgNDU3LjQ1NyAzMTAuMzI4IDQ1NS42M0wzOTguMjczIDQwNC44NTZWNDM4LjE0OUMzOTguMjczIDQ0MC40ODUgMzk3LjAyMiA0NDIuNjcxIDM5NC45OTcgNDQzLjgzOUwzMjguMDI5IDQ4Mi41MDJDMzAxLjQ5NSA0OTcuMzIyIDI2Ny4zMjcgNDkzLjQ1MiAyNDQuNzcyIDQ3MC45SDI0NC43NzVaTTQ1MC44OTcgNDQ1Ljk4MkM0NTAuNDY2IDQ3Ni4zNzEgNDMwLjAyOSA1MDQuMDI3IDM5OS4yMiA1MTIuMjgzQzM3Ny4zNzMgNTE4LjEzNiAzNTUuMTY4IDUxMi45MzIgMzM4LjU0NyA1MDAuMTAyTDQxMy42NTkgNDU2LjczOEM0MTYuODI2IDQ1NC45MTEgNDE4Ljc3NSA0NTEuNTMyIDQxOC43NzUgNDQ3Ljg3N1YzNDYuMzI5TDQ0Ny42MDkgMzYyLjk3N0M0NDkuNjMxIDM2NC4xNDUgNDUwLjg5NyAzNjYuMzIzIDQ1MC44OTcgMzY4LjY1OVY0NDUuOTg1VjQ0NS45ODJaTTUxMi4yODIgMzk5LjIyMUM1MDYuNDI5IDQyMS4wNjggNDkwLjgxOSA0MzcuNjk3IDQ3MS4zOTcgNDQ1LjY3NlYzNTguOTQ2QzQ3MS4zOTcgMzU1LjI5MiA0NjkuNDQ4IDM1MS45MTIgNDY2LjI4MSAzNTAuMDg1TDM3OC4zMzYgMjk5LjMxMUw0MDcuMTcgMjgyLjY2M0M0MDkuMTkyIDI4MS40OTUgNDExLjcxMiAyODEuNDg3IDQxMy43MzQgMjgyLjY1NUw0ODAuNzAyIDMyMS4zMThDNTA2LjgwNSAzMzYuODg3IDUyMC41MzYgMzY4LjQxNSA1MTIuMjgyIDM5OS4yMjFaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K',
+    copilot: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iOTgiIGhlaWdodD0iOTYiIHZpZXdCb3g9IjAgMCA5OCA5NiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGcgY2xpcC1wYXRoPSJ1cmwoI2NsaXAwXzczMF8yNzEzNikiPgo8cGF0aCBkPSJNNDEuNDM5NSA2OS4zODQ4QzI4LjgwNjYgNjcuODUzNSAxOS45MDYyIDU4Ljc2MTcgMTkuOTA2MiA0Ni45OTAyQzE5LjkwNjIgNDIuMjA1MSAyMS42Mjg5IDM3LjAzNzEgMjQuNSAzMy41OTE4QzIzLjI1NTkgMzAuNDMzNiAyMy40NDczIDIzLjczNDQgMjQuODgyOCAyMC45NTlDMjguNzEwOSAyMC40ODA1IDMzLjg3ODkgMjIuNDkwMiAzNi45NDE0IDI1LjI2NTZDNDAuNTc4MSAyNC4xMTcyIDQ0LjQwNjIgMjMuNTQzIDQ5LjA5NTcgMjMuNTQzQzUzLjc4NTIgMjMuNTQzIDU3LjYxMzMgMjQuMTE3MiA2MS4wNTg2IDI1LjE2OTlDNjQuMDI1NCAyMi40OTAyIDY5LjI4OTEgMjAuNDgwNSA3My4xMTcyIDIwLjk1OUM3NC40NTcgMjMuNTQzIDc0LjY0ODQgMzAuMjQyMiA3My40MDQzIDMzLjQ5NjFDNzYuNDY2OCAzNy4xMzI4IDc4LjA5MzcgNDIuMDEzNyA3OC4wOTM3IDQ2Ljk5MDJDNzguMDkzNyA1OC43NjE3IDY5LjE5MzQgNjcuNjYyMSA1Ni4zNjkxIDY5LjI4OTFDNTkuNjIzIDcxLjM5NDUgNjEuODI0MiA3NS45ODgzIDYxLjgyNDIgODEuMjUyTDYxLjgyNDIgOTEuMjA1MUM2MS44MjQyIDk0LjA3NjIgNjQuMjE2OCA5NS43MDMxIDY3LjA4NzkgOTQuNTU0N0M4NC40MTAyIDg3Ljk1MTIgOTggNzAuNjI4OSA5OCA0OS4xOTE0Qzk4IDIyLjEwNzQgNzUuOTg4MyA2LjY5NTM5ZS0wNyA0OC45MDQzIDQuMzA5ZS0wN0MyMS44MjAzIDEuOTIyNjFlLTA3IC0xLjk0NzllLTA3IDIyLjEwNzQgLTQuMzM0M2UtMDcgNDkuMTkxNEMtNi4yMDYzMWUtMDcgNzAuNDM3NSAxMy40OTQxIDg4LjA0NjkgMzEuNjc3NyA5NC42NTA0QzM0LjI2MTcgOTUuNjA3NCAzNi43NSA5My44ODQ4IDM2Ljc1IDkxLjMwMDhMMzYuNzUgODMuNjQ0NUMzNS40MTAyIDg0LjIxODggMzMuNjg3NSA4NC42MDE2IDMyLjE1NjIgODQuNjAxNkMyNS44Mzk4IDg0LjYwMTYgMjIuMTA3NCA4MS4xNTYzIDE5LjQyNzcgNzQuNzQ0MUMxOC4zNzUgNzIuMTYwMiAxNy4yMjY2IDcwLjYyODkgMTUuMDI1NCA3MC4zNDE4QzEzLjg3NyA3MC4yNDYxIDEzLjQ5NDEgNjkuNzY3NiAxMy40OTQxIDY5LjE5MzRDMTMuNDk0MSA2OC4wNDQ5IDE1LjQwODIgNjcuMTgzNiAxNy4zMjIzIDY3LjE4MzZDMjAuMDk3NyA2Ny4xODM2IDIyLjQ5MDIgNjguOTA2MyAyNC45Nzg1IDcyLjQ0NzNDMjYuODkyNiA3NS4yMjI3IDI4LjkwMjMgNzYuNDY2OCAzMS4yOTQ5IDc2LjQ2NjhDMzMuNjg3NSA3Ni40NjY4IDM1LjIxODcgNzUuNjA1NSAzNy40MTk5IDczLjQwNDNDMzkuMDQ2OSA3MS43NzczIDQwLjI5MSA3MC4zNDE4IDQxLjQzOTUgNjkuMzg0OFoiIGZpbGw9IndoaXRlIi8+CjwvZz4KPGRlZnM+CjxjbGlwUGF0aCBpZD0iY2xpcDBfNzMwXzI3MTM2Ij4KPHJlY3Qgd2lkdGg9Ijk4IiBoZWlnaHQ9Ijk2IiBmaWxsPSJ3aGl0ZSIvPgo8L2NsaXBQYXRoPgo8L2RlZnM+Cjwvc3ZnPgo=',
+    claude: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iOTQiIGhlaWdodD0iOTQiIHZpZXdCb3g9IjAgMCA5NCA5NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTE4Ljc2NTcgNjIuNDQzN0wzNy4xODIyIDUyLjExNjdMMzcuNDg1NyA1MS4yMTIyTDM3LjE4MjIgNTAuNzA4NUgzNi4yNzE1TDMzLjE4NTIgNTAuNTIwOEwyMi42NjE1IDUwLjIzOTFMMTMuNTU0NSA0OS44NjM2TDQuNzAwNDQgNDkuMzk0MkwyLjQ3NDI4IDQ4LjkyNDhMMC4zOTk5MDIgNDYuMTU1M0wwLjYwMjI4MSA0NC43OTRMMi40NzQyOCA0My41MjY2TDUuMTU1NzkgNDMuNzYxM0wxMS4wNzU0IDQ0LjE4MzdMMTkuOTggNDQuNzk0TDI2LjQwNTUgNDUuMTY5NUwzNS45Njc5IDQ2LjE1NTNIMzcuNDg1N0wzNy42ODgxIDQ1LjU0NUwzNy4xODIyIDQ1LjE2OTVMMzYuNzc3NCA0NC43OTRMMjcuNTY5MiAzOC41NTA4TDE3LjYwMjEgMzEuOTc5MUwxMi4zOTA4IDI4LjE3NjlMOS42MDgxMiAyNi4yNTI0TDguMTkxNDcgMjQuNDY4Nkw3LjU4NDMzIDIwLjUyNTZMMTAuMTE0MSAxNy43MDkxTDEzLjU1NDUgMTcuOTQzOEwxNC40MTQ2IDE4LjE3ODVMMTcuOTA1NiAyMC44NTQyTDI1LjM0MyAyNi42Mjc5TDM1LjA1NzIgMzMuNzYyOUwzNi40NzM5IDM0LjkzNjRMMzcuMDQ0MyAzNC41NTE0TDM3LjEzMTYgMzQuMjc5MkwzNi40NzM5IDMzLjE5OTZMMzEuMjEyIDIzLjY3MDZMMjUuNTk2IDEzLjk1MzlMMjMuMDY2MyA5LjkxNjk1TDIyLjQwODYgNy41MjI5NkMyMi4xNTM4IDYuNTE4MzEgMjIuMDAzOCA1LjY4NzE0IDIyLjAwMzggNC42NTk1N0wyNC44ODc3IDAuNzE2NTQ0TDI2LjUwNjcgMC4yMDAxOTVMMzAuNDAyNSAwLjcxNjU0NEwzMi4wMjE1IDIuMTI0NzdMMzQuNDUwMSA3LjY2Mzc5TDM4LjM0NTggMTYuMzQ3OEw0NC40MTcyIDI4LjE3NjlMNDYuMTg4IDMxLjY5NzVMNDcuMTQ5MyAzNC45MzY0TDQ3LjUwMzUgMzUuOTIyMkg0OC4xMTA2VjM1LjM1ODlMNDguNjE2NiAyOC42OTMzTDQ5LjUyNzMgMjAuNTI1Nkw1MC40MzggMTAuMDEwOEw1MC43NDE1IDcuMDUzNTZMNTIuMjA4OCAzLjQ4NjA1TDU1LjE0MzMgMS41NjE0OEw1Ny40MiAyLjY0MTEyTDU5LjI5MiA1LjMxNjc0TDU5LjAzOSA3LjA1MzU2TDU3LjkyNiAxNC4yODI0TDU1Ljc1MDQgMjUuNTk1Mkw1NC4zMzM3IDMzLjE5OTZINTUuMTQzM0w1Ni4xMDQ2IDMyLjIxMzhMNTkuOTQ5NyAyNy4xNDQyTDY2LjM3NTIgMTkuMDcwNEw2OS4yMDg1IDE1Ljg3ODRMNzIuNTQ3OCAxMi4zNTc5TDc0LjY3MjggMTAuNjY4SDc4LjcyMDNMODEuNjU0OCAxNS4wODA0TDgwLjMzOTQgMTkuNjMzN0w3Ni4xOTA2IDI0Ljg5MTFMNzIuNzUwMiAyOS4zNTA0TDY3LjgxNzIgMzUuOTU5NUw2NC43NTYyIDQxLjI3MzRMNjUuMDMwNyA0MS43MTE4TDY1Ljc2ODEgNDEuNjQ4OUw3Ni44OTg5IDM5LjI1NUw4Mi45MTk3IDM4LjE3NTNMOTAuMTA0MSAzNi45NTQ5TDkzLjM0MjIgMzguNDU3TDkzLjY5NjMgNDAuMDA2TDkyLjQzMTUgNDMuMTUxTDg0Ljc0MTEgNDUuMDI4N0w3NS43MzUzIDQ2Ljg1OTRMNjIuMzI0NCA1MC4wMTY0TDYyLjE3NTkgNTAuMTM1OEw2Mi4zNTEyIDUwLjM5NThMNjguMzk5IDUwLjk0MzJMNzAuOTc5NCA1MS4wODRINzcuMzAzN0w4OS4wOTIyIDUxLjk3NTlMOTIuMTc4NSA1My45OTQ0TDkzLjk5OTkgNTYuNDgyMkw5My42OTYzIDU4LjQwNjhMODguOTQwNCA2MC44MDA4TDgyLjU2NTUgNTkuMjk4N0w2Ny42NDAxIDU1LjczMTJMNjIuNTMwMSA1NC40NjM4SDYxLjgyMTdWNTQuODg2Mkw2Ni4wNzE3IDU5LjA2NEw3My45MTM5IDY2LjEwNTFMODMuNjc4NiA3NS4yMTE2TDg0LjE4NDUgNzcuNDY0OEw4Mi45MTk3IDc5LjI0ODVMODEuNjA0MiA3OS4wNjA4TDczLjAwMzIgNzIuNTgyOUw2OS42NjM5IDY5LjY3MjZMNjIuMTc1OSA2My4zMzU2SDYxLjY3VjYzLjk5MjhMNjMuMzkwMiA2Ni41Mjc2TDcyLjU0NzggODAuMjgxMkw3My4wMDMyIDg0LjUwNTlMNzIuMzQ1NCA4NS44NjcyTDY5Ljk2NzUgODYuNzEyMUw2Ny4zODcxIDg2LjI0MjdMNjEuOTczNSA3OC42ODUyTDU2LjQ1ODcgNzAuMjM1OUw1Mi4wMDY0IDYyLjYzMTVMNTEuNDY4NyA2Mi45NzFMNDguODE4OSA5MS4yNjU0TDQ3LjYwNDcgOTIuNzIwNkw0NC43NzE0IDkzLjgwMDJMNDIuMzkzNCA5Mi4wMTY0TDQxLjEyODYgODkuMTA2MUw0Mi4zOTM0IDgzLjMzMjRMNDMuOTExMyA3NS44MjE5TDQ1LjEyNTUgNjkuODYwNEw0Ni4yMzg2IDYyLjQ0MzdMNDYuOTE4NCA1OS45NjYxTDQ2Ljg1ODMgNTkuODAwM0w0Ni4zMTUzIDU5Ljg5MTZMNDAuNzIzOCA2Ny41NjAzTDMyLjIyMzkgNzkuMDYwOEwyNS40OTQ4IDg2LjI0MjdMMjMuODc1OCA4Ni44OTk5TDIxLjA5MzEgODUuNDQ0N0wyMS4zNDYxIDgyLjg2M0wyMi45MTQ1IDgwLjU2MjlMMzIuMjIzOSA2OC43MzM4TDM3LjgzOTkgNjEuMzY0MUw0MS40NTk0IDU3LjEzMzdMNDEuNDI0MiA1Ni41MjE4TDQxLjIyNDQgNTYuNTA0OEwxNi40ODkgNzIuNjI5OUwxMi4wODczIDczLjE5MzJMMTAuMTY0NyA3MS40MDk0TDEwLjQxNzYgNjguNDk5MUwxMS4zMjgzIDY3LjU2MDNMMTguNzY1NyA2Mi40NDM3WiIgZmlsbD0iI0Q5Nzc1NyIvPgo8L3N2Zz4K',
+    grok: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgNy40IDI0IDkuMiIgYXJpYS1oaWRkZW49InRydWUiIGNsYXNzPSJ0ZXh0LXByaW1hcnkgYmxvY2sgaC01IHctYXV0byBzaHJpbmstMCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjEzIiBmb2N1c2FibGU9ImZhbHNlIiBzdHlsZT0iZmlsbDpjdXJyZW50Q29sb3IiPjxwYXRoIGQ9Ik0yNCA3LjQxN0M4Ljg4MiA4LjI4NyAxLjg5IDE0Ljc1LjMyMSAxNi4yOEwwIDE2LjU4M2gyLjc5N0MxMC4zNTYgOS4wMDUgMjEuMjIyIDcuNjYzIDI0IDcuNDE3em0tMTcuMDQ2IDYuMzVjLS40NzIuMzIxLS45NDUuNjgtMS4zOTggMS4wMmwyLjQ1NyAxLjc5NmgyLjc3OHpNMi45NDggMTAuOEguMTg5bDMuMjUgMi4zODFjLjQ3My0uMzIxIDEuMDItLjY2MSAxLjUxMi0uOTQ1WiI+PC9wYXRoPjwvc3ZnPg==',
+  };
+  // 品牌標(登入卡與安裝 / 換版卡共用):真 LOGO 放中性方底,Grok 白底;沒 LOGO 用名字首字
+  const rlcMark = (b, N) => RELOG_LOGO[b] ? `<span class="rlcmark rlclogo${b === 'grok' ? ' rlclogo-light' : ''}"><img src="${RELOG_LOGO[b]}" alt="" width="${RELOG_LOGO_PX[b] || 28}" height="${RELOG_LOGO_PX[b] || 28}"></span>` : `<span class="rlcmark">${esc(String(N).slice(0, 1))}</span>`;
+  function relogCard(R, N, msg) {
+    const auto = relogAuto(R), key = relogKey(), b = RELOG_BRAND.includes(R.provider) ? R.provider : 'other';
+    const said = R.copied === true ? `<div class="rlcok" role="status">✓ 已複製,到登入網頁按 ${key} 貼上</div>` : R.copied === false ? '<div class="rlcno" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</div>' : '';
+    const go = `<a class="rlcgo" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開登入網頁 ↗</a>`;
+    // f163c REVIEW-relogcard N1(RFC 8628 5.4):網址帶碼也留一行對照碼,讓人核登入頁上的碼一樣(不給複製,不用貼)
+    const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div><div class="rlcrow">${go}</div>` : !R.dcode ? `<div class="rlcno">AIB 沒給登入碼,這一輪先取消再按一次</div><div class="rlcrow">${go}</div>` : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div>${said}<div class="rlcrow"><button type="button" class="rlccp" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${go}</div>`;
+    const sub = auto ? '碼已經帶在網址裡,打開登入網頁按授權就好。' : '打開登入網頁,在輸入框貼上這組碼,再按授權。';
+    const steps = auto ? ['打開登入網頁,按授權(不用貼碼)', '授權完這裡會自己更新'] : ['到登入網頁的輸入框按 ' + key + ' 貼上碼', '按授權', '授權完這裡會自己更新'];
+    return `<div class="rlc rlc-${b}"><div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">共 ${steps.length} 步</span></div><div class="rlcbody"><h4>登入 ${esc(N)}</h4><p class="rlcsub">${sub}</p>${code}<ol class="rlcs">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol></div><div class="rlcfoot"><span>登入存在這台 ${esc(N)} 自己的登入設定(夥伴讀的同一處)</span><span class="rlct">${RELOG_TTL_NA}</span></div></div>${msg}`;
+  }
+
+  async function relogCopy() {
+    const R = S.relog; if (!R || R.done || !R.dcode || relogAuto(R)) return;
+    try { await navigator.clipboard.writeText(R.dcode); R.copied = true; } catch (_) { R.copied = false; }
+    render();
+  }
   function relogHtml(pv) {
     if (!RELOG_NAME[pv]) return '';
     const R = S.relog && S.relog.provider === pv ? S.relog : null, N = RELOG_NAME[pv];
@@ -4582,9 +4628,8 @@
     if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="按這台的指紋,在瀏覽器重新登入 ${esc(N)}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
     if (!R.url) return `<span class="trs" data-relogwait>${FP_SEE}</span>${msg}`;
     const link = `<a class="k g" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開 ${esc(N)} 登入頁</a>`;
-    const step = R.mode === 'device'
-      ? `<span class="trs">在登入頁輸入這組碼:<b class="mono">${esc(R.dcode || '')}</b></span>`
-      : R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
+    if (R.mode === 'device') return relogCard(R, N, msg);
+    const step = R.sent ? '<span class="trs">碼已送出,等登入完成…</span>' : `<span class="msw"><input class="apq" data-relogcode="1" value="${esc(R.v || '')}" placeholder="登入頁授權後給的碼,貼在這裡" aria-label="登入碼" autocomplete="off" spellcheck="false"><button type="button" class="k g" data-relogsend="1" ${R.busy ? 'disabled' : ''}>送出</button></span>`;
     return link + step + msg;
   }
   async function relogin(pv) {
@@ -4605,8 +4650,11 @@
       const r = await act('provider_relogin_state', { login_id: id }).catch(() => null);
       const st = r && String(r.state || '');
       if (st === 'ok') {
-        S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + ';按「重開」讓這一席接著做' };
-        get('/api/v1/version').then((v) => { if (v && v.capabilities) { S.version = v; render(); } }).catch(() => {});
+        const A = S.add, inAdd = !!(A && (A.needLogin === pv || providers().some((p) => p.key === pv && p.nl)));
+        S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + (inAdd ? '' : ';按「重開」讓這一席接著做') };
+        S.version = await soft(get('/api/v1/version')).catch(() => S.version); // 08de5 定案 4:capabilities 不快取 ⇒ 重抓一次就是 open=true;開席被 409 擋的那一次自動再送
+        // f163c L1 / 3e53b M1:只在設定跟被擋那次一模一樣(同一家、同模式 / 人格 / 倉 …)才自動再送;改過就只重畫,讓人自己按「開」
+        if (inAdd && S.add === A) { const snap = A.needLogin === pv ? A.nlSnap : null; A.needLogin = null; A.nlSnap = null; A.msg = ''; A.err = false; if (snap) return doAdd(snap); }
         return render();
       }
       if (st === 'failed' || Date.now() > until) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(r ? String(r.reason || 'exit_not_0') : 'timeout') }; return render(); }
@@ -4619,6 +4667,200 @@
     catch (e) { R.msg = relogWhy(e); R.bad = true; }
     R.busy = false; render();
   }
+  // ---------- c2f0b IFACE-provider-lifecycle r1(L3,Andy 11-26 02:3x「新安裝、更新、綁定 都是走類似流程」):三種動作同一張卡(版面照登入卡 rlc)----------
+  // 讀 GET /api/v1/providers/lifecycle(next 由 aibd 判,頁面照著出卡);做 = act provider_install / provider_update(fingerAct:202 + ticket、本人驗證)、取消 = provider_job_cancel;
+  // 登入(next = login)交給既有的登入卡 relogHtml。GET 讀不到(舊 aibd)或 acts 沒有那一項 ⇒ 照舊寫「這一版 AIB 還沒有」,不送。「先不要」只記在頁面記憶體(r1-6 2)。
+  const LC_URL = '/api/v1/providers/lifecycle';
+  const LC_NAME = { claude: 'Claude', codex: 'Codex', copilot: 'GitHub Copilot', grok: 'Grok' };
+  const LC_MAKER = { claude: 'Anthropic', codex: 'OpenAI', copilot: 'GitHub', grok: 'xAI' };
+  const LC_W = {
+    'zh-TW': {
+      tag: { install: '安裝', update: '換版' }, go: { install: '同意並安裝', update: '換版' }, again: '再按一次', no: '先不要', cancel: '取消', na: '這一版 AIB 還沒有',
+      installT: (n) => `這台還沒有 ${n},要幫你裝嗎?`,
+      installB: (n, v, mb, mk) => `從 ${mk} 官方下載 ${n} ${v}${mb ? `(約 ${mb} MB)` : ''},裝在你自己的帳號裡,不需要系統管理員。裝好就能在這台開 ${n}。`,
+      updateT: (n) => `${n} 換成 AIB 試過的版本`,
+      updateB: (n, cur, v) => `這台的 ${n} 是 ${cur},AIB 還沒試過這一版。要換成 AIB 試過的 ${v} 嗎?`,
+      phase: { download: (p) => `正在下載(${p}%)…`, verify: () => '正在核對是不是官方的檔…', place: () => '正在安裝…', install: () => '正在安裝…' },
+      owner: '按下去會跳本人驗證(Touch ID / Windows Hello 或登入密碼),驗證窗上寫的版本跟這裡一樣才按。',
+      src: (s) => `來源:${s}`, cancelled: (n) => `已取消,${n} 沒有裝。`, cancelledU: (n) => `已取消,${n} 還是原本的版本。`, whyU: { lifecycle_offline: '連不到官方下載站,這次沒換;還是原本的版本。網路好了再按一次。' }, other: (c) => `沒有完成(${c})`,
+      why: { lifecycle_offline: '連不到官方下載站,這次沒裝。網路好了再按一次。', lifecycle_verify_failed: '下載下來的檔跟 AIB 記的不一樣,AIB 沒有執行它,已經刪掉。再按一次;一直這樣就截圖給我們。', lifecycle_failed: (n) => `裝到一半停了,${n} 還不能用。再按一次。`, lifecycle_timeout: (n) => `裝到一半停了,${n} 還不能用。再按一次。`, provider_unsigned: (n) => `這台的 ${n} 不是官方簽的那一支(可能被換過),AIB 不會開它。請重新安裝。`, provider_unmeasured: (n) => `這台的 ${n} 版本 AIB 還沒試過。請換版。`, lifecycle_busy: '已經在進行了,等它跑完。' },
+    },
+    en: {
+      tag: { install: 'Install', update: 'Change version' }, go: { install: 'Agree and install', update: 'Change version' }, again: 'Try again', no: 'Not now', cancel: 'Cancel', na: 'This version of AIB doesn\'t have this yet',
+      installT: (n) => `${n} isn't on this computer yet. Install it for you?`,
+      installB: (n, v, mb, mk) => `Downloads ${n} ${v}${mb ? ` (about ${mb} MB)` : ''} from ${mk}'s official site and puts it in your own account; no administrator needed. Once it's in, you can open ${n} here.`,
+      updateT: (n) => `Switch ${n} to a version AIB has tested`,
+      updateB: (n, cur, v) => `${n} on this computer is ${cur}, which AIB hasn't tested. Switch to ${v}, which AIB has tested?`,
+      phase: { download: (p) => `Downloading (${p}%)…`, verify: () => 'Checking it is the official file…', place: () => 'Installing…', install: () => 'Installing…' },
+      owner: 'Pressing it asks for the owner check (Touch ID / Windows Hello, or your login password). Only approve if the window shows the same version as here.',
+      src: (s) => `Source: ${s}`, cancelled: (n) => `Cancelled; ${n} was not installed.`, cancelledU: (n) => `Cancelled; ${n} is still on the version it had.`, whyU: { lifecycle_offline: 'Couldn\'t reach the official download site; nothing was changed and it is still on the version it had. Try again when the network is back.' }, other: (c) => `Not finished (${c})`,
+      why: { lifecycle_offline: 'Couldn\'t reach the official download site; nothing was installed. Try again when the network is back.', lifecycle_verify_failed: 'The downloaded file doesn\'t match what AIB has on record. AIB didn\'t run it and has deleted it. Try again; if it keeps happening, send us a screenshot.', lifecycle_failed: (n) => `It stopped partway; ${n} can't be used yet. Try again.`, lifecycle_timeout: (n) => `It stopped partway; ${n} can't be used yet. Try again.`, provider_unsigned: (n) => `${n} on this computer isn't the one signed by its maker (it may have been replaced). AIB won't open it. Please reinstall.`, provider_unmeasured: (n) => `AIB hasn't tested this version of ${n}. Please change the version.`, lifecycle_busy: 'It\'s already running; wait for it to finish.' },
+    },
+    ja: {
+      tag: { install: 'インストール', update: 'バージョン変更' }, go: { install: '同意してインストール', update: 'バージョンを変える' }, again: 'もう一度', no: '今はしない', cancel: 'キャンセル', na: 'この版の AIB にはまだありません',
+      installT: (n) => `このパソコンにはまだ ${n} がありません。インストールしますか?`,
+      installB: (n, v, mb, mk) => `${mk} の公式サイトから ${n} ${v}${mb ? `(約 ${mb} MB)` : ''}をダウンロードし、あなた自身のアカウントに入れます。管理者は不要です。入れ終われば、このパソコンで ${n} を開けます。`,
+      updateT: (n) => `${n} を AIB が試した版に変える`,
+      updateB: (n, cur, v) => `このパソコンの ${n} は ${cur} で、AIB はまだこの版を試していません。AIB が試した ${v} に変えますか?`,
+      phase: { download: (p) => `ダウンロード中(${p}%)…`, verify: () => '公式のファイルか確認中…', place: () => 'インストール中…', install: () => 'インストール中…' },
+      owner: '押すと本人確認(Touch ID / Windows Hello、またはログインパスワード)が出ます。確認画面の版がここと同じときだけ承認してください。',
+      src: (s) => `入手元:${s}`, cancelled: (n) => `キャンセルしました。${n} は入れていません。`, cancelledU: (n) => `キャンセルしました。${n} は元のバージョンのままです。`, whyU: { lifecycle_offline: '公式のダウンロードサイトにつながらず、今回は変えていません。元のバージョンのままです。ネットワークが戻ったらもう一度押してください。' }, other: (c) => `完了していません(${c})`,
+      why: { lifecycle_offline: '公式のダウンロードサイトにつながらず、今回は入れていません。ネットワークが戻ったらもう一度押してください。', lifecycle_verify_failed: 'ダウンロードしたファイルが AIB の記録と違うため、実行せずに削除しました。もう一度押してください。続く場合はスクリーンショットを送ってください。', lifecycle_failed: (n) => `途中で止まりました。${n} はまだ使えません。もう一度押してください。`, lifecycle_timeout: (n) => `途中で止まりました。${n} はまだ使えません。もう一度押してください。`, provider_unsigned: (n) => `このパソコンの ${n} は公式に署名されたものではありません(差し替えられた可能性があります)。AIB は開きません。入れ直してください。`, provider_unmeasured: (n) => `この版の ${n} は AIB がまだ試していません。バージョンを変えてください。`, lifecycle_busy: 'すでに実行中です。終わるまでお待ちください。' },
+    },
+    ko: {
+      tag: { install: '설치', update: '버전 변경' }, go: { install: '동의하고 설치', update: '버전 바꾸기' }, again: '다시 시도', no: '나중에', cancel: '취소', na: '이 버전의 AIB에는 아직 없습니다',
+      installT: (n) => `이 컴퓨터에는 아직 ${n}이(가) 없습니다. 설치할까요?`,
+      installB: (n, v, mb, mk) => `${mk} 공식 사이트에서 ${n} ${v}${mb ? `(약 ${mb} MB)` : ''}을(를) 내려받아 내 계정에 설치합니다. 관리자 권한은 필요 없습니다. 설치가 끝나면 이 컴퓨터에서 ${n}을(를) 열 수 있습니다.`,
+      updateT: (n) => `${n}을(를) AIB가 시험한 버전으로 바꾸기`,
+      updateB: (n, cur, v) => `이 컴퓨터의 ${n}은(는) ${cur}이며, AIB가 아직 시험하지 않은 버전입니다. AIB가 시험한 ${v}(으)로 바꿀까요?`,
+      phase: { download: (p) => `내려받는 중(${p}%)…`, verify: () => '공식 파일인지 확인하는 중…', place: () => '설치하는 중…', install: () => '설치하는 중…' },
+      owner: '누르면 본인 확인(Touch ID / Windows Hello 또는 로그인 비밀번호) 창이 뜹니다. 창에 표시된 버전이 여기와 같을 때만 승인하세요.',
+      src: (s) => `출처: ${s}`, cancelled: (n) => `취소했습니다. ${n}은(는) 설치되지 않았습니다.`, cancelledU: (n) => `취소했습니다. ${n}은(는) 원래 버전 그대로입니다.`, whyU: { lifecycle_offline: '공식 다운로드 사이트에 연결하지 못해 이번에는 바꾸지 않았습니다. 원래 버전 그대로입니다. 네트워크가 돌아오면 다시 눌러 주세요.' }, other: (c) => `완료되지 않았습니다(${c})`,
+      why: { lifecycle_offline: '공식 다운로드 사이트에 연결하지 못해 이번에는 설치하지 않았습니다. 네트워크가 돌아오면 다시 눌러 주세요.', lifecycle_verify_failed: '내려받은 파일이 AIB 기록과 달라 실행하지 않고 삭제했습니다. 다시 눌러 주세요. 계속되면 스크린샷을 보내 주세요.', lifecycle_failed: (n) => `도중에 멈췄습니다. ${n}은(는) 아직 쓸 수 없습니다. 다시 눌러 주세요.`, lifecycle_timeout: (n) => `도중에 멈췄습니다. ${n}은(는) 아직 쓸 수 없습니다. 다시 눌러 주세요.`, provider_unsigned: (n) => `이 컴퓨터의 ${n}은(는) 공식 서명된 것이 아닙니다(바뀌었을 수 있습니다). AIB는 열지 않습니다. 다시 설치해 주세요.`, provider_unmeasured: (n) => `이 버전의 ${n}은(는) AIB가 아직 시험하지 않았습니다. 버전을 바꿔 주세요.`, lifecycle_busy: '이미 진행 중입니다. 끝날 때까지 기다려 주세요.' },
+    },
+  };
+  const lcW = () => LC_W[askLang()] || LC_W['zh-TW'];
+  const lcEntry = (k) => { const d = S.lc && S.lc.d; return (d && d.providers.find((p) => p && p.name === k)) || null; };
+  const lcHas = (t) => !!(S.lc && S.lc.d && Array.isArray(S.lc.d.acts) && S.lc.d.acts.includes(t));
+  const lcRun = (p) => !!(p && p.job && p.job.state === 'running');
+  const lcAct = (p) => (lcRun(p) ? String(p.job.action || '') : p && (p.next === 'install' || p.next === 'update') ? p.next : '');
+  // 開席視窗 / 開席設定卡用:這家要出安裝或換版卡嗎(登入另走 relogHtml,不重複)
+  const lcNeeds = (k) => { const a = lcAct(lcEntry(k)); return (a === 'install' || a === 'update') && !(S.lc.no[k] && !lcRun(lcEntry(k))); };
+  const lcName = (k) => LC_NAME[k] || RELOG_NAME[k] || String(k);
+  function lcWhy(c, n, a) { const W = lcW(), w = (a === 'update' && W.whyU[c]) || W.why[c]; return typeof w === 'function' ? w(n) : w || W.other(c || '?'); }
+  function lcCard(k) {
+    const p = lcEntry(k); if (!p) return '';
+    if (p.next === 'login' && !lcRun(p)) return relogHtml(k) + lcQuotaHtml(k, 'login');
+    const a = lcAct(p); if (a !== 'install' && a !== 'update') return '';
+    const L = S.lc, W = lcW(), N = lcName(k), j = p.job && typeof p.job === 'object' ? p.job : null, c = p.card && typeof p.card === 'object' ? p.card : {};
+    if (L.no[k] && !lcRun(p)) return '';
+    const b = RELOG_BRAND.includes(k) ? k : 'other', v = String(c.version || p.measured || ''), sz = Number(c.size), mb = Number.isFinite(sz) && sz > 0 ? Math.round(sz / 1e6) : 0;
+    const cur = String((p.installed && p.installed.version) || '?'), mk = LC_MAKER[k] || N;
+    const title = a === 'install' ? W.installT(N) : W.updateT(N), body = a === 'install' ? W.installB(N, v, mb, mk) : W.updateB(N, cur, v);
+    let state = '', btn = '';
+    if (lcRun(p)) {
+      const ph = W.phase[j.phase] ? String(j.phase) : 'download', dn = Number(j.done), tt = Number(j.total), pct = tt > 0 && dn >= 0 ? Math.min(100, Math.floor((dn * 100) / tt)) : 0;
+      state = `<div class="lcst" role="status">${esc(W.phase[ph](pct))}</div>${ph === 'download' ? `<progress class="lcpg" max="100" value="${pct}" aria-label="${esc(W.phase.download(pct))}"></progress>` : ''}`;
+      btn = lcHas('provider_job_cancel') ? `<button type="button" class="k" data-lccancel="${esc(k)}" ${L.busy[k] ? 'disabled' : ''}>${esc(W.cancel)}</button>` : '';
+    } else {
+      const done = j && (j.state === 'failed' || j.state === 'cancelled') ? (j.state === 'cancelled' ? (String(j.action || a) === 'update' ? W.cancelledU(N) : W.cancelled(N)) : lcWhy(String(j.error || 'lifecycle_failed'), N, String(j.action || a))) : '';
+      const m = L.msg[k] ? L.msg[k] : '';
+      state = (done ? `<div class="rlcno" role="alert">${esc(done)}</div>` : '') + (m ? `<div class="rlcno" role="alert">${esc(m)}</div>` : '');
+      btn = lcHas('provider_' + a) ? `<button type="button" class="rlccp" data-lcgo="${esc(k)}" ${L.busy[k] ? 'disabled' : ''}>${esc(done ? W.again : W.go[a])}</button><button type="button" class="k" data-lcno="${esc(k)}">${esc(W.no)}</button>` : `<span class="rlcno">${esc(W.na)}</span>`;
+    }
+    const foot = [c.source ? W.src(String(c.source)) : '', lcRun(p) ? '' : W.owner].filter(Boolean).join(' · ');
+    return `<div class="rlc rlc-${b} lc"><div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">${esc(W.tag[a])}</span></div><div class="rlcbody"><h4>${esc(title)}</h4><p class="rlcsub">${esc(body)}</p>${state}<div class="rlcrow">${btn}</div>${lcQuotaHtml(k, a)}</div><div class="rlcfoot"><span>${esc(foot)}</span></div></div>`;
+  }
+  // ---------- §10.6 卡片下方「方案與用量」(c2f0b IFACE-provider-lifecycle §10 / §10.6;Andy 11-26 03:0x「用類似的方格顯示」,ebab8 轉)----------
+  // 樣子照座艙右欄「用量」面板:每個時段一列 = 家別圖示 + 時段名 + 10 格方格條(一格 10%,四捨五入到格,同 render_lib.usage_bar)+ 百分比;第二行小字 = 量於多久前 · 重置。
+  // 顏色門檻照抄 render_lib.CTX_TIERS(≥95 紅、≥75 橙、≥50 黃、其他藍),到上限整列紅;過期三態(fresh / counting / rolled_over / no_reset)由 aibd 算,頁面照 state 畫。
+  // 連結只用這裡的常數(§10.3:不從 aibd 回應或席位輸出拿網址);數字只供參考,頁面不拿來判斷任何事。
+  // c2f0b REVIEW-words-2e03fbb2 N3(curl 實查):claude.com/pricing、chatgpt.com/pricing、github.com/features/copilot/plans 都 200;x.ai/grok 回 403(擋程式)未實查、先用
+  //(github.com/settings/copilot 要登入、不是方案頁,出自 copilot help billing,不用)
+  const LC_PLAN_URL = { claude: 'https://claude.com/pricing', codex: 'https://chatgpt.com/pricing', copilot: 'https://github.com/features/copilot/plans', grok: 'https://x.ai/grok' };
+  const LC_Q_TIERS = [[95, 't3'], [75, 't2'], [50, 't1'], [0, 't0']];
+  const LC_Q_CELLS = 10;
+  const LC_QW = {
+    'zh-TW': { win: { '5h': '5 小時', '7d': '每 1 週' }, link: '看方案 ↗', official: '方案與價格以官方頁為準', na: '用量:這一版 AIB 還沒有',
+      none: { not_seen_yet: '還沒有用量資料:開一席跑一回合就會有', not_available: '查不到' }, recheck: '重驗', rechecking: '重驗中…', nonew: '沒有更新的資料:開一席跑一回合就會有',
+      ago: (m, h, d) => (d ? `量於 ${d} 天前` : h ? `量於 ${h} 小時前` : m ? `量於 ${m} 分鐘前` : '量於剛剛'), reset: (t) => `${t} 重置`, least: (p) => `(至少 ${p}%)`, cd: (t) => `重置倒數 ${t}`,
+      rolled: '資訊過期(舊讀數不採用)', nextcd: (t) => `下次重置倒數 ${t}`, noreset: '無重置時刻', limit: (t) => (t ? `已達上限 · ${t}後恢復` : '已達上限'),
+      dur: (d, h, m) => (d ? `${d} 天${h ? ` ${h} 小時` : ''}` : h ? `${h} 小時${m ? ` ${m} 分鐘` : ''}` : `${m} 分鐘`), wd: '日一二三四五六', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+    en: { win: { '5h': '5 hours', '7d': 'Weekly' }, link: 'See plans ↗', official: 'Plans and prices are as shown on the official page', na: 'Usage: this version of AIB doesn\'t have this yet',
+      none: { not_seen_yet: 'No usage data yet: open a partner and run one turn', not_available: 'Not available' }, recheck: 'Recheck', rechecking: 'Rechecking…', nonew: 'No newer data: open a partner and run one turn',
+      ago: (m, h, d) => (d ? `Checked ${d} days ago` : h ? `Checked ${h} h ago` : m ? `Checked ${m} min ago` : 'Checked just now'), reset: (t) => `resets ${t}`, least: (p) => ` (at least ${p}%)`, cd: (t) => `resets in ${t}`,
+      rolled: 'Out of date (old reading not used)', nextcd: (t) => `next reset in ${t}`, noreset: 'no reset time', limit: (t) => (t ? `Limit reached · back in ${t}` : 'Limit reached'),
+      dur: (d, h, m) => (d ? `${d} d${h ? ` ${h} h` : ''}` : h ? `${h} h${m ? ` ${m} min` : ''}` : `${m} min`), wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], date: (md, w, hm) => `${w} ${md} ${hm}` },
+    ja: { win: { '5h': '5 時間', '7d': '1 週間ごと' }, link: 'プランを見る ↗', official: 'プランと価格は公式ページの内容が優先されます', na: '使用量:この版の AIB にはまだありません',
+      none: { not_seen_yet: '使用量のデータはまだありません。パートナーを開いて 1 回動かすと出ます', not_available: '取得できません' }, recheck: '再確認', rechecking: '再確認中…', nonew: '新しいデータはありません。パートナーを開いて 1 回動かすと出ます',
+      ago: (m, h, d) => (d ? `${d} 日前に取得` : h ? `${h} 時間前に取得` : m ? `${m} 分前に取得` : 'たった今取得'), reset: (t) => `${t} にリセット`, least: (p) => `(少なくとも ${p}%)`, cd: (t) => `リセットまで ${t}`,
+      rolled: '情報が古い(古い値は使いません)', nextcd: (t) => `次のリセットまで ${t}`, noreset: 'リセット時刻なし', limit: (t) => (t ? `上限に達しました · ${t}後に回復` : '上限に達しました'),
+      dur: (d, h, m) => (d ? `${d} 日${h ? ` ${h} 時間` : ''}` : h ? `${h} 時間${m ? ` ${m} 分` : ''}` : `${m} 分`), wd: '日月火水木金土', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+    ko: { win: { '5h': '5시간', '7d': '1주마다' }, link: '요금제 보기 ↗', official: '요금제와 가격은 공식 페이지 기준입니다', na: '사용량: 이 버전의 AIB에는 아직 없습니다',
+      none: { not_seen_yet: '아직 사용량 데이터가 없습니다. 파트너를 열어 한 번 실행하면 생깁니다', not_available: '확인할 수 없음' }, recheck: '다시 확인', rechecking: '다시 확인하는 중…', nonew: '새 데이터가 없습니다. 파트너를 열어 한 번 실행하면 생깁니다',
+      ago: (m, h, d) => (d ? `${d}일 전 확인` : h ? `${h}시간 전 확인` : m ? `${m}분 전 확인` : '방금 확인'), reset: (t) => `${t} 초기화`, least: (p) => ` (최소 ${p}%)`, cd: (t) => `초기화까지 ${t}`,
+      rolled: '정보가 오래됨(이전 값은 쓰지 않음)', nextcd: (t) => `다음 초기화까지 ${t}`, noreset: '초기화 시각 없음', limit: (t) => (t ? `한도 도달 · ${t} 후 회복` : '한도 도달'),
+      dur: (d, h, m) => (d ? `${d}일${h ? ` ${h}시간` : ''}` : h ? `${h}시간${m ? ` ${m}분` : ''}` : `${m}분`), wd: '일월화수목금토', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+  };
+  const lcQW = () => LC_QW[askLang()] || LC_QW['zh-TW'];
+  const lcQNow = () => Math.floor(Date.now() / 1000);
+  const lcQSec = (x) => { const n = Number(x); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+  function lcQDur(sec) { const W = lcQW(), t = Math.max(60, Math.floor(sec)), d = Math.floor(t / 86400), h = Math.floor((t % 86400) / 3600), m = Math.floor((t % 3600) / 60); return W.dur(d, h, d ? 0 : m); }
+  function lcQAgo(at) { const a = Math.max(0, lcQNow() - at); return lcQW().ago(a >= 60 && a < 3600 ? Math.floor(a / 60) : 0, a >= 3600 && a < 86400 ? Math.floor(a / 3600) : 0, a >= 86400 ? Math.floor(a / 86400) : 0); }
+  function lcQDate(at) { const W = lcQW(), d = new Date(at * 1000), z = (n) => String(n).padStart(2, '0'); return W.date(z(d.getMonth() + 1) + '/' + z(d.getDate()), W.wd[d.getDay()], z(d.getHours()) + ':' + z(d.getMinutes())); }
+  // 3e53b N1:aibd 的字只當鍵查自己的表(constructor 之類不算)
+  const lcOwn = (o, k) => (typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : '');
+  const lcQTier = (pct) => (LC_Q_TIERS.find(([f]) => pct >= f) || LC_Q_TIERS[LC_Q_TIERS.length - 1])[1];
+  function lcQRow(r, mark) {
+    const W = lcQW(), now = lcQNow(), st = String(r.state || ''), seen = lcQSec(r.seen_at), rs = lcQSec(r.resets_at), rec = lcQSec(r.recover_at) || rs;
+    const pct = Math.max(0, Math.min(100, Math.round(Number(r.used_percent != null ? r.used_percent : r.used_pct) || 0))), nm = lcOwn(W.win, r.window) || String(r.window || '');
+    const head = `${mark}<span class="lcqn">${esc(nm)}</span>`;
+    if (st === 'rolled_over') return `<div class="lcqr none">${head}<small>${esc([W.rolled, rs > now ? W.nextcd(lcQDur(rs - now)) : ''].filter(Boolean).join(' · '))}</small></div>`;
+    const f = Math.max(0, Math.min(LC_Q_CELLS, Math.round(pct / 10))), lim = r.at_limit === true, old = st === 'counting' || st === 'no_reset';
+    const grid = `<span class="lcqg" role="img" aria-label="${pct}%">${'<i class="on"></i>'.repeat(f)}${'<i></i>'.repeat(LC_Q_CELLS - f)}</span>`;
+    const sub = st === 'counting' ? [seen ? lcQAgo(seen) + W.least(pct) : W.least(pct).trim(), rs > now ? W.cd(lcQDur(rs - now)) : ''] : st === 'no_reset' ? [seen ? lcQAgo(seen) : '', W.noreset] : [seen ? lcQAgo(seen) : '', rs ? W.reset(lcQDate(rs)) : ''];
+    return `<div class="lcqr ${lim ? 'lim t3' : lcQTier(pct)}${old ? ' old' : ''}">${head}${grid}<b class="lcqv">${pct}%</b>${lim ? `<em>${esc(W.limit(rec > now ? lcQDur(rec - now) : ''))}</em>` : ''}<small>${esc(sub.filter(Boolean).join(' · '))}</small></div>`;
+  }
+  // a = install | update | login:安裝還沒登入 ⇒ 只放連結;換版 / 登入照 quota 畫;quota 欄不存在(舊 aibd)⇒ 連結 +「這一版 AIB 還沒有」
+  function lcQuotaHtml(k, a) {
+    const p = lcEntry(k); if (!p) return '';
+    const W = lcQW(), N = lcName(k), b = RELOG_BRAND.includes(k) ? k : 'other', url = Object.prototype.hasOwnProperty.call(LC_PLAN_URL, k) ? LC_PLAN_URL[k] : '', L = S.lc;
+    const ln = url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(W.link)}</a>` : '';
+    if (a === 'install') return ln ? `<div class="lcq"><div class="lcqp">${ln} · ${esc(W.official)}</div></div>` : '';
+    if (!Object.prototype.hasOwnProperty.call(p, 'quota')) return `<div class="lcq"><div class="lcqp">${ln}</div><div class="lcqx">${esc(W.na)}</div></div>`;
+    const q = p.quota && typeof p.quota === 'object' ? p.quota : null, R = q && Array.isArray(q.rows) ? q.rows.filter((r) => r && typeof r === 'object').slice(0, 4) : [];
+    const plan = q && typeof q.plan === 'string' && /^[a-z0-9_]{1,24}$/.test(q.plan) ? q.plan.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : '';
+    const mark = rlcMark(b, N), why = String((q && q.reason) || p.quota_reason || 'not_seen_yet');
+    const rows = R.length ? R.map((r) => lcQRow(r, mark)).join('') : `<div class="lcqr none">${mark}<span class="lcqn">${esc(W.win['7d'])}</span><small>${esc(lcOwn(W.none, why) || W.none.not_available)}</small></div>`;
+    const stale = !R.length || R.some((r) => r.state !== 'fresh'), can = q && q.can_recheck === true && (k === 'claude' || k === 'codex') && lcHas('provider_quota_recheck');
+    const rb = stale && can ? `<button type="button" class="k lcqrb" data-lcqr="${esc(k)}" ${L.qbusy && L.qbusy[k] ? 'disabled' : ''}>${esc(L.qbusy && L.qbusy[k] ? W.rechecking : W.recheck)}</button>` : '';
+    const msg = L.qmsg && L.qmsg[k] ? `<div class="lcqx" role="status">${esc(L.qmsg[k])}</div>` : '';
+    return `<div class="lcq"><div class="lcqp">${plan ? `<b>${esc(plan)}</b>${ln ? ' · ' : ''}` : ''}${ln}</div>${rows}${rb || msg ? `<div class="lcqf">${rb}${msg}</div>` : ''}</div>`;
+  }
+  // 重驗 = aibd 重讀它手上最新的席位事件(不跳窗、不開 CLI、不花額度);seen_at 沒變 ⇒ 照實說沒有新資料
+  async function lcQRecheck(k) {
+    const L = S.lc, p = lcEntry(k); if (!L || !p || (k !== 'claude' && k !== 'codex') || !lcHas('provider_quota_recheck')) return;
+    L.qbusy = L.qbusy || {}; L.qmsg = L.qmsg || {}; if (L.qbusy[k]) return;
+    const seen = (x) => Math.max(0, ...((x && x.quota && Array.isArray(x.quota.rows) ? x.quota.rows : []).map((r) => lcQSec(r && r.seen_at))));
+    const before = seen(p); L.qbusy[k] = true; L.qmsg[k] = ''; render();
+    try { await act('provider_quota_recheck', { provider: k }); await lcLoad(); L.qmsg[k] = seen(lcEntry(k)) > before ? '' : lcQW().nonew; } catch (e) { L.qmsg[k] = lcWhy(rgCode(e), lcName(k)); }
+    L.qbusy[k] = false; render();
+  }
+  async function lcLoad() {
+    const L = S.lc = S.lc || { d: null, no: {}, msg: {}, busy: {}, run: {} };
+    const r = await soft(get(LC_URL)).catch(() => null);
+    L.d = r && typeof r === 'object' && Array.isArray(r.providers) ? r : null;
+    const now = {}; (L.d ? L.d.providers : []).forEach((p) => { if (lcRun(p)) now[p.name] = 1; });
+    const ended = Object.keys(L.run).filter((k) => !now[k]); L.run = now;
+    // 工作結束 ⇒ capabilities 不快取,重抓 version(08de5 定案 4);開席設定卡開著就重讀;照 next 接下一張卡(登入卡 / 開席設定卡)
+    if (ended.length) { S.version = await soft(get('/api/v1/version')).catch(() => S.version); if (S.sp && typeof spLoad === 'function') spLoad(); }
+    render();
+    if (Object.keys(now).length && !L.tm) L.tm = setTimeout(() => { L.tm = 0; lcLoad(); }, 1000);
+    return L.d;
+  }
+  async function lcGo(k) {
+    const L = S.lc, p = lcEntry(k), a = p && (p.next === 'install' || p.next === 'update') ? p.next : '';
+    if (!L || !a || L.busy[k] || lcRun(p) || !lcHas('provider_' + a)) return;
+    L.busy[k] = true; L.msg[k] = ''; L.no[k] = false; render();
+    // body 只有 {type, provider}(r0 §2.2 白名單);本人驗證與回送 ticket 由 fingerAct 做,每次都是新的一窗
+    try { await (a === 'install' ? fingerAct('provider_install', { provider: k }) : fingerAct('provider_update', { provider: k })); }
+    catch (e) { L.msg[k] = lcWhy(rgCode(e), lcName(k)); }
+    L.busy[k] = false; await lcLoad();
+  }
+  async function lcCancel(k) {
+    const L = S.lc; if (!L || L.busy[k] || !lcHas('provider_job_cancel')) return;
+    L.busy[k] = true; render();
+    try { await act('provider_job_cancel', { provider: k }); } catch (e) { L.msg[k] = lcWhy(rgCode(e), lcName(k)); }
+    L.busy[k] = false; await lcLoad();
+  }
+  function lcClick(x) {
+    const g = x.closest('[data-lcgo]'); if (g) { lcGo(g.dataset.lcgo); return true; }
+    const c = x.closest('[data-lccancel]'); if (c) { lcCancel(c.dataset.lccancel); return true; }
+    const qr = x.closest('[data-lcqr]'); if (qr) { lcQRecheck(qr.dataset.lcqr); return true; }
+    const n = x.closest('[data-lcno]'); if (n && S.lc) { S.lc.no[n.dataset.lcno] = true; render(); return true; }
+    return false;
+  }
+  // ---------- lifecycle 卡到這裡 ----------
   const trustWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return TRUST_WHY[rs] || errText(e); };
   async function seatTrust(id, on) {
     S.trustMsg = null;
@@ -4839,36 +5081,113 @@
   // §1 機器分類頂端那一行、§3 密語窗:等 3e53b W-3 / W-5 給欄位名再接(見 OWNER_CLASS_NA)。
   const OWNER_WHY = {
     owner_check_too_weak: '這台的本人驗證方式不夠強,這個動作不開放。',
-    owner_check_unmeasured: '這台的 Windows Hello 還沒做過實機檢查,高風險動作先不開放。',
-    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認窗。請在這台電腦前登入後再按。',
+    owner_check_unmeasured: 'Windows Hello 還沒在這台電腦上實測過,高風險動作先不開放。',
+    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後再按。',
     no_biometry: '這台沒有設定 Windows Hello。',
-    cancel: '你按了取消,這次沒做。',
-    pair_touch_timeout: '確認窗等太久沒有回應,這次沒做。可以再按一次。',
-    auth_failed: '驗證沒通過,這次沒做。',
-    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重新配對。',
-    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
-    pair_key_missing: '這台還沒配對。請先配對。',
+    cancel: '你按了取消,沒有動任何東西。',
+    pair_touch_timeout: '確認視窗等太久沒有回應,沒有動任何東西。可以再按一次。',
+    auth_failed: '驗證沒通過,沒有動任何東西。',
+    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重建配對金鑰。',
+    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重建配對金鑰。',
+    pair_key_missing: '這台還沒有配對金鑰。請先建配對金鑰。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
     passphrase_locked: '密語打錯太多次,暫時鎖住。',
     // c2f0b 18:00(Pro 16 實機單 2 r7):蓋上蓋子會讀成這個,打開就恢復
     owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
-    // W-10(c2f0b IFACE r3 核字):寫開席設定的拒絕原因
+    // W-10(c2f0b IFACE r3 核字;11-26 後半句照用字第 11 列改成「沒有動任何東西」,待 c2f0b 再核):寫開席設定的拒絕原因
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
     policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。',
-    policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。',
-    policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。',
+    policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。',
+    policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。',
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
-  const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
+  // c2f0b PAGE-WORDS-ap26 §1 (b)「怎麼設 PIN」三步照抄;第 3 步的「重新檢查」要 W-3 分類上 API 才有那顆鈕 ⇒ 先寫「再按一次」(ebab8 03:10:沒 PIN 時頁面要引導,Windows 今天上線)
+  const OWNER_PIN_HOW = '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。';
   const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
+  const OWNER_LOCK_NA = '解鎖時間:這一版 AIB 還沒有。';
+  // 拒絕原因四語(ebab8 11-26 00:35;Andy 00:4x 定「本人驗證」「配對金鑰」,其餘照 RETRO-fc7f9-1126 §0.2):語言跟 askLang 同一條。
+  // ja / ko 是提案字(未核);Windows / Apple 介面原名(unavailable、finger_not_now、PIN 路徑)沒對過該語系截圖 ⇒ ja / ko 不給,退英文、不猜
+  const OWNER_WHY_L = {
+    en: {
+      owner_check_too_weak: "This computer's owner verification is not strong enough, so this action is not available.",
+      owner_check_unmeasured: 'Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.',
+      unavailable: 'AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.',
+      no_biometry: 'Windows Hello is not set up on this computer.',
+      cancel: 'You pressed Cancel. Nothing was changed.',
+      pair_touch_timeout: 'The confirmation window got no answer for too long. Nothing was changed. You can press again.',
+      auth_failed: 'The check did not pass. Nothing was changed.',
+      pair_key_weak: "This computer's pairing key can sign without the owner, so it may have been replaced. Make a new pairing key.",
+      pair_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      owner_check_key_mismatch: "This computer's pairing key is not the one on record. Make a new pairing key.",
+      pair_key_missing: 'This computer has no pairing key yet. Make a pairing key first.',
+      pair_touch_not_on_this_system: "This computer's system does not support owner verification yet.",
+      passphrase_locked: 'The passphrase was wrong too many times, so it is locked for now.',
+      owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
+      policy_no_native: 'No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).',
+      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_write_failed: 'AIB could not write the seat-opening setup file. Nothing was changed. You can press again.',
+      policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
+      pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
+      class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
+      lock_at: 'You can try again after {t}.',
+      lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
+    },
+    ja: {
+      owner_check_too_weak: 'このパソコンの本人確認の方式が十分に強くないため、この操作は使えません。',
+      owner_check_unmeasured: 'Windows Hello はまだこのパソコンで実測していないため、高リスクの操作は今は使えません。',
+      no_biometry: 'このパソコンには Windows Hello が設定されていません。',
+      cancel: 'キャンセルを押しました。何も変更していません。',
+      pair_touch_timeout: '確認ウィンドウが長いあいだ応答しませんでした。何も変更していません。もう一度押せます。',
+      auth_failed: '認証が通りませんでした。何も変更していません。',
+      pair_key_weak: 'このパソコンのペアリングキーは本人なしで署名できるため、差し替えられた可能性があります。ペアリングキーを作り直してください。',
+      pair_key_mismatch: 'このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。',
+      owner_check_key_mismatch: 'このパソコンのペアリングキーが登録済みのものと違います。ペアリングキーを作り直してください。',
+      pair_key_missing: 'このパソコンにはまだペアリングキーがありません。先にペアリングキーを作ってください。',
+      pair_touch_not_on_this_system: 'このパソコンのシステムはまだ本人確認に対応していません。',
+      passphrase_locked: 'パスフレーズを何度も間違えたため、一時的にロックされています。',
+      policy_no_native: 'このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」(再検索)を押してください。',
+      policy_exists: 'このパソコンにはすでに AI の席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」(再検索)を押してください。',
+      policy_write_failed: 'AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
+      policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
+      class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
+      lock_at: '{t} 以降にもう一度試せます。',
+      lock_na: 'ロック解除の時刻:この AIB のバージョンにはまだありません。',
+    },
+    ko: {
+      owner_check_too_weak: '이 컴퓨터의 본인 확인 방식이 충분히 강하지 않아 이 작업은 사용할 수 없습니다.',
+      owner_check_unmeasured: 'Windows Hello를 아직 이 컴퓨터에서 실측하지 않아 고위험 작업은 지금 사용할 수 없습니다.',
+      no_biometry: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다.',
+      cancel: '취소를 눌렀습니다. 아무것도 바꾸지 않았습니다.',
+      pair_touch_timeout: '확인 창이 너무 오래 응답하지 않았습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
+      auth_failed: '인증을 통과하지 못했습니다. 아무것도 바꾸지 않았습니다.',
+      pair_key_weak: '이 컴퓨터의 페어링 키는 본인 없이도 서명할 수 있어 바뀌었을 수 있습니다. 페어링 키를 다시 만드세요.',
+      pair_key_mismatch: '이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.',
+      owner_check_key_mismatch: '이 컴퓨터의 페어링 키가 등록된 것과 다릅니다. 페어링 키를 다시 만드세요.',
+      pair_key_missing: '이 컴퓨터에는 아직 페어링 키가 없습니다. 먼저 페어링 키를 만드세요.',
+      pair_touch_not_on_this_system: '이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.',
+      passphrase_locked: '암호 문구를 너무 많이 틀려 잠시 잠겼습니다.',
+      policy_no_native: '이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」(다시 찾기)를 누르세요.',
+      policy_exists: '이 컴퓨터에는 이미 AI 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」(다시 찾기)를 누르세요.',
+      policy_write_failed: 'AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
+      policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
+      class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
+      lock_at: '{t} 이후에 다시 시도할 수 있습니다.',
+      lock_na: '잠금 해제 시간: 이 버전의 AIB에는 아직 없습니다.',
+    },
+  };
   // 只認 aibd 的碼(字串、表裡有的);不讀 message / words 等任何帶字的欄位
   function ownerWhy(code, e) {
     const c = typeof code === 'string' ? code : '';
     if (!Object.prototype.hasOwnProperty.call(OWNER_WHY, c)) return '';
-    const w = OWNER_WHY[c];
-    if (c === 'owner_check_too_weak') return w + (/Win/.test(String((globalThis.navigator && navigator.platform) || '')) ? OWNER_PIN_HOW : OWNER_CLASS_NA);
-    if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + (/^\d\d:\d\d:\d\d$/.test(t) ? t + ' 後可以再試。' : '解鎖時間:這一版 AIB 還沒給。'); }
+    const L = typeof askLang === 'function' ? askLang() : 'zh-TW', has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+    // 中文照中文表;其他語先找該語,沒有就英文(ja / ko 不猜介面原名)
+    const word = (k, zh) => (L === 'zh-TW' ? zh : has(OWNER_WHY_L[L], k) ? OWNER_WHY_L[L][k] : OWNER_WHY_L.en[k]);
+    const w = word(c, OWNER_WHY[c]), sp = L === 'zh-TW' || L === 'ja' ? '' : ' ';
+    const isWin = /Win/.test(String((globalThis.navigator && navigator.platform) || ''));
+    if (c === 'owner_check_too_weak') return w + sp + (isWin ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    if (c === 'no_biometry' && isWin) return w + sp + word('pin', OWNER_PIN_HOW); // 沒設 Hello:不能只說沒有,要說怎麼設
+    if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + sp + (/^\d\d:\d\d:\d\d$/.test(t) ? word('lock_at', '{t} 後可以再試。').replace('{t}', () => t) : word('lock_na', OWNER_LOCK_NA)); }
     return w;
   }
   const FP_NO = { finger_cancel: '你按了取消這次', finger_denied: '系統視窗按了拒絕', finger_expired: '時間到了', finger_timeout: '時間到了', owner_check_unavailable: '這台現在叫不出驗證視窗' };
@@ -5669,13 +5988,42 @@
     const head = bad ? `<div class="aerr" role="alert">這台的開席設定檔讀不懂${pp}。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>` : d.policy === 'loaded' ? `<div class="aerr" role="alert">這台已經有開席設定${pp},但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。</div>` : '';
     const msg = SP.msg ? `<div class="${SP.msg.bad ? 'aerr' : 'aok'}" role="${SP.msg.bad ? 'alert' : 'status'}">${esc(SP.msg.text)}</div>` : '';
     return `<div class="spcard" role="region" aria-label="開席設定"><h4>還沒設定這台能開哪些 AI</h4>
-      <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${head}
+      <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${ocHtml()}${head}
       <ul class="anop">${F.length ? F.map(spRow).join('') : '<li>這台沒找到任何 AI 程式</li>'}</ul>
-      <div class="apn">${esc(SP_INSTALL_NA)}</div>${msg}
+      ${spInstallHtml()}${msg}
       <div class="afoot"><button type="button" class="k" data-addx="1">關閉</button><button type="button" class="k" data-spre="1" ${SP.busy ? 'disabled' : ''}>重新找</button>${canW ? `<button type="button" class="go" data-spok="1" ${SP.busy ? 'disabled' : ''}>核准並啟用</button>` : ''}</div></div>`;
+  }
+  // IFACE-provider-lifecycle §5:開席設定卡那句「官方安裝說明的連結:這一版 AIB 還沒有」換成同一張安裝 / 換版卡;讀不到 lifecycle(舊 aibd)照舊寫那句
+  function spInstallHtml() { return S.lc && S.lc.d ? S.lc.d.providers.filter((p) => p && lcNeeds(p.name)).map((p) => lcCard(p.name)).join('') : `<div class="apn">${esc(SP_INSTALL_NA)}</div>`; }
+  // c2f0b 03:31(ebab8 03:28 派):GET /api/v1/owner-check(頁面憑證、不跳窗、不建金鑰)→ {platform, class, class_is_final, words};開席設定卡頂端照 class 寫這台是哪一種(W-7 §1)。
+  // 頁面照 class 選字、不印 words;no_hello / unknown 出設 PIN 三步;「重新檢查」= 再 GET 一次(不是 act)。舊 aibd 404 / 非 Windows / 不認得的 class ⇒ 不出
+  // ja / ko:設 PIN 三步的 Windows 介面原名沒核,退英文(同 AP26 pin)
+  const OC_CLASSES = ['hello_hardware', 'hello_software', 'hello_key_unknown', 'no_hello', 'not_at_desk', 'unknown'];
+  const OC_W = {
+    'zh-TW': { line: { hello_hardware: '這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。', hello_software: '這台用 Windows Hello 確認是你本人,但這台沒有安全晶片(TPM),金鑰存在一般檔案裡,所以高風險的動作不開放。', hello_key_unknown: '這台有 Windows Hello,還沒建配對金鑰;建好後才知道金鑰在不在安全晶片裡。', no_hello: '這台還沒設 Windows Hello。設一個 PIN 就能用完整功能(不需要指紋或臉部辨識的硬體)。', not_at_desk: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後按「重新檢查」。', unknown: '還不知道這台有沒有設 Windows Hello。還沒設的話,照下面三步設一個 PIN。' },
+      steps: ['打開「設定」→「帳戶」→「登入選項」。', '在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。', '設好回到這頁按「重新檢查」。'], nopw: '沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。', recheck: '重新檢查', checking: '檢查中…' },
+    en: { line: { hello_hardware: 'This computer uses Windows Hello to check that it is you (the key is kept in the security chip).', hello_software: 'This computer uses Windows Hello to check that it is you, but it has no security chip (TPM), so the key is kept in an ordinary file and high-risk actions are not available.', hello_key_unknown: 'This computer has Windows Hello but no pairing key yet; once the key is made we will know whether it is in the security chip.', no_hello: 'Windows Hello is not set up on this computer. Set up a PIN to use everything (no fingerprint or face hardware needed).', not_at_desk: 'AIB is not running on the desktop you signed in to (for example it was started over a remote connection), so it cannot show the confirmation window. Sign in at this computer, then press Check again.', unknown: 'We don\'t know yet whether Windows Hello is set up on this computer. If it isn\'t, set up a PIN with the three steps below.' },
+      steps: ['Open Settings → Accounts → Sign-in options.', 'Under PIN (Windows Hello), press Set up and follow the screens.', 'Come back to this page and press Check again.'], nopw: 'If this computer has no Windows sign-in password, set one first.', recheck: 'Check again', checking: 'Checking…' },
+    ja: { line: { hello_hardware: 'このパソコンは Windows Hello で本人を確認します(鍵はセキュリティチップに保存されています)。', hello_software: 'このパソコンは Windows Hello で本人を確認しますが、セキュリティチップ(TPM)がないため鍵は通常のファイルに保存され、高リスクの操作は使えません。', hello_key_unknown: 'このパソコンには Windows Hello がありますが、ペアリング鍵はまだありません。作成後に鍵がセキュリティチップにあるか分かります。', no_hello: 'このパソコンには Windows Hello が設定されていません。PIN を設定するとすべての機能が使えます(指紋や顔認証のハードウェアは不要です)。', not_at_desk: 'AIB はあなたがサインインしているデスクトップで動いていません(リモート接続から起動した場合など)。確認画面を出せません。このパソコンの前でサインインしてから「再確認」を押してください。', unknown: 'このパソコンに Windows Hello が設定されているかまだ分かりません。未設定なら、下の 3 つの手順で PIN を設定してください。' }, recheck: '再確認', checking: '確認中…' },
+    ko: { line: { hello_hardware: '이 컴퓨터는 Windows Hello로 본인을 확인합니다(키는 보안 칩에 저장됨).', hello_software: '이 컴퓨터는 Windows Hello로 본인을 확인하지만, 보안 칩(TPM)이 없어 키가 일반 파일에 저장되므로 고위험 작업은 쓸 수 없습니다.', hello_key_unknown: '이 컴퓨터에는 Windows Hello가 있지만 아직 페어링 키가 없습니다. 키를 만든 뒤에 보안 칩에 있는지 알 수 있습니다.', no_hello: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다. PIN을 설정하면 모든 기능을 쓸 수 있습니다(지문이나 얼굴 인식 하드웨어는 필요 없음).', not_at_desk: 'AIB가 로그인한 데스크톱에서 실행되고 있지 않아(예: 원격 연결로 시작) 확인 창을 띄울 수 없습니다. 이 컴퓨터 앞에서 로그인한 뒤 「다시 확인」을 누르세요.', unknown: '이 컴퓨터에 Windows Hello가 설정되어 있는지 아직 모릅니다. 설정되어 있지 않다면 아래 세 단계로 PIN을 설정하세요.' }, recheck: '다시 확인', checking: '확인하는 중…' },
+  };
+  const ocW = (k) => { const T = OC_W[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OC_W['zh-TW']; return Object.prototype.hasOwnProperty.call(T, k) ? T[k] : OC_W.en[k]; };
+  async function ocLoad() {
+    const O = S.oc = S.oc || {}; if (O.busy) return;
+    O.busy = true; render();
+    const r = await soft(get('/api/v1/owner-check')).catch(() => null);
+    O.busy = false; O.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
+  }
+  function ocHtml() {
+    const O = S.oc, d = O && O.d; if (!d || d.platform !== 'windows' || !OC_CLASSES.includes(d.class)) return '';
+    const c = d.class, pin = c === 'no_hello' || c === 'unknown', re = pin || c === 'not_at_desk';
+    const st = pin ? `<ol class="ocsteps">${ocW('steps').map((x) => `<li>${esc(x)}</li>`).join('')}</ol><div class="apn">${esc(ocW('nopw'))}</div>` : '';
+    const btn = re ? `<button type="button" class="k ocre" data-ocre="1" ${O.busy ? 'disabled' : ''}>${esc(O.busy ? ocW('checking') : ocW('recheck'))}</button>` : '';
+    return `<div class="occ${re ? ' warn' : ''}" role="status"><b>${esc(ocW('line')[c])}</b>${st}${btn}</div>`;
   }
   async function spLoad() {
     const SP = S.sp = S.sp || {};
+    ocLoad();
     SP.busy = true; render();
     const r = await soft(get('/api/v1/session-policy')).catch(() => null);
     SP.busy = false; SP.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
@@ -5691,6 +6039,9 @@
     } catch (e) { SP.msg = { bad: true, text: errText(e) }; }
     SP.busy = false; await spLoad();
   }
+  // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
+  const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
+  const addSnap = (b) => JSON.stringify(Object.assign({}, b, { idem_key: '' })); // 開席 body 快照(idem_key 每次新的,不算)
   function addHtml() {
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
@@ -5723,8 +6074,7 @@
     const NO = nodeOpts(); const node = A.node || ''; // S0-3:不默默帶左樹選中的那項,要用戶自己選
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     // S1b 3(Andy 11-23 03:00「不同品牌的AI 設計的不好」):跟其他選項同一套橫向按鈕;沒有原因的寫這家能做什麼
-    const unlogged = PV.filter((p) => !p.open && p.why === '這台還沒登入' && RELOG_NAME[p.key]).map((p) => relogHtml(p.key)).join(' ');
-    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}${unlogged ? `<div class="apn">${unlogged}</div>` : ''}`;
+    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}${PV.filter((p) => (p.nl || A.needLogin === p.key) && RELOG_NAME[p.key]).map((p) => `<div class="apn anl">這台的 ${esc(p.name)} 沒登入或已過期。${addLoginCard(p.key)}</div>`).join('')}${PV.filter((p) => !p.open && lcNeeds(p.key)).map((p) => `<div class="apn anl">${lcCard(p.key)}</div>`).join('')}`;
     const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' && A.mode !== 'host' ? 'on' : ''}" data-addm="safe"><span class="amh">${ICO_SAFE}<b>討論研究</b></span><i>不碰檔案、不跑指令${apNetWords(pv, 'safe') ? ';' + esc(apNetWords(pv, 'safe')) : ''}</i><em class="adang d1">危險程度:低</em></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}><span class="amh">${ICO_WORK}<b>沙盒開發</b></span><i>${canW ? '只動自己的資料夾,不推送' + (apNetWords(pv, 'work') ? ';' + esc(apNetWords(pv, 'work')) : '') : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 AIB 還不能開'}</i><em class="adang d2">危險程度:中</em></button>${hsModeBtn(A, pv) || apHostCard(A, pv)}<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD && !inPreview() ? '' : 'off'}" data-addm="dgrs" ${canD && !inPreview() ? '' : 'disabled aria-disabled="true"'}><span class="amh">${ICO_DGRS}<b>完全權限</b></span><i>${inPreview() ? '預覽區不能開完全權限,到正式版才行' : canD ? '跟你本人一樣,每次開都要驗證' + (apNetWords(pv, 'dgrs') ? ';' + esc(apNetWords(pv, 'dgrs')) : '') : '這個品牌在這台只能開討論研究'}</i><em class="adang d4">危險程度:最高</em></button>`; // S1b 5(Andy 11-23 03:01「只有二個」):開不了也畫出來、變灰寫原因,不要整顆消失
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
@@ -5734,10 +6084,10 @@
     const where = `<div class="apl"><button type="button" class="apr ${!node ? 'on' : ''}" data-addnu="" aria-pressed="${!node}"><b>不指定</b><i>自由發揮,不綁專案</i></button></div><div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找已有專案(標題或編號)" aria-label="找已有專案" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div><div class="apn">讀自進度樹;選了之後它只專注做這個專案,不會再默默帶入左樹選中的那一項${node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改' : node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個(不選就只開席、不掛)' : ''}</div>`;
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
-    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login', copilot: '終端機打 copilot login(' + COPILOT_LOGIN + ')' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
-    const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
+    // Andy 11-26 02:0x「用那台既有的登入,過期或沒有一樣彈出綁定視窗」:沒登入 / 過期不叫人去終端機,就地接同一張重新登入卡(TABLE-win-login-on-open-fc7f9-1126 §F)
+    const FIX = { 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
     if (!pv) {
-      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${p.why === '這台還沒登入' && RELOG_NAME[p.key] ? ' ' + relogHtml(p.key) : FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
+      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${p.nl && RELOG_NAME[p.key] ? '。' + addLoginCard(p.key) : lcNeeds(p.key) ? '。' + `<span class="anlc">${lcCard(p.key)}</span>` : FIX[p.why] ? '。怎麼辦:' + esc(FIX[p.why]) : ''}</li>`).join('');
       // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
       const pvGo = !inPreview() && Array.isArray(S.pvs) && S.pvs.some((x) => !x.sample);
       if (pvGo) return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="新增 AI 夥伴">
@@ -6183,7 +6533,7 @@
     if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 AIB 不收這些欄位(' + why + ')';
     return c === 'shared_folder_writers_full' ? '這個資料夾已經有兩席在寫,請開在自己的資料夾' : c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 AIB 還不能從頁面開席' : errText(e);
   }
-  async function doAdd() {
+  async function doAdd(onlySnap) { // onlySnap:登入完自動再送時,要跟被擋那次的 body 快照一樣才送
     const A = S.add, PV = providers(), pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.open);
     const persona = A.persona;
     if (!pv || !persona) { A.msg = pv ? '先選一個人格(這一席的個性與專長)' : '要選品牌和人格'; A.err = true; return render(); }
@@ -6217,6 +6567,9 @@
       const T = A.tpl && hasAct('perm_template_apply') === true ? ptOf(A.tpl) : null;
       if (T && body.repo) { A.busy = false; A.msg = PT_WHY.template; A.err = true; return render(); } // 08de5:兩個驗證會搶 ticket 欄,aibd 回 400 reason=template
       if (T) { body.tpl_uid = T.tpl_uid; body.rev = T.rev; body.mode = T.base; }
+      // 自動再送:body 不帶 ticket(c2f0b N1:409 在本人窗之前,完全權限照樣要新的本人窗);idem_key 每次新的,不算進快照
+      if (typeof onlySnap === 'string' && addSnap(body) !== onlySnap) { A.busy = false; A.msg = '已重新登入;設定跟剛才被擋那次不一樣,沒有自動開,請確認後按「開」'; A.err = false; return render(); }
+      A.nlSnap = addSnap(body);
       const r = await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = FP_SEE; render(); } }); // 08de5 A11:dgrs 不帶倉也會 202 要指紋 ⇒ 一律走 fingerAct(不是 202 就照原樣回)
       const seat = r.seat || {};
       let note = '';
@@ -6246,7 +6599,12 @@
       await tick(true);
       if (seat.seat_id && seatById(seat.seat_id)) { S.mode = seat.seat_id; S.atOpen = false; render(); } // 不走 setMode:它會清掉上面那句「開了 @… / 在排隊…」
       return;
-    } catch (e) { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
+    } catch (e) {
+      // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
+      const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
+      if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
+      else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
+    }
     A.busy = false; render();
   }
 
@@ -6636,8 +6994,10 @@
     const rrd = x.closest('[data-rcpread],[data-rcpwd]'); if (rrd) { rrd.disabled = true; return rrd.dataset.rcpread ? rcpAct('receipt_read', rrd.dataset.rcpread) : rcpAct('receipt_withdraw', rrd.dataset.rcpwd); }
     const sbb = x.closest('[data-sendback]'); if (sbb && sbHeld(sbb.dataset.sendback)) { S.sbMsg = { seat: sbb.dataset.sendback, bad: true, text: '這一席正在做事,沒有交回。這一輪做完再按「交回本機原倉」(不用停席)' }; say(S.sbMsg.text, 'err'); return render(); }
     if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
+    if (lcClick(x)) return;
     const rlb = x.closest('[data-relogin]'); if (rlb && !(S.relog && !S.relog.done)) return relogin(rlb.dataset.relogin);
     if (x.closest('[data-relogsend]')) return relogSend();
+    if (x.closest('[data-relogcopy]')) return relogCopy();
     const mvb = x.closest('[data-move]'); if (mvb) { S.moveAsk = mvb.dataset.move; S.moveCode = ''; S.moveMsg = null; render(); const ci = document.querySelector('[data-movecode]'); if (ci) ci.focus(); return; }
     if (x.closest('[data-moveno]')) { S.moveAsk = null; render(); return; }
     const mvg = x.closest('[data-movego]'); if (mvg && !S.moveF) { const ci = document.querySelector('[data-movecode]'); mvg.disabled = true; return seatMove(mvg.dataset.movego, String(ci ? ci.value : S.moveCode || '').trim()); }
@@ -6844,6 +7204,7 @@
       loadRegistry();
       if (!S.pt.off) ptLoad(); // S3:每次開都重讀(別的分頁可能改過)
       hsLoad(); // S2:沒有 act 就不送
+      lcLoad(); // L3:安裝 / 換版卡(舊 aibd 沒有這支 GET ⇒ 不出卡)
       S.sp = null; spLoad(); // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
       { const A = S.add; setTimeout(() => { if (S.add === A) A.still = true; }, 400); } // 進場只播一次,之後點選重畫不再播
       // 0eed7 L:人格清單有介面就用(GET /api/v1/personas,形狀未定:{personas:[{uid, display_name}]} 或陣列);沒有就從現有席收
@@ -6855,6 +7216,7 @@
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
+    if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列
