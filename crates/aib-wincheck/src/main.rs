@@ -6,7 +6,8 @@
 
 use aib_wincheck::{
     check_pack, failed_names, kept_env, parse_results, parse_sums, parse_tests, sha256_hex,
-    step_args, suite_name, Counts, Report, TestExe, SCREEN_ASKS, STEPS, TREE, WINDOWS_ROOT,
+    step_args, suite_name, Counts, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, TREE,
+    WINDOWS_ROOT,
 };
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -236,8 +237,8 @@ fn main() -> ExitCode {
 
     // the tree back where CI built it: a folder of this program's own, never a project
     // folder of the person's (c2f0b L1)
-    let tests: Vec<TestExe> = match std::fs::read_to_string(a.pack.join(TREE).join("TESTS"))
-        .map_err(|e| format!("TESTS: {e}"))
+    let tests: Vec<TestExe> = match std::fs::read_to_string(a.pack.join(TESTS_LIST))
+        .map_err(|e| format!("{TESTS_LIST}: {e}"))
         .and_then(|t| parse_tests(&t))
     {
         Ok(t) => t,

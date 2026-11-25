@@ -295,7 +295,8 @@ jobs:
           #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
           #   C:\aibw\ez2-aib and the laptop puts the tree back at the same place. The pack keeps
           #   the tree's layout: the source (git archive), target/debug/*.exe, the test
-          #   executables, and TESTS (<exe>\t<package folder>). Every file is in SHA256SUMS.
+          #   executables, and wincheck-tests.tsv (<exe>\t<package folder>) at the pack root (not in the
+          #   tree: Windows ignores case and the tree has tests/). Every file is in SHA256SUMS.
           W=/c/aibw/ez2-aib
           rm -rf /c/aibw && mkdir -p "$W"
           git archive HEAD | tar -x -C "$W"
@@ -303,23 +304,23 @@ jobs:
             | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
             | sort -u > winexe-tests.raw
           [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
-          : > "$W/TESTS"
+          : > winexe-tests.tsv
           while IFS=$'\t' read -r e m; do
             e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
             case "$e$m" in "$W"/*"$W"/*) ;; *) echo "::error::$e or $m is not under $W"; exit 1 ;; esac
             pkg=$(dirname "${m#"$W"/}"); [ "$pkg" = . ] && pkg=
-            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> "$W/TESTS"
+            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> winexe-tests.tsv
           done < winexe-tests.raw
           P=winexe/aibw/ez2-aib
           mkdir -p "$P"
           git archive HEAD | tar -x -C "$P"
-          cp "$W/TESTS" "$P/TESTS"
+          cp winexe-tests.tsv winexe/wincheck-tests.tsv
           mkdir -p "$P/target/debug/deps"
           cp "$W"/target/debug/*.exe "$P/target/debug/"
-          cut -f1 "$W/TESTS" | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
+          cut -f1 winexe-tests.tsv | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
           printf '%s\n' "$HEAD_SHA" > winexe/HEAD
           (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
-          echo "::notice title=wincheck pack::$(wc -l < "$W/TESTS") test executables, $(du -sh winexe | cut -f1)"
+          echo "::notice title=wincheck pack::$(wc -l < winexe-tests.tsv) test executables, $(du -sh winexe | cut -f1)"
           echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && steps.winexe.outcome == 'success'

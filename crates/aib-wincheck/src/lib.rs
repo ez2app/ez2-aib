@@ -34,7 +34,11 @@ pub const TREE: &str = "aibw/ez2-aib/";
 /// fixtures), so it is not moved; the tree is put back where it was built.
 pub const WINDOWS_ROOT: &str = r"C:\aibw\ez2-aib";
 
-/// One test executable of the pack's `TESTS` list: the executable and the package folder it
+/// The list of test executables, at the pack's root (not inside the tree: on a file system that
+/// ignores case, which Windows' and macOS' do, `TESTS` there is the source's `tests` folder).
+pub const TESTS_LIST: &str = "wincheck-tests.tsv";
+
+/// One test executable of the pack's [`TESTS_LIST`]: the executable and the package folder it
 /// runs in (cargo runs a test in its package's folder, with `CARGO_MANIFEST_DIR` set to it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestExe {
@@ -53,7 +57,7 @@ fn inside(p: &str) -> bool {
         || p.split('/').any(|x| x == ".." || x.is_empty()))
 }
 
-/// The pack's `TESTS` file: one `<exe>\t<package folder>` line per test executable, both
+/// The pack's [`TESTS_LIST`]: one `<exe>\t<package folder>` line per test executable, both
 /// relative to the tree. Anything else, a path that leaves the tree, or an executable listed
 /// twice is refused.
 pub fn parse_tests(text: &str) -> Result<Vec<TestExe>, String> {
@@ -117,7 +121,7 @@ pub struct Step {
     /// the name in the result file (`STEP-BEGIN <name>`)
     pub name: &'static str,
     /// the test executable, named as cargo names its target (`hello`, `aib_sys`): the file
-    /// in the pack's `TESTS` list without `-<hash>` and `.exe`
+    /// in the pack's [`TESTS_LIST`] without `-<hash>` and `.exe`
     pub exe: &'static str,
     /// the test-name filter passed to libtest (`None` = every test of the executable)
     pub filter: Option<&'static str>,
