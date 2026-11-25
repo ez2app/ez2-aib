@@ -91,7 +91,7 @@ pub fn pick(all: &[Found], changed: Option<&BTreeSet<String>>) -> Picked {
 }
 
 /// `git diff --no-renames --name-only base...head`, `/` paths; Err = not read.
-fn changed(root: &Path, base: &str, head: &str) -> Result<BTreeSet<String>, String> {
+pub(crate) fn changed(root: &Path, base: &str, head: &str) -> Result<BTreeSet<String>, String> {
     let o = Command::new("git")
         .arg("-C")
         .arg(root)

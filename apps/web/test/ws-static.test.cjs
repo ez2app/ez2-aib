@@ -1586,4 +1586,10 @@ const hsChecks = (async () => {
   ok(/if \(x\.closest\('\[data-ptnew\],\[data-ptfine\],\[data-ptedit\],\[data-ptdel\],\[data-ptdelno\],\[data-ptdelok\],\[data-ptbase\],\[data-ptit\],\[data-ptno\],\[data-ptok\],\[data-ptpick\],\[data-ptsa\],\[data-ptap\],\[data-ptrv\]'\) && await ptClick\(x\)\) return;/.test(mainClick), 'reason: pt_click_not_wired');
 })();
 
+// 08de5 11-25 grok L1(Andy 接受):品牌說明與開席前的摘要都寫明 grok 安全席仍可搜尋 X、關不掉
+{
+  const sum = (ws.split('  function apSum(A, pv) {')[1] || '').slice(0, 700);
+  ok(/const GROK_X = 'Grok 安全席仍可搜尋 X\(關不掉\)';/.test(ws) && /grok: '[^']*' \+ GROK_X \+/.test(ws), 'reason: grok_x_search_unsaid_in_brand');
+  ok(sum.includes("${pv.key === 'grok' ? ' · ' + GROK_X : ''}"), 'reason: grok_x_search_unsaid_before_open');
+}
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

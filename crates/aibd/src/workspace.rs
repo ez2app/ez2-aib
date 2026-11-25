@@ -232,6 +232,26 @@ pub async fn version(State(st): State<AppState>) -> Response {
     // 043dd (519d0 自測 r3 M3): sessions running at once, so the page says a new seat will
     // queue before it is opened
     body["max_sessions"] = json!(st.sessions.max_running());
+    // A13 (DESIGN-a13-model-list-08de5-1123 r1): the models the page may offer, per brand
+    let store = st.store.clone();
+    let got = tokio::task::spawn_blocking(move || {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            .saturating_sub(30 * 86_400);
+        let since = crate::sessions::rfc3339_of_unix(i64::try_from(secs).unwrap_or(0));
+        let used = crate::model_list::used_lately(&store.seat_metas().unwrap_or_default(), &since);
+        let codex = crate::model_list::codex_home().and_then(|h| crate::model_list::read_codex(&h));
+        (used, codex)
+    })
+    .await;
+    let (used, codex) = got.unwrap_or_default();
+    crate::model_list::add_to(
+        &mut body,
+        &crate::default_model::now(),
+        &used,
+        codex.as_ref(),
+    );
     Json(body).into_response()
 }
 
@@ -1359,6 +1379,8 @@ mod tests {
             &vec![
                 json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
                 json!({"id": "codex", "open": false, "modes": aib_seatopen::pipe_modes("codex"), "reason": "not_installed"}),
+                json!({"id": "grok", "open": false, "modes": aib_seatopen::pipe_modes("grok"), "reason": "not_set_up"}),
+                json!({"id": "copilot", "open": false, "modes": aib_seatopen::pipe_modes("copilot"), "reason": "not_set_up"}),
             ],
             "reason: brands_are_aib2_only_each_ready_or_why"
         );
@@ -1397,21 +1419,26 @@ mod tests {
             .iter()
             .map(|p| p["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["claude", "codex"], "reason: brands_not_aib2_only");
+        assert_eq!(
+            ids,
+            ["claude", "codex", "grok", "copilot"],
+            "reason: brands_not_aib2_only"
+        );
         for old in [
             "openrouterjev",
             "typesafe",
             "nvidia",
             "openrouter",
             "deepseek",
-            "copilot",
             "musebot",
         ] {
             assert!(!v.to_string().contains(old), "reason: old_name_shown {old}");
         }
         // nothing listed for them here: not set up
         assert_eq!(brand_ready("claude", &policy_with(&[])), Err("not_set_up"));
-        assert_eq!(brand_ready("grok", &policy_with(&[])), Err("not_built"));
+        assert_eq!(brand_ready("grok", &policy_with(&[])), Err("not_set_up"));
+        assert_eq!(brand_ready("copilot", &policy_with(&[])), Err("not_set_up"));
+        assert_eq!(brand_ready("agy", &policy_with(&[])), Err("not_built"));
     }
 
     #[test]
@@ -1419,6 +1446,7 @@ mod tests {
         let h = tempfile::tempdir().unwrap();
         assert!(!logged_in("claude", h.path(), None));
         assert!(!logged_in("codex", h.path(), None));
+        assert!(!logged_in("grok", h.path(), None));
         // claude: the account named in ~/.claude.json (macOS keychain) or the credentials file
         std::fs::write(
             h.path().join(".claude.json"),

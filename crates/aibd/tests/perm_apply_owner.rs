@@ -210,5 +210,20 @@ async fn a_raise_on_an_open_seat_goes_in_only_with_its_own_ticket() {
     assert_eq!(r.code, 403, "reason: revoked_ticket_accepted {}", r.body);
     assert!(r.body.contains("owner_check_not_approved"), "{}", r.body);
     assert_eq!(pending().await.as_deref(), Some(b.as_str()));
+
+    // Positive control (ebab8 15:28): a fresh approved ticket for a still succeeds (proving the
+    // three 403s above came from ticket state, not rev or anything else).
+    let was = n.load(Ordering::SeqCst);
+    let r = post(apply(&a, a_rev, None)).await;
+    assert_eq!(r.code, 202, "{}", r.body);
+    let tfresh = r.json["ticket"].as_str().unwrap().to_owned();
+    answered(&n, was + 1).await;
+    let r = post(apply(&a, a_rev, Some(&tfresh))).await;
+    assert_eq!(
+        r.code, 200,
+        "reason: fresh_ticket_control_failed {}",
+        r.body
+    );
+    assert_eq!(pending().await.as_deref(), Some(a.as_str()));
     d.shutdown().await;
 }

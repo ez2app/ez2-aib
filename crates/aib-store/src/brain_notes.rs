@@ -78,14 +78,47 @@ fn key_ok(s: &str) -> bool {
     crate::ranks::key_ok(s)
 }
 
-/// A path inside a brain: `/`-separated pieces, none empty, `.` or `..`, no `\`, not absolute.
+/// A path inside a brain: `/`-separated pieces, none empty, `.` or `..`, no `\`, `:`, NUL,
+/// trailing `.` / space, or Windows reserved device names (L6).
 pub fn rel_path_ok(p: &str) -> bool {
     !p.is_empty()
         && p.len() <= 400
         && !p.starts_with('/')
         && !p.contains('\\')
+        && !p.contains(':')
         && !p.contains('\0')
-        && p.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+        && p.split('/').all(|s| {
+            if s.is_empty() || s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ') {
+                return false;
+            }
+            let stem = s.split('.').next().unwrap_or("");
+            let up = stem.to_ascii_uppercase();
+            !matches!(
+                up.as_str(),
+                "CON"
+                    | "PRN"
+                    | "AUX"
+                    | "NUL"
+                    | "COM1"
+                    | "COM2"
+                    | "COM3"
+                    | "COM4"
+                    | "COM5"
+                    | "COM6"
+                    | "COM7"
+                    | "COM8"
+                    | "COM9"
+                    | "LPT1"
+                    | "LPT2"
+                    | "LPT3"
+                    | "LPT4"
+                    | "LPT5"
+                    | "LPT6"
+                    | "LPT7"
+                    | "LPT8"
+                    | "LPT9"
+            )
+        })
 }
 
 fn need(ok: bool, why: &'static str) -> Result<()> {
@@ -294,7 +327,20 @@ mod tests {
     #[test]
     fn a_bad_row_is_refused() {
         let (_d, m) = db();
-        for p in ["../x.md", "/abs.md", "a//b.md", "a/./b.md", "a\\b.md", ""] {
+        for p in [
+            "../x.md",
+            "/abs.md",
+            "a//b.md",
+            "a/./b.md",
+            "a\\b.md",
+            "",
+            "a:b.md",
+            "CON.md",
+            "sub/nul.txt",
+            "LPT1",
+            "a/b.",
+            "a/b ",
+        ] {
             let mut n = note("bn_p", "s1", 1);
             n.rel_path = p.into();
             assert!(m.brain_note_add(n).is_err(), "reason: path_taken {p:?}");

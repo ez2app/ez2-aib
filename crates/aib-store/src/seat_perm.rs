@@ -1,3 +1,4 @@
+//! 記錄、不是防線;work 席靠沙盒擋寫 aibd 資料夾,dgrs 席與同使用者程式改得到 (P10).
 //! What each seat was given from a permission template (aibd §7 7b, DESIGN-brainnote-08de5-1123
 //! §2d / §7; SPEC-ai-partner-open-ebab8-1123-r2 §3.7 / §6): the template and revision it was
 //! opened or applied with, its items as aibd expanded them, a change waiting for the seat's
@@ -263,10 +264,11 @@ impl MessageDb {
         by: &str,
         at: &str,
     ) -> Result<PermWrite> {
-        self.seat_perm_pend_inner(seat, s, None, action, by, at, None)
+        self.seat_perm_pend_inner(seat, s, None, action, by, at, None, None)
     }
 
-    /// Compare-and-swap pend (7b L1) and optional atomic log revoke (7b L4) in one transaction.
+    /// Compare-and-swap pend (7b L1), optional atomic log revoke (7b L4), and optional atomic
+    /// initial open (P8) in one transaction.
     #[allow(clippy::too_many_arguments)]
     pub fn seat_perm_pend_if(
         &self,
@@ -278,6 +280,7 @@ impl MessageDb {
         by: &str,
         at: &str,
         revoking: Option<i64>,
+        open_default: Option<&PermState>,
     ) -> Result<PermWrite> {
         self.seat_perm_pend_inner(
             seat,
@@ -287,6 +290,7 @@ impl MessageDb {
             by,
             at,
             revoking,
+            open_default.cloned(),
         )
     }
 
@@ -300,9 +304,13 @@ impl MessageDb {
         by: &str,
         at: &str,
         revoking: Option<i64>,
+        open_default: Option<PermState>,
     ) -> Result<PermWrite> {
         who_checked(seat, by, at)?;
         state_checked(s)?;
+        if let Some(ref def) = open_default {
+            state_checked(def)?;
+        }
         need(
             matches!(action, "lower" | "raise_pending" | "revoke"),
             "action is lower, raise_pending or revoke",
@@ -316,8 +324,31 @@ impl MessageDb {
         );
         self.write(move |c| {
             let tx = c.transaction()?;
-            let Some(old) = row_of(&tx, &seat)? else {
-                return Ok(PermWrite::Unknown);
+            let old = match row_of(&tx, &seat)? {
+                Some(row) => row,
+                None => match (open_default, &expected) {
+                    (Some(def), Some((exp_now, exp_pend)))
+                        if &def == exp_now && exp_pend.is_none() =>
+                    {
+                        tx.execute(
+                            "INSERT INTO seat_perm (seat_id, tpl_uid, tpl_rev, base, items_json, set_at, set_by)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![seat, def.tpl_uid, def.tpl_rev, def.base, def.items_json, at, "aibd:mode"],
+                        )?;
+                        log_row(&tx, &seat, "open", None, Some(state_json(&def)), &at, "aibd:mode")?;
+                        SeatPerm {
+                            seat_id: seat.clone(),
+                            now: def,
+                            set_at: at.clone(),
+                            set_by: "aibd:mode".to_owned(),
+                            pending: None,
+                            pending_at: None,
+                            pending_by: None,
+                        }
+                    }
+                    (Some(_), _) => return Ok(PermWrite::Conflict),
+                    (None, _) => return Ok(PermWrite::Unknown),
+                },
             };
             if let Some((exp_now, exp_pend)) = expected {
                 if old.now != exp_now || old.pending != exp_pend {
@@ -559,7 +590,7 @@ mod tests {
         };
         // L1: stale expected_now (different items OR same items with different tpl_uid/rev/base) -> Conflict
         assert_eq!(
-            m.seat_perm_pend_if("s1", &b, &b, None, "lower", "page:x", "t2", None)
+            m.seat_perm_pend_if("s1", &b, &b, None, "lower", "page:x", "t2", None, None)
                 .unwrap(),
             PermWrite::Conflict
         );
@@ -574,6 +605,7 @@ mod tests {
                 "lower",
                 "page:x",
                 "t2",
+                None,
                 None
             )
             .unwrap(),
@@ -581,7 +613,7 @@ mod tests {
         );
         // L1: matching expected state -> Done
         assert!(matches!(
-            m.seat_perm_pend_if("s1", &b, &a, None, "lower", "page:x", "t2", None)
+            m.seat_perm_pend_if("s1", &b, &a, None, "lower", "page:x", "t2", None, None)
                 .unwrap(),
             PermWrite::Done(_)
         ));
@@ -595,6 +627,7 @@ mod tests {
                 "raise_pending",
                 "page:x",
                 "t3",
+                None,
                 None
             )
             .unwrap(),
@@ -620,6 +653,7 @@ mod tests {
                 "page:x",
                 "t5",
                 Some(open_id),
+                None,
             )
             .unwrap(),
             PermWrite::Conflict

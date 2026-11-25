@@ -40,7 +40,7 @@ impl fmt::Display for PipeRefused {
 impl std::error::Error for PipeRefused {}
 
 /// The providers [`pipe_argv`] can start.
-pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex"];
+pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex", "grok", "copilot"];
 
 /// The modes each of [`PIPE_PROVIDERS`] starts in (GET version's capabilities).
 pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
@@ -50,8 +50,157 @@ pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
         // seat start-up it then runs); only a seat CODEX_HOME keeps it out, and how that
         // home shares the login is not measured yet. A safe seat has no tool to run it with.
         "codex" => CODEX_MODES,
+        // AP31 (andymini 11-25 probe on grok 1.0.70): safe-only until work sandbox probes pass.
+        "grok" => &["safe"],
+        // AP30 (andymini 11-25 probe on copilot 1.0.103): safe-only.
+        "copilot" => &["safe"],
         _ => &[],
     }
+}
+
+/// Built-in tools removed in grok `safe` mode (measured on grok 1.0.70: `--tools ""` still
+/// left all 24 built-in tools enabled and ran `read_file` / `curl`, whereas `--disallowed-tools`
+/// with this list yields `"tools":[]` and refuses file, shell, and web-fetch).
+pub const GROK_SAFE_DISALLOWED: &str = "run_terminal_command,read_file,search_replace,list_dir,grep,kill_command_or_subagent,todo_write,get_command_or_subagent_output,scheduler_create,scheduler_delete,scheduler_list,monitor,search_tool,use_tool,workflow,enter_plan_mode,exit_plan_mode,ask_user_question,send_feedback,image_gen,image_edit,image_to_video,reference_to_video,write";
+
+/// The grok versions whose flags were measured (BRAND-grok-ae921-1124: 1.0.70). `out` is what
+/// `grok --version` prints (`grok 1.0.70 (f50904eaee6c)`); anything else is refused with it.
+pub fn grok_version_ok(out: &str) -> bool {
+    out.lines().any(|l| {
+        l.trim()
+            .strip_prefix("grok 1.0.70")
+            .is_some_and(|r| r.is_empty() || r.starts_with(' '))
+    })
+}
+
+/// What a grok safe seat must be started with, each exactly once: flag and value (`None` for a
+/// bare flag). 08de5 11-25 (ebab8 q_cd554b24 condition 1): checked where the seat starts,
+/// not only where [`pipe_argv`] builds the words.
+pub const GROK_SAFE_REQUIRED: &[(&str, Option<&str>)] = &[
+    ("--permission-mode", Some("plan")),
+    ("--disable-web-search", None),
+    ("--no-subagents", None),
+    ("--sandbox", Some("readonly")),
+    ("--disallowed-tools", Some(GROK_SAFE_DISALLOWED)),
+];
+
+/// Words that would give a grok safe seat back what [`GROK_SAFE_REQUIRED`] takes away (an
+/// allow rule, a tool list, an extra folder, an agent, a prompt of its own, auto-approval).
+pub const GROK_SAFE_FORBIDDEN: &[&str] = &[
+    "--allow",
+    "--allowedTools",
+    "--allowed-tools",
+    "--always-approve",
+    "--tools",
+    "--add-dir",
+    "--agent",
+    "--agents",
+    "--system-prompt-override",
+    "--system-prompt",
+    "--worktree",
+    "-w",
+    "--cwd",
+];
+
+/// The first reason a grok argv is not a safe seat's ([`safe_refusal`] with grok's lists).
+pub fn grok_safe_refusal(argv: &[String]) -> Option<String> {
+    safe_refusal(argv, GROK_SAFE_REQUIRED, GROK_SAFE_FORBIDDEN)
+}
+
+/// The first reason `argv` (`argv[0]` the program) is not a safe seat's: a `required` flag
+/// missing, given twice or with another value (`missing:--sandbox`), or a `forbidden` one
+/// present (`forbidden:--tools`). A `--flag=value` form counts as the flag.
+pub fn safe_refusal(
+    argv: &[String],
+    required: &[(&str, Option<&str>)],
+    forbidden: &[&str],
+) -> Option<String> {
+    let words = argv.get(1..).unwrap_or_default();
+    let name = |w: &str| w.split_once('=').map_or(w, |(n, _)| n).to_owned();
+    for w in words {
+        if forbidden.contains(&name(w).as_str()) {
+            return Some(format!("forbidden:{}", name(w)));
+        }
+    }
+    for (flag, value) in required {
+        let at: Vec<usize> = (0..words.len())
+            .filter(|&i| name(&words[i]) == *flag)
+            .collect();
+        let ok = match (at.as_slice(), value) {
+            ([i], None) => words[*i] == *flag,
+            ([i], Some(v)) => words[*i] == *flag && words.get(i + 1).is_some_and(|x| x == v),
+            _ => false,
+        };
+        if !ok {
+            return Some(format!("missing:{flag}"));
+        }
+    }
+    None
+}
+
+/// The copilot versions aibd starts: only the one this seat's words were read against
+/// (`copilot --help` of 1.0.115, 08de5 11-25). Its tools-off run is not measured yet
+/// (TAKEOVER-brands §2.2; condition 6): this list changes to the measured one then.
+pub fn copilot_version_ok(out: &str) -> bool {
+    out.lines().any(|l| {
+        l.trim()
+            .strip_prefix("GitHub Copilot CLI 1.0.115")
+            .is_some_and(|r| r.is_empty() || r == ".")
+    })
+}
+
+/// What a copilot safe seat must be started with, each exactly once.
+pub const COPILOT_SAFE_REQUIRED: &[(&str, Option<&str>)] = &[
+    ("--output-format", Some("json")),
+    ("--available-tools", Some("nonexistent_tool")),
+    ("--disable-builtin-mcps", None),
+    ("--disallow-temp-dir", None),
+    ("--deny-url", Some("*")),
+    ("--no-custom-instructions", None),
+];
+
+/// Words that would give a copilot safe seat back what [`COPILOT_SAFE_REQUIRED`] takes away,
+/// or put the prompt in argv (`-p`, `-i`).
+pub const COPILOT_SAFE_FORBIDDEN: &[&str] = &[
+    "--allow-all",
+    "--allow-all-paths",
+    "--allow-all-tools",
+    "--allow-all-urls",
+    "--allow-all-mcp-server-instructions",
+    "--allow-tool",
+    "--allow-url",
+    "--yolo",
+    "--autopilot",
+    "--mode",
+    "--fleet",
+    "--add-dir",
+    "--plugin-dir",
+    "--additional-mcp-config",
+    "--add-github-mcp-tool",
+    "--add-github-mcp-toolset",
+    "--enable-all-github-mcp-tools",
+    "--enable-mcp-server",
+    "--agent",
+    "--trust-folder",
+    "--assisted-approval",
+    "--connect",
+    "--acp",
+    "--share",
+    "--share-gist",
+    "--sync-session",
+    "-C",
+    "-p",
+    "--prompt",
+    "-i",
+    "--interactive",
+];
+
+/// The model a copilot seat asks for when none is given: copilot picks among those the plan has.
+pub const COPILOT_ANY_MODEL: &str = "auto";
+
+/// The first reason a copilot argv is not a safe seat's ([`safe_refusal`]).
+pub fn copilot_safe_refusal(argv: &[String]) -> Option<String> {
+    safe_refusal(argv, COPILOT_SAFE_REQUIRED, COPILOT_SAFE_FORBIDDEN)
 }
 
 /// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C, COUNCIL-worktree-gitdir Q3): a
@@ -355,6 +504,55 @@ fn argv_with(
             }
             Ok(a)
         }
+        "copilot" => {
+            if !pipe_modes("copilot").contains(&mode) {
+                return Err(PipeRefused::ProviderMode("copilot".into(), mode.into()));
+            }
+            let a = vec![
+                "copilot".to_owned(),
+                "--output-format".to_owned(),
+                "json".to_owned(),
+                "--available-tools".to_owned(),
+                "nonexistent_tool".to_owned(),
+                "--disable-builtin-mcps".to_owned(),
+                "--disallow-temp-dir".to_owned(),
+                "--deny-url".to_owned(),
+                "*".to_owned(),
+                "--no-custom-instructions".to_owned(),
+                "--model".to_owned(),
+                // no model given: copilot's own pick, never the user's config default (on this
+                // Mac a grok model copilot does not serve: every turn failed, EVIDENCE-brand-
+                // copilot-08de5-1125)
+                model.unwrap_or(COPILOT_ANY_MODEL).to_owned(),
+            ];
+            Ok(a)
+        }
+        "grok" => {
+            if !pipe_modes("grok").contains(&mode) {
+                return Err(PipeRefused::ProviderMode("grok".into(), mode.into()));
+            }
+            let grok_id_flag = if id_flag == RESUME_FLAG { "-r" } else { "-s" };
+            let mut a = vec![
+                "grok".to_owned(),
+                "--output-format".to_owned(),
+                "streaming-json".to_owned(),
+                "--permission-mode".to_owned(),
+                "plan".to_owned(),
+                "--disable-web-search".to_owned(),
+                "--no-subagents".to_owned(),
+                "--sandbox".to_owned(),
+                "readonly".to_owned(),
+                "--disallowed-tools".to_owned(),
+                GROK_SAFE_DISALLOWED.to_owned(),
+                grok_id_flag.to_owned(),
+                session_id.to_owned(),
+            ];
+            if let Some(m) = model {
+                a.push("--model".into());
+                a.push(m.into());
+            }
+            Ok(a)
+        }
         other => Err(PipeRefused::Provider(other.to_owned())),
     }
 }
@@ -364,9 +562,9 @@ fn argv_with(
 /// without its persona). The text never goes in argv (seen by `ps`; Windows' command line
 /// is 32 K), only the file's path.
 pub fn add_persona_file(provider: &str, argv: &mut Vec<String>, file: &str) -> bool {
-    // codex: aibd hands the card over in the protocol (thread/start developerInstructions,
-    // codex_wire), so nothing goes in argv
-    if provider == "codex" {
+    // codex / grok / copilot: aibd hands the card over in the turn protocol, the prompt file or
+    // the turn's stdin, so nothing goes in argv
+    if provider == "codex" || provider == "grok" || provider == "copilot" {
         return true;
     }
     // appended to Claude Code's own system prompt: the tools and rules stay
@@ -403,8 +601,171 @@ mod tests {
         let mut b = vec!["codex".to_string()];
         assert!(add_persona_file("codex", &mut b, "/d/p.md"));
         assert_eq!(b, ["codex"], "reason: persona_in_codex_argv");
+        let mut g = vec!["grok".to_string()];
+        assert!(add_persona_file("grok", &mut g, "/d/p.md"));
+        assert_eq!(g, ["grok"], "reason: persona_in_grok_argv");
         let mut c = vec!["agy".to_string()];
         assert!(!add_persona_file("agy", &mut c, "/d/p.md"));
+    }
+
+    #[test]
+    fn grok_safe_has_all_safety_flags_and_refuses_other_modes() {
+        let a = pipe_argv("grok", "safe", Some("grok-4.6"), ID).unwrap();
+        assert_eq!(
+            words(&a),
+            [
+                "grok",
+                "--output-format",
+                "streaming-json",
+                "--permission-mode",
+                "plan",
+                "--disable-web-search",
+                "--no-subagents",
+                "--sandbox",
+                "readonly",
+                "--disallowed-tools",
+                GROK_SAFE_DISALLOWED,
+                "-s",
+                ID,
+                "--model",
+                "grok-4.6",
+            ]
+        );
+        let r = resume_argv("grok", "safe", None, ID).unwrap();
+        assert!(r.windows(2).any(|w| w == ["-r", ID]), "{r:?}");
+        assert_eq!(
+            pipe_argv("grok", "dgrs", None, ID),
+            Err(PipeRefused::ProviderMode("grok".into(), "dgrs".into()))
+        );
+        assert_eq!(
+            pipe_argv("grok", "work", None, ID),
+            Err(PipeRefused::ProviderMode("grok".into(), "work".into()))
+        );
+    }
+
+    /// 08de5 11-25 condition 1: every required flag, taken away alone, refuses the seat; so
+    /// does each forbidden word added, a flag given twice, another value, and `--flag=value`.
+    #[test]
+    fn a_grok_safe_seat_missing_any_flag_is_refused() {
+        let a = pipe_argv("grok", "safe", Some("grok-4.6"), ID).unwrap();
+        assert_eq!(grok_safe_refusal(&a), None, "reason: built_argv_refused");
+        let r = resume_argv("grok", "safe", None, ID).unwrap();
+        assert_eq!(grok_safe_refusal(&r), None, "reason: resume_argv_refused");
+        for (flag, value) in GROK_SAFE_REQUIRED {
+            let i = a.iter().position(|w| w == flag).unwrap();
+            let mut b = a.clone();
+            b.drain(i..i + if value.is_some() { 2 } else { 1 });
+            assert_eq!(
+                grok_safe_refusal(&b),
+                Some(format!("missing:{flag}")),
+                "reason: dropped_flag_opened {flag}"
+            );
+            if let Some(v) = value {
+                let mut c = a.clone();
+                c[i + 1] = format!("{v}x");
+                assert_eq!(
+                    grok_safe_refusal(&c),
+                    Some(format!("missing:{flag}")),
+                    "{flag}"
+                );
+                let mut d = a.clone();
+                d[i] = format!("{flag}={v}");
+                d.remove(i + 1);
+                assert_eq!(
+                    grok_safe_refusal(&d),
+                    Some(format!("missing:{flag}")),
+                    "{flag}="
+                );
+            }
+            let mut twice = a.clone();
+            twice.push((*flag).to_owned());
+            if let Some(v) = value {
+                twice.push((*v).to_owned());
+            }
+            assert_eq!(
+                grok_safe_refusal(&twice),
+                Some(format!("missing:{flag}")),
+                "reason: twice_opened {flag}"
+            );
+        }
+        for bad in GROK_SAFE_FORBIDDEN {
+            let mut b = a.clone();
+            b.push(format!("{bad}=x"));
+            assert_eq!(
+                grok_safe_refusal(&b),
+                Some(format!("forbidden:{bad}")),
+                "reason: forbidden_opened {bad}"
+            );
+        }
+    }
+
+    /// Condition 1 for copilot: each required flag taken away, given another value or twice,
+    /// and each forbidden word added (the prompt in argv among them) refuses the seat.
+    #[test]
+    fn a_copilot_safe_seat_missing_any_flag_is_refused() {
+        let a = pipe_argv("copilot", "safe", Some("gpt-5"), ID).unwrap();
+        assert_eq!(copilot_safe_refusal(&a), None, "reason: built_argv_refused");
+        for (flag, value) in COPILOT_SAFE_REQUIRED {
+            let i = a.iter().position(|w| w == flag).unwrap();
+            let mut b = a.clone();
+            b.drain(i..i + if value.is_some() { 2 } else { 1 });
+            assert_eq!(
+                copilot_safe_refusal(&b),
+                Some(format!("missing:{flag}")),
+                "reason: dropped_flag_opened {flag}"
+            );
+            let mut twice = a.clone();
+            twice.push((*flag).to_owned());
+            twice.extend(value.map(str::to_owned));
+            assert_eq!(
+                copilot_safe_refusal(&twice),
+                Some(format!("missing:{flag}"))
+            );
+            if let Some(v) = value {
+                let mut c = a.clone();
+                c[i + 1] = format!("{v}x");
+                assert_eq!(copilot_safe_refusal(&c), Some(format!("missing:{flag}")));
+            }
+        }
+        for bad in COPILOT_SAFE_FORBIDDEN {
+            let mut b = a.clone();
+            b.push(format!("{bad}=x"));
+            assert_eq!(
+                copilot_safe_refusal(&b),
+                Some(format!("forbidden:{bad}")),
+                "reason: forbidden_opened {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_read_copilot_version_starts() {
+        assert!(copilot_version_ok(
+            "GitHub Copilot CLI 1.0.115.\nRun 'copilot update'"
+        ));
+        for v in [
+            "GitHub Copilot CLI 1.0.116.",
+            "GitHub Copilot CLI 1.0.1150.",
+            "GitHub Copilot CLI 1.0.103.",
+            "",
+        ] {
+            assert!(!copilot_version_ok(v), "reason: unread_version_ok {v}");
+        }
+    }
+
+    #[test]
+    fn only_the_measured_grok_version_starts() {
+        assert!(grok_version_ok("grok 1.0.70 (f50904eaee6c)\n"));
+        assert!(grok_version_ok("grok 1.0.70"));
+        for v in [
+            "grok 1.0.71 (x)",
+            "grok 1.0.700",
+            "grok 1.0.7",
+            "",
+            "codex-cli 0.167.0",
+        ] {
+            assert!(!grok_version_ok(v), "reason: unmeasured_version_ok {v}");
+        }
     }
 
     const ID: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
@@ -462,14 +823,50 @@ mod tests {
 
     #[test]
     fn a_provider_not_measured_is_refused() {
-        for p in ["agy", "grok", "copilot", "nope"] {
+        for p in ["agy", "nope"] {
             assert_eq!(
                 pipe_argv(p, "dgrs", None, ID),
                 Err(PipeRefused::Provider(p.into())),
                 "{p}"
             );
         }
-        assert_eq!(PIPE_PROVIDERS, ["claude", "codex"]);
+        assert_eq!(PIPE_PROVIDERS, ["claude", "codex", "grok", "copilot"]);
+    }
+
+    #[test]
+    fn copilot_safe_has_all_safety_flags_and_refuses_other_modes() {
+        let a = pipe_argv("copilot", "safe", Some("gpt-5"), ID).unwrap();
+        assert_eq!(
+            words(&a),
+            [
+                "copilot",
+                "--output-format",
+                "json",
+                "--available-tools",
+                "nonexistent_tool",
+                "--disable-builtin-mcps",
+                "--disallow-temp-dir",
+                "--deny-url",
+                "*",
+                "--no-custom-instructions",
+                "--model",
+                "gpt-5",
+            ]
+        );
+        let none = pipe_argv("copilot", "safe", None, ID).unwrap();
+        assert_eq!(
+            &none[none.len() - 2..],
+            ["--model", "auto"],
+            "reason: user_default_model_used"
+        );
+        assert_eq!(
+            pipe_argv("copilot", "dgrs", None, ID),
+            Err(PipeRefused::ProviderMode("copilot".into(), "dgrs".into()))
+        );
+        assert_eq!(
+            pipe_argv("copilot", "work", None, ID),
+            Err(PipeRefused::ProviderMode("copilot".into(), "work".into()))
+        );
     }
 
     #[test]

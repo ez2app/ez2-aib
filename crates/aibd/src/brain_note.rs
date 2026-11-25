@@ -301,15 +301,18 @@ mod fsops {
             Err("brain_folder_missing") => return Ok(Took::Gone),
             Err(e) => return Err(e),
         };
-        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let fd = match openat(&dir, *name, flags, nix::sys::stat::Mode::empty()) {
             Err(Errno::ENOENT) => return Ok(Took::Gone),
             Err(_) => return Err("brain_path_unsafe"),
             Ok(fd) => fd,
         };
+        let file = std::fs::File::from(fd);
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err("brain_path_unsafe");
+        }
         let mut bytes = Vec::new();
-        std::fs::File::from(fd)
-            .take(super::TEXT_MAX as u64 * 2 + 4096)
+        file.take(super::TEXT_MAX as u64 * 2 + 4096)
             .read_to_end(&mut bytes)
             .map_err(|_| "note_read_failed")?;
         if super::sha_hex(&bytes) != sha {
@@ -457,36 +460,48 @@ mod fsops {
 
 pub use fsops::{take_back, write_new};
 
-/// `bytes` as the archive copy `keep` (its folder made owner-only first). A copy already
-/// there with the same bytes is fine (a take-back tried again).
+/// `bytes` as the archive copy `keep` (its folder made owner-only first). L4: writes to a
+/// temp file beside `keep`, `sync_all`, `rename`, then `sync_all` the parent dir; removes the
+/// temp file on any failure. A copy already there with the same bytes is fine.
 fn keep_copy(keep: &Path, bytes: &[u8]) -> Result<(), &'static str> {
     use std::io::Write;
-    if let Some(dir) = keep.parent() {
-        std::fs::create_dir_all(dir).map_err(|_| "note_archive_failed")?;
-        // f163c bnote L3: the owner's alone on unix; on Windows the folder keeps aibd's data
-        // folder's own access list
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| "note_archive_failed")?;
-        }
-    }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(keep)
+    let dir = keep.parent().ok_or("note_archive_failed")?;
+    std::fs::create_dir_all(dir).map_err(|_| "note_archive_failed")?;
+    #[cfg(unix)]
     {
-        Ok(mut f) => f
-            .write_all(bytes)
-            .and_then(|()| f.sync_all())
-            .map_err(|_| "note_archive_failed"),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(keep) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "note_archive_failed")?;
+    }
+    if keep.exists() {
+        return match std::fs::read(keep) {
             Ok(b) if b == bytes => Ok(()),
             _ => Err("note_archive_failed"),
-        },
-        Err(_) => Err("note_archive_failed"),
+        };
     }
+    let name = keep
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("note_archive_failed")?;
+    let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, keep)?;
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if write_res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("note_archive_failed");
+    }
+    Ok(())
 }
 
 /// Where aibd keeps the notes it took back: `<data>/archive/brain-notes/<note id>.md`.
@@ -623,6 +638,7 @@ pub fn message_of(code: &str) -> &'static str {
         "brain_root_missing" => "找不到第二大腦的資料庫",
         "brain_folder_missing" | "brain_unknown" => "找不到這位夥伴綁的第二大腦資料夾",
         "brain_path_unsafe" | "brain_index_unreadable" => "第二大腦的位置不安全,沒有寫入",
+        "brain_archived" => "這個第二大腦已封存,請先復原",
         _ => "筆記沒有寫入",
     }
 }
@@ -631,15 +647,30 @@ fn status_of(code: &str) -> StatusCode {
     match code {
         "note_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "note_text_empty" | "note_text_bad" | "note_title_too_long" => StatusCode::BAD_REQUEST,
-        "brain_root_missing" | "brain_folder_missing" | "brain_unknown" | "brain_not_bound" => {
-            StatusCode::CONFLICT
-        }
+        "brain_root_missing"
+        | "brain_folder_missing"
+        | "brain_unknown"
+        | "brain_not_bound"
+        | "brain_archived" => StatusCode::CONFLICT,
         "brain_path_unsafe" | "brain_index_unreadable" | "brain_overlaps_protected" => {
             StatusCode::FORBIDDEN
         }
-        "brain_protected_unknown" => StatusCode::SERVICE_UNAVAILABLE,
+        "brain_protected_unknown" | "archive_unreadable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+
+/// L8 (f163c): an already-open seat cannot keep writing to a brain once it is archived.
+fn brain_archived(data: &Path, db: &aib_store::MessageDb, route: &str) -> Result<(), &'static str> {
+    let uids = crate::registry::brain_uids_for_route(data, route)?;
+    for uid in uids {
+        match db.archived("brain", &uid) {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err("brain_archived"),
+            Err(_) => return Err("archive_unreadable"),
+        }
+    }
+    Ok(())
 }
 
 fn event(kind: &str, payload: Value) -> Option<aib_store::NewEvent> {
@@ -727,6 +758,22 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "this seat was opened with no second brain",
         );
     };
+    let (data, db, r_check) = (
+        crate::registry::data_of(&st),
+        st.messages.clone(),
+        route.clone(),
+    );
+    match tokio::task::spawn_blocking(move || brain_archived(&data, &db, &r_check)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(c)) => return refuse(status_of(c), c, message_of(c)),
+        Err(_) => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "archive check",
+            )
+        }
+    }
 
     let _one = LOCK.lock().await;
     let now_unix = std::time::SystemTime::now()
@@ -834,10 +881,24 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         // a note with no row could never be taken back: remove it again
         let (rel2, sha2) = (rel.clone(), sha.clone());
         let tmp = archive_path(&crate::registry::data_of(&st), &note_id);
-        let _ = tokio::task::spawn_blocking(move || {
+        let rolled = tokio::task::spawn_blocking(move || {
             library().and_then(|root| take_back(&root, &rel2, &sha2, &tmp))
         })
         .await;
+        if !matches!(rolled, Ok(Ok(_))) {
+            crate::seats::side_event(
+                &st,
+                "brain_note",
+                "brain.note.orphan",
+                json!({"seat_id": seat_id, "rel": rel, "sha256": sha}),
+            )
+            .await;
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("檔留在 {rel},請手動收"),
+            );
+        }
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -1374,5 +1435,43 @@ mod tests {
             Some(&home),
             true
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn take_back_refuses_fifo_without_blocking() {
+        let d = tempfile::tempdir().unwrap();
+        let fifo = d.path().join("pipe.md");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let keep = d.path().join("keep.md");
+        let r = take_back(d.path(), "pipe.md", &"0".repeat(64), &keep);
+        assert_eq!(r, Err("brain_path_unsafe"));
+        assert!(!keep.exists());
+    }
+
+    #[test]
+    fn an_archived_brain_refuses_new_notes() {
+        let d = tempfile::tempdir().unwrap();
+        let db = aib_store::MessageDb::open(&d.path().join("msg.db")).unwrap();
+        std::fs::write(
+            d.path().join("registry.json"),
+            r#"{"brains":[{"uid":"br_1","name":"b1","route_key":"k.1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(brain_archived(d.path(), &db, "k.1"), Ok(()));
+        db.archive_add(aib_store::ArchivedItem {
+            kind: "brain".into(),
+            uid: "br_1".into(),
+            archived_at: 1,
+            keep_until: None,
+            reason: "archive".into(),
+            batch_id: None,
+            copy_dir: None,
+            sha256: None,
+            restored_at: None,
+        })
+        .unwrap();
+        assert_eq!(brain_archived(d.path(), &db, "k.1"), Err("brain_archived"));
+        assert_eq!(status_of("brain_archived"), StatusCode::CONFLICT);
     }
 }

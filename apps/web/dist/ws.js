@@ -983,7 +983,7 @@
       const tip = [typeof x.what === 'string' ? x.what : '', typeof x.run_id === 'string' ? x.run_id : '', typeof x.why === 'string' ? x.why : ''].filter(Boolean).join('\n');
       h += `<div class="hrow"${tip ? ` title="${esc(tip)}"` : ''}><span class="hd ${dot}"></span><span class="hn">${esc(String(x.name || '?'))}</span><span class="hv">${esc(v)}</span></div>`;
     }
-    return h + testHostHtml() + timeSavedHtml() + pluginsHtml() + marketplaceHtml();
+    return h + testHostHtml() + timeSavedHtml() + pluginsHtml() + tierHtml() + marketplaceHtml();
   }
   // b4297 CARD-add-test-host r0(62fd9f9690):這台 ssh 設定裡的機器,哪些能拿來跑收據;加 / 收回都要指紋。只在 aibd 有 test_host_list 時畫
   const TH_WHY = {
@@ -1157,6 +1157,70 @@
       h += `<div class="thr"><span class="hd ${cur === ver ? 'hg' : ''}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(ver)}${p.paid ? ' · 付費' : ''}</i></span><span class="hv">${esc(st)}</span>${btn}<div class="thm">${esc(String(p.summary || ''))}</div></div>`;
     }
     if (M.msg) h += `<div class="thm bad" role="alert">${esc(M.msg)}</div>`;
+    return h;
+  }
+  async function tierLoad() {
+    if (hasAct('skipstop_tier_get') !== true || (S.tier && S.tier.loading)) return;
+    S.tier = Object.assign(S.tier || {}, { loading: true });
+    try { const r = await act('skipstop_tier_get', {}); S.tier = { r, at: Date.now() }; }
+    catch (e) { S.tier = { err: errText(e), at: Date.now() }; }
+    render();
+  }
+  async function tierPick(tier) {
+    const T = S.tier || {};
+    S.tier = Object.assign({}, T, { busy: tier, msg: '' });
+    render();
+    try { const r = await act('skipstop_tier_set', { tier }); S.tier = { r, at: Date.now() }; }
+    catch (e) { S.tier = Object.assign({}, T, { busy: '', msg: errText(e) }); }
+    render();
+  }
+  function tierHtml() {
+    if (hasAct('skipstop_tier_get') !== true) return '';
+    const T = S.tier;
+    if (!T || (!T.r && !T.err)) { if (!T || !T.loading) setTimeout(tierLoad, 0); return '<div class="thh"><b>省時續跑檔次</b><span class="hv">讀取中…</span></div>'; }
+    const savedWeek = S.ts && S.ts.r && S.ts.r.boxes && S.ts.r.boxes.week ? fmtMs(S.ts.r.boxes.week.confirmed_ms || 0) : '0 秒';
+    const head = `<div class="thh"><b>省時續跑檔次</b><span class="hv">本週已省 ${esc(savedWeek)}</span><button type="button" class="k" data-tierreload="1" title="重讀檔次設定">重讀</button></div>`;
+    if (T.err) return head + `<div class="thr bad">${esc(T.err)}</div>`;
+    const d = T.r || {}, p = d.policy || {}, rs = d.repo_settings || {};
+    const eff = String(d.effective_tier || 'normal');
+    const canSet = hasAct('skipstop_tier_set') === true;
+    const tiers = [
+      ['strict', '🔒 嚴格', '同版完全相符 · 每 5 次抽 1 · 有變全刀 · 失敗重跑 · Mac + Win', '不省'],
+      ['normal', '⚖️ 一般（預設）', '改動碰不到也沿用 · 每 10 次抽 1 · 只跑受影響刀 · 主要平台', '省'],
+      ['fast', '⚡ 快速（需硬體簽章）', '改動碰不到也沿用 · 每 20 次抽 1 · 只跑受影響刀 · 裝不下延後（未簽章退回嚴格）', '省'],
+    ];
+    let h = head + '<div class="thr">';
+    for (const [id, lbl, desc, tag] of tiers) {
+      const on = eff === id;
+      h += `<button type="button" class="k ${on ? 'g' : ''}" data-tierpick="${id}" ${!canSet || T.busy ? 'disabled' : ''} title="${esc(desc)}">${lbl}（${tag}）${on ? ' ✓' : ''}</button>`;
+    }
+    h += '</div>';
+    h += '<div class="thm">目前只記錄於本機設定，一期尚未接入 CI 執行；無硬體簽章之放寬設定會自動退回嚴格。</div>';
+    if (d.fell_back_to_strict) {
+      h += '<div class="thm" role="status">未完成硬體簽章驗證，已自動退回嚴格。</div>';
+    }
+    const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'exact' ? '同機完全相符' : '改動碰不到也沿用';
+    const knivesLbl = p.knives === 'changed_all' ? '有變的全跑' : p.knives === 'affected' ? '只跑受影響的' : '只跑改動刀';
+    const retryLbl = p.retry_miss === 'on' ? '當場重跑一次' : '不重跑';
+    const platLbl = p.platforms === 'all' ? 'Mac + Win' : '主要平台';
+    const ovLbl = p.overflow === 'add_cell' ? '加格全跑' : '照優先序延後';
+    const fields = [
+      ['什麼時候沿用', reuseLbl, '省很多'],
+      ['沿用幾次抽查', p.spot ? `每 ${p.spot} 次抽 1` : '每 10 次抽 1', '省一點'],
+      ['刀跑哪些', knivesLbl, p.knives === 'changed_all' ? '不省' : '省很多'],
+      ['沒咬的刀', retryLbl, '不省'],
+      ['測試平台', platLbl, '不省'],
+      ['時間裝不下時', ovLbl, p.overflow === 'defer' ? '只是挪後' : '不省'],
+      ['每格最長分鐘', `${p.cell_max_min || 90} 分`, '不省'],
+      ['同時最多格數', `${p.cells_max || 5} 格`, '不省'],
+    ];
+    h += '<details class="thr"><summary class="hv">八欄明細與全倉設定（我的組合：' + (Array.isArray(d.presets) ? d.presets.length : 0) + ' 組）</summary>';
+    for (const [k, v, s] of fields) {
+      h += `<div class="thm">${esc(k)}：<b>${esc(String(v || ''))}</b> · <span class="hv">${s}</span></div>`;
+    }
+    const hrs = Array.isArray(rs.merge_batch_hours) ? rs.merge_batch_hours.join('/') : '10/16/22';
+    h += `<div class="thm">全倉設定：平台無關刀搬 Linux=${rs.linux_knives ? '開' : '關'} · 刀長度檢查=${rs.knife_length_check === 'warn' ? '只提醒' : '開'}（單支 ≤ ${rs.script_max_knives || 140} 把、≤ ${rs.script_max_min || 15} 分）· 合併批次=${esc(hrs)} (${esc(String(rs.merge_batch_tz || 'Asia/Taipei'))})</div></details>`;
+    if (T.msg) h += `<div class="thm bad" role="alert">${esc(T.msg)}</div>`;
     return h;
   }
   async function thLoad() {
@@ -3872,8 +3936,8 @@
   const ROLE_ZH = Object.fromEntries(Object.entries(ROLE_EN).map(([z, e]) => [e, z]));
   // §22(Andy 22:2x「這個不要支援 openrouterjev 並且這個畫面的設計太差了,重新依風格設計」):品牌只列 2.0 支援的四個,
   // 舊設定裡的自訂名稱(openrouterjev、typesafe、*bot…)一律不畫;capabilities 有回就照它標能不能開,沒回的變淡
-  const ADD_BRANDS = [['claude', 'Claude', 'bc'], ['codex', 'Codex', 'bx'], ['agy', 'Antigravity', 'bg'], ['grok', 'Grok', 'bk']];
-  const BRAND_ALIAS = { claude: 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', gemini: 'agy', grok: 'grok' };
+  const ADD_BRANDS = [['claude', 'Claude', 'bc'], ['codex', 'Codex', 'bx'], ['agy', 'Antigravity', 'bg'], ['grok', 'Grok', 'bk'], ['copilot', 'Copilot', 'bp']];
+  const BRAND_ALIAS = { claude: 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', gemini: 'agy', grok: 'grok', copilot: 'copilot' };
   // 0eed7 VERIFY-codex 2d1c3b98(00:5x):codex 安全席在串裡說話、回報已真跑過;叫你決定(ask_person)還沒證 ⇒ 只開安全席、說明寫清楚;C5 證了再拿掉
   //   { block: 原因 } = 整個灰掉;{ modes, note } = 能開但只給這些模式,品牌鈕下寫 note
   const HOLD_BRANDS = { codex: { modes: ['safe'], note: 'Codex 席能在對話裡說話、叫別席、開決定卡;還不能寫檔' } };
@@ -4908,7 +4972,9 @@
     const seen = qwWhen(q.seen_at), tail = [q.plan ? '方案 ' + String(q.plan) : '', q.status ? QW_ST[q.status] || String(q.status) : '', seen ? '看到於 ' + seen : ''].filter(Boolean).join(' · ');
     return `<div class="apn">帳號額度(AIB 從 ${esc(p.name)} 自己回報的數字讀,只有用了幾 %,沒有餘額)${tail ? ' · ' + esc(tail) : ''}</div><div class="qws">${W || '<div class="apn">沒有額度視窗</div>'}</div>`;
   }
-  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊' };
+  // 08de5 11-25(3e53b REVIEW-grok L1;Andy 選 (a) 接受):grok 1.0.70 安全席仍有 4 支 xAI 伺服器端 X 搜尋工具,旗標關不掉(EVIDENCE-brand-grok-08de5-1125)⇒ 品牌說明與開席前那一行都照實寫
+  const GROK_X = 'Grok 安全席仍可搜尋 X(關不掉)';
+  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊 · ' + GROK_X + ':X 搜尋在 xAI 伺服器上,AIB 關不掉;碰不到你的檔案,但讀得到 X 上的公開貼文' };
   const AP_MODE = { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] };
   function seatModeTag(m) {
     const k = m === 'host' ? ['管理主機', '高', 3] : AP_MODE[m] ? [AP_MODE[m][0], AP_MODE[m][1], m === 'dgrs' ? 4 : m === 'work' ? 2 : 1] : null;
@@ -5366,7 +5432,7 @@
     const pn = A.persona ? ((personas().find(([u]) => u === A.persona) || [])[1] || A.persona) : '未選人格';
     const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length, mx = S.maxRun || 8;
     const mn = (A.mates || []).length;
-    return `${pv.name} · ${(AP_MODE[A.mode] || AP_MODE.safe)[0]} · ${pn}${mn ? ' + ' + mn + ' 搭檔' : ''} · 現在 ${run}/${mx} 位在工作${run + 1 + mn > mx ? ',會排隊' : ''}`;
+    return `${pv.name} · ${(AP_MODE[A.mode] || AP_MODE.safe)[0]} · ${pn}${mn ? ' + ' + mn + ' 搭檔' : ''} · 現在 ${run}/${mx} 位在工作${run + 1 + mn > mx ? ',會排隊' : ''}${pv.key === 'grok' ? ' · ' + GROK_X : ''}`;
   }
   // 示意 .src:人格 N · 第二大腦 N · 角色 N · 倉 N · 席 N,讀自這台 AIB
   function apSrc() { const R = S.reg || {}; return `人格 ${personas().length} · 第二大腦 ${(R.brains || []).length} · 角色 ${roleList().length} · 倉 ${addRepos().length} · ${apCounts()}`; }
@@ -6450,6 +6516,8 @@
     const plgB = x.closest('[data-plgset]'); if (plgB) return plgSet(plgB.dataset.plgset, plgB.dataset.plgon === '1');
     if (x.closest('[data-mktreload]')) { S.mkt = null; return mktLoad(); }
     const mktB = x.closest('[data-mktinst]'); if (mktB) return mktInstall(mktB.dataset.mktinst);
+    if (x.closest('[data-tierreload]')) { S.tier = null; return tierLoad(); }
+    const tierB = x.closest('[data-tierpick]'); if (tierB) return tierPick(tierB.dataset.tierpick);
     const ft = x.closest('[data-ftab]'); if (ft) { S.ftab = ft.dataset.ftab; try { localStorage.setItem('aib.ws.ftab', S.ftab); } catch (e) { /* 存不了:這次有效就好 */ } return render(); }
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);

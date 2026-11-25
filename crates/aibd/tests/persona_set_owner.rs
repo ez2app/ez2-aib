@@ -55,9 +55,10 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
     let n = Arc::new(AtomicUsize::new(0));
     aibd::owner_ok::set_presence(Arc::new(Yes(n.clone())), Arc::new(Open));
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-    let mut d = Daemon::start(dir.path()).await;
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let mut d = Daemon::start(&root).await;
     // a card aibd can read (cards.json is read on every ask): the registry's shape
-    let vault = dir.path().join("vault");
+    let vault = root.join("vault");
     let card_dir = vault.join("lib").join("pw0set");
     std::fs::create_dir_all(&card_dir).unwrap();
     let text = "---\nuid: pw0set\nname: \"寫卡測試\"\n---\n\n## 職責\n\n舊的職責\n";
@@ -76,7 +77,13 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
                        "card_path_rel": "lib/pw0set/角色.md"}
         }
     });
-    std::fs::write(dir.path().join("cards.json"), doc.to_string()).unwrap();
+    let doc_text = doc.to_string();
+    std::fs::write(root.join("cards.json"), &doc_text).unwrap();
+    let prov = json!({
+        "cards_json_sha256": aibd::persona_write::sha_hex(doc_text.as_bytes()),
+        "cards_fingerprint": aibd::persona_write::cards_fingerprint(&doc),
+    });
+    std::fs::write(root.join("cards.json.provenance.json"), prov.to_string()).unwrap();
 
     let cred = d.page(true).await;
     let post = |c: &str, b: Value| {
@@ -140,14 +147,17 @@ async fn a_persona_changes_only_with_its_own_ticket_and_only_from_the_built_in_p
     }
     assert_eq!(std::fs::read_to_string(&card).unwrap(), text);
 
-    // (d) its own ticket gets past the gate (asked no more, not refused as unapproved)
+    // (d) its own ticket gets past the gate and updates the card (N12)
     let asked = n.load(Ordering::SeqCst);
     let r = post(&cred, set("新的職責", Some(&t))).await;
-    assert!(
-        r.code != 202 && r.code != 403,
+    assert_eq!(
+        r.code, 200,
         "reason: approved_persona_set_refused {} {}",
-        r.code,
-        r.body
+        r.code, r.body
+    );
+    assert!(
+        std::fs::read_to_string(&card).unwrap().contains("新的職責"),
+        "reason: card_not_updated"
     );
     assert_eq!(n.load(Ordering::SeqCst), asked);
     d.shutdown().await;

@@ -9,6 +9,7 @@ members = [
     "crates/aib-forkcount",
     "crates/aib-fixture-tree",
     "crates/aib-cloud",
+    "crates/aib-fp",
     "crates/aib-cireuse",
     "crates/aib-release",
     "crates/aib-lease",
