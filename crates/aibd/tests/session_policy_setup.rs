@@ -52,7 +52,8 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     std::env::remove_var("AIBD_SESSION_POLICY");
 
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-    let bin = dir.path().join("bin");
+    // not the harness's own `bin` (its fake claude / codex are on the start-up policy)
+    let bin = dir.path().join("w10-look");
     std::fs::create_dir_all(&bin).unwrap();
     // claude: a native executable; codex: only an npm launcher
     std::fs::write(bin.join("claude"), b"\x7fELF\x02\x01\x01\0").unwrap();
@@ -67,7 +68,8 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     // the state: nothing written yet, claude found native, codex only as a launcher
     let r = state(&d, &page).await;
     assert_eq!(r.json["policy"], "missing", "{}", r.body);
-    assert_eq!(r.json["programs"], json!([]), "{}", r.body);
+    // the harness starts with its own policy (claude and codex); the page's file replaces it
+    assert_eq!(r.json["programs"], json!(["claude", "codex"]), "{}", r.body);
     assert_eq!(r.json["can_write"], true, "{}", r.body);
     assert_eq!(r.json["policy_path"], file.to_str().unwrap(), "{}", r.body);
     let kinds: Vec<(String, String)> = r.json["found"]
