@@ -1648,6 +1648,12 @@ const hsChecks = (async () => {
   const pth = 'C:\\ProgramData\\aib\\config\\seats\\v2\\session-policy.json';
   const hi = src ? c.card({ d: Object.assign({}, d, { policy: 'invalid', policy_path: pth }) }) : 'data-spok';
   ok(!hi.includes('data-spok') && hi.includes('data-spre="1"') && hi.includes('這台的開席設定檔讀不懂(<span class="sppath" title="' + pth + '">C:\\ProgramData\\aib\\…\\session-policy.json</span>)。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。'), 'reason: w10_invalid_no_approve_says_delete_file');
+  // f163c L1:檔讀得懂但沒有程式 ⇒ 一樣不出鈕,叫人刪檔
+  const hl = src ? c.card({ d: Object.assign({}, d, { policy: 'loaded', programs: [], policy_path: '/Users/x/.aib/session-policy.json' }) }) : 'data-spok';
+  ok(!hl.includes('data-spok') && hl.includes('這台已經有開席設定(<span class="sppath" title="/Users/x/.aib/session-policy.json">/Users/x/.aib/session-policy.json</span>),但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。'), 'reason: w10_loaded_empty_no_approve_says_delete_file');
+  ok(src && c.card({ d: Object.assign({}, d, { policy: 'whatever' }) }).indexOf('data-spok') < 0, 'reason: w10_approve_only_when_missing');
+  vm.runInContext('this.nm = spName;', c);
+  ok(src && c.nm('toString') === 'toString' && c.nm('claude') === 'Claude' && c.nm('constructor') === 'constructor', 'reason: w10_name_own_keys_only');
   const hn = src ? c.card({ d: { policy: 'invalid', can_write: true, policy_path: 7, found: [] } }) : '(';
   ok(hn.includes('這台的開席設定檔讀不懂。AIB 不會自己蓋掉它') && !hn.includes('data-spok'), 'reason: w10_invalid_without_path');
   ok(c.NA === '官方安裝說明的連結:這一版 AIB 還沒有' && h.includes(c.NA) && !/https?:/.test(h), 'reason: w10_install_link_not_faked');
@@ -1664,7 +1670,7 @@ const hsChecks = (async () => {
   ok(ws.includes("session_policy_init: () => ['允許 AIB 在這台開', [['程式', typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name) + '(' + f.path + ')').join('、') : '', true]"), 'reason: w10_fp_card_same_order_as_window');
   ok(ws.includes("${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `<div class=\"aerr\" role=\"alert\">這台現在開不了任何 AI,所以不能加席。</div>"), 'reason: w10_card_replaces_cannot_open_line');
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
-  ok(ws.includes('      spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
+  ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
   ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }

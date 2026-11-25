@@ -5590,7 +5590,7 @@
   const SP_INSTALL_NA = '官方安裝說明的連結:這一版 AIB 還沒有';
   const SP_NPM_WHY = (n) => `這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 ${n}。請改用官方安裝程式(下面的連結),裝好後按「重新找」。`;
   const spCut = (t, n) => { const a = Array.from(String(t == null ? '' : t)); return a.length > n ? a.slice(0, n).join('') + '…' : a.join(''); };
-  const spName = (n) => SP_NAME[n] || spCut(n, 20);
+  const spName = (n) => (Object.prototype.hasOwnProperty.call(SP_NAME, n) ? SP_NAME[n] : spCut(n, 20)); // f163c N2
   // 路徑長的留前 3 段 + … + 檔名(滑過看全文);分隔字照原樣
   function spPath(t) {
     const p = String(t || ''), sep = p.includes('\\') ? '\\' : '/', a = p.split(sep);
@@ -5610,10 +5610,10 @@
     return `<li class="spwarn">⚠️ ${n}:找到的不是程式本體${pt ? '(' + pt + ')' : ''},請用官方安裝程式重裝</li>`;
   }
   function spCard(SP) {
-    // c2f0b IFACE r3:設定檔讀不懂 ⇒ aibd 一律不覆蓋(按了必定 policy_exists),所以不出核准鈕,改叫人刪檔;路徑用 GET 的 policy_path
-    const d = SP.d, F = spFound(d), bad = d.policy === 'invalid', canW = !bad && d.can_write === true && F.some((f) => f.kind === 'native');
+    // c2f0b IFACE r3 + f163c REVIEW L1:檔已存在(讀不懂,或讀得懂但沒有程式)aibd 一律不覆蓋、按了必定 policy_exists ⇒ 只有 missing 才出核准鈕,其他叫人刪檔;路徑用 GET 的 policy_path
+    const d = SP.d, F = spFound(d), bad = d.policy === 'invalid', canW = d.policy === 'missing' && d.can_write === true && F.some((f) => f.kind === 'native');
     const pp = typeof d.policy_path === 'string' && d.policy_path ? `(<span class="sppath" title="${esc(d.policy_path)}">${esc(spPath(d.policy_path))}</span>)` : '';
-    const head = bad ? `<div class="aerr" role="alert">這台的開席設定檔讀不懂${pp}。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>` : '';
+    const head = bad ? `<div class="aerr" role="alert">這台的開席設定檔讀不懂${pp}。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>` : d.policy === 'loaded' ? `<div class="aerr" role="alert">這台已經有開席設定${pp},但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。</div>` : '';
     const msg = SP.msg ? `<div class="${SP.msg.bad ? 'aerr' : 'aok'}" role="${SP.msg.bad ? 'alert' : 'status'}">${esc(SP.msg.text)}</div>` : '';
     return `<div class="spcard" role="region" aria-label="開席設定"><h4>還沒設定這台能開哪些 AI</h4>
       <div class="apn">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${head}
@@ -6790,7 +6790,7 @@
       loadRegistry();
       if (!S.pt.off) ptLoad(); // S3:每次開都重讀(別的分頁可能改過)
       hsLoad(); // S2:沒有 act 就不送
-      spLoad(); // W-10:開席設定;舊 aibd 404 ⇒ 不出卡
+      S.sp = null; spLoad(); // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
       { const A = S.add; setTimeout(() => { if (S.add === A) A.still = true; }, 400); } // 進場只播一次,之後點選重畫不再播
       // 0eed7 L:人格清單有介面就用(GET /api/v1/personas,形狀未定:{personas:[{uid, display_name}]} 或陣列);沒有就從現有席收
       const r = await soft(get('/api/v1/personas')).catch(() => null);
