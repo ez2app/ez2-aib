@@ -39,21 +39,64 @@ pub const ALLOW_REVOKE: &str = "net_allow_revoke";
 
 static CARDS: Mutex<Option<Cards>> = Mutex::new(None);
 static ALLOW: Mutex<BTreeMap<String, AllowList>> = Mutex::new(BTreeMap::new());
-static INVALID_ROW_LOG: Mutex<BTreeMap<(String, &'static str), u64>> = Mutex::new(BTreeMap::new());
+static INVALID_ROW_LOG: Mutex<InvalidLog> = Mutex::new(InvalidLog::new());
 
-fn should_log_invalid(ticket: &str, state: &'static str, now_unix: u64) -> bool {
-    let Ok(mut g) = INVALID_ROW_LOG.lock() else {
-        return false;
-    };
-    let key = (ticket.to_owned(), state);
-    if g.get(&key).is_some_and(|&prev| now_unix < prev + 60) {
-        return false;
+/// One event per ticket per [`PER_TICKET_SECS`].
+const PER_TICKET_SECS: u64 = 600;
+/// At most this many events a minute in all; the rest are only counted (IFACE-netallow N1).
+const PER_MINUTE: u32 = 5;
+/// Tickets remembered; when full, new ones are held back, old ones never forgotten early.
+const KEEP_MAX: usize = 1024;
+
+/// What the bad-row events said lately (c2f0b REVIEW-netallow-incr L-c): a table that was
+/// emptied past 256 let a flood of bad rows log again each time the list was opened.
+struct InvalidLog {
+    last: BTreeMap<String, u64>,
+    minute: u64,
+    in_minute: u32,
+    held: u64,
+}
+
+impl InvalidLog {
+    const fn new() -> Self {
+        InvalidLog {
+            last: BTreeMap::new(),
+            minute: 0,
+            in_minute: 0,
+            held: 0,
+        }
     }
-    if g.len() > 256 {
-        g.clear();
+
+    /// `Some(held back since the last event)` when this ticket's event goes out now.
+    fn take(&mut self, ticket: &str, now_unix: u64) -> Option<u64> {
+        self.last.retain(|_, t| now_unix < *t + PER_TICKET_SECS);
+        if self
+            .last
+            .get(ticket)
+            .is_some_and(|&t| now_unix < t + PER_TICKET_SECS)
+        {
+            return None;
+        }
+        if now_unix / 60 != self.minute {
+            self.minute = now_unix / 60;
+            self.in_minute = 0;
+        }
+        if self.in_minute >= PER_MINUTE {
+            self.held += 1;
+            return None;
+        }
+        if self.last.len() >= KEEP_MAX {
+            self.held += 1;
+            return None;
+        }
+        self.last.insert(ticket.to_owned(), now_unix);
+        self.in_minute += 1;
+        Some(std::mem::take(&mut self.held))
     }
-    g.insert(key, now_unix);
-    true
+}
+
+fn should_log_invalid(ticket: &str, now_unix: u64) -> Option<u64> {
+    INVALID_ROW_LOG.lock().ok()?.take(ticket, now_unix)
 }
 
 fn now() -> u64 {
@@ -254,10 +297,10 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
             .and_then(|m| m.persona_uid),
         None => None,
     };
-    let persona_active = match want_uid.as_deref() {
-        Some(uid) => !crate::persona_edit::archived_uids(&st.messages, "persona")
-            .unwrap_or_default()
-            .contains(uid),
+    // per row, with or without seat_id (L-d); unreadable ⇒ every row inactive
+    let archived = crate::persona_edit::archived_uids(&st.messages, "persona");
+    let is_archived = |uid: &str| match &archived {
+        Some(a) => a.contains(uid),
         None => true,
     };
     let own_ips = crate::host_addr::own_addresses().unwrap_or_default();
@@ -270,7 +313,7 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
             &db_rows,
             q.seat_id.as_deref(),
             want_uid.as_deref(),
-            persona_active,
+            &is_archived,
             &own_ips,
             now_unix,
             &is_revoked,
@@ -279,12 +322,12 @@ pub async fn allow_list(st: AppState, body: Value) -> Response {
         );
     }
     for (ticket, state) in bad_events {
-        if should_log_invalid(&ticket, state, now_unix) {
+        if let Some(held) = should_log_invalid(&ticket, now_unix) {
             crate::seats::side_event(
                 &st,
                 "net",
                 "net.allow_row_invalid",
-                json!({"ticket": ticket, "state": state}),
+                json!({"ticket": ticket, "state": state, "held_back": held}),
             )
             .await;
         }
@@ -298,7 +341,7 @@ fn append_db_allow_rows(
     db_rows: &[aib_store::net_allow::NetAllowRow],
     seat_id: Option<&str>,
     want_uid: Option<&str>,
-    persona_active: bool,
+    is_archived: &dyn Fn(&str) -> bool,
     own_ips: &[IpAddr],
     now_unix: u64,
     is_revoked: &dyn Fn(&str) -> bool,
@@ -308,6 +351,9 @@ fn append_db_allow_rows(
     for r in db_rows {
         let Some((uid, canon, issued_at, until)) = crate::net_allow::parse_always_params(&r.params)
         else {
+            // a row that does not parse is shown, never hidden (c2f0b L-d)
+            bad_events.push((r.ticket.clone(), "bad_params"));
+            items.push(bad_params_row(r, seat_id));
             continue;
         };
         if seat_id.is_some() && want_uid != Some(uid.as_str()) {
@@ -324,12 +370,9 @@ fn append_db_allow_rows(
             || until - issued_at > crate::net_allow::MAX_DAYS_SECS
         {
             "expired"
-        } else if parsed_addr.is_none_or(|sa| {
-            crate::egress::verdict(&[sa.ip()], sa.port(), own_ips, &|_, _| true)
-                != crate::egress::Verdict::Pass(sa.ip())
-        }) {
+        } else if parsed_addr.is_none_or(|sa| !class_as_holds(sa, own_ips)) {
             "class_changed"
-        } else if !persona_active {
+        } else if is_archived(&uid) {
             "persona_inactive"
         } else {
             "ok"
@@ -371,6 +414,32 @@ fn append_db_allow_rows(
         }
         items.push(obj);
     }
+}
+
+/// Whether "always" may stand for this address, by the class [`crate::net_allow::holds`]
+/// uses: only an address that would get a card (a private one, not this machine's) is ever
+/// let through by it, so only that is shown ok (c2f0b REVIEW-netallow-incr L-b: a public
+/// address was shown ok though holds never uses it).
+fn class_as_holds(sa: SocketAddr, own_ips: &[IpAddr]) -> bool {
+    matches!(
+        crate::egress::verdict(&[sa.ip()], sa.port(), own_ips, &|_, _| false),
+        crate::egress::Verdict::Card(_)
+    )
+}
+
+/// A row whose fields do not parse: its ticket and the state, nothing taken from it.
+fn bad_params_row(r: &aib_store::net_allow::NetAllowRow, seat_id: Option<&str>) -> Value {
+    let mut obj = json!({
+        "ticket": r.ticket,
+        "persona_uid": null,
+        "addr": null,
+        "until": null,
+        "state": "bad_params",
+    });
+    if let Some(sid) = seat_id {
+        obj["seat_id"] = json!(sid);
+    }
+    obj
 }
 
 /// The list's rows for the page, of one seat or of all.
@@ -514,12 +583,14 @@ mod tests {
             }
         };
         let rows = vec![
-            mk("tk_ok", "p_1", "8.8.8.8:443", 5000, vec![1]),
+            mk("tk_ok", "p_1", "192.168.1.20:443", 5000, vec![1]),
             mk("tk_exp", "p_1", "10.0.0.6:5432", 1500, vec![1]),
             mk("tk_bad", "p_1", "10.0.0.7:5432", 5000, vec![9]),
             mk("tk_pub", "p_1", "127.0.0.1:443", 5000, vec![1]),
             mk("tk_rev", "p_1", "10.0.0.8:5432", 5000, vec![1]),
             mk("tk_other", "p_2", "10.0.0.9:5432", 5000, vec![1]),
+            // L-b: a public address is never let through by holds, so never ok
+            mk("tk_public", "p_1", "203.0.113.9:443", 5000, vec![1]),
         ];
         let own = ["127.0.0.1".parse().unwrap()];
         let mut out = Vec::new();
@@ -529,22 +600,26 @@ mod tests {
             &rows,
             Some("a1b2c"),
             Some("p_1"),
-            true,
+            &|_| false,
             &own,
             2000,
             &|t| t == "tk_rev",
             &|_, sig| sig == [1],
             &mut bad_events,
         );
-        assert_eq!(out.len(), 5);
+        assert_eq!(out.len(), 6);
         assert_eq!(out[0]["state"], "ok");
-        assert_eq!(out[0]["ip"], "8.8.8.8");
+        assert_eq!(out[0]["ip"], "192.168.1.20");
         assert_eq!(out[0]["port"], 443);
         assert_eq!(out[1]["state"], "expired");
         assert_eq!(out[2]["state"], "bad_sig");
         assert_eq!(out[3]["state"], "class_changed");
         assert_eq!(out[4]["state"], "revoked_reappeared");
-        assert_eq!(bad_events.len(), 4);
+        assert_eq!(
+            out[5]["state"], "class_changed",
+            "reason: public_address_listed_ok"
+        );
+        assert_eq!(bad_events.len(), 5);
 
         let mut inactive = Vec::new();
         let mut ev2 = Vec::new();
@@ -553,7 +628,7 @@ mod tests {
             &rows[..1],
             Some("a1b2c"),
             Some("p_1"),
-            false,
+            &|_| true,
             &own,
             2000,
             &|_| false,
@@ -569,7 +644,7 @@ mod tests {
             &rows,
             Some("a1b2c"),
             None,
-            true,
+            &|_| false,
             &[],
             2000,
             &|_| false,
@@ -577,5 +652,61 @@ mod tests {
             &mut ev3,
         );
         assert!(none.is_empty());
+
+        // L-d: without seat_id an archived persona's row is persona_inactive, and a row that
+        // does not parse is listed as bad_params, not dropped
+        let mut broken = mk("tk_broken", "p_1", "10.0.0.10:5432", 5000, vec![1]);
+        broken.params = b"not the always format".to_vec();
+        let mut all = Vec::new();
+        let mut ev4 = Vec::new();
+        append_db_allow_rows(
+            &mut all,
+            &[rows[0].clone(), broken],
+            None,
+            None,
+            &|uid| uid == "p_1",
+            &own,
+            2000,
+            &|_| false,
+            &|_, sig| sig == [1],
+            &mut ev4,
+        );
+        assert_eq!(all.len(), 2, "reason: broken_row_hidden");
+        assert_eq!(
+            all[0]["state"], "persona_inactive",
+            "reason: archived_persona_ok_without_seat"
+        );
+        assert_eq!(all[1]["state"], "bad_params", "reason: broken_row_hidden");
+        assert_eq!(all[1]["ticket"], "tk_broken");
+        assert_eq!(ev4.len(), 2);
+    }
+
+    /// L-c: one event per ticket per 10 minutes, at most five a minute in all (the rest
+    /// counted and reported with the next one), and a full table never forgets early.
+    #[test]
+    fn bad_row_events_are_limited_and_never_flushed() {
+        let mut l = InvalidLog::new();
+        assert_eq!(l.take("t1", 6000), Some(0));
+        assert_eq!(l.take("t1", 6000 + 599), None, "reason: same_ticket_again");
+        for i in 2..=5 {
+            assert_eq!(l.take(&format!("t{i}"), 6001), Some(0));
+        }
+        assert_eq!(l.take("t6", 6002), None, "reason: more_than_five_a_minute");
+        assert_eq!(l.take("t7", 6003), None);
+        assert_eq!(l.take("t8", 6060), Some(2), "reason: held_back_not_counted");
+        assert_eq!(
+            l.take("t1", 6000 + 600),
+            Some(0),
+            "reason: ticket_never_again"
+        );
+
+        let mut full = InvalidLog::new();
+        for i in 0..KEEP_MAX {
+            full.last.insert(format!("k{i}"), 9000);
+        }
+        assert_eq!(full.take("new", 9001), None, "reason: full_table_flushed");
+        assert_eq!(full.last.len(), KEEP_MAX);
+        assert_eq!(full.take("k0", 9002), None, "reason: full_table_flushed");
+        assert_eq!(full.held, 1);
     }
 }

@@ -256,7 +256,7 @@ impl Card {
     /// What `net_card_list` says of it (IFACE-netcard §1).
     pub fn shown(&self) -> serde_json::Value {
         let choices: Vec<serde_json::Value> = self
-            .choices_with_owner(crate::owner_ok::available())
+            .choices_with_owner(crate::owner_ok::can_sign())
             .into_iter()
             .map(|c| {
                 let words = CHOICES
@@ -452,6 +452,24 @@ impl Cards {
         by: &str,
         approved: impl FnOnce(&str, &crate::owner_ok::Ask) -> bool,
     ) -> Step {
+        let can_sign = crate::owner_ok::can_sign();
+        self.answer_as(request_id, choice, ticket, now, by, can_sign, approved)
+    }
+
+    /// [`Cards::answer`] with whether the owner's window signs given: a choice the card
+    /// does not show (always, when nothing can sign it) is not taken either (c2f0b
+    /// REVIEW-netallow-incr N1 with L-a).
+    #[allow(clippy::too_many_arguments)]
+    pub fn answer_as(
+        &mut self,
+        request_id: &str,
+        choice: &str,
+        ticket: Option<&str>,
+        now: u64,
+        by: &str,
+        can_sign: bool,
+        approved: impl FnOnce(&str, &crate::owner_ok::Ask) -> bool,
+    ) -> Step {
         let Some(i) = self
             .rows
             .iter()
@@ -467,7 +485,9 @@ impl Cards {
             *state = State::Finished;
             return Step::Refused("net_card_expired");
         }
-        let Some(c) = Choice::parse(choice).filter(|c| card.choices().contains(c)) else {
+        let Some(c) =
+            Choice::parse(choice).filter(|c| card.choices_with_owner(can_sign).contains(c))
+        else {
             return Step::Refused("not_a_choice");
         };
         if !card.needs_owner(c) {
@@ -804,7 +824,7 @@ mod tests {
         assert_eq!(l[0]["dest_port"], 5432);
         assert_eq!(
             l[0]["choices"].as_array().unwrap().len(),
-            if crate::owner_ok::available() { 6 } else { 5 }
+            if crate::owner_ok::can_sign() { 6 } else { 5 }
         );
         let high: Vec<(String, bool)> = l[1]["choices"]
             .as_array()
@@ -882,6 +902,23 @@ mod tests {
         assert!(!l.has(ip.ip(), 22), "reason: still_listed");
         assert_eq!(l.revoke(ip, &open), None);
         assert_eq!(l.seat(), "a1b2c");
+    }
+
+    /// N1 with L-a: "always" posted straight to the answer is refused when nothing can sign
+    /// it, as the card never showed it; with a signing window it raises the window.
+    #[test]
+    fn always_is_not_taken_when_nothing_can_sign_it() {
+        let mut cs = Cards::default();
+        cs.add(card("r_ns", false));
+        assert_eq!(
+            cs.answer_as("r_ns", "always", None, 10, "p", false, approve(true)),
+            Step::Refused("not_a_choice"),
+            "reason: unsigned_always_taken"
+        );
+        assert!(matches!(
+            cs.answer_as("r_ns", "always", None, 10, "p", true, approve(true)),
+            Step::Ask(_)
+        ));
     }
 
     #[test]

@@ -781,6 +781,11 @@ impl Owner {
     pub fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
         self.presence.verify(msg, sig)
     }
+
+    /// Whether a yes here comes with a signature [`Owner::approved_signed_for`] hands back.
+    pub fn can_sign(&self) -> bool {
+        self.presence.signs()
+    }
 }
 
 /// A ticket word as aibd hands it out: 1-64 of `A-Z a-z 0-9 - _` (anything else is never a
@@ -870,6 +875,13 @@ pub fn test_revoke_ticket(ticket: &str) {
 /// [`binding`], to store and check again with [`verify`]. Without the switch: none.
 pub fn approved_signed_for(ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
     OWNER.get().and_then(|o| o.approved_signed_for(ticket, ask))
+}
+
+/// Whether this aibd's owner window signs (what "always" needs), not only that it is on
+/// ([`available`]): a window that checks the person without a key signs nothing (c2f0b
+/// REVIEW-netallow-incr L-a). Without the switch: no.
+pub fn can_sign() -> bool {
+    OWNER.get().is_some_and(|o| o.can_sign())
 }
 
 /// Whether `sig` is the owner's key's signature of `msg`: the key this aibd checked at start.
@@ -1436,6 +1448,12 @@ mod tests {
     }
     fn owner(says: Result<(), &'static str>) -> std::sync::Arc<Owner> {
         std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(says)), gate(), now))
+    }
+
+    /// c2f0b L-a: an owner whose window only says yes (no key) cannot sign.
+    #[test]
+    fn an_owner_without_a_key_cannot_sign() {
+        assert!(!owner(Ok(())).can_sign(), "reason: keyless_owner_can_sign");
     }
     fn inline(f: Box<dyn FnOnce() + Send>) {
         f()

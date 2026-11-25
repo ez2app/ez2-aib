@@ -218,6 +218,12 @@ pub trait Presence: Send + Sync {
         let _ = (msg, sig);
         false
     }
+    /// Whether a yes comes with the key's signature, which an "always" stores and checks
+    /// again: a presence that only checks the person (no key, a password) does not, and then
+    /// "always" is never offered (c2f0b REVIEW-netallow-incr L-a).
+    fn signs(&self) -> bool {
+        false // a presence with no key signs nothing
+    }
 }
 
 /// The window closed by itself: nobody answered within its limit. Not a refusal.
@@ -355,6 +361,9 @@ impl Presence for KeyPresence {
     fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
         let by_the_checked_key = self.dev.verify(&self.key.public, msg, sig);
         !sig.is_empty() && by_the_checked_key
+    }
+    fn signs(&self) -> bool {
+        true // ask_until_keep keeps the signature of every yes
     }
 }
 
@@ -508,6 +517,13 @@ pub mod tests {
             "pair_touch_bad_signature",
             "reason: unchecked_signature"
         );
+        // the key signs; a presence with no key does not (c2f0b L-a)
+        assert!(yes.signs(), "reason: key_presence_said_unsigned");
+        let no_key = Recorder {
+            yes: true,
+            asked: Mutex::new(Vec::new()),
+        };
+        assert!(!no_key.signs(), "reason: keyless_presence_said_signed");
     }
 
     #[test]
