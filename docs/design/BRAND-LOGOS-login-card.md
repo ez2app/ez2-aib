@@ -41,3 +41,7 @@ Logos are aligned by the visible mark, not by the file's frame: the mark's long 
 ## Grok mark, owner's check
 
 The owner looked at the Grok screenshot (the docs.x.ai header mark) and answered "照用" (use it), 2026-11-26. That screenshot showed the earlier version, whose colour was set to white with the path unchanged; the version here uses the file unchanged on a white square instead, so no colour is changed at all.
+
+## Owner's sign-off
+
+2026-11-26 02:0x, after seeing the four marks side by side and the full Codex card (screenshots r7): "現在可以了". The card is settled as of this design: Grok's layout, each brand's colour, the providers' own logos aligned by the visible mark, and Grok's original black mark on a white square.
