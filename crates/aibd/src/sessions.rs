@@ -2054,6 +2054,15 @@ impl Sessions {
                     continue;
                 }
             };
+            // L2 (f163c REVIEW-l2-c2f0b-f163c-b029c9cc L1): a program aibd placed is checked
+            // again now, after the wait, and its checked handle is held until it has started
+            let held = match self.placed_now(argv.first().map(String::as_str)) {
+                Ok(h) => h,
+                Err(code) => {
+                    self.refuse_queued(q, code);
+                    continue;
+                }
+            };
             let spec = Spec {
                 id: q.rec.id.clone(),
                 argv,
@@ -2069,6 +2078,7 @@ impl Sessions {
                 Some((q.order, q.seq)),
                 q.timeout,
             );
+            drop(held);
         }
     }
 
@@ -2076,6 +2086,21 @@ impl Sessions {
     /// M1 gate once more on what the request asked for, now that the session
     /// leaves the queue. The argv to start (with `argv[0]` resolved again), or
     /// the refusal's code (audited as at the POST).
+    /// A program aibd placed (`<data>/providers/…`, data = the sessions folder's parent, as
+    /// `registry::data_of`) checked against the measured table again; the checked handle back.
+    /// Refused ⇒ `program_not_allowed` on the queued session (the exact word is logged).
+    fn placed_now(&self, argv0: Option<&str>) -> Result<Option<std::fs::File>, ErrorCode> {
+        let (Some(argv0), Some(data)) = (argv0, self.default_cwd.parent()) else {
+            return Ok(None);
+        };
+        crate::provider_fetch::maker::placed_for_seat(data, std::path::Path::new(argv0)).map_err(
+            |why| {
+                tracing::warn!(why, "a queued session's placed program failed its check");
+                ErrorCode::ProgramNotAllowed
+            },
+        )
+    }
+
     fn regate(&self, q: &Queued) -> Result<Vec<String>, ErrorCode> {
         let policy = self
             .policy
