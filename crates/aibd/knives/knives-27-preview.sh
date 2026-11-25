@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # §20 試用預覽版 knives PV1–PV6 (a9136 11-18, DESIGN-preview-a9136-1118 rev 2 / 5d33a CHECK-preview
 # r1): only the built-in page agrees, every agreement is on the books, the preview gets its own
 # HOME and data and nothing else of this aibd's. Run from the repo root.

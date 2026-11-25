@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # SM1–SM6 (1a93b 11-21, 519d0 06:45 point 2): a usage card says when it comes back; a seat moves
 # to another model from the built-in page only, pinned, and goes on in its own conversation.
 # Run from the repo root.

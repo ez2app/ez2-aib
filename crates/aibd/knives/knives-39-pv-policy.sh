@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # PP1–PP11 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.

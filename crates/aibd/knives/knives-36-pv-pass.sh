@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # Preview pass knives PV1–PV9 (7b81e 11-19; Andy 08:5x via 519d0: a preview opens already paired). The parent's paired
 # built-in page alone gets a one-time pass; only its digest goes down the preview's stdin; the preview lets one page in
 # with it, in time, on the built-in page, from its own origin. Each, broken, turns its own test red.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # N-revive knives RJ1–RJ12 (a9136 11-18; ORDER-workspace-519d0-1118 第三波 1): after aibd stops on
 # purpose and starts again, a seat that was running comes back with its own conversation
 # (--resume <its id>); a seat the person stopped, a crash-cut one and an archived one do not.

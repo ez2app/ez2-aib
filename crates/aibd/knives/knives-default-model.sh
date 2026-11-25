@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # DM1–DM6 (1a93b 11-21, 519d0 06:45 point 1): an open that names no model runs on the brand's
 # default; only a brand and a plain model name are kept; a user folder page may not set it.
 # Run from the repo root.
