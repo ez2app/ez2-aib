@@ -54,12 +54,36 @@ k 'b.choice === '\''always'\'' ? [['\''影響'\'', netAlwaysWho(c), true]]' 'tru
 # PGNL8 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
 k '>${esc(netAlwaysWords(o, c))}${o.needs_owner ? '\'' · 要驗證'\'' : '\'''\''}</button>' '>${esc(o.words)}${o.needs_owner ? '\'' · 要驗證'\'' : '\'''\''}</button>'
 # PGNL9 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
-k '${x.expires_at ? ` <span class="apn">到' '${false ? ` <span class="apn">到'
+k '${un ? ` <span class="apn">到' '${false ? ` <span class="apn">到'
 # PGNL10 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
-k '到 ${esc(fpWhen(x.expires_at))} 要再確認' '到 ${fpWhen(x.expires_at)} 要再確認'
+k '到 ${esc(fpWhen(un))} 要再確認' '到 ${fpWhen(un)} 要再確認'
 # PGNL11 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
 k ''\''綁人格「'\'' + String(c.persona_name || c.persona_uid || '\''這個人格'\'')' ''\''綁人格「'\'' + String(c.persona_uid || '\''這個人格'\'')'
 # PGUS1 (aibd is_bad_char 同一張表:少了 invisible_extra 那幾個就紅)
 k '\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]' '\u034f]'
 # PGUS2 (aibd 人格卡段落放行全形空白 U+3000:頁面預檢也要放行)
 k 'test(t.replace(/[\p{Cc}\u3000]/gu, '\'''\'')))' 'test(t.replace(/[\p{Cc}]/gu, '\'''\'')))'
+# PGNC1 (ae921 post-b4 網路卡:卡照 aibd 寫)
+k 'exp = netMs(c.expires_at), left =' 'exp = Date.parse(String(c.expires_at || '\'''\'')), left ='
+# PGNC2 (ae921 post-b4 網路卡:卡照 aibd 寫)
+k '${c.risk === '\''high'\'' ? `<div class="apn apwarn">連到這台電腦自己的服務' '${false ? `<div class="apn apwarn">連到這台電腦自己的服務'
+# PGNC3 (ae921 post-b4 網路卡:卡照 aibd 寫)
+k '&& !c.choices.some((o) => o && o.id === '\''always'\'') ?' '&& false ?'
+# PGNC4 (ae921 post-b4 網路卡:卡照 aibd 寫)
+k '${!asked && c.risk !== '\''high'\'' && c.category !== '\''local_self'\'' && Array.isArray(c.choices)' '${!asked && Array.isArray(c.choices)'
+# PGNA1 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k 'un = x.until !== undefined ? x.until : x.expires_at,' 'un = x.expires_at,'
+# PGNA2 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k '<div class="netar${bad ? '\'' bad'\'' : '\'''\''}">' '<div class="netar">'
+# PGNA3 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k '${bad ? `<span class="netbad">${esc(bad)}</span>` : '\'''\''}' ''
+# PGNA4 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k '${rv && ipp ? `<button' '${rv ? `<button'
+# PGNA5 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k ': String(x.addr || '\'''\''))}</code>' ': '\'''\'')}</code>'
+# PGNA6 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k 'netPName(x.persona_uid) || String(x.persona_uid)' 'String(x.persona_uid)'
+# PGNA7 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k 'NET_ST[x.state] || '\''不算數:'\'' + String(x.state)' 'NET_ST[x.state] || '\'''\'''
+# PGNA8 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
+k 'x.state !== undefined && x.state !== '\''ok'\'' ?' 'x.state !== undefined ?'

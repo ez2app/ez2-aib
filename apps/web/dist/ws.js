@@ -5074,6 +5074,12 @@
   const netPersonaSeats = (uid) => (uid ? (S.seats || []).filter((x) => x && x.persona_uid === uid && String(x.state || '').toLowerCase() !== 'archived').length : 0);
   const netAlwaysWords = (o, c) => String(o.words || '') + (o.id === 'always' && !/\d+\s*天/.test(String(o.words || '')) ? '(每 ' + netAlwaysDays(c) + ' 天再確認一次)' : '');
   const netAlwaysWho = (c) => '綁人格「' + String(c.persona_name || c.persona_uid || '這個人格') + '」:現在 ' + netPersonaSeats(c.persona_uid) + ' 位,之後開的同人格也算;合併或封存這個人格就收回';
+  // ae921 post-b4(c2f0b REVIEW-netallow-wire M2 / M3):aibd 簽不出一直允許(沒開硬體本人驗證)就不給這個選項 ⇒ 頁面寫原因;清單每列帶 state,不是 ok 的標紅寫原因、不藏
+  const NET_NO_ALWAYS = '沒有「一直允許」:這台 AIB 沒開硬體本人驗證(配對的 Touch ID / Windows Hello 金鑰),一直允許的紀錄簽不出來;只能選有時限的';
+  const NET_ST = { expired: '已過期(超過 30 天或到期),不算數;要用就再允許一次', class_changed: '這個位址現在不算內網了,不算數', persona_inactive: '這個人格現在沒在用(封存或合併了),不算數', bad_sig: '簽章對不上,不算數;建議收回', revoked_reappeared: '收回過又出現,不算數;建議收回' };
+  const netStWhy = (x) => (x && x.state !== undefined && x.state !== 'ok' ? NET_ST[x.state] || '不算數:' + String(x.state) : '');
+  const netMs = (v) => (typeof v === 'number' ? v * (v < 1e12 ? 1000 : 1) : Date.parse(String(v || '')));
+  const netPName = (uid) => { const p = (typeof personas === 'function' ? personas() : []).find(([u]) => u === uid); return p ? String(p[1]) : ''; };
   const netHas = (k) => hasAct(NET_ACTS[k]) === true;
   const netWhy = (e) => NET_WHY[rgCode(e)] || errText(e);
   const netCard = (rid) => ((S.net && S.net.items) || []).find((x) => x && x.request_id === rid) || null;
@@ -5101,13 +5107,13 @@
   }
   const netLeft = (exp) => { const s = Math.ceil((exp - Date.now()) / 1000); return s <= 0 ? '已逾時,拒絕了' : s <= 10 ? '快逾時了(約 ' + s + ' 秒),沒選就拒絕' : '還有約 ' + s + ' 秒,沒選就拒絕'; };
   function netCardHtml(c) {
-    const N = S.net || {}, se = seatById(c.seat_id), exp = Date.parse(String(c.expires_at || '')), left = Number.isFinite(exp) ? Math.max(0, Math.ceil((exp - Date.now()) / 1000)) : null;
+    const N = S.net || {}, se = seatById(c.seat_id), exp = netMs(c.expires_at), left = Number.isFinite(exp) ? Math.max(0, Math.ceil((exp - Date.now()) / 1000)) : null;
     const net = S.version && S.version.capabilities && S.version.capabilities.net, pv = net && se ? net[String(se.provider || 'claude').toLowerCase()] : null, cell = pv && se ? pv[se.mode] : '';
     const why = c.source === 'net_ask' && c.why ? `<div class="netwhy"><i>夥伴寫的理由:</i>${esc(String(c.why))}</div>` : '';
     // f163c r5km L1:驗證窗開過(沒過)⇒ aibd 那張卡只剩拒絕(別的選項回 net_card_used),只畫拒絕
     const asked = !!(N.asked && N.asked[c.request_id]);
     const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(netAlwaysWords(o, c))}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
-    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
+    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}${c.risk === 'high' ? `<div class="apn apwarn">連到這台電腦自己的服務(在聽的程式:${esc(String(c.listener || '查不到'))});每個允許都要驗證,沒有「一直允許」</div>` : ''}${!asked && c.risk !== 'high' && c.category !== 'local_self' && Array.isArray(c.choices) && c.choices.length && !c.choices.some((o) => o && o.id === 'always') ? `<div class="apn">${esc(NET_NO_ALWAYS)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
   }
   function netAskHtml() {
     if (!netHas('list')) return `<div class="apn">${esc(AP_ASK_NO)}</div>`;
@@ -5145,7 +5151,7 @@
     const msg = N.amsg && N.amsg.seat === sid ? `<div class="trm${N.amsg.bad ? ' bad' : ''}">${esc(N.amsg.text)}</div>` : '';
     if (!Array.isArray(L)) return `<div class="trm bad">讀不到:${esc(L.err || '')}</div>` + msg;
     const rv = netHas('revoke');
-    return (L.length ? `<div class="netal">${L.map((x) => `<div class="netar"><code>${esc(String(x.ip))}:${esc(String(x.port))}</code>${x.expires_at ? ` <span class="apn">到 ${esc(fpWhen(x.expires_at))} 要再確認</span>` : ''}${rv ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
+    return (L.length ? `<div class="netal">${L.map((x) => { const ipp = x.ip !== undefined && x.port !== undefined, un = x.until !== undefined ? x.until : x.expires_at, bad = netStWhy(x), pn = x.persona_uid ? netPName(x.persona_uid) || String(x.persona_uid) : ''; return `<div class="netar${bad ? ' bad' : ''}"><span><code>${esc(ipp ? String(x.ip) + ':' + String(x.port) : String(x.addr || ''))}</code>${un ? ` <span class="apn">到 ${esc(fpWhen(un))} 要再確認</span>` : ''}${pn ? ` <span class="apn">綁人格「${esc(pn)}」</span>` : ''}${bad ? `<span class="netbad">${esc(bad)}</span>` : ''}</span>${rv && ipp ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`; }).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
   }
   async function netRevoke(sid, ip, port) {
     const N = (S.net = S.net || {}); if (!netHas('revoke') || N.rv) return;
