@@ -17,6 +17,23 @@
 /// The key every value here lives under (below the current user's root).
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
+/// AIB's own entry in Settings > Apps (below the current user's root).
+pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\AIB";
+
+/// The only values written under [`UNINSTALL_KEY`].
+pub const UNINSTALL_NAMES: [&str; 5] = [
+    "DisplayName",
+    "DisplayVersion",
+    "Publisher",
+    "InstallLocation",
+    "UninstallString",
+];
+
+/// Is `name` one of [`UNINSTALL_NAMES`]?
+pub fn uninstall_name_ok(name: &str) -> bool {
+    UNINSTALL_NAMES.contains(&name)
+}
+
 /// `"<path>"` for a Run value: the whole path in double quotes, nothing after it. A path that
 /// itself holds a double quote, a NUL or a line break is refused (it could not be quoted back
 /// unambiguously), and so is one that is not absolute (`X:\…` or `\\server\…`).
@@ -45,17 +62,35 @@ fn os_err(rc: u32) -> crate::SysError {
     crate::SysError::Os(i32::try_from(rc).unwrap_or(i32::MAX))
 }
 
-/// Write (or replace) the Run value `name` = `command` (`REG_SZ`).
+/// The two keys this module writes, both below the current user's root; nothing else.
 #[cfg(windows)]
-pub fn run_set(name: &str, command: &str) -> Result<(), crate::SysError> {
+#[derive(Clone, Copy)]
+enum Key {
+    Run,
+    Uninstall,
+}
+
+#[cfg(windows)]
+impl Key {
+    fn path(self) -> &'static str {
+        match self {
+            Key::Run => RUN_KEY,
+            Key::Uninstall => UNINSTALL_KEY,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn set_sz(key: Key, name: &str, value: &str) -> Result<(), crate::SysError> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
-    let key = wide(RUN_KEY);
+    let key = wide(key.path());
     let name_w = wide(name);
-    let data = wide(command);
+    let data = wide(value);
     let bytes = u32::try_from(data.len() * 2).map_err(|_| crate::SysError::Unknown)?;
     // SAFETY: every pointer is a NUL-terminated UTF-16 buffer that lives for the whole call;
-    // `bytes` is the size of `data` in bytes, terminator included, as REG_SZ wants.
+    // `bytes` is the size of `data` in bytes, terminator included, as REG_SZ wants. A missing
+    // subkey is created by this same call (no RegCreateKeyEx).
     let rc = unsafe {
         RegSetKeyValueW(
             HKEY_CURRENT_USER,
@@ -73,15 +108,13 @@ pub fn run_set(name: &str, command: &str) -> Result<(), crate::SysError> {
     }
 }
 
-/// Read the Run value `name`: `Ok(None)` when there is none. A value of another type than
-/// `REG_SZ` is an error (it is not one we wrote).
 #[cfg(windows)]
-pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
+fn get_sz(key: Key, name: &str) -> Result<Option<String>, crate::SysError> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         RegGetValueW, HKEY_CURRENT_USER, RRF_NOEXPAND, RRF_RT_REG_SZ,
     };
-    let key = wide(RUN_KEY);
+    let key = wide(key.path());
     let name_w = wide(name);
     let mut buf = vec![0u16; 2048];
     let mut bytes = u32::try_from(buf.len() * 2).map_err(|_| crate::SysError::Unknown)?;
@@ -112,16 +145,14 @@ pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
     )))
 }
 
-/// Remove the Run value `name` only when it reads exactly `expected`: `Ok(true)` removed,
-/// `Ok(false)` there was none or it was somebody else's (left as it is).
 #[cfg(windows)]
-pub fn run_delete_if(name: &str, expected: &str) -> Result<bool, crate::SysError> {
+fn delete_if(key: Key, name: &str, expected: &str) -> Result<bool, crate::SysError> {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
-    if run_get(name)?.as_deref() != Some(expected) {
+    if get_sz(key, name)?.as_deref() != Some(expected) {
         return Ok(false);
     }
-    let key = wide(RUN_KEY);
+    let key = wide(key.path());
     let name_w = wide(name);
     // SAFETY: key and name are NUL-terminated UTF-16 buffers alive for the call.
     let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name_w.as_ptr()) };
@@ -132,6 +163,52 @@ pub fn run_delete_if(name: &str, expected: &str) -> Result<bool, crate::SysError
     } else {
         Err(os_err(rc))
     }
+}
+
+/// Write (or replace) the Run value `name` = `command` (`REG_SZ`).
+#[cfg(windows)]
+pub fn run_set(name: &str, command: &str) -> Result<(), crate::SysError> {
+    set_sz(Key::Run, name, command)
+}
+
+/// Read the Run value `name`: `Ok(None)` when there is none. A value of another type than
+/// `REG_SZ` is an error (it is not one we wrote).
+#[cfg(windows)]
+pub fn run_get(name: &str) -> Result<Option<String>, crate::SysError> {
+    get_sz(Key::Run, name)
+}
+
+/// Remove the Run value `name` only when it reads exactly `expected`: `Ok(true)` removed,
+/// `Ok(false)` there was none or it was somebody else's (left as it is).
+#[cfg(windows)]
+pub fn run_delete_if(name: &str, expected: &str) -> Result<bool, crate::SysError> {
+    delete_if(Key::Run, name, expected)
+}
+
+/// Write one value of AIB's entry in Settings > Apps ([`UNINSTALL_KEY`]); only the names in
+/// [`UNINSTALL_NAMES`] (COND r0 §4-1).
+#[cfg(windows)]
+pub fn uninstall_set(name: &str, value: &str) -> Result<(), crate::SysError> {
+    if !uninstall_name_ok(name) {
+        return Err(crate::SysError::Unsupported);
+    }
+    set_sz(Key::Uninstall, name, value)
+}
+
+/// Read one value of AIB's Settings > Apps entry.
+#[cfg(windows)]
+pub fn uninstall_get(name: &str) -> Result<Option<String>, crate::SysError> {
+    get_sz(Key::Uninstall, name)
+}
+
+/// Remove one value of AIB's Settings > Apps entry when it reads exactly `expected`. The key
+/// itself stays (empty, so Settings no longer lists it): deleting keys is not in this module.
+#[cfg(windows)]
+pub fn uninstall_delete_if(name: &str, expected: &str) -> Result<bool, crate::SysError> {
+    if !uninstall_name_ok(name) {
+        return Err(crate::SysError::Unsupported);
+    }
+    delete_if(Key::Uninstall, name, expected)
 }
 
 /// Is this process running elevated ("Run as administrator")? The setup refuses then: it would
@@ -187,6 +264,24 @@ pub fn run_get(_: &str) -> Result<Option<String>, crate::SysError> {
 /// No Run key off Windows.
 #[cfg(not(windows))]
 pub fn run_delete_if(_: &str, _: &str) -> Result<bool, crate::SysError> {
+    Err(crate::SysError::Unsupported)
+}
+
+/// No Settings > Apps entry off Windows.
+#[cfg(not(windows))]
+pub fn uninstall_set(_: &str, _: &str) -> Result<(), crate::SysError> {
+    Err(crate::SysError::Unsupported)
+}
+
+/// No Settings > Apps entry off Windows.
+#[cfg(not(windows))]
+pub fn uninstall_get(_: &str) -> Result<Option<String>, crate::SysError> {
+    Err(crate::SysError::Unsupported)
+}
+
+/// No Settings > Apps entry off Windows.
+#[cfg(not(windows))]
+pub fn uninstall_delete_if(_: &str, _: &str) -> Result<bool, crate::SysError> {
     Err(crate::SysError::Unsupported)
 }
 
@@ -310,6 +405,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert!(clean.is_empty(), "reason: winrun_allowed {clean:?}");
         assert_eq!(hits.len(), 2, "reason: planted_found {hits:?}");
+    }
+
+    #[test]
+    fn only_the_listed_settings_entry_values_are_written() {
+        for ok in UNINSTALL_NAMES {
+            assert!(uninstall_name_ok(ok), "reason: refused {ok}");
+        }
+        for no in ["", "QuietUninstallString", "NoRemove", "displayname", "Run"] {
+            assert!(!uninstall_name_ok(no), "reason: took {no}");
+        }
+        assert!(UNINSTALL_KEY.ends_with(r"\Uninstall\AIB"), "reason: key");
     }
 
     #[cfg(not(windows))]

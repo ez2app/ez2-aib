@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS13, WR1–WR5: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -80,3 +80,28 @@ wr '    if !drive && !path.starts_with(r"\\") {' \
 wr '            if text.contains(n.as_str()) {' \
    '            if text.contains(n.as_str()) && false {' \
    the_registry_guard_sees_a_planted_name
+# --- W2 (ebab8 04:31): Settings > Apps entry, fuller uninstall, rollback ---
+# WS14 (COND §4-2) uninstall deletes the program while AIB is running from it
+ws '    let running = ops.healthy();' \
+   '    let running = ops.healthy() && false;' \
+   uninstall_removes_the_program_only_when_aib_is_not_running
+# WS15 rollback swaps the program while AIB is running from it
+ws '    let busy = ops.exists(&p.exe) && ops.healthy();' \
+   '    let busy = ops.exists(&p.exe) && ops.healthy() && false;' \
+   rollback_swaps_in_the_previous_program_but_not_while_running
+# WS16 somebody else's Settings > Apps entry is overwritten
+ws '        if u != ours {' \
+   '        if u != ours && false {' \
+   somebody_elses_settings_entry_is_left_and_the_setup_goes_on
+# WS17 (COND §4-2) uninstall removes a Settings > Apps entry that is not ours
+ws '    if listed_ours {' \
+   '    if listed_ours || ops.settings_get("DisplayName")?.is_some() {' \
+   uninstall_removes_only_our_settings_entry
+# WS18 the Settings uninstall command loses its quotes / flag
+ws '    format!("{command} setup --uninstall")' \
+   '    format!("{command}")' \
+   the_setup_lists_aib_in_settings_with_an_uninstall_command
+# WR6 values outside the Settings list are written
+wr '    UNINSTALL_NAMES.contains(&name)' \
+   '    !name.is_empty()' \
+   only_the_listed_settings_entry_values_are_written
