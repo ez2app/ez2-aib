@@ -12,6 +12,45 @@ use std::time::{Duration, Instant};
 const FAKE: &str = env!("CARGO_BIN_EXE_aibd-fake-provider");
 const SHA: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
+/// Set by [`keep_home`]: the harness leaves HOME as the test set it.
+static KEEP_HOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This test process keeps its own HOME (one with no login, to see the refusal).
+pub fn keep_home() {
+    KEEP_HOME.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// HOME as it is when it has a claude and a codex login (the files aibd reads; nothing in
+/// them); else one folder for this process that has both, made once and kept for its life
+/// (tests run side by side: a per-test folder would go away under another test).
+fn logged_in_home() {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let both = |h: &Path| {
+        h.join(".claude").join(".credentials.json").is_file()
+            && h.join(".codex").join("auth.json").is_file()
+    };
+    if std::env::var_os("HOME").is_some_and(|h| both(Path::new(&h)))
+        && std::env::var_os("CODEX_HOME").is_none()
+    {
+        return;
+    }
+    let home = HOME.get_or_init(|| {
+        let h = tempfile::Builder::new()
+            .prefix("aibd-harness-home")
+            .tempdir()
+            .unwrap()
+            .keep();
+        for (d, f) in [(".claude", ".credentials.json"), (".codex", "auth.json")] {
+            std::fs::create_dir_all(h.join(d)).unwrap();
+            std::fs::write(h.join(d).join(f), "{}").unwrap();
+        }
+        h
+    });
+    std::env::set_var("HOME", home);
+    std::env::set_var("USERPROFILE", home);
+    std::env::remove_var("CODEX_HOME");
+}
+
 pub struct Daemon {
     addr: SocketAddr,
     token: String,
@@ -56,8 +95,30 @@ impl Daemon {
     /// `start` with room for `max` running sessions (a test that opens more seats than four and
     /// needs the later ones running, not queued).
     pub async fn start_max(dir: &Path, max: usize) -> Daemon {
+        Self::start_inner(dir, max, &[]).await
+    }
+
+    /// `start` with `copilot` listed too: the same fake under the file name `copilot` (it acts
+    /// like copilot 1.0.116 for aibd's checks, 3e53b REVIEW-copilot e3d07aff L1).
+    pub async fn start_copilot(dir: &Path) -> Daemon {
+        Self::start_inner(dir, 4, &["copilot"]).await
+    }
+
+    /// `start` with `grok` listed too: the same fake under the file name `grok`, a grok of a
+    /// version aibd did not measure (3e53b REVIEW-grok 4733597f N1).
+    pub async fn start_grok(dir: &Path) -> Daemon {
+        Self::start_inner(dir, 4, &["grok"]).await
+    }
+
+    async fn start_inner(dir: &Path, max: usize, also: &[&str]) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
+        // a page opens a seat only for a brand logged in where the seats read it (08de5 11-26):
+        // a HOME with neither login gets one that has both, the same for every test here
+        // (a test that sets its own HOME keeps it: copilot / grok, or `keep_home`)
+        if also.is_empty() && !KEEP_HOME.load(std::sync::atomic::Ordering::SeqCst) {
+            logged_in_home();
+        }
         let cards = dir.join("cards.json");
         let doc = serde_json::json!({
             "schema_version": "aib-cards/v2",
@@ -70,19 +131,35 @@ impl Daemon {
             .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
         std::fs::copy(FAKE, &codex).unwrap();
+        let mut programs = vec![
+            aibd::allowlist::Program {
+                name: "claude".into(),
+                path: FAKE.into(),
+                signer: None,
+            },
+            aibd::allowlist::Program {
+                name: "codex".into(),
+                path: codex.clone(),
+                signer: None,
+            },
+        ];
+        // the same fake under each of these names (its file name picks what it acts as)
+        for name in also {
+            let file = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                (*name).to_owned()
+            };
+            let path = dir.join("bin").join(file);
+            std::fs::copy(FAKE, &path).unwrap();
+            programs.push(aibd::allowlist::Program {
+                name: (*name).into(),
+                path,
+                signer: None,
+            });
+        }
         let policy = aibd::allowlist::SessionPolicy {
-            programs: vec![
-                aibd::allowlist::Program {
-                    name: "claude".into(),
-                    path: FAKE.into(),
-                    signer: None,
-                },
-                aibd::allowlist::Program {
-                    name: "codex".into(),
-                    path: codex.clone(),
-                    signer: None,
-                },
-            ],
+            programs,
             env: vec![],
             interpreters_ok: false,
         };
