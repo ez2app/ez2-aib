@@ -151,11 +151,28 @@ pub fn env_dropped(name: &str) -> bool {
     (up.starts_with("COPILOT_") && up != "COPILOT_HOME") || DROPPED_ENV.contains(&up.as_str())
 }
 
-/// Is `home` the shape of a seat home [`seat_home`] makes (`…/copilot-home/c_<hex>`, there)?
+/// Where this aibd makes seat homes, set by the gate before it admits a copilot seat
+/// ([`crate::sessions::gate`]); unset, no home is taken as aibd's.
+static HOMES_ROOT: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+
+/// Record `homes` as where this aibd makes seat homes.
+pub fn set_homes(homes: &Path) {
+    let real = std::fs::canonicalize(homes).unwrap_or_else(|_| homes.to_path_buf());
+    *HOMES_ROOT
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(real);
+}
+
+/// Is `home` a seat home this aibd made: its real path exactly `<homes>/c_<hex>` under the
+/// recorded [`set_homes`] folder (c2f0b: the whole path, not only its tail; a
+/// `/tmp/x/copilot-home/c_ab` an AI made is not one)?
 pub fn made_by_aibd(home: &Path) -> bool {
-    home.parent()
-        .and_then(Path::file_name)
-        .is_some_and(|n| n == HOMES)
+    let root = HOMES_ROOT
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(root) = root else { return false };
+    std::fs::canonicalize(home).is_ok_and(|real| real.parent() == Some(root.as_path()))
         && home
             .file_name()
             .and_then(|n| n.to_str())

@@ -219,12 +219,12 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '    if let Some((k, _)) = env.iter().find(|(_, _)| false) {' \
   --expect-fail 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_seat_home_holds_the_signed_in_user_only'
-# c-made-shape (any folder called c_<hex> is taken as aibd-made; DESIGN-copilot-seat-home / c2f0b PRE-READ)
+# c-made-shape (a folder of the same shape outside aibd's homes is taken as aibd's; c2f0b whole path)
 python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
-  '        .is_some_and(|n| n == HOMES)' \
-  '        .is_some_and(|_| true)' \
-  --expect-fail 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it' \
-  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it'
+  '    std::fs::canonicalize(home).is_ok_and(|real| real.parent() == Some(root.as_path()))' \
+  '    std::fs::canonicalize(home).is_ok() || root.as_os_str().is_empty()' \
+  --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-seat-env (the request keeps a name that moves copilot set-up; DESIGN-copilot-seat-home / c2f0b PRE-READ)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
   '        !crate::copilot_wire::env_dropped(k) && !k.eq_ignore_ascii_case("COPILOT_HOME")' \

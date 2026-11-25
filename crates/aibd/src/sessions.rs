@@ -2960,6 +2960,7 @@ pub(crate) async fn gate(
                 .join("config.json");
             match crate::copilot_wire::seat_home(&homes, &user) {
                 Ok(h) => {
+                    crate::copilot_wire::set_homes(&homes);
                     copilot_seat_env(&mut req, &policy, &h);
                     Some(h)
                 }
@@ -3699,10 +3700,29 @@ mod tests {
         std::fs::remove_file(home.join(".copilot").join("hooks").join("m.json")).unwrap();
         // the home aibd made for the seat is admitted though no policy lists COPILOT_HOME;
         // a home of any other shape is a name the request may not set
-        let own = d.path().join(crate::copilot_wire::HOMES).join("c_00ff");
+        let homes = d.path().join(crate::copilot_wire::HOMES);
+        let own = homes.join("c_00ff");
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("config.json"), "{}").unwrap();
-        for (h, ok) in [(own.clone(), true), (home.join(".copilot"), false)] {
+        // c2f0b: the whole path counts; a folder of the same shape elsewhere is not aibd's
+        let elsewhere = d
+            .path()
+            .join("x")
+            .join(crate::copilot_wire::HOMES)
+            .join("c_00ff");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("config.json"), "{}").unwrap();
+        let odd = homes.join("x_00ff");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("config.json"), "{}").unwrap();
+        // the only test that records a homes folder (the global is set by the gate)
+        crate::copilot_wire::set_homes(&homes);
+        for (h, ok) in [
+            (own.clone(), true),
+            (home.join(".copilot"), false),
+            (elsewhere, false),
+            (odd, false),
+        ] {
             let r = Request {
                 argv: argv.clone(),
                 cwd: Some(d.path().to_path_buf()),
@@ -3781,19 +3801,6 @@ mod tests {
             !req.withhold.iter().any(|w| w == "FOO"),
             "reason: other_env_withheld"
         );
-        assert!(crate::copilot_wire::made_by_aibd(&home));
-        for not in [
-            d.path().join("c_0123456789abcdef"),
-            homes.join("x_0123"),
-            homes.join("c_"),
-            homes.join("c_../x"),
-            homes.join("c_ffff"),
-        ] {
-            assert!(
-                !crate::copilot_wire::made_by_aibd(&not),
-                "reason: home_taken {not:?}"
-            );
-        }
     }
 
     /// 3e53b M1: the same gate runs on each turn's words with the turn's environment, so a
