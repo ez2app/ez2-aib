@@ -6,13 +6,14 @@
 //! Claude-compatible `stream-json` lines (`assistant`, `result`) so `ctl`, `usage`,
 //! `session_output`, and the web UI read them uniformly.
 
+use crate::lineage::Lineage;
 use crate::platform::session::{
-    child_env, CandidateDiag, Exit, ExitWait, Input, Output, Running, SpawnFail, Spec, Stop,
+    CandidateDiag, Exit, ExitWait, Input, Output, Running, SpawnFail, SpawnFn, Spec, Stop,
     StopStatus,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -25,6 +26,46 @@ pub fn is_grok(prog: &str) -> bool {
         .or_else(|| base.strip_suffix(".EXE"))
         .unwrap_or(base);
     stem.eq_ignore_ascii_case("grok")
+}
+
+/// What `grok inspect --json` (1.0.70) lists that would run in a safe seat: none may be there.
+/// MCP servers and LSP servers are programs grok starts outside the seat's sandbox; hooks run
+/// commands; an enabled plugin brings any of them. `Err` says which, with how many; a listing
+/// that is not a JSON object, or lacks one of these keys, is refused too (08de5 11-25: grok
+/// on this Mac lists 2 MCP servers from ~/.cursor/mcp.json, 2 hooks and 4 plugins from
+/// ~/.claude/plugins, 2 LSP servers, with no flag to turn them off).
+pub fn nothing_loaded(listed: &str) -> Result<(), String> {
+    let v: Value = serde_json::from_str(listed.trim())
+        .map_err(|_| "its set-up listing could not be read".to_owned())?;
+    let mut found = Vec::new();
+    for key in ["mcpServers", "hooks", "lspServers"] {
+        let n = v
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("its set-up listing has no {key}"))?
+            .len();
+        if n > 0 {
+            found.push(format!("{key} {n}"));
+        }
+    }
+    let on = v
+        .get("plugins")
+        .and_then(Value::as_array)
+        .ok_or("its set-up listing has no plugins")?
+        .iter()
+        .filter(|p| p.get("enabled").and_then(Value::as_bool) != Some(false))
+        .count();
+    if on > 0 {
+        found.push(format!("plugins {on}"));
+    }
+    if found.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "grok would load the user's own {}; turn them off for grok first",
+            found.join(", ")
+        ))
+    }
 }
 
 /// Extract the plain user text from one Claude-style `stream-json` user line.
@@ -140,11 +181,35 @@ pub fn turn_args(base_argv: &[String], turn_idx: usize, prompt_file: &str) -> Ve
     out
 }
 
+/// How a turn's `grok` is started: through aibd's own spawn (the platform's tree, and M1
+/// lineage on macOS), never a bare `Command` — a turn's program is a session tree like any
+/// other, so a stop finds what it started (08de5 11-25, ebab8 q_cd554b24 condition 2).
+#[derive(Clone)]
+pub struct Turns {
+    pub spawn: SpawnFn,
+    pub lineage: Option<Arc<Lineage>>,
+    /// Where a turn's prompt file is written: aibd's own folder, owner only
+    /// ([`crate::platform::create_private_dir`]), never the shared temp folder (condition 3).
+    pub prompt_dir: PathBuf,
+}
+
+/// How long a turn's stop may wait for the tree after its output closed.
+const TURN_GRACE: Duration = Duration::from_secs(2);
+/// How long the end of a turn waits for its root's exit after its output closed.
+const TURN_EXIT_WAIT: Duration = Duration::from_secs(5);
+
 struct GrokState {
     exit: Mutex<Option<Exit>>,
     cv: Condvar,
     stopping: AtomicBool,
-    active_child: Mutex<Option<Child>>,
+    /// The turn running now, as aibd's spawn returned it.
+    active: Mutex<Option<Box<dyn Running>>>,
+    /// A finished turn's stop that was not clean: the session's stop reports it.
+    left: Mutex<Option<Stop>>,
+}
+
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct GrokExitWait(Arc<GrokState>);
@@ -153,16 +218,15 @@ impl ExitWait for GrokExitWait {
     // ExitWait::wait is called off the async runtime by sessions.rs with the caller's timeout.
     #[allow(clippy::disallowed_methods)]
     fn wait(&self, timeout: Duration) -> Option<Exit> {
-        let mut g = self.0.exit.lock().unwrap_or_else(|e| e.into_inner());
+        let g = locked(&self.0.exit);
         if let Some(e) = g.clone() {
             return Some(e);
         }
-        let (g2, _) = self
+        let (g, _) = self
             .0
             .cv
             .wait_timeout_while(g, timeout, |e| e.is_none())
             .unwrap_or_else(|e| e.into_inner());
-        g = g2;
         g.clone()
     }
 }
@@ -195,9 +259,28 @@ struct GrokRunning {
     input: Option<Input>,
 }
 
+/// The stop of a session with no turn running and none left unclean: nothing of it is alive.
+fn idle_stop() -> Stop {
+    Stop {
+        status: StopStatus::Clean,
+        survivors: Vec::new(),
+        tree_size: 0,
+        signals: Vec::new(),
+        blind_spots: Vec::new(),
+        candidates: CandidateDiag {
+            count: 0,
+            orphan_extra: 0,
+            unreadable: Vec::new(),
+            unreadable_more: 0,
+            other_coalition: Vec::new(),
+            other_coalition_more: 0,
+        },
+    }
+}
+
 impl Running for GrokRunning {
     fn pid(&self) -> u32 {
-        0
+        locked(&self.state.active).as_ref().map_or(0, |r| r.pid())
     }
 
     fn take_output(&mut self) -> Option<Output> {
@@ -209,52 +292,28 @@ impl Running for GrokRunning {
     }
 
     fn try_exit(&mut self) -> std::io::Result<Option<Exit>> {
-        Ok(self
-            .state
-            .exit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone())
+        Ok(locked(&self.state.exit).clone())
     }
 
     fn exit_wait(&self) -> Arc<dyn ExitWait> {
         Arc::new(GrokExitWait(self.state.clone()))
     }
 
-    fn stop(&mut self, _grace: Duration) -> Stop {
+    /// The turn running now is stopped as the platform stops a tree, and its own report is
+    /// the session's (a tree not clean stays not clean); with none running, a finished turn
+    /// whose stop was not clean is reported; else nothing is alive.
+    fn stop(&mut self, grace: Duration) -> Stop {
         self.state.stopping.store(true, Ordering::SeqCst);
-        if let Some(mut child) = self
-            .state
-            .active_child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
+        let turn = locked(&self.state.active).take().map(|mut r| r.stop(grace));
+        let left = locked(&self.state.left).take();
         {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        {
-            let mut ex = self.state.exit.lock().unwrap_or_else(|e| e.into_inner());
+            let mut ex = locked(&self.state.exit);
             if ex.is_none() {
                 *ex = Some(Exit::Code(0));
             }
         }
         self.state.cv.notify_all();
-        Stop {
-            status: StopStatus::Clean,
-            survivors: Vec::new(),
-            tree_size: 0,
-            signals: Vec::new(),
-            blind_spots: Vec::new(),
-            candidates: CandidateDiag {
-                count: 0,
-                orphan_extra: 0,
-                unreadable: Vec::new(),
-                unreadable_more: 0,
-                other_coalition: Vec::new(),
-                other_coalition_more: 0,
-            },
-        }
+        turn.or(left).unwrap_or_else(idle_stop)
     }
 }
 
@@ -263,7 +322,8 @@ fn write_line(w: &mut std::io::PipeWriter, line: &str) {
     let _ = w.flush();
 }
 
-struct PromptGuard(std::path::PathBuf);
+/// A turn's prompt file, removed when the turn is over.
+struct PromptGuard(PathBuf);
 
 impl Drop for PromptGuard {
     fn drop(&mut self) {
@@ -271,21 +331,132 @@ impl Drop for PromptGuard {
     }
 }
 
-fn write_prompt_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+/// Write `content` to a new file of a random name in `dir` (aibd's own folder, owner only):
+/// created only if no file is there (O_EXCL), never through a link (O_NOFOLLOW on Unix; on
+/// Windows create_new refuses an existing name, links included — UNVERIFIED on a machine),
+/// owner only (0600; on Windows the folder's owner-only DACL). An AI of the same account that
+/// guessed the name cannot make aibd write through it (08de5 11-25 TAKEOVER-brands §1.3).
+fn write_prompt_file(dir: &std::path::Path, content: &str) -> std::io::Result<PathBuf> {
+    crate::platform::create_private_dir(dir)?;
+    let name = crate::sessions::new_id("p_").map_err(std::io::Error::other)?;
+    let path = dir.join(format!("{name}.prompt"));
+    let mut f = open_new_private(&path)?;
+    f.write_all(content.as_bytes())?;
+    f.flush()?;
+    Ok(path)
+}
+
+/// A new file at `path`, owner only: refused when anything is at that name, a link included.
+fn open_new_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
     }
-    let mut f = opts.open(path)?;
-    f.write_all(content.as_bytes())?;
-    f.flush()
+    opts.open(path)
 }
 
-/// Start a turn-by-turn `grok` session backed by pipes into `session_output`.
-pub fn spawn(spec: &Spec, persona: Option<String>) -> Result<Box<dyn Running>, SpawnFail> {
+/// One turn: started through `turns.spawn`, its stdout translated onto `out_w`, its stderr
+/// copied onto `err_w`; the turn's tree stopped (and reaped) once its output closed. Returns
+/// whether the root ended with code 0.
+fn run_turn(
+    st: &GrokState,
+    turns: &Turns,
+    spec: &Spec,
+    args: Vec<String>,
+    out_w: &mut std::io::PipeWriter,
+    err_w: &std::io::PipeWriter,
+) -> Result<bool, String> {
+    let turn_spec = Spec {
+        argv: std::iter::once(spec.argv[0].clone()).chain(args).collect(),
+        input: false,
+        ..spec.clone()
+    };
+    let mut run = (turns.spawn)(&turn_spec, turns.lineage.clone())
+        .map_err(|e| format!("grok spawn failed: {}", e.tag))?;
+    let output = run.take_output();
+    *locked(&st.active) = Some(run);
+    // a stop that came before the turn was kept finds it here (it set `stopping` first)
+    if st.stopping.load(Ordering::SeqCst) {
+        if let Some(mut r) = locked(&st.active).take() {
+            let s = r.stop(TURN_GRACE);
+            *locked(&st.left) = Some(s);
+        }
+        return Ok(false);
+    }
+    let Some(Output { stdout, stderr }) = output else {
+        return Err("grok output not captured".into());
+    };
+    let mut ew = err_w.try_clone().ok();
+    let err_copy = std::thread::spawn(move || {
+        let mut br = BufReader::new(stderr);
+        let mut line = String::new();
+        while br.read_line(&mut line).unwrap_or(0) > 0 {
+            if let Some(w) = ew.as_mut() {
+                let _ = w.write_all(line.as_bytes());
+                let _ = w.flush();
+            }
+            line.clear();
+        }
+    });
+    let mut text_buf = String::new();
+    let mut emitted_result = false;
+    let mut br = BufReader::new(stdout);
+    let mut line = String::new();
+    while br.read_line(&mut line).unwrap_or(0) > 0 {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if matches!(v.get("type").and_then(Value::as_str), Some("end" | "error")) {
+                if let Some(aline) = assistant_line(&text_buf) {
+                    write_line(out_w, &aline);
+                }
+            }
+        }
+        if let Some(out_line) = translate_line(&line, &mut text_buf) {
+            emitted_result = true;
+            write_line(out_w, &out_line);
+        }
+        line.clear();
+    }
+    let _ = err_copy.join();
+    // the output closed: the root's exit, then the turn's tree stopped and reaped; a stop
+    // that took the turn first has its report already
+    let exit_ok = match locked(&st.active).take() {
+        Some(mut r) => {
+            let ex = r.exit_wait().wait(TURN_EXIT_WAIT);
+            let s = r.stop(TURN_GRACE);
+            if !matches!(s.status, StopStatus::Clean) {
+                *locked(&st.left) = Some(s);
+            }
+            ex == Some(Exit::Code(0))
+        }
+        None => false,
+    };
+    if !emitted_result {
+        if let Some(aline) = assistant_line(&text_buf) {
+            write_line(out_w, &aline);
+        }
+        let msg = if exit_ok {
+            ""
+        } else {
+            "grok exited with error"
+        };
+        write_line(
+            out_w,
+            &json!({"type":"result","subtype": if exit_ok { "success" } else { "error" },"is_error": !exit_ok,"result": msg}).to_string(),
+        );
+    }
+    Ok(exit_ok)
+}
+
+/// Start a turn-by-turn `grok` session backed by pipes into `session_output`. Each turn's
+/// program is started through `turns` (aibd's own spawn).
+pub fn spawn(
+    spec: &Spec,
+    persona: Option<String>,
+    turns: Turns,
+) -> Result<Box<dyn Running>, SpawnFail> {
     let pipe_err = |e: std::io::Error| SpawnFail::from_io(&e);
     let (out_r, mut out_w) = std::io::pipe().map_err(pipe_err)?;
     let (err_r, err_w) = std::io::pipe().map_err(pipe_err)?;
@@ -294,11 +465,11 @@ pub fn spawn(spec: &Spec, persona: Option<String>) -> Result<Box<dyn Running>, S
         exit: Mutex::new(None),
         cv: Condvar::new(),
         stopping: AtomicBool::new(false),
-        active_child: Mutex::new(None),
+        active: Mutex::new(None),
+        left: Mutex::new(None),
     });
     let st_bg = state.clone();
     let spec_bg = spec.clone();
-    let env_bg = child_env(spec, std::env::vars_os());
     let spawned = std::thread::Builder::new()
         .name("aibd-grok-turns".into())
         .spawn(move || {
@@ -311,98 +482,29 @@ pub fn spawn(spec: &Spec, persona: Option<String>) -> Result<Box<dyn Running>, S
                     continue;
                 };
                 let prompt = turn_prompt(persona.as_deref(), &text, turn == 0);
-                let pbuf = std::env::temp_dir()
-                    .join(format!("aibd-grok-{}-{turn}.prompt", spec_bg.id));
-                let _guard = PromptGuard(pbuf.clone());
-                if write_prompt_file(&pbuf, &prompt).is_err() {
+                let fail = |out_w: &mut std::io::PipeWriter, why: &str| {
                     write_line(
-                        &mut out_w,
-                        &json!({"type":"result","subtype":"error","is_error":true,"result":"grok prompt write failed"}).to_string(),
+                        out_w,
+                        &json!({"type":"result","subtype":"error","is_error":true,"result":why})
+                            .to_string(),
                     );
-                    continue;
-                }
-                let ppath = pbuf.to_string_lossy().into_owned();
-                let args = turn_args(&spec_bg.argv, turn, &ppath);
-                let child_res = Command::new(&spec_bg.argv[0])
-                    .args(&args)
-                    .current_dir(&spec_bg.cwd)
-                    .env_clear()
-                    .envs(env_bg.iter().map(|(k, v)| (k, v)))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn();
-                let mut child = match child_res {
-                    Ok(c) => c,
-                    Err(e) => {
-                        write_line(
-                            &mut out_w,
-                            &json!({"type":"result","subtype":"error","is_error":true,"result":format!("grok spawn failed: {e}")}).to_string(),
-                        );
+                };
+                let path = match write_prompt_file(&turns.prompt_dir, &prompt) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        fail(&mut out_w, "grok prompt write failed");
                         continue;
                     }
                 };
-                let c_out = child.stdout.take();
-                let c_err = child.stderr.take();
-                *st_bg.active_child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-                let err_handle = c_err.map(|ce| {
-                    let mut ew = err_w.try_clone().ok();
-                    std::thread::spawn(move || {
-                        let mut br = BufReader::new(ce);
-                        let mut line = String::new();
-                        while br.read_line(&mut line).unwrap_or(0) > 0 {
-                            if let Some(w) = ew.as_mut() {
-                                let _ = w.write_all(line.as_bytes());
-                                let _ = w.flush();
-                            }
-                            line.clear();
-                        }
-                    })
-                });
-                let mut text_buf = String::new();
-                let mut emitted_result = false;
-                if let Some(co) = c_out {
-                    let mut br = BufReader::new(co);
-                    let mut line = String::new();
-                    while br.read_line(&mut line).unwrap_or(0) > 0 {
-                        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
-                            let kind = v.get("type").and_then(Value::as_str);
-                            if matches!(kind, Some("end" | "error")) {
-                                if let Some(aline) = assistant_line(&text_buf) {
-                                    write_line(&mut out_w, &aline);
-                                }
-                            }
-                        }
-                        if let Some(out_line) = translate_line(&line, &mut text_buf) {
-                            emitted_result = true;
-                            write_line(&mut out_w, &out_line);
-                        }
-                        line.clear();
-                    }
-                }
-                if let Some(h) = err_handle {
-                    let _ = h.join();
-                }
-                let exit_ok = st_bg
-                    .active_child
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .and_then(|mut c| c.wait().ok())
-                    .is_some_and(|s| s.success());
-                if !emitted_result {
-                    if let Some(aline) = assistant_line(&text_buf) {
-                        write_line(&mut out_w, &aline);
-                    }
-                    let msg = if exit_ok { "" } else { "grok exited with error" };
-                    write_line(
-                        &mut out_w,
-                        &json!({"type":"result","subtype": if exit_ok { "success" } else { "error" },"is_error": !exit_ok,"result": msg}).to_string(),
-                    );
+                let _guard = PromptGuard(path.clone());
+                let args = turn_args(&spec_bg.argv, turn, &path.to_string_lossy());
+                if let Err(why) = run_turn(&st_bg, &turns, &spec_bg, args, &mut out_w, &err_w) {
+                    fail(&mut out_w, &why);
+                    continue;
                 }
                 turn += 1;
             }
-            let mut ex = st_bg.exit.lock().unwrap_or_else(|e| e.into_inner());
+            let mut ex = locked(&st_bg.exit);
             if ex.is_none() {
                 *ex = Some(Exit::Code(0));
             }
@@ -501,5 +603,191 @@ mod tests {
             .windows(2)
             .any(|w| w == ["-r", "0f1e2d3c-4b5a-4968-8776-655443322110"]));
         assert!(!t1.iter().any(|w| w == "-s"));
+    }
+
+    /// grok 1.0.70 `inspect --json` on andymini-class Mac (08de5 11-25, trimmed to the keys read).
+    const INSPECT_LOADED: &str = r#"{"grokVersion":"1.0.70","mcpServers":[{"name":"notebooks","transport":"stdio","target":"node","source":{"type":"mcpJson","path":"/Users/u/.cursor/mcp.json"},"compatibilityStatus":"enabled","vendor":"cursor"}],"hooks":[{"event":"(plugin)","hookType":"file","target":"/Users/u/.claude/plugins/cache/x/hooks/hooks.json"}],"plugins":[{"name":"rust-analyzer-lsp","scope":"user","enabled":true},{"name":"off","enabled":false}],"lspServers":[{"name":"rust-analyzer","command":"rust-analyzer","args":[]}],"skills":[{"name":"a"}]}"#;
+
+    #[test]
+    fn a_grok_that_would_load_the_users_own_set_up_is_refused() {
+        let e = nothing_loaded(INSPECT_LOADED).unwrap_err();
+        for part in ["mcpServers 1", "hooks 1", "lspServers 1", "plugins 1"] {
+            assert!(e.contains(part), "reason: {part}_not_said {e}");
+        }
+        let empty = r#"{"mcpServers":[],"hooks":[],"lspServers":[],"plugins":[{"name":"off","enabled":false}],"skills":[{"name":"a"}]}"#;
+        assert_eq!(nothing_loaded(empty), Ok(()));
+        for key in ["mcpServers", "hooks", "lspServers"] {
+            let mut v: Value = serde_json::from_str(empty).unwrap();
+            v[key] = json!([{"name": "x"}]);
+            assert!(
+                nothing_loaded(&v.to_string()).is_err(),
+                "reason: {key}_opened"
+            );
+            v.as_object_mut().unwrap().remove(key);
+            assert!(
+                nothing_loaded(&v.to_string()).is_err(),
+                "reason: no_{key}_opened"
+            );
+        }
+        let mut v: Value = serde_json::from_str(empty).unwrap();
+        v["plugins"] = json!([{"name": "p"}]);
+        assert!(
+            nothing_loaded(&v.to_string()).is_err(),
+            "reason: plugin_without_enabled_opened"
+        );
+        for bad in ["", "not json", "[]"] {
+            assert!(
+                nothing_loaded(bad).is_err(),
+                "reason: unread_listing_opened {bad}"
+            );
+        }
+    }
+
+    /// The specs every turn was started with, through the fake spawn below.
+    static STARTED: std::sync::Mutex<Vec<Spec>> = std::sync::Mutex::new(Vec::new());
+
+    struct DoneWait;
+    impl ExitWait for DoneWait {
+        fn wait(&self, _timeout: Duration) -> Option<Exit> {
+            Some(Exit::Code(0))
+        }
+    }
+
+    /// A turn that printed one answer and left a process behind.
+    struct FakeTurn(Option<Output>);
+    impl Running for FakeTurn {
+        fn pid(&self) -> u32 {
+            4242
+        }
+        fn take_output(&mut self) -> Option<Output> {
+            self.0.take()
+        }
+        fn try_exit(&mut self) -> std::io::Result<Option<Exit>> {
+            Ok(Some(Exit::Code(0)))
+        }
+        fn exit_wait(&self) -> Arc<dyn ExitWait> {
+            Arc::new(DoneWait)
+        }
+        fn stop(&mut self, _grace: Duration) -> Stop {
+            Stop {
+                status: StopStatus::TreeNotClean,
+                survivors: vec![4243],
+                ..idle_stop()
+            }
+        }
+    }
+
+    fn fake_spawn(spec: &Spec, _l: Option<Arc<Lineage>>) -> Result<Box<dyn Running>, SpawnFail> {
+        STARTED.lock().unwrap().push(spec.clone());
+        let out = "{\"type\":\"text\",\"data\":\"OK\"}\n{\"type\":\"end\",\"stopReason\":\"end_turn\",\"sessionId\":\"s\"}\n";
+        Ok(Box::new(FakeTurn(Some(Output {
+            stdout: Box::new(std::io::Cursor::new(out.as_bytes().to_vec())),
+            stderr: Box::new(std::io::Cursor::new(Vec::new())),
+        }))))
+    }
+
+    /// 08de5 11-25 conditions 2 and 3: a turn is started through the spawn aibd hands over
+    /// (its argv the seat's own words plus the turn's prompt file, no stdin), the prompt file
+    /// sits in the private folder and is gone after the turn, and a turn whose tree did not
+    /// stop clean is what the session's stop reports.
+    #[test]
+    fn every_turn_goes_through_aibds_spawn_and_its_stop_is_reported() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("turn-prompts");
+        let spec = Spec {
+            id: "s_0123456789abcdef".into(),
+            argv: vec![
+                "/bin/grok".into(),
+                "--sandbox".into(),
+                "readonly".into(),
+                "-s".into(),
+                "u".into(),
+            ],
+            cwd: d.path().into(),
+            env: Vec::new(),
+            pass: Vec::new(),
+            input: true,
+        };
+        let turns = Turns {
+            spawn: fake_spawn,
+            lineage: None,
+            prompt_dir: dir.clone(),
+        };
+        let mut s = spawn(&spec, Some("CARD".into()), turns).unwrap();
+        let mut input = s.take_input().unwrap();
+        let mut out = std::io::BufReader::new(s.take_output().unwrap().stdout);
+        writeln!(
+            input,
+            "{}",
+            json!({"type":"user","message":{"role":"user","content":"hi"}})
+        )
+        .unwrap();
+        let mut seen = String::new();
+        while !seen.contains("\"result\"") {
+            let mut l = String::new();
+            assert!(
+                out.read_line(&mut l).unwrap() > 0,
+                "reason: no_result {seen}"
+            );
+            seen.push_str(&l);
+        }
+        assert!(seen.contains("OK"), "{seen}");
+        let started = STARTED.lock().unwrap().clone();
+        assert_eq!(started.len(), 1, "reason: turn_not_through_spawn");
+        let a = &started[0].argv;
+        assert_eq!(&a[..5], &spec.argv[..], "reason: seat_words_changed {a:?}");
+        assert_eq!(a[5], "--prompt-file");
+        assert!(
+            a[6].starts_with(&dir.to_string_lossy().into_owned()),
+            "reason: prompt_not_private {a:?}"
+        );
+        assert!(!started[0].input, "reason: turn_given_stdin");
+        assert!(!std::path::Path::new(&a[6]).exists(), "reason: prompt_left");
+        let stop = s.stop(Duration::from_millis(10));
+        assert_eq!(
+            stop.status,
+            StopStatus::TreeNotClean,
+            "reason: unclean_turn_said_clean"
+        );
+        assert_eq!(stop.survivors, vec![4243]);
+    }
+
+    /// Condition 3: the prompt file gets a new random name each time, owner only, and a name
+    /// already there (a link planted by an AI of the same account) is never written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_file_is_new_private_and_never_written_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("p");
+        let a = write_prompt_file(&dir, "one").unwrap();
+        let b = write_prompt_file(&dir, "two").unwrap();
+        assert_ne!(a, b, "reason: guessable_name");
+        assert_eq!(
+            std::fs::metadata(&a).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // the open itself: a name that is there, a link, is refused and its target untouched
+        let target = d.path().join("victim");
+        std::fs::write(&target, "keep").unwrap();
+        let planted = dir.join("planted.prompt");
+        std::os::unix::fs::symlink(&target, &planted).unwrap();
+        assert!(
+            open_new_private(&planted).is_err(),
+            "reason: written_through_link"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        // and a plain file already there is not written over either
+        let there = dir.join("there.prompt");
+        std::fs::write(&there, "old").unwrap();
+        assert!(
+            open_new_private(&there).is_err(),
+            "reason: existing_file_reused"
+        );
+        assert_eq!(std::fs::read_to_string(&there).unwrap(), "old");
     }
 }

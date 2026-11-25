@@ -61,6 +61,72 @@ pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
 /// with this list yields `"tools":[]` and refuses file, shell, and web-fetch).
 pub const GROK_SAFE_DISALLOWED: &str = "run_terminal_command,read_file,search_replace,list_dir,grep,kill_command_or_subagent,todo_write,get_command_or_subagent_output,scheduler_create,scheduler_delete,scheduler_list,monitor,search_tool,use_tool,workflow,enter_plan_mode,exit_plan_mode,ask_user_question,send_feedback,image_gen,image_edit,image_to_video,reference_to_video,write";
 
+/// The grok versions whose flags were measured (BRAND-grok-ae921-1124: 1.0.70). `out` is what
+/// `grok --version` prints (`grok 1.0.70 (f50904eaee6c)`); anything else is refused with it.
+pub fn grok_version_ok(out: &str) -> bool {
+    out.lines().any(|l| {
+        l.trim()
+            .strip_prefix("grok 1.0.70")
+            .is_some_and(|r| r.is_empty() || r.starts_with(' '))
+    })
+}
+
+/// What a grok safe seat must be started with, each exactly once: flag and value (`None` for a
+/// bare flag). 08de5 11-25 (ebab8 q_cd554b24 condition 1): checked where the seat starts,
+/// not only where [`pipe_argv`] builds the words.
+pub const GROK_SAFE_REQUIRED: &[(&str, Option<&str>)] = &[
+    ("--permission-mode", Some("plan")),
+    ("--disable-web-search", None),
+    ("--no-subagents", None),
+    ("--sandbox", Some("readonly")),
+    ("--disallowed-tools", Some(GROK_SAFE_DISALLOWED)),
+];
+
+/// Words that would give a grok safe seat back what [`GROK_SAFE_REQUIRED`] takes away (an
+/// allow rule, a tool list, an extra folder, an agent, a prompt of its own, auto-approval).
+pub const GROK_SAFE_FORBIDDEN: &[&str] = &[
+    "--allow",
+    "--allowedTools",
+    "--allowed-tools",
+    "--always-approve",
+    "--tools",
+    "--add-dir",
+    "--agent",
+    "--agents",
+    "--system-prompt-override",
+    "--system-prompt",
+    "--worktree",
+    "-w",
+    "--cwd",
+];
+
+/// The first reason a grok argv is not a safe seat's: a required flag missing, given twice or
+/// with another value (`missing:--sandbox`), or a forbidden one present (`forbidden:--tools`).
+/// `argv[0]` is the program. A `--flag=value` form counts as the flag.
+pub fn grok_safe_refusal(argv: &[String]) -> Option<String> {
+    let words = argv.get(1..).unwrap_or_default();
+    let name = |w: &str| w.split_once('=').map_or(w, |(n, _)| n).to_owned();
+    for w in words {
+        if GROK_SAFE_FORBIDDEN.contains(&name(w).as_str()) {
+            return Some(format!("forbidden:{}", name(w)));
+        }
+    }
+    for (flag, value) in GROK_SAFE_REQUIRED {
+        let at: Vec<usize> = (0..words.len())
+            .filter(|&i| name(&words[i]) == *flag)
+            .collect();
+        let ok = match (at.as_slice(), value) {
+            ([i], None) => words[*i] == *flag,
+            ([i], Some(v)) => words[*i] == *flag && words.get(i + 1).is_some_and(|x| x == v),
+            _ => false,
+        };
+        if !ok {
+            return Some(format!("missing:{flag}"));
+        }
+    }
+    None
+}
+
 /// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C, COUNCIL-worktree-gitdir Q3): a
 /// codex work seat runs in a codex permission profile that only macOS was measured with
 /// (codex's Windows sandbox is not measured), so Windows offers safe only.
@@ -476,6 +542,77 @@ mod tests {
             pipe_argv("grok", "work", None, ID),
             Err(PipeRefused::ProviderMode("grok".into(), "work".into()))
         );
+    }
+
+    /// 08de5 11-25 condition 1: every required flag, taken away alone, refuses the seat; so
+    /// does each forbidden word added, a flag given twice, another value, and `--flag=value`.
+    #[test]
+    fn a_grok_safe_seat_missing_any_flag_is_refused() {
+        let a = pipe_argv("grok", "safe", Some("grok-4.6"), ID).unwrap();
+        assert_eq!(grok_safe_refusal(&a), None, "reason: built_argv_refused");
+        let r = resume_argv("grok", "safe", None, ID).unwrap();
+        assert_eq!(grok_safe_refusal(&r), None, "reason: resume_argv_refused");
+        for (flag, value) in GROK_SAFE_REQUIRED {
+            let i = a.iter().position(|w| w == flag).unwrap();
+            let mut b = a.clone();
+            b.drain(i..i + if value.is_some() { 2 } else { 1 });
+            assert_eq!(
+                grok_safe_refusal(&b),
+                Some(format!("missing:{flag}")),
+                "reason: dropped_flag_opened {flag}"
+            );
+            if let Some(v) = value {
+                let mut c = a.clone();
+                c[i + 1] = format!("{v}x");
+                assert_eq!(
+                    grok_safe_refusal(&c),
+                    Some(format!("missing:{flag}")),
+                    "{flag}"
+                );
+                let mut d = a.clone();
+                d[i] = format!("{flag}={v}");
+                d.remove(i + 1);
+                assert_eq!(
+                    grok_safe_refusal(&d),
+                    Some(format!("missing:{flag}")),
+                    "{flag}="
+                );
+            }
+            let mut twice = a.clone();
+            twice.push((*flag).to_owned());
+            if let Some(v) = value {
+                twice.push((*v).to_owned());
+            }
+            assert_eq!(
+                grok_safe_refusal(&twice),
+                Some(format!("missing:{flag}")),
+                "reason: twice_opened {flag}"
+            );
+        }
+        for bad in GROK_SAFE_FORBIDDEN {
+            let mut b = a.clone();
+            b.push(format!("{bad}=x"));
+            assert_eq!(
+                grok_safe_refusal(&b),
+                Some(format!("forbidden:{bad}")),
+                "reason: forbidden_opened {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_measured_grok_version_starts() {
+        assert!(grok_version_ok("grok 1.0.70 (f50904eaee6c)\n"));
+        assert!(grok_version_ok("grok 1.0.70"));
+        for v in [
+            "grok 1.0.71 (x)",
+            "grok 1.0.700",
+            "grok 1.0.7",
+            "",
+            "codex-cli 0.167.0",
+        ] {
+            assert!(!grok_version_ok(v), "reason: unmeasured_version_ok {v}");
+        }
     }
 
     const ID: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";

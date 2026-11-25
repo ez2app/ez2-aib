@@ -530,8 +530,104 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             }
         }
     }
+    // 08de5 11-25 (ebab8 q_cd554b24 condition 1; TAKEOVER-brands-08de5-1125 §1): a grok seat is
+    // checked where it starts, as codex is — the measured version only, every safe flag exactly
+    // once and nothing that gives a tool back, and nothing of the user's own set-up that grok
+    // would load (MCP servers, hooks, plugins, LSP servers: grok 1.0.70 picks them up from
+    // ~/.cursor, ~/.claude plugins and its own config, and no flag turns them off). What
+    // `grok inspect --json` lists is read with the seat's own environment in the seat's folder;
+    // a list not read starts nothing.
+    if crate::grok_wire::is_grok(&real) {
+        let refuse_grok = |why: String| Refusal {
+            error: ApiError::new(
+                ErrorCode::ProgramNotAllowed,
+                format!("grok seat not started: {why}"),
+            ),
+            program: name(&real),
+        };
+        let printed = std::process::Command::new(&real)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !aib_seatopen::grok_version_ok(&printed) {
+            let said: String = printed
+                .lines()
+                .last()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(60)
+                .collect();
+            return Err(refuse_grok(format!(
+                "version not measured for aibd (1.0.70 only): {said} (grok_version)"
+            )));
+        }
+        if let Some(why) = aib_seatopen::grok_safe_refusal(&req.argv) {
+            return Err(refuse_grok(format!(
+                "safety flag {why} (grok_safety_flags)"
+            )));
+        }
+        let env = codex_list_env(&req, p, std::env::vars_os());
+        let listed = probe_listed(&real, &["inspect", "--json"], req.cwd.as_deref(), &env);
+        if let Err(why) = crate::grok_wire::nothing_loaded(&listed) {
+            return Err(refuse_grok(format!("{why} (grok_user_setup)")));
+        }
+    }
     req.argv[0] = real;
     Ok(req)
+}
+
+/// What `real <args>` prints in `cwd` with `env`, or nothing when it fails or takes more than
+/// [`MCP_LIST_WAIT`] (as [`codex_mcp_listed`]; a listing not read starts nothing).
+fn probe_listed(
+    real: &str,
+    args: &[&str],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> String {
+    let mut c = std::process::Command::new(real);
+    c.env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(d) = cwd {
+        c.current_dir(d);
+    }
+    let Ok(mut child) = c.spawn() else {
+        return String::new();
+    };
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return String::new();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("aibd-probe-list".into())
+        .spawn(move || {
+            let mut b = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut b);
+            let _ = tx.send(b);
+        });
+    // one wake-up for the answer or at the end of a start request's bound (ADR 0005 named
+    // exception, as `codex_mcp_listed`)
+    #[allow(clippy::disallowed_methods)]
+    let got = rx.recv_timeout(MCP_LIST_WAIT);
+    match got {
+        Ok(b) if child.wait().is_ok_and(|s| s.success()) => {
+            String::from_utf8_lossy(&b).into_owned()
+        }
+        Ok(_) => String::new(),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            String::new()
+        }
+    }
 }
 
 /// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
@@ -1531,7 +1627,19 @@ impl Sessions {
             .is_some_and(|p| crate::grok_wire::is_grok(p))
         {
             let persona = seat_id.as_deref().and_then(|s| self.take_persona(s));
-            crate::grok_wire::spawn(&spec, persona)
+            // every turn's grok goes through aibd's own spawn and lineage (condition 2); its
+            // prompt file in `<data dir>/turn-prompts`, owner only, beside the seats' default
+            // folder rather than in it (a seat started there does not see other seats' cards)
+            let turns = crate::grok_wire::Turns {
+                spawn: self.spawn,
+                lineage: self.lineage.clone(),
+                prompt_dir: self
+                    .default_cwd
+                    .parent()
+                    .unwrap_or(&self.default_cwd)
+                    .join("turn-prompts"),
+            };
+            crate::grok_wire::spawn(&spec, persona, turns)
         } else {
             (self.spawn)(&spec, self.lineage.clone())
         };
@@ -3248,6 +3356,92 @@ mod tests {
             withhold: Vec::new(),
             input: false,
         }
+    }
+
+    /// 08de5 11-25 (ebab8 q_cd554b24 condition 1): a grok seat is checked at the gate, not only
+    /// where its words are built — a safe flag missing, a version not measured, or any of the
+    /// user's own MCP servers / hooks / plugins / LSP servers grok would load: refused, saying
+    /// which; the seat's full safe words with nothing loaded: admitted. A stand-in `grok` (a
+    /// script, so interpreters are let through here) prints the version and the listing.
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_seat_is_checked_at_the_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("grok");
+        let script = |version: &str| {
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; inspect) cat '{}';; esac\n",
+                d.path().join("inspect.json").display()
+            )
+        };
+        let listing = |mcp: &str| {
+            std::fs::write(
+                d.path().join("inspect.json"),
+                format!(r#"{{"mcpServers":[{mcp}],"hooks":[],"lspServers":[],"plugins":[]}}"#),
+            )
+            .unwrap();
+        };
+        std::fs::write(&bin, script("grok 1.0.70 (test)")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        listing("");
+        let policy = SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "grok".into(),
+                path: bin.clone(),
+                signer: None,
+            }],
+            env: Vec::new(),
+            interpreters_ok: true,
+        };
+        let mut argv =
+            aib_seatopen::pipe_argv("grok", "safe", None, "0f1e2d3c-4b5a-4968-8776-655443322110")
+                .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        let ask = |argv: Vec<String>| {
+            let r = Request {
+                argv,
+                cwd: Some(d.path().to_path_buf()),
+                env: Vec::new(),
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            admit(r, &policy).map(|_| ()).map_err(|e| e.error.1)
+        };
+        assert_eq!(ask(argv.clone()), Ok(()), "reason: safe_grok_refused");
+        let i = argv.iter().position(|w| w == "--no-subagents").unwrap();
+        let mut short = argv.clone();
+        short.remove(i);
+        let e = ask(short).unwrap_err();
+        assert!(
+            e.contains("missing:--no-subagents (grok_safety_flags)"),
+            "reason: flag_missing_admitted {e}"
+        );
+        let mut more = argv.clone();
+        more.extend(["--tools".into(), "read_file".into()]);
+        assert!(
+            ask(more).unwrap_err().contains("forbidden:--tools"),
+            "reason: tool_given_back_admitted"
+        );
+        listing(r#"{"name":"notebooks"}"#);
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(
+            e.contains("mcpServers 1") && e.contains("(grok_user_setup)"),
+            "reason: user_mcp_admitted {e}"
+        );
+        std::fs::write(d.path().join("inspect.json"), "not json").unwrap();
+        assert!(
+            ask(argv.clone()).unwrap_err().contains("(grok_user_setup)"),
+            "reason: unread_listing_admitted"
+        );
+        listing("");
+        std::fs::write(&bin, script("grok 1.0.71 (test)")).unwrap();
+        let e = ask(argv).unwrap_err();
+        assert!(
+            e.contains("(grok_version)") && e.contains("1.0.71"),
+            "reason: unmeasured_version_admitted {e}"
+        );
     }
 
     #[test]
