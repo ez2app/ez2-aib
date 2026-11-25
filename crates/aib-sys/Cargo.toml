@@ -53,6 +53,9 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_Graphics_Gdi", # AP26 W-5: CreateDesktopW / RegisterClassW need it (BitBlt etc.: test code only, source guard)
     "Win32_Security",
     "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash
+    "Win32_Security_Cryptography_Catalog", # L1 (08de5 11-26): WinTrust signer helpers need it
+    "Win32_Security_Cryptography_Sip", # L1: same
+    "Win32_Security_WinTrust", # L1: Authenticode check of a downloaded AI CLI (wintrust.rs)
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
