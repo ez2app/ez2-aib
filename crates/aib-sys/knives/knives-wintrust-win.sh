@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=windows
+# aib-knives: job=rust-windows
 # L1b Windows Authenticode (08de5 11-26; IFACE-provider-lifecycle-c2f0b-1126 §3.2 S, §7 knife 3;
 # ebab8 03:3x: split out for 6770f's L1a fd7e2ca0c6): a file Windows does not trust is never
 # "signed", and the Signer-shaped check says not_trusted for it. The leaf-O compare itself needs
