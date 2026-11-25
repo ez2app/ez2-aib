@@ -6,6 +6,12 @@
 //! The behaviour of each step is tested where it lives (sessions, selfcheck,
 //! session_windows ...); the tests here pin the step's *shape* on each
 //! platform: Done, Unsupported or NotApplicable, never a silent empty value.
+// Off macOS / Windows (E3: the ubuntu knife cells build with -D warnings) only the empty registry is
+// built, so the helpers and imports the two platforms use are unused there.
+#![cfg_attr(
+    not(any(target_os = "macos", windows)),
+    allow(dead_code, unused_imports)
+)]
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aibd::platform::lifecycle::{CheckTree, Current, Lifecycle, Step, StepId, Swept};
@@ -19,6 +25,9 @@ macro_rules! register {
     };
 }
 
+// Only where aibd ships (Andy 11-14: macOS and Windows). E3 (90856 11-25) runs the workspace tests on
+// ubuntu too, where the empty registry below would always be red without saying anything new.
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn every_step_has_a_test_on_this_platform() {
     let missing: Vec<&str> = StepId::ALL
@@ -210,7 +219,7 @@ register! {
     Lineage => lineage_does_not_apply,
 }
 
-// A target aibd does not ship for: nothing registered, so the parity test
-// says which steps have no test there.
+// A target aibd does not ship for (Linux in the E3 knife cells): nothing registered, and the parity
+// test above is not built there.
 #[cfg(not(any(target_os = "macos", windows)))]
 register! {}
