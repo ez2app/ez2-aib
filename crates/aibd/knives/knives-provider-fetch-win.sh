@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=windows
+# aib-knives: job=rust-windows
 # PFW1 L1a provider_fetch on Windows (IFACE-provider-lifecycle-c2f0b-1126 §3.3, §7 knife 5;
 # c2f0b 11-26 03:18 L1 / L2 接點): the checked handle lets others only read, so the file
 # cannot be written, renamed or removed between the check and the run.
