@@ -117,3 +117,15 @@ python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
   '        if !INSPECT_KEYS.contains(&key.as_str()) && !empty && key.is_empty() {' \
   --expect-fail 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused' \
   -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused'
+# g-x-brand (the brand line no longer says grok's safe seat can still search X; Andy 11-25 (a))
+python3 -I scripts/knife.py apps/web/dist/ws.js \
+  '  const GROK_X = '\''Grok 安全席仍可搜尋 X(關不掉)'\'';' \
+  '  const GROK_X = '\'''\'';' \
+  --expect-fail 'the_page_is_checked_without_a_browser' \
+  -- cargo test -p aibd --locked --test page_static 'the_page_is_checked_without_a_browser'
+# g-x-open (the line before the seat opens leaves it out)
+python3 -I scripts/knife.py apps/web/dist/ws.js \
+  'pv.key === '\''grok'\'' ? '\'' · '\'' + GROK_X : '\'''\''' \
+  'pv.key === '\''grok'\'' ? '\'''\'' : '\'''\''' \
+  --expect-fail 'the_page_is_checked_without_a_browser' \
+  -- cargo test -p aibd --locked --test page_static 'the_page_is_checked_without_a_browser'

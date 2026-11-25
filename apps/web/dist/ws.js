@@ -4968,7 +4968,9 @@
     const seen = qwWhen(q.seen_at), tail = [q.plan ? '方案 ' + String(q.plan) : '', q.status ? QW_ST[q.status] || String(q.status) : '', seen ? '看到於 ' + seen : ''].filter(Boolean).join(' · ');
     return `<div class="apn">帳號額度(AIB 從 ${esc(p.name)} 自己回報的數字讀,只有用了幾 %,沒有餘額)${tail ? ' · ' + esc(tail) : ''}</div><div class="qws">${W || '<div class="apn">沒有額度視窗</div>'}</div>`;
   }
-  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊' };
+  // 08de5 11-25(3e53b REVIEW-grok L1;Andy 選 (a) 接受):grok 1.0.70 安全席仍有 4 支 xAI 伺服器端 X 搜尋工具,旗標關不掉(EVIDENCE-brand-grok-08de5-1125)⇒ 品牌說明與開席前那一行都照實寫
+  const GROK_X = 'Grok 安全席仍可搜尋 X(關不掉)';
+  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊 · ' + GROK_X + ':X 搜尋在 xAI 伺服器上,AIB 關不掉;碰不到你的檔案,但讀得到 X 上的公開貼文' };
   const AP_MODE = { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] };
   function seatModeTag(m) {
     const k = m === 'host' ? ['管理主機', '高', 3] : AP_MODE[m] ? [AP_MODE[m][0], AP_MODE[m][1], m === 'dgrs' ? 4 : m === 'work' ? 2 : 1] : null;
@@ -5426,7 +5428,7 @@
     const pn = A.persona ? ((personas().find(([u]) => u === A.persona) || [])[1] || A.persona) : '未選人格';
     const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length, mx = S.maxRun || 8;
     const mn = (A.mates || []).length;
-    return `${pv.name} · ${(AP_MODE[A.mode] || AP_MODE.safe)[0]} · ${pn}${mn ? ' + ' + mn + ' 搭檔' : ''} · 現在 ${run}/${mx} 位在工作${run + 1 + mn > mx ? ',會排隊' : ''}`;
+    return `${pv.name} · ${(AP_MODE[A.mode] || AP_MODE.safe)[0]} · ${pn}${mn ? ' + ' + mn + ' 搭檔' : ''} · 現在 ${run}/${mx} 位在工作${run + 1 + mn > mx ? ',會排隊' : ''}${pv.key === 'grok' ? ' · ' + GROK_X : ''}`;
   }
   // 示意 .src:人格 N · 第二大腦 N · 角色 N · 倉 N · 席 N,讀自這台 AIB
   function apSrc() { const R = S.reg || {}; return `人格 ${personas().length} · 第二大腦 ${(R.brains || []).length} · 角色 ${roleList().length} · 倉 ${addRepos().length} · ${apCounts()}`; }
