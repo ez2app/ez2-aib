@@ -3874,6 +3874,11 @@ jobs:
             | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
             | sort -u > winexe-tests.raw
           [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
+          # ebab8 11-25 19:04: the aibd session tests build aib-fixture-tree with cargo on first use;
+          #   the laptop has no cargo. Build it here into the same target/debug (copied below with the
+          #   other exes); aib-wincheck sets AIB_FIXTURE_PREBUILT=1 so the tests use it as it is.
+          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo build --locked -q -p aib-fixture-tree)
+          [ -f "$W/target/debug/aib-fixture-tree.exe" ] || { echo "::error::aib-fixture-tree.exe was not built"; exit 1; }
           : > winexe-tests.tsv
           while IFS=$'\t' read -r e m; do
             e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
