@@ -87,7 +87,11 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
 
     // a program in the providers folder, by the measured version's own path; while its
     // session waits, the file there is not the measured one (put there, or changed)
-    let dir = data.join("providers").join("claude").join("2.1.326");
+    // the version the measured table lists for this platform (any one, on a platform with none)
+    let version = aibd::provider_fetch::this_platform()
+        .and_then(|p| aib_seatopen::measured_for("claude", p))
+        .map_or("0.0.0", |m| m.version);
+    let dir = data.join("providers").join("claude").join(version);
     std::fs::create_dir_all(&dir).unwrap();
     let placed = dir.join(aibd::provider_fetch::program_name("claude"));
     std::fs::write(&placed, b"not the measured program\n").unwrap();
