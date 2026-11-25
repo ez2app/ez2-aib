@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# PM3-PM9 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
+# PM3-PM9 + PS1-PS3 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
 # interface): a table row becomes the same fetch row.
 set -euo pipefail
 umask 022
@@ -25,3 +25,10 @@ python3 -I scripts/knife.py crates/aibd/src/provider_login.rs 'use std::collecti
 # PM9 provider_fetch gets another child module, which would see run (3e53b r3)
 python3 -I scripts/knife.py crates/aibd/src/provider_fetch.rs 'pub mod maker;' 'pub mod maker; mod extra {}' --expect-fail "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer" \
         -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::only_fetch_measured_calls_the_download_with_a_signer"
+# PS1 a placed program is opened without the hash check (3e53b REVIEW-w2policy-90856 L1)
+pm '    provider_fetch::verify_placed(&row, &real).map(Some)' '    std::fs::File::open(&real).map(Some).map_err(|_| provider_fetch::ERR_VERIFY)' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
+# PS2 a version the table does not list is opened as if it were the listed one
+pm '    let row = row_for(provider, version).ok_or(ERR_UNMEASURED)?;' '    let row = row_for(provider, version).or_else(|| row_for(provider, "9.9.9")).ok_or(ERR_UNMEASURED)?;' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
+# PS3 opening a seat skips the check
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '        crate::provider_fetch::maker::placed_for_seat(&data, &program)' '        { let _ = (&data, &program); Ok::<Option<std::fs::File>, &'"'"'static str>(None) }' --expect-fail "provider_fetch::maker::tests::opening_a_seat_calls_the_placed_check_before_the_program_starts" \
+        -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::opening_a_seat_calls_the_placed_check_before_the_program_starts"

@@ -2828,6 +2828,26 @@ pub(crate) async fn start_session(
         }));
     };
     argv[0] = path;
+    // L2 (3e53b REVIEW-w2policy-90856 L1): a program aibd placed is checked against the
+    // measured table again now; the checked handle is held until the seat's program has
+    // started (on Windows nobody can change the file meanwhile)
+    let (data, program) = (
+        crate::registry::data_of(st),
+        std::path::PathBuf::from(&argv[0]),
+    );
+    let _held = tokio::task::spawn_blocking(move || {
+        crate::provider_fetch::maker::placed_for_seat(&data, &program)
+    })
+    .await
+    .map_err(
+        |_| serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"}),
+    )?
+    .map_err(|code| {
+        serde_json::json!({
+            "code": code,
+            "message": "the provider program aibd placed does not match the measured table",
+        })
+    })?;
     let req = crate::sessions::Request {
         argv,
         cwd: Some(std::path::PathBuf::from(cwd)),

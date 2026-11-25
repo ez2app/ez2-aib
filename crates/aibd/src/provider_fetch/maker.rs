@@ -106,6 +106,47 @@ fn mac_codesign(path: &Path, requirement: &str) -> Result<(), &'static str> {
     }
 }
 
+/// The refusal when a program in aibd's providers folder has no row in the measured table.
+pub const ERR_UNMEASURED: &str = "provider_unmeasured";
+
+/// Opening a seat (L1 / L2 接點; 3e53b REVIEW-w2policy-90856 L1): when the program the policy
+/// names is one aibd placed (`<data>/providers/<provider>/<version>/<name>`), check it against
+/// this machine's row of the measured table again, now, and give back the checked handle; the
+/// caller keeps it until the seat's program has started (on Windows nobody can change the file
+/// meanwhile). A program found elsewhere is the customer's own: `None`, the policy rules it.
+pub fn placed_for_seat(data: &Path, program: &Path) -> Result<Option<File>, &'static str> {
+    let row = |p: &str, v: &str| {
+        let m = aib_seatopen::measured_for(p, provider_fetch::this_platform()?)?;
+        (m.version == v).then(|| FetchRow::from(m))
+    };
+    placed_check(data, program, &row)
+}
+
+fn placed_check(
+    data: &Path,
+    program: &Path,
+    row_for: &dyn Fn(&str, &str) -> Option<FetchRow>,
+) -> Result<Option<File>, &'static str> {
+    // the folder placed_dir puts every provider under
+    let root = data.join("providers");
+    let (Ok(root), Ok(real)) = (std::fs::canonicalize(root), std::fs::canonicalize(program)) else {
+        // no providers folder yet: nothing aibd placed can be named
+        return Ok(None);
+    };
+    let Ok(rest) = real.strip_prefix(&root) else {
+        return Ok(None);
+    };
+    let parts: Vec<&str> = rest.iter().filter_map(|c| c.to_str()).collect();
+    let [provider, version, name] = parts.as_slice() else {
+        return Err(provider_fetch::ERR_VERIFY);
+    };
+    let row = row_for(provider, version).ok_or(ERR_UNMEASURED)?;
+    if *name != provider_fetch::program_name(&row.provider) {
+        return Err(provider_fetch::ERR_VERIFY);
+    }
+    provider_fetch::verify_placed(&row, &real).map(Some)
+}
+
 /// Download `m` (this machine's row of the measured table), check P then the maker's
 /// signature, place it; the placed path. The signer is [`signed_by_maker`], fixed here.
 pub fn fetch_measured(
@@ -345,6 +386,90 @@ mod tests {
                 .join(name)
                 .exists(),
             "reason: placed_unsigned"
+        );
+    }
+
+    /// Opening a seat checks a program aibd placed against the table again and hands back the
+    /// checked handle; a changed file, an unlisted version or a wrong shape is refused; a
+    /// program elsewhere is left to the policy (3e53b REVIEW-w2policy-90856 L1).
+    #[test]
+    fn a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy() {
+        let body: &[u8] = b"placed program bytes\n";
+        let data = tempfile::tempdir().unwrap();
+        let name = provider_fetch::program_name("claude");
+        let dir = data.path().join("providers").join("claude").join("9.9.9");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(&name);
+        std::fs::write(&exe, body).unwrap();
+        let sha = hex(body);
+        let row_for = |p: &str, v: &str| {
+            (p == "claude" && v == "9.9.9").then(|| FetchRow {
+                provider: "claude".into(),
+                version: "9.9.9".into(),
+                platform: "darwin-arm64".into(),
+                url: String::new(),
+                sha256: sha.clone(),
+                size: body.len() as u64,
+            })
+        };
+        let held = placed_check(data.path(), &exe, &row_for);
+        assert!(
+            matches!(held, Ok(Some(_))),
+            "reason: placed_refused {held:?}"
+        );
+        drop(held);
+
+        // a version the table does not list
+        let other = data.path().join("providers").join("claude").join("1.0.0");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(&name), body).unwrap();
+        assert_eq!(
+            placed_check(data.path(), &other.join(&name), &row_for).map(|f| f.is_some()),
+            Err(ERR_UNMEASURED),
+            "reason: unlisted_version_opened"
+        );
+
+        // a placed file changed after it was placed
+        std::fs::write(&exe, b"changed after it was placed\n").unwrap();
+        assert_eq!(
+            placed_check(data.path(), &exe, &row_for).map(|f| f.is_some()),
+            Err(provider_fetch::ERR_VERIFY),
+            "reason: changed_file_opened"
+        );
+
+        // not the provider/version/name shape
+        let odd = data.path().join("providers").join("claude").join("stray");
+        std::fs::write(&odd, body).unwrap();
+        assert_eq!(
+            placed_check(data.path(), &odd, &row_for).map(|f| f.is_some()),
+            Err(provider_fetch::ERR_VERIFY),
+            "reason: odd_shape_opened"
+        );
+
+        // the customer's own program elsewhere: the policy rules it
+        let own = data.path().join("elsewhere");
+        std::fs::write(&own, body).unwrap();
+        assert_eq!(
+            placed_check(data.path(), &own, &row_for).map(|f| f.is_some()),
+            Ok(false),
+            "reason: own_program_checked"
+        );
+    }
+
+    /// Opening a seat goes through the check above before the program starts (source check:
+    /// the call sits in `start_session` before the session is started).
+    #[test]
+    fn opening_a_seat_calls_the_placed_check_before_the_program_starts() {
+        let seats = include_str!("../seats.rs");
+        let start = seats
+            .find("async fn start_session(")
+            .expect("start_session");
+        let body = seats.get(start..).unwrap_or("");
+        let check = body.find(concat!("maker::placed_for_", "seat(&data, &program)"));
+        let run = body.find("start_gated(");
+        assert!(
+            matches!((check, run), (Some(c), Some(r)) if c < r),
+            "reason: seat_open_unchecked"
         );
     }
 }
