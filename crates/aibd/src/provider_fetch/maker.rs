@@ -567,6 +567,24 @@ mod tests {
                 "reason: linked_step_opened"
             );
         }
+        // the program itself a link to another file in its own version folder with the same
+        // bytes: the path as written is the row's, and so is where it leads, but the name the
+        // policy gives is a link that could be re-pointed after the check (only `plain` stops it)
+        #[cfg(unix)]
+        {
+            let other = tempfile::tempdir().unwrap();
+            let vdir = other.path().join("providers").join("claude").join("9.9.9");
+            std::fs::create_dir_all(&vdir).unwrap();
+            let twin = vdir.join("twin");
+            std::fs::write(&twin, body).unwrap();
+            let named = vdir.join(&name);
+            std::os::unix::fs::symlink(&twin, &named).unwrap();
+            assert_eq!(
+                placed_check(other.path(), &named, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: program_link_opened"
+            );
+        }
         // the data folder itself a link: everything under it looks right, still refused with
         // the word that says so (3e53b r10)
         #[cfg(unix)]
