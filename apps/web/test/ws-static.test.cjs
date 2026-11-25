@@ -1641,6 +1641,18 @@ const hsChecks = (async () => {
   ok(/if \(x\.closest\('\[data-ptnew\],\[data-ptfine\],\[data-ptedit\],\[data-ptdel\],\[data-ptdelno\],\[data-ptdelok\],\[data-ptbase\],\[data-ptit\],\[data-ptno\],\[data-ptok\],\[data-ptpick\],\[data-ptsa\],\[data-ptap\],\[data-ptrv\]'\) && await ptClick\(x\)\) return;/.test(mainClick), 'reason: pt_click_not_wired');
 })();
 
+// 08de5 11-25 grok L1(Andy 接受):品牌說明與開席前的摘要都寫明 grok 安全席仍可搜尋 X、關不掉
+{
+  const sum = (ws.split('  function apSum(A, pv) {')[1] || '').slice(0, 700);
+  ok(/const GROK_X = 'Grok 安全席仍可搜尋 X\(關不掉\)';/.test(ws) && /grok: '[^']*' \+ GROK_X \+/.test(ws), 'reason: grok_x_search_unsaid_in_brand');
+  ok(sum.includes("${pv.key === 'grok' ? ' · ' + GROK_X : ''}"), 'reason: grok_x_search_unsaid_before_open');
+}
+// 08de5 11-25(ebab8 q_17279e54):Copilot 用登入、不用金鑰;品牌說明與「怎麼登入」都這樣寫,不叫人填金鑰
+{
+  ok(/const COPILOT_LOGIN = '用 GitHub 帳號登入,不用金鑰';/.test(ws) && /copilot: '[^']*' \+ COPILOT_LOGIN \}/.test(ws), 'reason: copilot_key_wording_in_brand');
+  ok(/copilot: '終端機打 copilot login\(' \+ COPILOT_LOGIN \+ '\)'/.test(ws), 'reason: copilot_key_wording_in_login');
+  ok(!/COPILOT_GITHUB_TOKEN|GITHUB_COPILOT_TOKEN|api-key-copilot/.test(ws), 'reason: page_asks_copilot_key');
+}
 // AP26 W-7(c2f0b PAGE-WORDS-ap26-c2f0b-1125 r0 §2;ebab8 16:14):aibd 回的碼 → 頁面那一句,12 個碼字字照表;頁面只照碼選字、不顯示請求帶的字;
 // unavailable / cancel 只在本人驗證流程用(別的 act 也回 code unavailable,不能被蓋成「不在桌面上」);§1 分類還沒有 ⇒ 照實寫
 {

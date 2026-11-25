@@ -3066,7 +3066,7 @@ fn policy_init() -> Result<(), String> {
         .replace('\'', "'\\''");
     let mut programs = Vec::new();
     let search = std::env::var_os("PATH").ok_or("PATH is missing")?;
-    for name in ["claude", "codex"] {
+    for name in ["claude", "codex", "grok", "copilot"] {
         let candidate = std::env::split_paths(&search)
             .map(|d| d.join(name))
             .find(|p| p.is_file());
@@ -3293,7 +3293,7 @@ fn windows_policy(
 ) -> Result<(Value, Vec<String>), String> {
     let mut programs = Vec::new();
     let mut notes = Vec::new();
-    for name in ["claude", "codex"] {
+    for name in ["claude", "codex", "grok", "copilot"] {
         match find_native_provider(name, dirs) {
             Found::Native(p) => {
                 let p = p
