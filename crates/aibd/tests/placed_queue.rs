@@ -1,23 +1,64 @@
+#![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 //! L2 (f163c REVIEW-l2-c2f0b-f163c-b029c9cc L1): a session that had to wait for a slot is
 //! checked again when it leaves the queue: a program in aibd's providers folder that is not
 //! the measured file does not start, even when it was put there while the session waited.
-//! Both platforms: Windows is the one where the held handle stops a change (f163c / 3e53b N).
+//! The sessions use a fake start that runs no process and whose stop is clean (with no
+//! lineage a real stop keeps its slot, thermal_hooks.rs), so this runs the same on Windows
+//! and macOS; the fake records whether it was ever asked to start the placed program.
+// test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
+#![allow(clippy::disallowed_methods)]
 
 use aib_store::Store;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// a program that stays (the slot holder) and one to copy into the providers folder
-const STAY: &[&str] = if cfg!(windows) {
-    &[r"C:\Windows\System32\ping.exe", "-n", "30", "127.0.0.1"]
-} else {
-    &["/bin/sleep", "30"]
-};
-const COPY: &str = if cfg!(windows) {
-    r"C:\Windows\System32\whoami.exe"
-} else {
-    "/bin/echo"
-};
+static STARTED_PLACED: AtomicBool = AtomicBool::new(false);
+
+/// Never exits by itself; its stop is clean. Touches no process.
+struct Quiet;
+
+struct NeverExits;
+
+impl aibd::platform::session::ExitWait for NeverExits {
+    fn wait(&self, t: Duration) -> Option<aibd::platform::session::Exit> {
+        std::thread::sleep(t.min(Duration::from_millis(50)));
+        None
+    }
+}
+
+impl aibd::platform::session::Running for Quiet {
+    fn pid(&self) -> u32 {
+        999_995
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(None)
+    }
+    fn exit_wait(&self) -> Arc<dyn aibd::platform::session::ExitWait> {
+        Arc::new(NeverExits)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{CandidateDiag, Stop, StopStatus};
+        Stop {
+            status: StopStatus::Clean,
+            survivors: vec![],
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec![],
+            candidates: CandidateDiag::default(),
+        }
+    }
+}
+
+fn quiet_spawn(
+    spec: &aibd::platform::session::Spec,
+    _: Option<Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    if spec.argv.first().is_some_and(|a| a.contains("providers")) {
+        STARTED_PLACED.store(true, Ordering::SeqCst);
+    }
+    Ok(Box::new(Quiet))
+}
 
 fn req(argv: &[&str]) -> aibd::sessions::Request {
     aibd::sessions::Request {
@@ -37,16 +78,11 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
     let sessions_dir = data.join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
     let store = Arc::new(Store::open(&data.join("db.sqlite")).unwrap());
-    let s = aibd::sessions::Sessions::new(
-        store,
-        None,
-        aibd::platform::default_spawn(),
-        1,
-        sessions_dir,
-    );
+    let s = aibd::sessions::Sessions::new(store, None, quiet_spawn, 1, sessions_dir);
 
-    // the one slot is taken
-    let a = s.start_for_seat(None, req(STAY)).unwrap();
+    // the one slot is taken (an absolute path of this platform; the fake runs nothing)
+    let holder = data.join("holder").display().to_string();
+    let a = s.start_for_seat(None, req(&[&holder])).unwrap();
     assert_eq!(a.state, "running");
 
     // a program in the providers folder, by the measured version's own path; while its
@@ -54,7 +90,7 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
     let dir = data.join("providers").join("claude").join("2.1.326");
     std::fs::create_dir_all(&dir).unwrap();
     let placed = dir.join(aibd::provider_fetch::program_name("claude"));
-    std::fs::copy(COPY, &placed).unwrap();
+    std::fs::write(&placed, b"not the measured program\n").unwrap();
     let b = s
         .start_for_seat(None, req(&[placed.to_str().unwrap(), "hi"]))
         .unwrap();
@@ -75,5 +111,9 @@ fn a_placed_program_changed_while_its_session_waited_does_not_start() {
         "reason: changed_program_started {got:?}"
     );
     assert_eq!(got.pid, 0, "reason: changed_program_started");
+    assert!(
+        !STARTED_PLACED.load(Ordering::SeqCst),
+        "reason: changed_program_started"
+    );
     s.shutdown_all();
 }
