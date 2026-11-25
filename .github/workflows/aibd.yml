@@ -3823,7 +3823,8 @@ jobs:
     # TRIAL branch only (11-25, do not merge): the pack does not wait for the rust cells here, because
     #   the macOS rust cell queues for hours and the Windows trial pack is wanted today.
     needs: [changes]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge')) }}
+    # TRIAL branch only (11-26, do not merge): no ready-merge label needed here; this draft never carries it.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
