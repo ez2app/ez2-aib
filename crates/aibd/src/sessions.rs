@@ -570,7 +570,8 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             )));
         }
         let env = codex_list_env(&req, p, std::env::vars_os());
-        let listed = probe_listed(&real, &["inspect", "--json"], req.cwd.as_deref(), &env);
+        let ask = ["inspect", "--json"].map(String::from);
+        let listed = probe_listed(&real, &ask, req.cwd.as_deref(), &env);
         if let Err(why) = crate::grok_wire::nothing_loaded(&listed) {
             return Err(refuse_grok(format!("{why} (grok_user_setup)")));
         }
@@ -612,7 +613,8 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             )));
         }
         let env = codex_list_env(&req, p, std::env::vars_os());
-        let listed = probe_listed(&real, &["mcp", "list", "--json"], req.cwd.as_deref(), &env);
+        let ask = ["mcp", "list", "--json"].map(String::from);
+        let listed = probe_listed(&real, &ask, req.cwd.as_deref(), &env);
         match crate::copilot_wire::mcp_off(&listed) {
             Ok(off) => req.argv.extend(off),
             Err(why) => return Err(refuse_copilot(format!("{why} (copilot_mcp)"))),
@@ -623,10 +625,12 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
 }
 
 /// What `real <args>` prints in `cwd` with `env`, or nothing when it fails or takes more than
-/// [`MCP_LIST_WAIT`] (as [`codex_mcp_listed`]; a listing not read starts nothing).
+/// [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a program stuck on a login or a version check
+/// would hold the seat's start; a listing not read starts nothing). codex's MCP list and
+/// grok's set-up listing both read through it.
 fn probe_listed(
     real: &str,
-    args: &[&str],
+    args: &[String],
     cwd: Option<&std::path::Path>,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> String {
@@ -656,8 +660,8 @@ fn probe_listed(
             let _ = std::io::Read::read_to_end(&mut out, &mut b);
             let _ = tx.send(b);
         });
-    // one wake-up for the answer or at the end of a start request's bound (ADR 0005 named
-    // exception, as `codex_mcp_listed`)
+    // one wake-up for the answer or at the end of a start request's bound: not a periodic
+    // timer (ADR 0005 named exception, as `sessions::wait_timeout`)
     #[allow(clippy::disallowed_methods)]
     let got = rx.recv_timeout(MCP_LIST_WAIT);
     match got {
@@ -682,48 +686,9 @@ fn codex_mcp_listed(
     cwd: Option<&std::path::Path>,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> String {
-    let mut c = std::process::Command::new(real);
-    c.env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .args(flags)
-        .args(["mcp", "list", "--json"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    if let Some(d) = cwd {
-        c.current_dir(d);
-    }
-    let Ok(mut child) = c.spawn() else {
-        return String::new();
-    };
-    let Some(mut out) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return String::new();
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new()
-        .name("aibd-codex-mcp-list".into())
-        .spawn(move || {
-            let mut b = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut out, &mut b);
-            let _ = tx.send(b);
-        });
-    // one wake-up for the answer or at the end of a start request's bound: not a periodic
-    // timer (ADR 0005 named exception, as `sessions::wait_timeout`)
-    #[allow(clippy::disallowed_methods)]
-    let got = rx.recv_timeout(MCP_LIST_WAIT);
-    match got {
-        Ok(b) if child.wait().is_ok_and(|s| s.success()) => {
-            String::from_utf8_lossy(&b).into_owned()
-        }
-        Ok(_) => String::new(),
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            String::new()
-        }
-    }
+    let mut args: Vec<String> = flags.to_vec();
+    args.extend(["mcp", "list", "--json"].map(String::from));
+    probe_listed(real, &args, cwd, env)
 }
 
 /// The environment `codex mcp list` runs with: the one the seat's own codex gets
