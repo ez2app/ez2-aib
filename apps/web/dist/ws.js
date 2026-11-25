@@ -5089,7 +5089,8 @@
     policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。',
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
-  const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
+  // c2f0b PAGE-WORDS-ap26 §1 (b)「怎麼設 PIN」三步照抄;第 3 步的「重新檢查」要 W-3 分類上 API 才有那顆鈕 ⇒ 先寫「再按一次」(ebab8 03:10:沒 PIN 時頁面要引導,Windows 今天上線)
+  const OWNER_PIN_HOW = '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。';
   const OWNER_CLASS_NA = '這台是哪一種本人驗證、要怎麼補強:這一版 AIB 還沒有';
   const OWNER_LOCK_NA = '解鎖時間:這一版 AIB 還沒有。';
   // 拒絕原因四語(ebab8 11-26 00:35;Andy 00:4x 定「本人驗證」「配對金鑰」,其餘照 RETRO-fc7f9-1126 §0.2):語言跟 askLang 同一條。
@@ -5114,7 +5115,7 @@
       policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
       policy_write_failed: 'AIB could not write the seat-opening setup file. Nothing was changed. You can press again.',
       policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
-      pin: 'If this computer has a Windows sign-in password but Windows Hello is not set up yet: open Settings → Accounts → Sign-in options → PIN (Windows Hello), press Set up, then press again.',
+      pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
       class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
       lock_at: 'You can try again after {t}.',
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
@@ -5170,7 +5171,9 @@
     // 中文照中文表;其他語先找該語,沒有就英文(ja / ko 不猜介面原名)
     const word = (k, zh) => (L === 'zh-TW' ? zh : has(OWNER_WHY_L[L], k) ? OWNER_WHY_L[L][k] : OWNER_WHY_L.en[k]);
     const w = word(c, OWNER_WHY[c]), sp = L === 'zh-TW' || L === 'ja' ? '' : ' ';
-    if (c === 'owner_check_too_weak') return w + sp + (/Win/.test(String((globalThis.navigator && navigator.platform) || '')) ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    const isWin = /Win/.test(String((globalThis.navigator && navigator.platform) || ''));
+    if (c === 'owner_check_too_weak') return w + sp + (isWin ? word('pin', OWNER_PIN_HOW) : word('class_na', OWNER_CLASS_NA));
+    if (c === 'no_biometry' && isWin) return w + sp + word('pin', OWNER_PIN_HOW); // 沒設 Hello:不能只說沒有,要說怎麼設
     if (c === 'passphrase_locked') { const t = String((e && (e.retry_hms || (e.body && e.body.retry_hms))) || ''); return w + sp + (/^\d\d:\d\d:\d\d$/.test(t) ? word('lock_at', '{t} 後可以再試。').replace('{t}', () => t) : word('lock_na', OWNER_LOCK_NA)); }
     return w;
   }

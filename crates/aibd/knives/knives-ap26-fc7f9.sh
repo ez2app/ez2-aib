@@ -15,7 +15,7 @@ k '    passphrase_locked: '\''密語打錯太多次,暫時鎖住。'\'',' '    p
 # PGOW4 (AP26 W-7 §2 碼 → 頁面字)
 k 'if (!Object.prototype.hasOwnProperty.call(OWNER_WHY, c)) return '\'''\'';' 'if (!(c in OWNER_WHY)) return '\'''\'';'
 # PGOW5 (AP26 W-7 §2 碼 → 頁面字)
-k '/Win/.test(String((globalThis.navigator && navigator.platform) || '\'''\'')) ? word('\''pin'\'', OWNER_PIN_HOW) : word('\''class_na'\'', OWNER_CLASS_NA)' 'word('\''pin'\'', OWNER_PIN_HOW)'
+k '(isWin ? word('\''pin'\'', OWNER_PIN_HOW) : word('\''class_na'\'', OWNER_CLASS_NA))' '(word('\''pin'\'', OWNER_PIN_HOW))'
 # PGOW6 (AP26 W-7 §2 碼 → 頁面字)
 k '/^\d\d:\d\d:\d\d$/.test(t) ? word('\''lock_at'\''' 't ? word('\''lock_at'\'''
 # PGOW7 (AP26 W-7 §2 碼 → 頁面字)
@@ -27,7 +27,7 @@ k 'fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || ' 'fpcDone(card, false,
 # PGOW10 (AP26 W-7 §2 碼 → 頁面字)
 k 'if (rc !== '\''unavailable'\'' && rc !== '\''cancel'\'') { const ow = ownerWhy(rc, e); if (ow) return ow; }' '{ const ow = ownerWhy(rc, e); if (ow) return ow; }'
 # PGOW11 (AP26 W-7 §2 碼 → 頁面字)
-k '「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」' '「設定」→「登入選項」'
+k '1. 打開「設定」→「帳戶」→「登入選項」。' '1. 打開「設定」→「登入選項」。'
 # PGOW12 (c2f0b 18:00:Touch ID 現在讀不到 = 蓋子蓋著 / 鍵盤沒接)
 k '    owner_check_finger_not_now: '\''這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。'\'',' '    owner_check_finger_not_now: '\''Touch ID 讀不到。'\'','
 

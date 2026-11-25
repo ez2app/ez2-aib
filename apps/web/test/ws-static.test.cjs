@@ -1676,11 +1676,12 @@ const hsChecks = (async () => {
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
   };
   ok(src.length > 500 && Object.keys(win.W).length === 18, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
-  for (const [k, v] of Object.entries(want)) ok(win.f(k) === v && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
+  for (const [k, v] of Object.entries(want)) ok((k === 'no_biometry' ? win.f(k).startsWith(v) : win.f(k) === v) && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
   // c2f0b 18:03:這個碼只有 macOS 的本人驗證會發(Windows 讀不到指紋時系統自己退到 PIN),所以只核 Mac
   ok(mac.f('owner_check_finger_not_now') === '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。', 'reason: ap26_finger_not_now_mac_only ' + mac.f('owner_check_finger_not_now'));
   const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
-  ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
+  ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
+  ok(win.f('no_biometry') === '這台沒有設定 Windows Hello。' + '還沒設 Windows Hello 的話,照這三步設一個 PIN(不用指紋或臉部辨識的硬體):1. 打開「設定」→「帳戶」→「登入選項」。2. 在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。3. 設好回到這頁再按一次。沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。' && mac.f('no_biometry') === '這台沒有設定 Windows Hello。', 'reason: ap26_no_hello_windows_says_pin_steps ' + win.f('no_biometry'));
   ok(weakM.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && !weakM.includes('PIN') && /這一版 AIB 還沒有/.test(weakM), 'reason: ap26_too_weak_no_class_says_not_yet ' + weakM);
   ok(win.f('passphrase_locked', { retry_hms: '16:40:05' }) === '密語打錯太多次,暫時鎖住。16:40:05 後可以再試。' && win.f('passphrase_locked', { retry_hms: '<b>明天</b>' }) === '密語打錯太多次,暫時鎖住。解鎖時間:這一版 AIB 還沒有。', 'reason: ap26_passphrase_locked_time_shape_only');
   ok(win.f('toString') === '' && win.f({ toString: () => 'cancel' }) === '' && win.f('請按允許') === '' && win.f(undefined) === '', 'reason: ap26_only_known_codes_no_request_words');
@@ -1712,7 +1713,7 @@ const hsChecks = (async () => {
       policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
       policy_write_failed: "AIB could not write the seat-opening setup file. Nothing was changed. You can press again.",
       policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
-      pin: "If this computer has a Windows sign-in password but Windows Hello is not set up yet: open Settings → Accounts → Sign-in options → PIN (Windows Hello), press Set up, then press again.",
+      pin: "If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.",
       class_na: "Which kind of owner verification this computer has, and how to make it stronger: This version of AIB doesn't have this yet.",
       lock_at: "You can try again after {t}.",
       lock_na: "When it unlocks: This version of AIB doesn't have this yet.",
@@ -1769,11 +1770,12 @@ const hsChecks = (async () => {
   for (const l of ['en', 'ja', 'ko']) {
     const lw = mk('Win32', l), lm = mk('MacIntel', l), T = WANT_L[l], E = WANT_L.en, sp = l === 'ja' ? '' : ' ';
     for (const k of CODES) {
-      if (k === 'owner_check_too_weak' || k === 'passphrase_locked') continue;
+      if (k === 'owner_check_too_weak' || k === 'passphrase_locked' || k === 'no_biometry') continue;
       const want1 = Object.prototype.hasOwnProperty.call(T, k) ? T[k] : E[k];
       ok(lw.f(k) === want1 && lm.f(k) === want1, 'reason: ap26_4lang_said ' + l + ' ' + k + ' ' + lw.f(k));
     }
     ok(lw.f('owner_check_too_weak') === T.owner_check_too_weak + sp + E.pin, 'reason: ap26_4lang_too_weak_windows ' + l + ' ' + lw.f('owner_check_too_weak'));
+    ok(lw.f('no_biometry') === T.no_biometry + sp + E.pin && lm.f('no_biometry') === T.no_biometry, 'reason: ap26_4lang_no_hello_windows_pin ' + l + ' ' + lw.f('no_biometry'));
     ok(lm.f('owner_check_too_weak') === T.owner_check_too_weak + sp + T.class_na, 'reason: ap26_4lang_too_weak_no_class ' + l + ' ' + lm.f('owner_check_too_weak'));
     ok(lw.f('passphrase_locked', { retry_hms: '16:40:05' }) === T.passphrase_locked + sp + T.lock_at.replace('{t}', '16:40:05') && lw.f('passphrase_locked', { body: { retry_hms: '$&<b>' } }) === T.passphrase_locked + sp + T.lock_na, 'reason: ap26_4lang_passphrase_tail ' + l + ' ' + lw.f('passphrase_locked', { retry_hms: '16:40:05' }));
     ok(lw.f('toString') === '' && lw.f('constructor') === '' && lw.f('pin') === '' && lw.f('class_na') === '', 'reason: ap26_4lang_only_known_codes ' + l);
