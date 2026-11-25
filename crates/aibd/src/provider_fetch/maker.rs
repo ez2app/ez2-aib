@@ -149,13 +149,18 @@ fn placed_check(
         return Err(provider_fetch::ERR_VERIFY);
     };
     let row = row_for(provider, version).ok_or(ERR_UNMEASURED)?;
-    // the whole path equals this row's placed program, and the name the policy gives is that
-    // file itself, not a link to it (3e53b 05:13 point 1)
-    let want =
-        provider_fetch::placed_dir(data, &row).join(provider_fetch::program_name(&row.provider));
-    let same = std::fs::canonicalize(&want).is_ok_and(|w| w == real);
+    // the policy names exactly this row's placed program, as written (3e53b 05:13 point 1),
+    // and no step of that path from the providers folder down is a link or junction: a step
+    // changed after the check would change what argv[0] runs (3e53b r6 L2)
+    let dir = provider_fetch::placed_dir(data, &row);
+    let want = dir.join(provider_fetch::program_name(&row.provider));
+    let same = program == want && std::fs::canonicalize(&want).is_ok_and(|w| w == real);
+    let steps = [root.clone(), root.join(&row.provider), dir];
+    let no_link = steps.iter().all(|d| {
+        std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+    });
     let plain = std::fs::symlink_metadata(program).is_ok_and(|m| m.file_type().is_file());
-    if !same || !plain {
+    if !same || !plain || !no_link {
         return Err(provider_fetch::ERR_VERIFY);
     }
     provider_fetch::verify_placed(&row, &real).map(Some)
@@ -495,6 +500,27 @@ mod tests {
                 placed_check(data.path(), &climb, &row_for).map(|f| f.is_some()),
                 Err(provider_fetch::ERR_VERIFY),
                 "reason: climb_opened"
+            );
+
+            // the providers folder itself a link (a junction on Windows): the path as written
+            // and the file it reaches both look right, but the link could be pointed elsewhere
+            // between the check and the start (3e53b r6 L2)
+            let other = tempfile::tempdir().unwrap();
+            let store = other.path().join("store");
+            let vdir = store.join("claude").join("9.9.9");
+            std::fs::create_dir_all(&vdir).unwrap();
+            std::fs::write(vdir.join(&name), body).unwrap();
+            std::os::unix::fs::symlink(&store, other.path().join("providers")).unwrap();
+            let via = other
+                .path()
+                .join("providers")
+                .join("claude")
+                .join("9.9.9")
+                .join(&name);
+            assert_eq!(
+                placed_check(other.path(), &via, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: linked_step_opened"
             );
         }
 

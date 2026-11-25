@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# PM3-PM9 + PS1-PS6 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
+# PM3-PM9 + PS1-PS7 L2 provider_maker (PM1 / PM2 are in knives-provider-maker-sign-c2f0b.sh, macOS) (IFACE-provider-lifecycle-c2f0b-1126 §3.2 S; 3e53b N2 on the L1
 # interface): a table row becomes the same fetch row.
 set -euo pipefail
 umask 022
@@ -33,9 +33,11 @@ pm '    let row = row_for(provider, version).ok_or(ERR_UNMEASURED)?;' '    let r
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '        crate::provider_fetch::maker::placed_for_seat(&data, &program)' '        { let _ = (&data, &program); Ok::<Option<std::fs::File>, &'"'"'static str>(None) }' --expect-fail "provider_fetch::maker::tests::opening_a_seat_calls_the_placed_check_before_the_program_starts" \
         -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::opening_a_seat_calls_the_placed_check_before_the_program_starts"
 # PS4 a link named in the policy is followed to the placed program (3e53b 05:13 point 1)
-pm '    if !same || !plain {' '    if !same {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
+pm '    if !same || !plain || !no_link {' '    if !same || !no_link {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
 # PS5 any file in the version folder passes for the row's program (3e53b 05:13 point 1)
-pm '    if !same || !plain {' '    if !plain {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
+pm '    if !same || !plain || !no_link {' '    if !plain || !no_link {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
 # PS6 a session that waited for a slot starts without the check (f163c REVIEW-l2-c2f0b-f163c-b029c9cc L1)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            let held = match self.placed_now(argv.first().map(String::as_str)) {' '            let held = match self.placed_now(None) {' --expect-fail "a_placed_program_changed_while_its_session_waited_does_not_start" \
         -- cargo test -p aibd --locked --test placed_queue
+# PS7 a link on the path from the providers folder down passes (3e53b r6 L2)
+pm '    if !same || !plain || !no_link {' '    if !same || !plain {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
