@@ -137,7 +137,7 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
 # c-trusted (a seat folder below a trusted one opens; 3e53b REVIEW-copilot M1 / L1)
 python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
-  '                if cwd.starts_with(f) {' \
+  '                if folder_under(cwd, Path::new(f)) {' \
   '                if cwd == Path::new(f) {' \
   --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
@@ -273,3 +273,9 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '    let real = |p: &Path| p.to_path_buf();' \
   --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-own-dir-stop (a seat stopped while aibd runs keeps its home: the turn thread waits on input and never reaches its own removal; seat_copilot_home)
+python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
+  '            std::fs::remove_dir_all(d).ok();' \
+  '            let _ = d;' \
+  --expect-fail 'a_copilot_seat_runs_in_the_home_aibd_made_for_it' \
+  -- cargo test -p aibd --locked --test seat_copilot_home a_copilot_seat_runs_in_the_home_aibd_made_for_it
