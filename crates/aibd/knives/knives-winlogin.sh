@@ -45,9 +45,10 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '        "code": "conflict",' \
   --expect-fail a_brand_with_no_login_is_refused_before_any_window \
   -- cargo test -p aibd --locked --test seats_page_open_nologin a_brand_with_no_login_is_refused_before_any_window
-# wl-open-brand (the refusal does not say which brand: the page cannot match it, f163c L1)
+# wl-open-brand (the refusal does not say which brand: the page cannot match it, f163c L1;
+#   still reads `provider`, or -D warnings makes it a compile error = fake bite, 90856 stack11 receipt)
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
   '        "provider": provider,' \
-  '        "provider": "claude",' \
+  '        "provider": if provider.is_empty() { provider } else { "claude" },' \
   --expect-fail a_brand_with_no_login_is_refused_before_any_window \
   -- cargo test -p aibd --locked --test seats_page_open_nologin a_brand_with_no_login_is_refused_before_any_window
