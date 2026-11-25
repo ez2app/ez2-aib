@@ -121,6 +121,19 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     assert_eq!(windows.load(Ordering::SeqCst), 1);
     assert!(!file.exists(), "reason: written_before_the_owner");
 
+    // 3e53b L2: what the owner approved is the text found then; a look that now finds more (a
+    // native codex put down after the window) is another ask, so the ticket does not write it
+    std::fs::write(bin.join("codex"), b"\x7fELF\x02\x01\x01\0").unwrap();
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "session_policy_init", "ticket": ticket}),
+    )
+    .await;
+    assert_eq!(r.code, 403, "reason: approved_other_text {}", r.body);
+    assert!(!file.exists(), "reason: written_with_another_look");
+    std::fs::remove_file(bin.join("codex")).unwrap();
+
     // a ticket that is not this one: refused, nothing written
     let r = act(
         &d,

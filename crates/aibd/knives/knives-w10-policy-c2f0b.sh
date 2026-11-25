@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix   # the act's own test is cfg(unix) (the seat-input harness); the lib tests run anywhere
-# WP1–WP8 (W-10, IFACE-w10-session-policy-c2f0b-1125 r5): the page writes the session policy only with native
+# WP1–WP10 (W-10, IFACE-w10-session-policy-c2f0b-1125 r5): the page writes the session policy only with native
 # programs found by aibd, after a fresh owner check, never over a file already there, from a body that names
 # nothing, and the policy is in force at once. Each, broken, turns its own test red. Run from the repo root.
 set -eu
@@ -42,3 +42,11 @@ wi '    if o.keys().any(|k| k != "type" && k != "ticket") {' \
 wl '    let env = allowlist::prefill_env(|k| !is_key(k) && is_set(k));' \
    '    let env = allowlist::prefill_env(|k| is_set(k) || is_key(k)); // knife' \
    a_policy_the_page_writes_names_no_key
+# WP9 (3e53b L2) the owner approves a fixed word, not the text found: a look that finds more at the resend is written
+wi '        params: text.clone().into_bytes(),' \
+   '        params: b"session_policy".to_vec(), // knife' \
+   the_page_writes_the_policy_once_after_a_fresh_owner_check
+# WP10 (3e53b L1) a file swapped between the write and the read back is put in force
+wl '    let same = std::fs::read(path).is_ok_and(|b| b == text.as_bytes());' \
+   '    let same = std::fs::read(path).is_ok(); // knife' \
+   only_the_approved_text_is_put_in_force
