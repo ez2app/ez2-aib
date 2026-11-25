@@ -94,6 +94,7 @@ use std::path::Path;
 
 #[derive(Clone)]
 struct CachedPlan {
+    #[allow(dead_code)]
     plan: Value,
     expires_at: u64,
 }
@@ -161,7 +162,7 @@ fn only_keys(body: &Value, allowed: &[&str]) -> Result<(), Box<Response>> {
     Ok(())
 }
 
-fn known_prefixes(st: &AppState) -> Vec<String> {
+fn known_prefixes(_st: &AppState) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(ws) = crate::assign::workspace_db() {
         if let Ok(nodes) = ws.nodes() {
@@ -396,10 +397,9 @@ fn parse_card(v: Option<&Value>) -> Result<&'static str, &'static str> {
     }
 }
 
-fn normalize_preview(
-    st: &AppState,
-    body: &Value,
-) -> Result<(Value, Vec<Value>, Vec<String>, usize, Option<u32>), Box<Response>> {
+type NormalizedPreview = (Value, Vec<Value>, Vec<String>, usize, Option<u32>);
+
+fn normalize_preview(st: &AppState, body: &Value) -> Result<NormalizedPreview, Box<Response>> {
     only_keys(body, &["type", "kind", "groups", "idem_key"])?;
     let Some(kind) = body.get("kind").and_then(Value::as_str) else {
         return Err(Box::new(bad("kind", "請指定 kind")));

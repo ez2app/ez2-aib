@@ -26,14 +26,6 @@ impl aibd::touch::Presence for Yes {
 struct Gate;
 
 impl aibd::owner_ok::WindowGate for Gate {
-    fn page_now(&self, digest: [u8; 32]) -> Option<aibd::pairing::PageAccess> {
-        Some(aibd::pairing::PageAccess {
-            digest,
-            confirmed: true,
-            user_page: false,
-            carried: false,
-        })
-    }
     fn open(&self) -> Result<(), &'static str> {
         Ok(())
     }
@@ -53,7 +45,7 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let mut d = Daemon::start(dir.path()).await;
     let page = d.page(true).await;
-    let user_page = d.page_user(true).await;
+    let user_page = d.page_form(true, "&to=user").await;
     let data = dir.path().join("data");
 
     // Add two alike roles in registry.json
