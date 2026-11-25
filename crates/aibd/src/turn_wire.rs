@@ -128,6 +128,9 @@ struct State {
     active: Mutex<Option<Box<dyn Running>>>,
     /// A finished turn's stop that was not clean: the session's stop reports it.
     left: Mutex<Option<Stop>>,
+    /// The seat's own folder ([`Turns::own_dir`]): removed at the session's stop too, since
+    /// the turn thread waits on input and a stop does not end that wait (seat_copilot_home).
+    own_dir: Option<PathBuf>,
 }
 
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -236,6 +239,9 @@ impl Running for TurnRunning {
             }
         }
         self.state.cv.notify_all();
+        if let Some(d) = self.state.own_dir.as_deref() {
+            std::fs::remove_dir_all(d).ok();
+        }
         turn.or(left).unwrap_or_else(idle_stop)
     }
 }
@@ -415,6 +421,7 @@ pub fn spawn(
         stopping: AtomicBool::new(false),
         active: Mutex::new(None),
         left: Mutex::new(None),
+        own_dir: turns.own_dir.clone(),
     });
     let st_bg = state.clone();
     let spec_bg = spec.clone();
