@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS18, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WS22–WS23, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -105,3 +105,12 @@ ws '    format!("{command} setup --uninstall")' \
 wr '    UNINSTALL_NAMES.contains(&name)' \
    '    !name.is_empty()' \
    only_the_listed_settings_entry_values_are_written
+# --- 3e53b REVIEW-winsetup-w2 (5b59ffdf) L1 / N1 ---
+# WS22 (L1) uninstall says the program was removed while the running aibd.exe is still there
+ws '            .filter(|f| ops.exists(f))' \
+   '            .filter(|f| ops.exists(f) && false)' \
+   uninstall_does_not_say_removed_when_the_running_program_stays
+# WS23 (N1) a rollback that fails half way leaves no aibd.exe
+ws '        let back = ops.rename(&p.new, &p.exe);' \
+   '        let back: Result<(), String> = Ok(());' \
+   a_rollback_that_fails_half_way_puts_the_current_program_back

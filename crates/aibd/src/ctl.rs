@@ -2585,11 +2585,19 @@ pub enum SetupMode {
     Rollback,
 }
 
-/// Append `line` to `<AIB folder>\setup.log` (steps and error codes only, never keys or
-/// codes); a folder that is not there yet or a write that fails is skipped.
-fn setup_log(dir: &Path, line: &str) {
-    if !dir.is_dir() {
-        return;
+/// The setup's log: `%LOCALAPPDATA%\AIB-setup.log`, beside the AIB folder and not in it, so
+/// removing AIB can remove its folder (3e53b REVIEW-winsetup-w2 L1).
+pub const SETUP_LOG: &str = "AIB-setup.log";
+
+/// Append `line` to [`SETUP_LOG`] in `base` (steps and error codes only, never keys or codes).
+/// Written only to a plain file or where nothing is (3e53b N3: appending follows a link); a
+/// write that fails is skipped.
+fn setup_log(base: &Path, line: &str) {
+    let path = base.join(SETUP_LOG);
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) if m.file_type().is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return,
     }
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2598,7 +2606,7 @@ fn setup_log(dir: &Path, line: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("setup.log"))
+        .open(&path)
     {
         let _ = writeln!(f, "{at} {line}");
     }
@@ -2609,7 +2617,7 @@ fn setup_log(dir: &Path, line: &str) {
 /// can be read. Every line also goes to `setup.log` in the AIB folder.
 pub fn setup(pause: bool, mode: SetupMode) -> Result<(), String> {
     let dir = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())
-        .map(|p| p.dir)
+        .map(|p| p.base)
         .ok();
     let mut say = |l: &str| {
         println!("{l}");
