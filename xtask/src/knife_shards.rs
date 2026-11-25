@@ -157,7 +157,8 @@ pub fn target_of(argv: &[String]) -> Option<String> {
     Some(
         cmd.iter()
             .take(2)
-            .map(|w| norm_path(w))
+            .map(String::as_str)
+            .map(norm_path)
             .collect::<Vec<_>>()
             .join(" "),
     )
@@ -301,6 +302,7 @@ pub fn estimates(
 }
 
 /// Cell (1..=shards) of every listed script, in path byte order. See the module text for the rule.
+#[cfg(test)]
 pub fn plan(
     list: &[String],
     secs: &BTreeMap<String, u64>,
@@ -352,6 +354,7 @@ pub fn plan_with(
 }
 
 /// Seconds every cell gets under `plan` (for the line printed beside the plan).
+#[cfg(test)]
 pub fn loads(plan: &[(String, u32)], secs: &BTreeMap<String, u64>, shards: u32) -> Vec<u64> {
     loads_with(plan, secs, &BTreeMap::new(), shards)
 }
@@ -484,6 +487,9 @@ pub struct SizeSummary {
 /// Check per-script knife count, historical seconds, and projected shard load.
 /// When `only` is `Some(paths)`, per-script checks apply only to scripts in `paths`
 /// (so unrelated PRs are not blocked by pre-existing grandfathered scripts).
+// the est lines came in as their own argument (ebab8 11-25); the limits stay separate numbers
+// so a test can set each one
+#[allow(clippy::too_many_arguments)]
 pub fn check_size(
     knives: &[crate::knife_anchors::Knife],
     secs: &BTreeMap<String, u64>,
@@ -1206,8 +1212,8 @@ mod tests {
 
         let ok = check_size(
             &make("crates/a/knives/ok.sh", 140),
-            &BTreeSet::new(),
             &table(&[("crates/a/knives/ok.sh", 900)]),
+            &BTreeSet::new(),
             4,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
