@@ -61,20 +61,20 @@ impl WinClass {
     pub fn words(self) -> &'static str {
         match self {
             WinClass::NotAtDesk => {
-                "aibd 不在你登入的桌面上執行(遠端連線或服務帳號),這裡不能請你本人確認。請在這台電腦前登入後再試。"
+                "aibd 不在你登入的桌面上執行(遠端連線或服務帳號),這裡不能請你做本人驗證。請在這台電腦前登入後再試。"
             }
             WinClass::HelloHardware => "這台用 Windows Hello 確認是你本人。",
             WinClass::HelloSoftware => {
                 "這台沒有 TPM,Windows Hello 的金鑰存在軟體裡:一般動作可以做，要存簽章和高風險的動作不開放。"
             }
             WinClass::HelloKeyUnknown => {
-                "這台有 Windows Hello,還沒建核准鑰。建好後才知道金鑰在不在硬體裡。"
+                "這台有 Windows Hello,還沒建配對金鑰。建好後才知道金鑰在不在硬體裡。"
             }
             WinClass::NoHello => {
                 "這台還沒設 Windows Hello,只能做一般動作。設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN。沒有 Windows 登入密碼的話，要先設密碼才能設 PIN。"
             }
             WinClass::Unknown => {
-                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好再建核准鑰。"
+                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好再建配對金鑰。"
             }
         }
     }

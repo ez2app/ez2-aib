@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 18] = [
+pub const ACTIONS: [(&str, &str); 26] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -136,6 +136,22 @@ pub const ACTIONS: [(&str, &str); 18] = [
         crate::net_card::OP_NET_ALLOW_ALWAYS,
         "一直允許 AI 夥伴連這個位址",
     ),
+    // stack10 (6770f: the window's top line said `merge.brain`): every WIRED operation has its
+    // words here, so the top line is never a code (every_wired_operation_has_words)
+    (crate::merge_acts::OP_PERSONA, "合併相似的人格"),
+    (crate::merge_acts::OP_BRAIN, "合併相似的第二大腦"),
+    (crate::seat_tick::OP_SET, "設定定時送給一席的話"),
+    (crate::seat_tick::OP_RESUME, "讓暫停的定時送話恢復"),
+    (crate::perm_tpl::OP, "讓權限模板多開項目"),
+    (
+        crate::perm_apply::OP_OPEN,
+        "用權限模板開一席(比模式多開項目)",
+    ),
+    (
+        crate::perm_apply::OP_APPLY,
+        "對開著的席套用權限模板(多開項目)",
+    ),
+    (crate::persona_edit::OP_SET, "改人格卡的段落"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -345,6 +361,21 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         // D7a: the reason the owner typed is in the window's resource line (free text)
         crate::drive_switch::OP if v["to"] == "on" => {
             "打開自動推進派工:aibd 照自動推進的計畫寄派工給網頁席".to_owned()
+        }
+        // stack10: a run's parameters are the plan (its groups), an undo's are {batch_id}; the
+        // same operation for both, so the top line says which
+        crate::merge_acts::OP_PERSONA | crate::merge_acts::OP_BRAIN => {
+            let what = if operation == crate::merge_acts::OP_PERSONA {
+                "人格"
+            } else {
+                "第二大腦"
+            };
+            if v.get("batch_id").is_some() {
+                format!("復原一次{what}合併")
+            } else {
+                let groups = v["groups"].as_array()?.len();
+                format!("合併 {groups} 組相似的{what}")
+            }
         }
         _ => return None,
     })
@@ -1362,6 +1393,38 @@ mod tests {
                 "reason: {bad} passed over: {e}"
             );
         }
+    }
+
+    /// stack10 (6770f): `merge.brain` was WIRED with no words, so the window's top line was the
+    /// code. Every WIRED operation has its words in ACTIONS, once.
+    #[test]
+    fn every_wired_operation_has_words() {
+        for w in WIRED {
+            let n = ACTIONS.iter().filter(|(op, _)| op == w).count();
+            assert_eq!(n, 1, "reason: wired_without_words {w}");
+            assert_ne!(action_words(w), *w, "reason: words_are_the_code {w}");
+        }
+        assert_eq!(ACTIONS.len(), WIRED.len(), "reason: words_not_wired");
+    }
+
+    /// stack10: a merge run and its undo share one operation; the top line says which.
+    #[test]
+    fn a_merge_and_its_undo_say_which_on_top() {
+        let run = br#"{"groups":[{"a":1},{"b":2}]}"#;
+        let undo = br#"{"batch_id":"mb_1"}"#;
+        assert_eq!(
+            plain_words(crate::merge_acts::OP_PERSONA, run).as_deref(),
+            Some("合併 2 組相似的人格")
+        );
+        assert_eq!(
+            plain_words(crate::merge_acts::OP_BRAIN, undo).as_deref(),
+            Some("復原一次第二大腦合併")
+        );
+        assert_eq!(
+            plain_words(crate::merge_acts::OP_BRAIN, b"{}"),
+            None,
+            "reason: no_groups_no_sentence"
+        );
     }
 
     /// 519d0 11-21 (0eed7 a82: `seat_send_back` answered `owner_check_unavailable` on the
