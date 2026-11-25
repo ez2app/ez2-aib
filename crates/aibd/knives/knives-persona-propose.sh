@@ -74,7 +74,7 @@ pd crates/aibd/src/seat_input.rs \
 # ---- S2-2 part 2: the owner's approve wires to persona_write (waits for A12 in the integration line)
 # PA1 an approve without a ticket goes on to write
 pp '        None => Step::Ask(ask),' \
-   '        None => Step::Write { p, ask, ticket: String::new(), by },' \
+   '        None => Step::Write { p: Box::new(p), ask, ticket: String::new(), by },' \
    approve_without_a_ticket_writes_nothing
 # PA2 the ask does not bind the base the text was proposed on
 pp '        "base_sha": p.base_sha,' \

@@ -625,7 +625,8 @@ pub enum Step {
     Ask(crate::owner_ok::Ask),
     /// A ticket: check it is approved for this very ask, then write.
     Write {
-        p: Proposal,
+        /// Boxed: a proposal is the large part (clippy large_enum_variant).
+        p: Box<Proposal>,
         ask: crate::owner_ok::Ask,
         ticket: String,
         by: String,
@@ -665,7 +666,7 @@ pub async fn approve_step(
     match body.get("ticket").and_then(Value::as_str) {
         None => Step::Ask(ask),
         Some(t) => Step::Write {
-            p,
+            p: Box::new(p),
             ask,
             ticket: t.to_owned(),
             by,
@@ -1047,7 +1048,7 @@ mod tests {
 
     fn waiting_one(b: &Book) -> Proposal {
         let t = new_text("規則三");
-        b.propose(&card(), &ask("seat_ab", &t), &mut ids(), 100)
+        b.propose(&card(), &ask("seat_ab", &t), ids(), 100)
             .unwrap()
             .0
     }
