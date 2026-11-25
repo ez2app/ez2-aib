@@ -109,6 +109,11 @@ fn mac_codesign(path: &Path, requirement: &str) -> Result<(), &'static str> {
 /// The refusal when a program in aibd's providers folder has no row in the measured table.
 pub const ERR_UNMEASURED: &str = "provider_unmeasured";
 
+/// The refusal when the data folder, the providers folder or a provider / version folder on
+/// the way to a placed program is a link or junction (3e53b r10): aibd starts its programs
+/// only from its own folders. A customer who made the data folder a link gets this word.
+pub const ERR_LINKED: &str = "provider_path_linked";
+
 /// Opening a seat (L1 / L2 接點; 3e53b REVIEW-w2policy-90856 L1): when the program the policy
 /// names is one aibd placed (`<data>/providers/<provider>/<version>/<name>`), check it against
 /// this machine's row of the measured table again, now, and give back the checked handle; the
@@ -166,7 +171,10 @@ fn placed_check(
         std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
     });
     let plain = std::fs::symlink_metadata(program).is_ok_and(|m| m.file_type().is_file());
-    if !same || !plain || !no_link {
+    if !no_link {
+        return Err(ERR_LINKED);
+    }
+    if !same || !plain {
         return Err(provider_fetch::ERR_VERIFY);
     }
     provider_fetch::verify_placed(&row, &real).map(Some)
@@ -525,8 +533,30 @@ mod tests {
                 .join(&name);
             assert_eq!(
                 placed_check(other.path(), &via, &row_for).map(|f| f.is_some()),
-                Err(provider_fetch::ERR_VERIFY),
+                Err(ERR_LINKED),
                 "reason: linked_step_opened"
+            );
+        }
+        // the data folder itself a link: everything under it looks right, still refused with
+        // the word that says so (3e53b r10)
+        #[cfg(unix)]
+        {
+            let other = tempfile::tempdir().unwrap();
+            let real_data = other.path().join("real");
+            let vdir = real_data.join("providers").join("claude").join("9.9.9");
+            std::fs::create_dir_all(&vdir).unwrap();
+            std::fs::write(vdir.join(&name), body).unwrap();
+            let linked = other.path().join("data");
+            std::os::unix::fs::symlink(&real_data, &linked).unwrap();
+            let via = linked
+                .join("providers")
+                .join("claude")
+                .join("9.9.9")
+                .join(&name);
+            assert_eq!(
+                placed_check(&linked, &via, &row_for).map(|f| f.is_some()),
+                Err(ERR_LINKED),
+                "reason: linked_data_opened"
             );
         }
         // the same on Windows, with a directory link (a junction is a reparse point too, and
@@ -548,7 +578,7 @@ mod tests {
                 .join(&name);
             assert_eq!(
                 placed_check(other.path(), &via, &row_for).map(|f| f.is_some()),
-                Err(provider_fetch::ERR_VERIFY),
+                Err(ERR_LINKED),
                 "reason: linked_step_opened"
             );
         }

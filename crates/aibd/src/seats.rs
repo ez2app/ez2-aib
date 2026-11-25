@@ -2845,7 +2845,11 @@ pub(crate) async fn start_session(
     .map_err(|code| {
         serde_json::json!({
             "code": code,
-            "message": "the provider program aibd placed does not match the measured table",
+            "message": if code == crate::provider_fetch::maker::ERR_LINKED {
+                "a folder on the way to the provider program (the data folder, providers, or a provider or version folder) is a link; aibd starts providers only from its own folders"
+            } else {
+                "the provider program aibd placed does not match the measured table"
+            },
         })
     })?;
     let req = crate::sessions::Request {
