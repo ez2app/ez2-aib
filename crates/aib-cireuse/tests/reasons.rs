@@ -232,6 +232,12 @@ fn pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers() {
     let names = [
         "cireuse-ledger",
         "cireuse-ledger-knives-rust",
+        "cireuse-ledger-crate-knives-0",
+        "cireuse-ledger-crate-knives-1",
+        "cireuse-ledger-crate-knives-2",
+        "cireuse-ledger-crate-knives-3",
+        "cireuse-ledger-crate-knives-macos-0",
+        "cireuse-ledger-crate-knives-macos-1",
         "cireuse-ledger-cloud-knives",
         "cireuse-ledger-cloud-host-knives",
     ];

@@ -37,3 +37,9 @@ rk main.rs 'reasons_summary(&ledger_lines(dir), now(), a.days)' \
 # RS8 pull does not take a knife cell's ledger (S66-4)
 rk main.rs '"cireuse-ledger-knives-rust",' '// "cireuse-ledger-knives-rust",' \
    pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
+# RS9 pull does not take a Linux crate knife cell's ledger (f163c a5f760d2af N3)
+rk main.rs '"cireuse-ledger-crate-knives-3",' '// "cireuse-ledger-crate-knives-3",' \
+   pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
+# RS10 pull does not take a macOS crate knife cell's ledger (f163c a5f760d2af N3)
+rk main.rs '"cireuse-ledger-crate-knives-macos-1",' '// "cireuse-ledger-crate-knives-macos-1",' \
+   pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
