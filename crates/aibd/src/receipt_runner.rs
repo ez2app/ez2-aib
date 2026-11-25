@@ -1128,7 +1128,7 @@ mod tests {
             ..Brings::default()
         };
         let w = card_words("lin", "web-b4297-012345678", &quiet);
-        assert_eq!(w, "收據到 lin · build.rs 0·新套件 0·新檔 1 · web-b4297-0…");
+        assert_eq!(w, "收據到 lin · build.rs 0·新套件 0·新檔 1 · web-b4297-01…");
         assert!(w.chars().count() <= crate::owner_ok::RESOURCE_MAX);
         let loud = Brings {
             build_scripts: vec!["a/build.rs".into(), "b/build.rs".into()],

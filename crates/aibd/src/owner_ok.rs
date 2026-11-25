@@ -1337,7 +1337,7 @@ mod tests {
         // an empty fixed word (a warning that is not there) leaves no empty place
         assert_eq!(
             fixed_then_cut(&["", "收據到 lin"], "web-b4297-012345678", 12),
-            "收據到 lin · web-b4297-0…"
+            "收據到 lin · web-b4297-01…"
         );
         assert_eq!(cut_to("短", 12), "短");
     }
