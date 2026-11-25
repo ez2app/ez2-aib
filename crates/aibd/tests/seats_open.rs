@@ -824,7 +824,7 @@ async fn a_queued_seat_session_starts_when_a_slot_frees() {
 }
 
 /// B4-1b-2b K3, changed by S89-live-5 (0eed7 J2, 519d0 04:02): a provider aib knows but cannot
-/// yet start over pipes (codex, grok) is refused before anything is written — no empty seat
+/// yet start over pipes (agy; grok opens a safe seat since 08de5 11-25) is refused before anything is written — no empty seat
 /// left behind — and a dry run says the same instead of printing a plan.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_cannot_start_is_refused_and_leaves_no_seat() {
@@ -834,8 +834,8 @@ async fn a_provider_that_cannot_start_is_refused_and_leaves_no_seat() {
     let cwd = serde_json::Value::String(cwd()).to_string();
     // S89-live-2: codex opens safe only; its dgrs is refused the same way, with its own code
     for (provider, mode, extra, why) in [
-        ("grok", "safe", "", "provider_unsupported"),
-        ("grok", "safe", r#","dry_run":true"#, "provider_unsupported"),
+        ("agy", "safe", "", "provider_unsupported"),
+        ("agy", "safe", r#","dry_run":true"#, "provider_unsupported"),
         ("codex", "dgrs", "", "provider_mode_unsupported"),
         (
             "codex",

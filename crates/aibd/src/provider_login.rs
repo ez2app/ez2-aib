@@ -400,7 +400,7 @@ pub fn logged_in(
                 .or_else(crate::workspace::seat_login_home);
             return home.is_some_and(|h| {
                 crate::workspace::copilot_users(&h.join(".copilot").join("config.json"))
-            }) && copilot_token_stored();
+            }) && crate::workspace::copilot_token_stored("copilot-cli");
         }
         return false;
     };
@@ -429,25 +429,6 @@ pub fn grok_says_logged_in(out: &[u8]) -> bool {
         .lines()
         .find(|l| !l.trim().is_empty())
         .is_some_and(|l| l.trim_start().starts_with("You are logged in"))
-}
-
-/// copilot keeps its token in the system credential store (macOS: the keychain item
-/// `copilot-cli`, measured 1.0.115): is the item there? Its attributes only are asked (no
-/// `-g` / `-w`: the secret is never read) and the answer is dropped. Elsewhere: no (Windows
-/// is refused before a login starts; not tried there).
-pub fn copilot_token_stored() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let mut c = Command::new("/usr/bin/security");
-        c.args(["find-generic-password", "-s", "copilot-cli"]);
-        let (code, _) =
-            crate::gh_view::run_timed(c, &crate::timers::PROVIDER_LOGIN_STATUS_WAIT, None);
-        code == Some(0)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
 }
 
 /// Wait for the program's end (at most [`crate::timers::PROVIDER_LOGIN_WAIT`]), then ask the

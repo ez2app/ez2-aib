@@ -4974,7 +4974,9 @@
   }
   // 08de5 11-25(3e53b REVIEW-grok L1;Andy 選 (a) 接受):grok 1.0.70 安全席仍有 4 支 xAI 伺服器端 X 搜尋工具,旗標關不掉(EVIDENCE-brand-grok-08de5-1125)⇒ 品牌說明與開席前那一行都照實寫
   const GROK_X = 'Grok 安全席仍可搜尋 X(關不掉)';
-  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊 · ' + GROK_X + ':X 搜尋在 xAI 伺服器上,AIB 關不掉;碰不到你的檔案,但讀得到 X 上的公開貼文' };
+  // 08de5 11-25(ebab8 q_17279e54,Andy「我沒金鑰啊」):Copilot 用 GitHub 帳號登入(權杖在系統鑰匙圈),不要跟人要金鑰
+  const COPILOT_LOGIN = '用 GitHub 帳號登入,不用金鑰';
+  const BRAND_WHAT = { claude: '能對話、能改程式', codex: '能對話、能改程式', agy: '能對話、查資料', grok: '能對話、查即時資訊 · ' + GROK_X + ':X 搜尋在 xAI 伺服器上,AIB 關不掉;碰不到你的檔案,但讀得到 X 上的公開貼文', copilot: '能對話、查資料 · ' + COPILOT_LOGIN };
   const AP_MODE = { safe: ['討論研究', '低'], work: ['沙盒開發', '中'], dgrs: ['完全權限', '最高'] };
   function seatModeTag(m) {
     const k = m === 'host' ? ['管理主機', '高', 3] : AP_MODE[m] ? [AP_MODE[m][0], AP_MODE[m][1], m === 'dgrs' ? 4 : m === 'work' ? 2 : 1] : null;
@@ -5590,7 +5592,7 @@
     const where = `<div class="apl"><button type="button" class="apr ${!node ? 'on' : ''}" data-addnu="" aria-pressed="${!node}"><b>不指定</b><i>自由發揮,不綁專案</i></button></div><div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找已有專案(標題或編號)" aria-label="找已有專案" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div><div class="apn">讀自進度樹;選了之後它只專注做這個專案,不會再默默帶入左樹選中的那一項${node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改' : node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個(不選就只開席、不掛)' : ''}</div>`;
     const step = A.busy ? (A.step === 2 ? '掛角色中…' : '開席中…') : '開';
     // Andy 11-19 11:3x:品牌不能開時整個視窗還能一路選到底、「開」是灰的卻沒說為什麼 ⇒ 最上面講原因和怎麼辦,其餘先不顯示
-    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
+    const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login', copilot: '終端機打 copilot login(' + COPILOT_LOGIN + ')' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
     const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
     if (!pv) {
       const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${p.why === '這台還沒登入' && RELOG_NAME[p.key] ? ' ' + relogHtml(p.key) : FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');

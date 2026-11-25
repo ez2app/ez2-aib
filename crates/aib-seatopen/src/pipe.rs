@@ -139,8 +139,8 @@ pub fn safe_refusal(
 }
 
 /// The copilot versions aibd starts: only the one this seat's words were read against
-/// (`copilot --help` of 1.0.115, 08de5 11-25). Its tools-off run is not measured yet
-/// (TAKEOVER-brands §2.2; condition 6): this list changes to the measured one then.
+/// (`copilot --help` of 1.0.115, 08de5 11-25); its tools-off run, MCP servers and hooks were
+/// measured on that version (EVIDENCE-brand-copilot-08de5-1125, condition 6).
 pub fn copilot_version_ok(out: &str) -> bool {
     out.lines().any(|l| {
         l.trim()

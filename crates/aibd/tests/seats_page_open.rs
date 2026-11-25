@@ -86,8 +86,9 @@ async fn a_page_cannot_open_what_it_may_not() {
     // a mode that is not safe counts as needing it too
     let r = act(&d, &cred, base("claude", "yolo", "k2")).await;
     assert_eq!(r.json["code"], "dgrs_needs_switch", "{}", r.body);
-    // a brand aibd cannot start: refused by aibd, not only greyed on the page
-    let r = act(&d, &cred, base("grok", "safe", "k3")).await;
+    // a brand aibd cannot start (agy; grok starts since 08de5 11-25): refused by aibd, not
+    // only greyed on the page
+    let r = act(&d, &cred, base("agy", "safe", "k3")).await;
     assert_eq!(r.code, 400, "{}", r.body);
     assert_eq!(r.json["reason"], "provider_unsupported", "{}", r.body);
     // the page gives no folder, cabin or arguments
