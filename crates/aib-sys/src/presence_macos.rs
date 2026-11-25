@@ -495,6 +495,40 @@ fn la_context() -> Retained<LAContext> {
     unsafe { LAContext::new() }
 }
 
+/// What LocalAuthentication says about this Mac's owner checks, asking nobody
+/// (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8, S10-2 measurement): `canEvaluatePolicy`
+/// for biometrics and for "the owner" (biometrics or the login password), then
+/// `biometryType`, which Apple sets only after a `canEvaluatePolicy`. No `evaluatePolicy`, no
+/// key, no window: an error is the `LAError` code (-6 biometry not available, -7 not enrolled,
+/// -8 locked out, -5 passcode not set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerCheckState {
+    /// `LABiometryType`: 0 none, 1 Touch ID, 2 Face ID, 4 Optic ID.
+    pub biometry_type: isize,
+    pub biometrics: Result<(), isize>,
+    pub owner: Result<(), isize>,
+}
+
+pub fn owner_check_state() -> OwnerCheckState {
+    use objc2_local_authentication::LAPolicy;
+    let ctx = la_context();
+    // SAFETY: a fresh context; `canEvaluatePolicy:error:` only reads the device's state and
+    // shows nothing (objc2 turns the out error into the Err side).
+    let biometrics =
+        unsafe { ctx.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics) }
+            .map_err(|e| e.code());
+    // SAFETY: as above, the policy that also takes the login password.
+    let owner = unsafe { ctx.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthentication) }
+        .map_err(|e| e.code());
+    // SAFETY: a property read on the same context, after canEvaluatePolicy as Apple asks.
+    let biometry_type = unsafe { ctx.biometryType() }.0;
+    OwnerCheckState {
+        biometry_type,
+        biometrics,
+        owner,
+    }
+}
+
 fn sign_key(key: &Owned, msg: &[u8]) -> Result<Vec<u8>, SeError> {
     let data = cf_data(msg);
     let alg = k(&raw const kSecKeyAlgorithmECDSASignatureMessageX962SHA256);

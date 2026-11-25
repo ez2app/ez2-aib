@@ -485,6 +485,7 @@ dependencies = [
  "libproc",
  "nix",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

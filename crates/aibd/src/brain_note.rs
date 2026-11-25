@@ -484,24 +484,33 @@ fn keep_copy(keep: &Path, bytes: &[u8]) -> Result<(), &'static str> {
         .and_then(|s| s.to_str())
         .ok_or("note_archive_failed")?;
     let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
-    let write_res = (|| -> std::io::Result<()> {
+    let link_res = (|| -> std::io::Result<bool> {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, keep)?;
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
+        match std::fs::hard_link(&tmp, keep) {
+            Ok(()) => {
+                if let Ok(d) = std::fs::File::open(dir) {
+                    let _ = d.sync_all();
+                }
+                Ok(false)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),
+            Err(e) => Err(e),
         }
-        Ok(())
     })();
-    if write_res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err("note_archive_failed");
+    let _ = std::fs::remove_file(&tmp);
+    match link_res {
+        Ok(false) => Ok(()),
+        Ok(true) => match std::fs::read(keep) {
+            Ok(b) if b == bytes => Ok(()),
+            _ => Err("note_archive_failed"),
+        },
+        Err(_) => Err("note_archive_failed"),
     }
-    Ok(())
 }
 
 /// Where aibd keeps the notes it took back: `<data>/archive/brain-notes/<note id>.md`.
@@ -758,6 +767,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             "this seat was opened with no second brain",
         );
     };
+    let _one = LOCK.lock().await;
     let (data, db, r_check) = (
         crate::registry::data_of(&st),
         st.messages.clone(),
@@ -774,8 +784,6 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             )
         }
     }
-
-    let _one = LOCK.lock().await;
     let now_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
