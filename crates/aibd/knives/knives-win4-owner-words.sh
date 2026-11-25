@@ -57,3 +57,21 @@ python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
   '                &format!("{} {} {}", t.repo, t.branch, path_shown(&t.remote)),' \
   --expect-fail 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host' \
   -- cargo test -p aibd --locked --lib 'repo_push::tests::a_branch_never_stands_before_the_head_or_the_host'
+# w4-la-owner (c2f0b REVIEW-win4 L-a: the remote path's owner dropped, two owners of one long name read the same)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '    let owner = crate::owner_ok::cut_to(owner, OWNER_SHOWN);' \
+  '    let owner = crate::owner_ok::cut_to(owner, 0);' \
+  --expect-fail 'repo_push::tests::two_owners_of_one_long_name_read_apart' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::two_owners_of_one_long_name_read_apart'
+# w4-la-tail (L-a: the repo's name not cut to its end)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '    let name: String = if c.len() > NAME_TAIL_SHOWN {' \
+  '    let name: String = if c.len() > usize::MAX - NAME_TAIL_SHOWN {' \
+  --expect-fail 'repo_push::tests::two_owners_of_one_long_name_read_apart' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::two_owners_of_one_long_name_read_apart'
+# w4-la-git (L-a: the .git end kept, eating the name's last characters)
+python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
+  '    let p = p.strip_suffix(".git").unwrap_or(p);' \
+  '    let p = p.strip_suffix(".gitx").unwrap_or(p);' \
+  --expect-fail 'repo_push::tests::two_owners_of_one_long_name_read_apart' \
+  -- cargo test -p aibd --locked --lib 'repo_push::tests::two_owners_of_one_long_name_read_apart'

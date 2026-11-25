@@ -207,18 +207,37 @@ fn path_shown(remote: &str) -> String {
         Some((_, rest)) => rest.split_once('/').map_or("", |(_, x)| x),
         None => remote.split_once(':').map_or(remote, |(_, x)| x),
     };
-    let c: Vec<char> = p.chars().collect();
-    c[c.len().saturating_sub(PATH_SHOWN)..].iter().collect()
+    // c2f0b REVIEW-win4-f5dbc6c2 L-a: the owner kept (its start), then the repo's name's end;
+    // the path's last 20 alone lost the owner of a long name, so `you/long-name` and
+    // `other/long-name` read the same
+    let p = p.strip_suffix(".git").unwrap_or(p);
+    let (owner, name) = p.rsplit_once('/').unwrap_or(("", p));
+    let owner = crate::owner_ok::cut_to(owner, OWNER_SHOWN);
+    let c: Vec<char> = name.chars().collect();
+    let name: String = if c.len() > NAME_TAIL_SHOWN {
+        std::iter::once('…')
+            .chain(c[c.len() - NAME_TAIL_SHOWN..].iter().copied())
+            .collect()
+    } else {
+        name.to_owned()
+    };
+    if owner.is_empty() {
+        name
+    } else {
+        format!("{owner}/{name}")
+    }
 }
 
-/// How much of the remote's path the window shows, its end kept.
-pub const PATH_SHOWN: usize = 20;
+/// How much of the remote path's owner the window shows, its start kept.
+pub const OWNER_SHOWN: usize = 8;
+/// How much of the remote repo's name the window shows, its end kept.
+pub const NAME_TAIL_SHOWN: usize = 11;
 /// How much of `{repo} {branch}` (the seat's and the registrant's words) the window shows:
 /// with the head, the host and the path it is never more than the window's 80.
-pub const BRANCH_SHOWN: usize = 14;
+pub const BRANCH_SHOWN: usize = 12;
 
 /// What the owner is asked. The window: the head's first 12 and where it goes — the host
-/// with its end kept and the path's end — first, then the repo and the branch, a seat's
+/// with its end kept, the path's owner and its name's end — first, then the repo and the branch, a seat's
 /// words, cut (ebab8 11-25 14:01, SCAN-owner-window-words 5: a long branch pushed the head
 /// into the part the window cuts). The whole object fits the window's 80: nothing is cut there.
 pub fn push_ask(t: &Target, by: String) -> crate::owner_ok::Ask {
@@ -1036,11 +1055,52 @@ mod tests {
             let shown = crate::owner_ok::object_shown(&r);
             crate::owner_ok::fixed_first(
                 &shown,
-                "0123456789ab → github.com · own/repo.git · ",
+                "0123456789ab → github.com · own/repo · ",
                 &["ffffffffffff", "evil.example"],
             )
             .unwrap();
             assert!(r.ends_with('…'), "reason: branch_not_cut {r}");
+        }
+    }
+
+    /// c2f0b REVIEW-win4-f5dbc6c2 L-a: two remotes that differ only in their owner, with a
+    /// long repo name, read differently in the window; the owner's start is kept.
+    #[test]
+    fn two_owners_of_one_long_name_read_apart() {
+        let ask = |remote: &str| {
+            push_ask(
+                &Target {
+                    repo: "demo".into(),
+                    path: PathBuf::from("/x"),
+                    remote: remote.into(),
+                    branch: BRANCH.into(),
+                    sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                },
+                "page:1".into(),
+            )
+            .resource
+        };
+        let mine = ask("git@github.com:andy-company/some-long-repo-name.git");
+        let other = ask("git@github.com:evil/some-long-repo-name.git");
+        assert_ne!(mine, other, "reason: owners_read_the_same");
+        assert!(
+            mine.contains("· andy-com…/…g-repo-name · "),
+            "reason: owner_cut_off {mine}"
+        );
+        assert!(
+            other.contains("· evil/…g-repo-name · "),
+            "reason: owner_cut_off {other}"
+        );
+        let https = ask("https://github.com/andy-company/some-long-repo-name");
+        assert!(
+            https.contains("· andy-com…/…g-repo-name · "),
+            "reason: https_path {https}"
+        );
+        for r in [&mine, &other, &https] {
+            assert!(
+                r.chars().count() <= crate::owner_ok::RESOURCE_MAX,
+                "reason: window_cuts {r}"
+            );
         }
     }
 
@@ -1064,7 +1124,7 @@ mod tests {
             "reason: window_cuts {shown}"
         );
         assert!(
-            shown.contains("r-owned.example · own/er/repo-name.git · "),
+            shown.contains("r-owned.example · own/er/repo-name · "),
             "reason: remote_cut {shown}"
         );
         assert!(
