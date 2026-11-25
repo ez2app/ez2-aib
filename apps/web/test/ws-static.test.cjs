@@ -55,6 +55,8 @@ for (const t of acts) {
   // a9136 feat/web-capture-a9136-1121(21a22431c / 9348a45c9,IFACE-chat-tools-aibd-a9136-1121 r1)才有:截圖 / 存圖 / webp / 送出紀錄 / 收藏 / 最近色;頁面只在 version.acts 有才呼叫(ctHas),沒有就只在本頁有效。合進來後拿掉這行
   // 519d0 DEV-drive-web D6 / D7:aibd 的 drive_status / drive_toggle 還沒寫(形狀在 OPINION-driveweb-1a93b-1121);頁面只在有時呼叫,沒有就用「自動推進的信」拼
   if (/^drive_(status|toggle)$/.test(t)) continue;
+  // c2f0b IFACE-provider-lifecycle r1(L1 08de5 / L2 c2f0b 還沒寫)才有 provider_install / _update / _job_cancel;頁面只在 GET lifecycle 的 acts 有才送。合進來後拿掉這行
+  if (/^provider_(install|update|job_cancel)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('c2f0b IFACE-provider-lifecycle r1(L3') && ws.includes("|| !lcHas('provider_' + a)) return;") && ws.includes("|| !lcHas('provider_job_cancel')) return;"), 'branch-only act is marked: ' + t); continue; }
   // 08de5 7a feat/permtpl-08de5-1123(f511716fc1 / 855a8b487d)才有 perm_template_list / _add / _set / _remove;perm_template_apply 是 7b(未開)。
   // 頁面收到 unknown_act_type 就寫「這一版還沒有」;apply 只在 version.acts 有才放。合進來後拿掉這行
   if (/^perm_template_(list|add|set|remove|apply)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7a f511716fc1') && ws.includes("hasAct('perm_template_apply') === true"), 'branch-only act is marked: ' + t); continue; }
@@ -1874,4 +1876,75 @@ const relogChecks = (async () => {
   ok(ws.includes("    if (x.closest('[data-relogcopy]')) return relogCopy();") && ws.includes("const rl = e.target.closest('.evact [data-relogin], .evact [data-relogsend], .evact [data-relogcopy]');"), 'reason: relogcard_copy_wired');
   ok(/\.rlcode\{font-family:"SF Mono",ui-monospace[^}]*font-size:clamp\(44px,12vw,76px\)[^}]*text-align:center/.test(css) && /\.rlc-copilot\{--rlb:#a98bf0;--rli:#140d24\}/.test(css) && /\.rlc-grok\{--rlb:#f2f2f2;--rli:#0c0d10\}/.test(css) && /\.rlccp,\.rlcgo\{flex:1 1 200px;min-height:56px;border-radius:14px;font-size:19px/.test(css), 'reason: relogcard_grok_design_style');
 })();
-Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks, relogChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });
+// c2f0b IFACE-provider-lifecycle r1(L3):安裝 / 換版 / 登入同一張卡;GET lifecycle 照 next 出卡、acts 有才送、進度位元組自己算百分比、工作結束重抓 version 接下一張
+const lcChecks = (async () => {
+  const blk = (ws.split('  // ---------- c2f0b IFACE-provider-lifecycle r1(L3')[1] || '').split('  // ---------- lifecycle 卡到這裡 ----------')[0];
+  const mark = (ws.match(/  const rlcMark = \(b, N\) => [^\n]*\n/) || [''])[0], spI = (ws.match(/  function spInstallHtml\(\) \{[^\n]*\n/) || [''])[0];
+  ok(blk.length > 2000 && mark && spI, 'reason: lc_block_found');
+  const st = { lc: null, sp: null, version: { v: 0 } }, gets = [], sent = [], fp = [], timers = [];
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const c = vm.createContext({ S: st, esc: E, render: () => {}, lang: 'zh-TW', RELOG_BRAND: ['claude', 'codex', 'grok', 'copilot'], RELOG_LOGO: { claude: 'data:image/svg+xml;base64,AA' }, RELOG_LOGO_PX: {}, RELOG_NAME: { claude: 'Claude', codex: 'Codex' }, relogHtml: (k) => 'LOGIN:' + k, SP_INSTALL_NA: '官方安裝說明的連結:這一版 AIB 還沒有',
+    rgCode: (e) => String((e && e.code) || ''), soft: (p) => p.catch((e) => (e && e.status === 404 ? null : Promise.reject(e))),
+    get: async (u) => { sent.push(['GET', u]); const r = gets.shift(); if (r instanceof Error) throw r; return u === '/api/v1/version' ? { v: (st.version.v || 0) + 1 } : r; },
+    act: async (t, b) => { sent.push([t, b]); if (st.actErr) throw Object.assign(new Error('x'), { code: st.actErr }); return {}; },
+    fingerAct: async (t, b) => { fp.push([t, b]); if (st.fpErr) throw Object.assign(new Error('x'), { code: st.fpErr }); return { started: true }; },
+    setTimeout: (f) => { timers.push(f); return 1; }, spLoad: () => { st.spLoads = (st.spLoads || 0) + 1; } });
+  vm.runInContext('const askLang = () => lang;\n' + mark + '//' + blk + spI + '\nthis.F = { LC_W, lcCard, lcLoad, lcGo, lcCancel, lcClick, lcNeeds, spInstallHtml };', c);
+  const F = c.F, tick = () => new Promise((r) => setImmediate(r));
+  const ck = (d) => ({ closest: (q) => { const k = q.slice(6, -1); return Object.prototype.hasOwnProperty.call(d, k) ? { dataset: { [k.replace(/-([a-z])/g, (m, x) => x.toUpperCase())]: d[k] } } : null; } });
+  const ACTS = ['provider_install', 'provider_update', 'provider_job_cancel', 'provider_login'];
+  const inst = (o) => Object.assign({ name: 'claude', installed: { kind: 'not_found', version: null }, measured: '2.1.326', next: 'install', card: { action: 'install', version: '2.1.326', size: 353037664, source: 'downloads.claude.ai', owner_check: true } }, o);
+  // 舊 aibd:GET 404 ⇒ 不出卡,開席設定卡照舊那句
+  gets.push(Object.assign(new Error('nf'), { status: 404 })); await F.lcLoad();
+  ok(st.lc.d === null && F.lcCard('claude') === '' && F.lcNeeds('claude') === false && F.spInstallHtml() === '<div class="apn">官方安裝說明的連結:這一版 AIB 還沒有</div>', 'reason: lc_old_aibd_no_card');
+  // 安裝卡(中文照 IFACE §5)
+  gets.push({ providers: [inst()], acts: ACTS }); await F.lcLoad(); let h = F.lcCard('claude');
+  ok(h.startsWith('<div class="rlc rlc-claude lc"><div class="rlcband"><span class="rlcmark rlclogo"><img src="data:image/svg+xml;base64,AA"') && h.includes('<b>Claude</b><span class="rlcstep">安裝</span>') && h.includes('<h4>這台還沒有 Claude,要幫你裝嗎?</h4>') && h.includes('從 Anthropic 官方下載 Claude 2.1.326(約 337 MB),裝在你自己的帳號裡,不需要系統管理員。裝好就能在這台開 Claude。') && h.includes('data-lcgo="claude"') && h.includes('>同意並安裝</button>') && h.includes('data-lcno="claude">先不要</button>') && h.includes('來源:downloads.claude.ai · 按下去會跳本人驗證'), 'reason: lc_install_card ' + h.slice(0, 300));
+  ok(F.lcNeeds('claude') === true && F.spInstallHtml() === h, 'reason: lc_install_in_policy_card');
+  // acts 沒有 ⇒ 不給鈕、照實寫
+  gets.push({ providers: [inst()], acts: ['provider_login'] }); await F.lcLoad(); h = F.lcCard('claude');
+  ok(!h.includes('data-lcgo') && h.includes('<span class="rlcno">這一版 AIB 還沒有</span>'), 'reason: lc_no_act_not_faked');
+  fp.length = 0; F.lcClick(ck({ lcgo: 'claude' })); await tick(); ok(fp.length === 0, 'reason: lc_no_act_not_sent');
+  // 同意 ⇒ fingerAct provider_install 只送 {provider};接著重讀,running 下載 ⇒ 百分比 + 進度條 + 取消,每秒重讀
+  gets.push({ providers: [inst()], acts: ACTS }); await F.lcLoad();
+  gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'download', done: 50, total: 200, error: null } })], acts: ACTS });
+  timers.length = 0; F.lcClick(ck({ lcgo: 'claude' })); await tick(); await tick(); await tick(); h = F.lcCard('claude');
+  ok(fp.length === 1 && fp[0][0] === 'provider_install' && JSON.stringify(fp[0][1]) === '{"provider":"claude"}', 'reason: lc_install_sends_only_provider ' + JSON.stringify(fp));
+  ok(h.includes('<div class="lcst" role="status">正在下載(25%)…</div><progress class="lcpg" max="100" value="25"') && /data-lccancel="claude" ?>取消<\/button>/.test(h) && !h.includes('data-lcgo') && !h.includes('本人驗證') && timers.length === 1, 'reason: lc_progress_bytes_to_percent ' + h.slice(0, 400));
+  gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'verify', done: 200, total: 200 } })], acts: ACTS }); timers.shift()(); await tick(); await tick();
+  ok(F.lcCard('claude').includes('正在核對是不是官方的檔…') && !F.lcCard('claude').includes('<progress'), 'reason: lc_phase_verify');
+  // 取消 ⇒ provider_job_cancel {provider}
+  sent.length = 0; gets.push({ providers: [inst({ job: { action: 'install', state: 'cancelled' } })], acts: ACTS }); F.lcClick(ck({ lccancel: 'claude' })); await tick(); await tick(); await tick();
+  ok(sent.some((x) => x[0] === 'provider_job_cancel' && JSON.stringify(x[1]) === '{"provider":"claude"}'), 'reason: lc_cancel_sent');
+  h = F.lcCard('claude'); ok(h.includes('已取消,Claude 沒有裝。') && h.includes('>再按一次</button>') && sent.some((x) => x[1] === '/api/v1/version') && st.spLoads === undefined, 'reason: lc_cancelled_then_again ' + h.slice(0, 300));
+  // 失敗代碼照 §5 字;工作結束 ⇒ 重抓 version、開席設定卡開著就重讀
+  st.sp = {}; gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'download', done: 1, total: 2 } })], acts: ACTS }); await F.lcLoad();
+  sent.length = 0; gets.push({ providers: [inst({ job: { action: 'install', state: 'failed', error: 'lifecycle_verify_failed' } })], acts: ACTS }); await F.lcLoad();
+  ok(F.lcCard('claude').includes('下載下來的檔跟 AIB 記的不一樣,AIB 沒有執行它,已經刪掉。') && sent.some((x) => x[1] === '/api/v1/version') && st.spLoads === 1, 'reason: lc_failed_words_and_refetch');
+  // 完成 ⇒ next = login 交給登入卡;不再出安裝卡
+  gets.push({ providers: [inst({ installed: { kind: 'native', version: '2.1.326' }, next: 'login', job: { action: 'install', state: 'done' } })], acts: ACTS }); await F.lcLoad();
+  ok(F.lcCard('claude') === 'LOGIN:claude' && F.lcNeeds('claude') === false, 'reason: lc_next_login_uses_login_card');
+  // 換版卡:目前 = installed.version、AIB 試過 = card.version
+  gets.push({ providers: [inst({ installed: { kind: 'native', version: '2.1.340' }, next: 'update', card: { action: 'update', version: '2.1.326' } })], acts: ACTS }); await F.lcLoad(); h = F.lcCard('claude');
+  ok(h.includes('<span class="rlcstep">換版</span>') && h.includes('這台的 Claude 是 2.1.340,AIB 還沒試過這一版。要換成 AIB 試過的 2.1.326 嗎?') && h.includes('>換版</button>') && !h.includes('終端機'), 'reason: lc_update_card ' + h.slice(0, 300));
+  fp.length = 0; gets.push({ providers: [inst({ next: 'update' })], acts: ACTS }); F.lcClick(ck({ lcgo: 'claude' })); await tick(); await tick(); ok(fp.length === 1 && fp[0][0] === 'provider_update', 'reason: lc_update_sends_update');
+  // 先不要 ⇒ 只在頁面記憶體;跑著的工作照樣顯示
+  F.lcClick(ck({ lcno: 'claude' })); ok(F.lcCard('claude') === '' && F.lcNeeds('claude') === false && st.lc.no.claude === true, 'reason: lc_not_now_in_memory');
+  gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'place' } })], acts: ACTS }); await F.lcLoad(); ok(F.lcCard('claude').includes('正在安裝…'), 'reason: lc_running_shown_after_not_now');
+  // 409 lifecycle_busy 等錯誤照 §5 字;沒有錨點的代碼寫代碼本身
+  st.lc.no.claude = false; gets.push({ providers: [inst()], acts: ACTS }); await F.lcLoad(); st.fpErr = 'lifecycle_busy'; gets.push({ providers: [inst()], acts: ACTS }); F.lcClick(ck({ lcgo: 'claude' })); await tick(); await tick(); await tick();
+  ok(F.lcCard('claude').includes('<div class="rlcno" role="alert">已經在進行了,等它跑完。</div>'), 'reason: lc_busy_words');
+  st.fpErr = 'zzz_new'; gets.push({ providers: [inst()], acts: ACTS }); F.lcClick(ck({ lcgo: 'claude' })); await tick(); await tick(); await tick(); ok(F.lcCard('claude').includes('沒有完成(zzz_new)'), 'reason: lc_unknown_code_said'); st.fpErr = '';
+  // 名字經 esc;不認得的品牌用首字
+  gets.push({ providers: [inst({ name: 'x<y', card: { version: '1"2', source: 'a<b' } })], acts: ACTS }); await F.lcLoad(); h = F.lcCard('x<y');
+  ok(!h.includes('x<y') && h.includes('rlc rlc-other') && h.includes('<span class="rlcmark">x</span>') && !h.includes('1"2') && !h.includes('a<b'), 'reason: lc_escaped ' + h.slice(0, 200));
+  // 四語:每種語言鍵一樣、函式參數照填;英文抽兩句逐字
+  const W = F.LC_W, L = ['zh-TW', 'en', 'ja', 'ko'], keys = (o) => JSON.stringify(Object.keys(o).sort());
+  ok(L.every((l) => W[l] && keys(W[l]) === keys(W['zh-TW']) && keys(W[l].why) === keys(W['zh-TW'].why) && keys(W[l].phase) === keys(W['zh-TW'].phase) && W[l].installB('Claude', '2.1.326', 337, 'Anthropic').includes('2.1.326') && W[l].installB('Claude', '2.1.326', 337, 'Anthropic').includes('337') && W[l].updateB('Claude', '2.1.340', '2.1.326').includes('2.1.340') && W[l].phase.download(25).includes('25')), 'reason: lc_four_langs_same_keys');
+  ok(W.en.installT('Claude') === "Claude isn't on this computer yet. Install it for you?" && W.en.why.lifecycle_busy === "It's already running; wait for it to finish." && W.ja.go.install === '同意してインストール' && W.ko.go.install === '동의하고 설치', 'reason: lc_en_ja_ko_words');
+  c.lang = 'en'; gets.push({ providers: [inst()], acts: ACTS }); await F.lcLoad(); ok(F.lcCard('claude').includes('>Agree and install</button>'), 'reason: lc_lang_follows_browser'); c.lang = 'zh-TW';
+})();
+// 接線:開席視窗兩處 + 開席設定卡 + 開視窗就讀 + 點擊先給 lcClick;登入卡共用品牌標
+ok(ws.includes("${PV.filter((p) => !p.open && lcNeeds(p.key)).map((p) => `<div class=\"apn anl\">${lcCard(p.key)}</div>`).join('')}") && ws.includes(": lcNeeds(p.key) ? '。' + `<span class=\"anlc\">${lcCard(p.key)}</span>` : FIX[p.why] ?") && ws.includes('      ${spInstallHtml()}${msg}') && ws.includes('      lcLoad(); // L3') && ws.includes("    if (lcClick(x)) return;\n    const rlb = x.closest('[data-relogin]');") && ws.includes('<div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">共 ${steps.length} 步</span>'), 'reason: lc_wired');
+{ const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.lc \.lcpg::-webkit-progress-value\{background:var\(--rlb\)/.test(css) && /\.lc \.rlcrow \.k\{font-size:17px[^}]*min-height:52px\}/.test(css), 'reason: lc_card_css_brand_progress_big_buttons'); }
+Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks, relogChecks, lcChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

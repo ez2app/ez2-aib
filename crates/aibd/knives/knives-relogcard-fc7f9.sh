@@ -45,7 +45,7 @@ k '    codex: '\''data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzE2IiBo' '    codex
 # RLC19 標誌不放在中性方塊(少 rlclogo)
 k '`<span class="rlcmark rlclogo${b === ' '`<span class="rlcmark${b === '
 # RLC20 不放標誌、一律字母
-k '${RELOG_LOGO[b] ? `' '${false ? `'
+k 'const rlcMark = (b, N) => RELOG_LOGO[b] ? `' 'const rlcMark = (b, N) => false ? `'
 # RLC21 Grok 不放白方塊(原檔黑標放在深色方塊上看不見)
 k 'b === '\''grok'\'' ? '\'' rlclogo-light'\'' : '\'''\''' 'b === '\''grok'\'' ? '\'''\'' : '\'''\'''
 # RLC22 Codex 不放大(本體只剩方塊三成)
