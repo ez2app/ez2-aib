@@ -32,6 +32,11 @@ pub const NOT_ENROLLED: isize = -7;
 pub const LOCKED_OUT: isize = -8;
 /// `LAErrorPasscodeNotSet`.
 pub const NO_PASSCODE: isize = -5;
+/// `LAErrorBiometryNotPaired`: no Touch ID accessory was ever paired (a Mac mini or Studio
+/// without the keyboard). DECISION-andymini-password-c2f0b-1125: read as no biometry.
+pub const NOT_PAIRED: isize = -12;
+/// `LAErrorBiometryDisconnected`: a paired Touch ID keyboard is away now. Stays not-now.
+pub const DISCONNECTED: isize = -13;
 
 /// A first reading of what the device said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +69,8 @@ pub fn class(ty: isize, bio: Result<(), isize>, owner: Result<(), isize>) -> Cla
     match (ty, bio, owner) {
         (_, _, Err(_)) => Class::None,
         (0, _, Ok(())) => Class::PasswordOnly,
+        // no Touch ID keyboard ever paired: the login password, the same grade (andymini)
+        (_, Err(NOT_PAIRED), Ok(())) => Class::PasswordOnly,
         (_, Ok(()), Ok(())) => Class::Fingerprint,
         (_, Err(NOT_ENROLLED), Ok(())) => Class::NotEnrolled,
         (_, Err(_), Ok(())) => Class::NotNow,
@@ -242,6 +249,20 @@ mod tests {
         assert_eq!(class(0, Err(NOT_AVAILABLE), Ok(())), Class::PasswordOnly);
         assert_eq!(class(0, Err(NOT_AVAILABLE), Err(NO_PASSCODE)), Class::None);
         assert_eq!(class(1, Ok(()), Err(NO_PASSCODE)), Class::None);
+    }
+
+    /// DECISION-andymini-password-c2f0b-1125: a Mac that never paired a Touch ID keyboard
+    /// (-12) uses the login password; a paired keyboard that is away (-13) stays not-now, so it
+    /// never gets the password instead.
+    #[test]
+    fn never_paired_is_the_login_password_and_away_is_not_now() {
+        assert_eq!(class(1, Err(NOT_PAIRED), Ok(())), Class::PasswordOnly);
+        assert_eq!(class(1, Err(DISCONNECTED), Ok(())), Class::NotNow);
+        assert_eq!(class(1, Err(NOT_PAIRED), Err(NO_PASSCODE)), Class::None);
+        assert_eq!(
+            key_kind(class(1, Err(NOT_PAIRED), Ok(()))),
+            Ok(KeyKind::LoginPassword)
+        );
     }
 
     /// S10-2b-1 §4a: the login-password key only where no biometry is reported; nothing
