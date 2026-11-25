@@ -1951,6 +1951,10 @@ const lcChecks = (async () => {
     ok(h.includes('href="https://x.ai/grok"') && h.includes('查不到') && !h.includes('lcqrb'), 'reason: lc_quota_grok_no_recheck ' + h);
     put(inst({ next: 'update', job: null, quota: Q() }), ACTS); ok(!F.lcQuotaHtml('claude', 'update').includes('lcqrb'), 'reason: lc_quota_recheck_needs_act');
     for (const [pct, t] of [[95, 't3'], [94, 't2'], [75, 't2'], [74, 't1'], [50, 't1'], [49, 't0'], [4, 't0']]) { put(inst({ next: 'update', job: null, quota: Q({ rows: [Object.assign({}, Q().rows[0], { used_percent: pct })] }) })); const rr = rowOf(F.lcQuotaHtml('claude', 'update'), 0); ok(rr.startsWith(' ' + t + '"') && cells(rr) === Math.round(pct / 10), 'reason: lc_quota_tier_' + pct + ' ' + rr.slice(0, 40)); }
+    // f163c N1:counting 沒 seen_at 不寫「量於 2 萬天前」;3e53b N1:aibd 的 window / reason 是 constructor 之類只當不認得
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [Object.assign({}, Q().rows[1], { seen_at: null, window: 'constructor' })], reason: 'constructor' }) })); h = F.lcQuotaHtml('claude', 'update');
+    ok(!h.includes('天前') && h.includes('<small>(至少 68%) · 重置倒數 5 天</small>') && !h.includes('function') && h.includes('<span class="lcqn">constructor</span>'), 'reason: lc_quota_counting_no_seen_and_own_keys ' + h);
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [], reason: 'constructor' }) })); h = F.lcQuotaHtml('claude', 'update'); ok(h.includes('<small>查不到</small>') && !h.includes('function'), 'reason: lc_quota_reason_own_key ' + h);
     c.lang = 'en'; put(inst({ next: 'update', job: null, quota: Q() })); h = F.lcQuotaHtml('claude', 'update');
     ok(h.includes('>See plans ↗</a>') && h.includes('Checked just now · resets ') && h.includes('<em>Limit reached · back in 2 d 4 h</em>') && h.includes('Checked 3 h ago (at least 68%) · resets in 5 d') && h.includes('>Recheck</button>'), 'reason: lc_quota_en ' + h.slice(0, 300));
     c.lang = 'ko'; ok(F.lcQuotaHtml('claude', 'update').includes('한도 도달 · 2일 4시간 후 회복'), 'reason: lc_quota_ko');

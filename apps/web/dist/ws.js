@@ -4778,15 +4778,17 @@
   function lcQDur(sec) { const W = lcQW(), t = Math.max(60, Math.floor(sec)), d = Math.floor(t / 86400), h = Math.floor((t % 86400) / 3600), m = Math.floor((t % 3600) / 60); return W.dur(d, h, d ? 0 : m); }
   function lcQAgo(at) { const a = Math.max(0, lcQNow() - at); return lcQW().ago(a >= 60 && a < 3600 ? Math.floor(a / 60) : 0, a >= 3600 && a < 86400 ? Math.floor(a / 3600) : 0, a >= 86400 ? Math.floor(a / 86400) : 0); }
   function lcQDate(at) { const W = lcQW(), d = new Date(at * 1000), z = (n) => String(n).padStart(2, '0'); return W.date(z(d.getMonth() + 1) + '/' + z(d.getDate()), W.wd[d.getDay()], z(d.getHours()) + ':' + z(d.getMinutes())); }
+  // 3e53b N1:aibd 的字只當鍵查自己的表(constructor 之類不算)
+  const lcOwn = (o, k) => (typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : '');
   const lcQTier = (pct) => (LC_Q_TIERS.find(([f]) => pct >= f) || LC_Q_TIERS[LC_Q_TIERS.length - 1])[1];
   function lcQRow(r, mark) {
     const W = lcQW(), now = lcQNow(), st = String(r.state || ''), seen = lcQSec(r.seen_at), rs = lcQSec(r.resets_at), rec = lcQSec(r.recover_at) || rs;
-    const pct = Math.max(0, Math.min(100, Math.round(Number(r.used_percent != null ? r.used_percent : r.used_pct) || 0))), nm = W.win[r.window] || String(r.window || '');
+    const pct = Math.max(0, Math.min(100, Math.round(Number(r.used_percent != null ? r.used_percent : r.used_pct) || 0))), nm = lcOwn(W.win, r.window) || String(r.window || '');
     const head = `${mark}<span class="lcqn">${esc(nm)}</span>`;
     if (st === 'rolled_over') return `<div class="lcqr none">${head}<small>${esc([W.rolled, rs > now ? W.nextcd(lcQDur(rs - now)) : ''].filter(Boolean).join(' · '))}</small></div>`;
     const f = Math.max(0, Math.min(LC_Q_CELLS, Math.round(pct / 10))), lim = r.at_limit === true, old = st === 'counting' || st === 'no_reset';
     const grid = `<span class="lcqg" role="img" aria-label="${pct}%">${'<i class="on"></i>'.repeat(f)}${'<i></i>'.repeat(LC_Q_CELLS - f)}</span>`;
-    const sub = st === 'counting' ? [lcQAgo(seen) + W.least(pct), rs > now ? W.cd(lcQDur(rs - now)) : ''] : st === 'no_reset' ? [seen ? lcQAgo(seen) : '', W.noreset] : [seen ? lcQAgo(seen) : '', rs ? W.reset(lcQDate(rs)) : ''];
+    const sub = st === 'counting' ? [seen ? lcQAgo(seen) + W.least(pct) : W.least(pct).trim(), rs > now ? W.cd(lcQDur(rs - now)) : ''] : st === 'no_reset' ? [seen ? lcQAgo(seen) : '', W.noreset] : [seen ? lcQAgo(seen) : '', rs ? W.reset(lcQDate(rs)) : ''];
     return `<div class="lcqr ${lim ? 'lim t3' : lcQTier(pct)}${old ? ' old' : ''}">${head}${grid}<b class="lcqv">${pct}%</b>${lim ? `<em>${esc(W.limit(rec > now ? lcQDur(rec - now) : ''))}</em>` : ''}<small>${esc(sub.filter(Boolean).join(' · '))}</small></div>`;
   }
   // a = install | update | login:安裝還沒登入 ⇒ 只放連結;換版 / 登入照 quota 畫;quota 欄不存在(舊 aibd)⇒ 連結 +「這一版 AIB 還沒有」
@@ -4799,7 +4801,7 @@
     const q = p.quota && typeof p.quota === 'object' ? p.quota : null, R = q && Array.isArray(q.rows) ? q.rows.filter((r) => r && typeof r === 'object').slice(0, 4) : [];
     const plan = q && typeof q.plan === 'string' && /^[a-z0-9_]{1,24}$/.test(q.plan) ? q.plan.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : '';
     const mark = rlcMark(b, N), why = String((q && q.reason) || p.quota_reason || 'not_seen_yet');
-    const rows = R.length ? R.map((r) => lcQRow(r, mark)).join('') : `<div class="lcqr none">${mark}<span class="lcqn">${esc(W.win['7d'])}</span><small>${esc(W.none[why] || W.none.not_available)}</small></div>`;
+    const rows = R.length ? R.map((r) => lcQRow(r, mark)).join('') : `<div class="lcqr none">${mark}<span class="lcqn">${esc(W.win['7d'])}</span><small>${esc(lcOwn(W.none, why) || W.none.not_available)}</small></div>`;
     const stale = !R.length || R.some((r) => r.state !== 'fresh'), can = q && q.can_recheck === true && (k === 'claude' || k === 'codex') && lcHas('provider_quota_recheck');
     const rb = stale && can ? `<button type="button" class="k lcqrb" data-lcqr="${esc(k)}" ${L.qbusy && L.qbusy[k] ? 'disabled' : ''}>${esc(L.qbusy && L.qbusy[k] ? W.rechecking : W.recheck)}</button>` : '';
     const msg = L.qmsg && L.qmsg[k] ? `<div class="lcqx" role="status">${esc(L.qmsg[k])}</div>` : '';

@@ -82,3 +82,7 @@ k '${lcQuotaHtml(k, a)}</div><div class="rlcfoot">' '</div><div class="rlcfoot">
 k '(t ? `한도 도달 · ${t} 후 회복` : '\''한도 도달'\'')' '(t ? `한도 도달` : '\''한도 도달'\'')'
 # LQ18 (重驗不是 provider_quota_recheck;§10.6 方案與用量)
 k 'await act('\''provider_quota_recheck'\'', { provider: k }); await lcLoad();' 'await lcLoad();'
+# LQ19 (counting 沒守 seen=0(f163c N1);§10.6 方案與用量)
+k '[seen ? lcQAgo(seen) + W.least(pct) : W.least(pct).trim(),' '[lcQAgo(seen) + W.least(pct),'
+# LQ20 (aibd 的字直接查表(3e53b N1);§10.6 方案與用量)
+k '(typeof k === '\''string'\'' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : '\'''\'')' '(o[k] || '\'''\'')'
