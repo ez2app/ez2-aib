@@ -138,7 +138,7 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
 # c-trusted (a seat folder below a trusted one opens; 3e53b REVIEW-copilot M1 / L1)
 python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '                if folder_under(cwd, Path::new(f)) {' \
-  '                if cwd == Path::new(f) {' \
+  '                if folder_under(cwd, Path::new(f)) && cwd == Path::new(f) {' \
   --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
 # c-copilot-home (COPILOT_HOME not followed; 3e53b REVIEW-copilot M1 / L1)
