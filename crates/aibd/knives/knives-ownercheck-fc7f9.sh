@@ -28,3 +28,5 @@ k '    if (S.add && x.closest('\''[data-ocre]'\'')) { ocLoad(); return; }' ' '
 k 'get('\''/api/v1/owner-check'\'')' 'get('\''/api/v1/owner'\'')'
 # OC12 (ja 步驟退成中文、不是英文)
 k '? T[k] : OC_W.en[k];' '? T[k] : OC_W['\''zh-TW'\''][k];'
+# OC13 (今天沒 W-2 卻說高風險不開放;c2f0b REVIEW 264d6a91 N2)
+k '金鑰存在一般檔案裡。'\'',' '金鑰存在一般檔案裡,所以高風險的動作不開放。'\'','

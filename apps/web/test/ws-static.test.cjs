@@ -1673,15 +1673,15 @@ lateChecks.push((async () => {
   const F = c.F, load = async (r) => { gets.push(r); await F.ocLoad(); return F.ocHtml(); };
   ok(src.length > 1000, 'reason: oc_block_found');
   let h = await load({ platform: 'windows', class: 'no_hello', class_is_final: false, words: '<b>aibd 的字</b>' });
-  ok(sent[0] === '/api/v1/owner-check' && h.startsWith('<div class="occ warn" role="status"><b>這台還沒設 Windows Hello。設一個 PIN 就能用完整功能(不需要指紋或臉部辨識的硬體)。</b><ol class="ocsteps"><li>打開「設定」→「帳戶」→「登入選項」。</li><li>在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。</li><li>設好回到這頁按「重新檢查」。</li></ol>') && h.includes('沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。') && h.includes('data-ocre="1" >重新檢查</button>') && !h.includes('aibd 的字'), 'reason: oc_no_hello_pin_steps ' + h);
+  ok(sent[0] === '/api/v1/owner-check' && h.startsWith('<div class="occ warn" role="status"><b>這台還沒設 Windows Hello。設一個 PIN,這台就能用 Windows Hello 確認是你本人(不需要指紋或臉部辨識的硬體)。</b><ol class="ocsteps"><li>打開「設定」→「帳戶」→「登入選項」。</li><li>在「PIN (Windows Hello)」按「設定」,照畫面設一個 PIN。</li><li>設好回到這頁按「重新檢查」。</li></ol>') && h.includes('沒有 Windows 登入密碼的話,要先設密碼才能設 PIN。') && h.includes('data-ocre="1" >重新檢查</button>') && !h.includes('aibd 的字'), 'reason: oc_no_hello_pin_steps ' + h);
   h = await load({ platform: 'windows', class: 'unknown' }); ok(h.includes('還不知道這台有沒有設 Windows Hello') && h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_unknown_pin_steps');
   h = await load({ platform: 'windows', class: 'not_at_desk' }); ok(h.includes('不在你登入的桌面上') && !h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_not_at_desk_recheck');
   h = await load({ platform: 'windows', class: 'hello_hardware' }); ok(h === '<div class="occ" role="status"><b>這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。</b></div>', 'reason: oc_hello_hardware_plain ' + h);
-  h = await load({ platform: 'windows', class: 'hello_software' }); ok(h.includes('沒有安全晶片(TPM)') && !h.includes('data-ocre'), 'reason: oc_hello_software');
+  h = await load({ platform: 'windows', class: 'hello_software' }); ok(h.includes('沒有安全晶片(TPM)') && !h.includes('高風險') && !h.includes('data-ocre'), 'reason: oc_hello_software');
   for (const r of [{ platform: 'macos', class: null }, { platform: 'macos', class: 'no_hello' }, { platform: 'windows', class: 'constructor' }, { platform: 'windows', class: 'zz' }, null]) { const x = await load(r); ok(x === '', 'reason: oc_nothing_when_not_windows_class ' + JSON.stringify(r)); }
   h = await load(Object.assign(new Error('nf'), { status: 404 })); ok(h === '', 'reason: oc_old_aibd_nothing');
   c.lang = 'en'; h = await load({ platform: 'windows', class: 'no_hello' }); ok(h.includes('<li>Open Settings → Accounts → Sign-in options.</li>') && h.includes('>Check again</button>'), 'reason: oc_en');
-  c.lang = 'ja'; h = await load({ platform: 'windows', class: 'no_hello' }); ok(h.includes('PIN を設定するとすべての機能が使えます') && h.includes('<li>Open Settings → Accounts → Sign-in options.</li>') && h.includes('>再確認</button>'), 'reason: oc_ja_steps_fall_back_en');
+  c.lang = 'ja'; h = await load({ platform: 'windows', class: 'no_hello' }); ok(h.includes('PIN を設定すると、このパソコンで Windows Hello による本人確認ができます') && h.includes('<li>Open Settings → Accounts → Sign-in options.</li>') && h.includes('>再確認</button>'), 'reason: oc_ja_steps_fall_back_en');
   c.lang = 'zh-TW';
   ok(ws.includes("<div class=\"apn\">AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。</div>${ocHtml()}${head}") && ws.includes("    const SP = S.sp = S.sp || {};\n    ocLoad();\n") && ws.includes("if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }"), 'reason: oc_wired');
 })());
