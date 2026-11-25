@@ -15,8 +15,8 @@
 //! Enclave gives.
 
 use crate::hello::{
-    classify, der_to_raw, ecc_blob_to_x963, impl_is_hardware, probe_outcome, raw_to_der,
-    reason_wide, run_limited, x963_to_ecc_blob, HelloError,
+    classify, der_to_raw, ecc_blob_to_x963, gesture_required, impl_is_hardware, probe_outcome,
+    raw_to_der, reason_wide, run_limited, x963_to_ecc_blob, HelloError,
 };
 use windows_sys::Win32::Security::Cryptography::{
     BCryptDestroyKey, BCryptHash, BCryptImportKeyPair, BCryptVerifySignature,
@@ -24,8 +24,9 @@ use windows_sys::Win32::Security::Cryptography::{
     NCryptFreeObject, NCryptGetProperty, NCryptOpenKey, NCryptOpenStorageProvider,
     NCryptSetProperty, NCryptSignHash, BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALG_HANDLE,
     BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALG_HANDLE, MS_NGC_KEY_STORAGE_PROVIDER,
-    NCRYPT_ECDSA_P256_ALGORITHM, NCRYPT_IMPL_TYPE_PROPERTY, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
-    NCRYPT_SILENT_FLAG, NCRYPT_USE_CONTEXT_PROPERTY,
+    NCRYPT_ECDSA_P256_ALGORITHM, NCRYPT_IMPL_TYPE_PROPERTY, NCRYPT_KEY_HANDLE,
+    NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
+    NCRYPT_USE_CONTEXT_PROPERTY,
 };
 
 /// The longest message signed (same bound as the macOS key).
@@ -190,10 +191,41 @@ pub fn create(blob: &[u8]) -> Result<[u8; 65], HelloError> {
             0,
         )
     })?;
-    let k = Key(k);
+    let mut k = Key(k);
+    // 3e53b REVIEW-winfirst M1: every use asks for the gesture (no PIN / gesture cache)
+    let one: u32 = 1;
+    // SAFETY: a key handle being made; a static property name and a 4-byte value, its size given
+    let set = ok(unsafe {
+        NCryptSetProperty(
+            k.0,
+            NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
+            (&raw const one).cast(),
+            4,
+            0,
+        )
+    });
+    if let Err(e) = set {
+        // SAFETY: the unfinished key; NCryptDeleteKey frees the handle on success
+        if ok(unsafe { NCryptDeleteKey(k.0, 0) }).is_ok() {
+            k.0 = 0;
+        }
+        return Err(e);
+    }
     // SAFETY: a key handle being made
     ok(unsafe { NCryptFinalizeKey(k.0, 0) })?;
     export_public(&k)
+}
+
+/// A 4-byte property of an open key; no Hello window.
+fn read_u32(k: &Key, name: windows_sys::core::PCWSTR) -> Result<u32, HelloError> {
+    let mut v = 0u32;
+    let mut len = 0u32;
+    // SAFETY: the key is open; a static property name and a 4-byte output, its size given
+    ok(unsafe { NCryptGetProperty(k.0, name, (&raw mut v).cast(), 4, &mut len, 0) })?;
+    if len != 4 {
+        return Err(HelloError::BadKey);
+    }
+    Ok(v)
 }
 
 /// The key's public key as Windows reports it; needs no Hello.
@@ -206,6 +238,7 @@ pub fn public_key(blob: &[u8]) -> Result<[u8; 65], HelloError> {
 pub fn probe(blob: &[u8]) -> Result<(), HelloError> {
     let p = provider()?;
     let k = open(&p, blob)?;
+    gesture_required(read_u32(&k, NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY))?;
     let d = sha256(b"aibd/hello-probe/v1")?;
     match sign_digest(&k, &d, NCRYPT_SILENT_FLAG) {
         Ok(_) => Err(HelloError::WeakKey),
@@ -305,23 +338,7 @@ pub fn hardware_backed(blob: &[u8]) -> bool {
     let read = || -> Result<u32, HelloError> {
         let p = provider()?;
         let k = open(&p, blob)?;
-        let mut v = 0u32;
-        let mut len = 0u32;
-        // SAFETY: the key is open; a static property name and a 4-byte output, its size given
-        ok(unsafe {
-            NCryptGetProperty(
-                k.0,
-                NCRYPT_IMPL_TYPE_PROPERTY,
-                (&raw mut v).cast(),
-                4,
-                &mut len,
-                0,
-            )
-        })?;
-        if len != 4 {
-            return Err(HelloError::BadKey);
-        }
-        Ok(v)
+        read_u32(&k, NCRYPT_IMPL_TYPE_PROPERTY)
     };
     impl_is_hardware(read())
 }
@@ -401,6 +418,24 @@ mod w0 {
             r.as_ref().map(Vec::len)
         );
         r.unwrap();
+        // 3e53b REVIEW-winfirst M1: right after an answer, a second signature must ask again
+        // (say: answer Cancel on the second window). Signed within a moment = gesture cache.
+        let t0 = std::time::Instant::now();
+        let again = sign_until(
+            NAME,
+            "W0-2 第二次:請按取消",
+            b"w0-2b",
+            std::time::Duration::from_secs(20),
+        );
+        let ms = t0.elapsed().as_millis();
+        println!(
+            "W0-2b second sign right after: {:?} in {ms} ms",
+            again.as_ref().map(Vec::len)
+        );
+        assert!(
+            again.is_err(),
+            "reason: signed_again_without_asking ({ms} ms)"
+        );
     }
 
     /// W0-3: press Cancel in the Hello window; the code it returns.
