@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# PF1-PF17 L1a + L1c provider_fetch (IFACE-provider-lifecycle-c2f0b-1126 r1 §3, r1-1, r1-5 N2;
+# PF1-PF18 L1a + L1c provider_fetch (IFACE-provider-lifecycle-c2f0b-1126 r1 §3, r1-1, r1-5 N2;
 # ebab8 11-26 03:16 → 6770f): only the measured https path is fetched, curl's fixed arguments,
 # P (hash, size) before S, S before anything is kept, the copy hashed again, the placed file
 # checked on every seat open, a cancel stops the hash, a failed job leaves no download folder,
@@ -44,3 +44,9 @@ pf '            return stopped(child, ERR_CANCELLED);' '            let _ = stop
 pf '    let _ = child.kill();' '    let _ = child.id();' a_download_stops_at_once_on_cancel_or_at_the_time_limit
 # PF17 the time limit does not stop curl (L1c)
 pf '        if !tick() {' '        if !tick() && false {' a_download_stops_at_once_on_cancel_or_at_the_time_limit
+# PF18 aibd's start does not clear what a crash left in run/dl (L1c)
+python3 -I scripts/knife.py crates/aibd/src/server.rs \
+  '    match crate::provider_fetch::clean_downloads(&dirs.data_dir()) {' \
+  '    match crate::provider_fetch::clean_downloads(&dirs.data_dir().join("never")) {' \
+  --expect-fail a_start_removes_downloads_a_crash_left_and_never_follows_a_link \
+  -- cargo test -p aibd --locked --test provider_fetch_start a_start_removes_downloads_a_crash_left_and_never_follows_a_link
