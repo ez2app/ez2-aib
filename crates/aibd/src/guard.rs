@@ -104,6 +104,9 @@ pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
 pub const OWNER_TICKET: &str = "/api/v1/owner/tickets/{id}";
 /// W-10 (IFACE-w10-session-policy r5): the policy file's state and what a look finds (page token).
 pub const SESSION_POLICY: &str = "/api/v1/session-policy";
+/// W-7 / ebab8 11-26 03:28: which kind of owner check this machine has (the Windows class of
+/// [`crate::owner_probe_win`]); read only: no window, no key made (page token).
+pub const OWNER_CHECK: &str = "/api/v1/owner-check";
 
 /// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
 /// `api::handlers` has no route of its own). The guard skips the bearer check for paths
@@ -166,6 +169,7 @@ pub const ROUTES: &[&str] = &[
     PAIR_PREVIEW,
     OWNER_TICKET,
     SESSION_POLICY,
+    OWNER_CHECK,
 ];
 
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
