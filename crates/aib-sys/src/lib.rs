@@ -65,6 +65,10 @@ pub mod held;
 pub mod hello;
 #[cfg(windows)]
 pub mod hello_ncrypt;
+// AP26 W-4: owner-present measurements, compiled for tests only (the source guard in
+// test_only_calls checks this line)
+#[cfg(test)]
+mod hello_measure;
 #[cfg(windows)]
 pub mod job;
 pub mod list;
@@ -80,6 +84,8 @@ pub mod session;
 pub mod settle;
 #[cfg(target_os = "macos")]
 pub mod stdio_only;
+#[cfg(test)]
+mod test_only_calls;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;
