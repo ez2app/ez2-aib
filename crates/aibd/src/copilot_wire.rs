@@ -37,7 +37,9 @@ pub fn mcp_off(listed: &str) -> Result<Vec<String>, String> {
         .ok_or("its MCP list has no mcpServers")?;
     let mut out = Vec::new();
     for name in servers.keys() {
+        // a name starting with `-` would be read as a flag after --disable-mcp-server
         let plain = !name.is_empty()
+            && !name.starts_with('-')
             && name.len() <= 64
             && name
                 .bytes()

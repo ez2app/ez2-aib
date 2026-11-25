@@ -78,7 +78,7 @@ python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
 # c-stdin-write (the prompt not written on the turn's stdin)
 python3 -I scripts/knife.py crates/aibd/src/turn_wire.rs \
   '        let _ = w.write_all(prompt.as_bytes());' \
-  '        let _ = w.write_all(b"");' \
+  '        let _ = w.write_all(&prompt.as_bytes()[..0]);' \
   --expect-fail 'turn_wire::tests::a_stdin_prompt_never_goes_in_argv' \
   -- cargo test -p aibd --locked --lib 'turn_wire::tests::a_stdin_prompt_never_goes_in_argv'
 # c-resume (turn 2 does not resume turn 1's session)
@@ -99,3 +99,9 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
   '        if !spec.argv.windows(2).any(|w| w == pair) && pair.is_empty() {' \
   --expect-fail 'sessions::tests::a_copilot_turn_is_checked_again_before_it_starts' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_turn_is_checked_again_before_it_starts'
+# c-mcp-dash (an MCP name starting with - goes after --disable-mcp-server and is read as a flag)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  "            && !name.starts_with('-')" \
+  "            && !name.starts_with('=')" \
+  --expect-fail 'copilot_wire::tests::every_listed_mcp_server_is_turned_off' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::every_listed_mcp_server_is_turned_off'
