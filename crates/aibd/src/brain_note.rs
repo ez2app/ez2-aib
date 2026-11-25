@@ -324,23 +324,34 @@ mod fsops {
     }
 }
 
+/// Whether the Windows walk refuses an entry as a link: what std calls a symlink (on Windows
+/// a symbolic link or a junction, the name-surrogate reparse points). The reparse-point
+/// attribute (0x400) alone is not one: OneDrive files that are downloaded or pinned, and
+/// OneDrive folders, carry it with no redirection, and a brain under OneDrive's Documents was
+/// refused whole (ebab8 11-25 19:25; the same as f163c REVIEW-macts a2c64199 L1). Pure, so
+/// the rule is tested on every platform.
+#[cfg(any(not(unix), test))]
+fn refused_as_link(symlink: bool, attrs: u32) -> bool {
+    let _ = attrs;
+    symlink // not attrs & 0x400 alone
+}
+
 #[cfg(not(unix))]
 mod fsops {
     use super::{pieces, Took};
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
 
-    /// A link or a reparse point (a junction too) on Windows; a link elsewhere.
+    /// A link or a junction ([`super::refused_as_link`]).
     fn is_link(m: &std::fs::Metadata) -> bool {
         #[cfg(windows)]
-        {
+        let attrs = {
             use std::os::windows::fs::MetadataExt;
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-            if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return true;
-            }
-        }
-        m.file_type().is_symlink()
+            m.file_attributes()
+        };
+        #[cfg(not(windows))]
+        let attrs = 0;
+        super::refused_as_link(m.file_type().is_symlink(), attrs)
     }
 
     /// A new file at `p`, never over one; on Windows opened with
@@ -1302,6 +1313,54 @@ mod tests {
             std::fs::read_dir(&away).unwrap().count(),
             0,
             "reason: wrote_through_link"
+        );
+    }
+
+    /// ebab8 11-25 19:25: a link or a junction is refused, a pinned / downloaded OneDrive
+    /// entry (reparse point, archive, pinned; not a link) is not.
+    #[test]
+    fn only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point() {
+        const REPARSE: u32 = 0x400;
+        assert!(refused_as_link(true, 0), "reason: link_followed");
+        assert!(refused_as_link(true, REPARSE), "reason: junction_followed");
+        assert!(
+            !refused_as_link(false, 0x0008_0000 | 0x20 | REPARSE),
+            "reason: onedrive_note_refused"
+        );
+        assert!(
+            !refused_as_link(false, 0x10 | REPARSE),
+            "reason: onedrive_folder_refused"
+        );
+        assert!(!refused_as_link(false, 0));
+    }
+
+    /// BN7 on Windows: a junction on the way (made with cmd's built-in mklink /J, no
+    /// privilege; test only) is not followed.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_on_the_way_is_not_followed() {
+        let (d, root) = brain();
+        let away = d.path().join("away");
+        std::fs::create_dir_all(&away).unwrap();
+        let j = root.join("fld_a").join(FOLDER);
+        let ok = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&j)
+            .arg(&away)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "mklink /J failed");
+        assert_eq!(
+            write_new(&root, "fld_a", "2026-11", "n.md", b"x"),
+            Err("brain_path_unsafe")
+        );
+        assert_eq!(
+            std::fs::read_dir(&away).unwrap().count(),
+            0,
+            "reason: wrote_through_junction"
         );
     }
 

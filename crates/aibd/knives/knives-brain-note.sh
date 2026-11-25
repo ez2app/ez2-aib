@@ -75,3 +75,10 @@ python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '            Ok(Some(_)) => {}' \
   --expect-fail brain_note::tests::an_archived_brain_refuses_new_notes \
   -- cargo test -p aibd --locked --lib brain_note::tests::an_archived_brain_refuses_new_notes
+# bn-reparse (ebab8 11-25 19:25: the reparse-point attribute alone is not a link; the Windows
+# junction test a_junction_on_the_way_is_not_followed has no knife: a Mac knife cannot run it)
+python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
+  '    symlink // not attrs & 0x400 alone' \
+  '    symlink || attrs & 0x400 != 0 // not attrs & 0x400 alone' \
+  --expect-fail 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::only_a_link_or_junction_is_refused_not_a_onedrive_reparse_point'
