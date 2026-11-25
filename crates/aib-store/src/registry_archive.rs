@@ -252,6 +252,15 @@ impl MessageDb {
             if live > 0 {
                 return Err(StoreError::Invalid("already archived"));
             }
+            let same_ts: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM archived_items WHERE kind = ?1 AND uid = ?2 \
+                 AND archived_at = ?3",
+                params![a.kind, a.uid, a.archived_at],
+                |r| r.get(0),
+            )?;
+            if same_ts > 0 {
+                return Err(StoreError::Invalid("already archived at this timestamp"));
+            }
             tx.execute(
                 &format!("INSERT INTO archived_items ({ACOLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)"),
                 params![
@@ -298,14 +307,28 @@ impl MessageDb {
     }
 
     /// Mark the live archiving of one item restored. `false` = nothing live to restore.
+    /// R6: `at` must be `>= archived_at`, else `Invalid`.
     pub fn archive_restore(&self, kind: &str, uid: &str, at: i64) -> Result<bool> {
         let (kind, uid) = (kind.to_string(), uid.to_string());
         self.write(move |c| {
-            let n = c.execute(
+            let tx = c.transaction()?;
+            let archived_at: Option<i64> = tx
+                .query_row(
+                    "SELECT archived_at FROM archived_items WHERE kind = ?1 AND uid = ?2 \
+                     AND restored_at IS NULL",
+                    params![kind, uid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(arch) = archived_at {
+                need(at >= arch, "restore time before archived_at")?;
+            }
+            let n = tx.execute(
                 "UPDATE archived_items SET restored_at = ?3 WHERE kind = ?1 AND uid = ?2 \
                  AND restored_at IS NULL",
                 params![kind, uid, at],
             )?;
+            tx.commit()?;
             Ok(n > 0)
         })
     }
@@ -567,7 +590,7 @@ impl MessageDb {
     }
 
     /// Move a step: `pending` → `done`, or `pending` / `done` → `undone`. `false` = the
-    /// step is not in a state that moves there.
+    /// step is not in a state that moves there. R3: only a `running` batch can move steps.
     pub fn merge_step_state(&self, batch_id: &str, seq: i64, state: &str) -> Result<bool> {
         let from: &[&str] = match state {
             "done" => &["pending"],
@@ -580,11 +603,25 @@ impl MessageDb {
             from.get(1).unwrap_or(&from[0]).to_string(),
         );
         self.write(move |c| {
-            Ok(c.execute(
+            let tx = c.transaction()?;
+            let batch_state: Option<String> = tx
+                .query_row(
+                    "SELECT state FROM merge_batches WHERE batch_id = ?1",
+                    params![b],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            need(
+                batch_state.as_deref() == Some("run"),
+                "batch is not running",
+            )?;
+            let n = tx.execute(
                 "UPDATE merge_steps SET state = ?3 WHERE batch_id = ?1 AND seq = ?2 \
                  AND state IN (?4, ?5)",
                 params![b, seq, s, f0, f1],
-            )? > 0)
+            )?;
+            tx.commit()?;
+            Ok(n > 0)
         })
     }
 
@@ -866,9 +903,31 @@ mod tests {
             ["undone", "undone"]
         );
         assert_eq!(s[0].planned_after_json, r#""aaaaa1""#);
-        // a finished batch takes no more steps
+        // a finished batch takes no more steps (R3: merge_step_state also refuses)
         assert!(m.merge_batch_state("mb_1", "failed").unwrap());
         assert!(m.merge_step_pending(step("mb_1", 2)).is_err());
+        assert!(
+            m.merge_step_state("mb_1", 0, "done").is_err(),
+            "R3: non-running batch"
+        );
+    }
+
+    #[test]
+    fn restore_before_archived_at_is_invalid() {
+        let (_d, m) = db();
+        m.archive_add(item("persona", "p1", 100)).unwrap();
+        assert!(
+            m.archive_restore("persona", "p1", 99).is_err(),
+            "R6: at < archived_at"
+        );
+        assert!(m.archive_restore("persona", "p1", 100).unwrap());
+        assert!(
+            matches!(
+                m.archive_add(item("persona", "p1", 100)),
+                Err(StoreError::Invalid(_))
+            ),
+            "N5: same-second primary key must be Invalid"
+        );
     }
 
     #[test]
