@@ -99,3 +99,10 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   '            let (status, message) = if left != 0 || true {' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
+# ma-archive-old (ebab8 11-25 14:44, c2f0b P2: the proxy trusts that a merged persona's old uid
+# is archived as well as aliased; merge_notes_owner.rs asserts both after the run)
+python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
+  '                            kind: kind.to_string(),' \
+  '                            kind: format!("{kind}-not-archived"),' \
+  --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
+  -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
