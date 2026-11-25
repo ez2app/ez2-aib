@@ -223,10 +223,9 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     assert_eq!(items[0]["port"], 443, "{}", r.body);
     assert!(items[0]["ticket"].as_str().is_some(), "{}", r.body);
 
-    let r = act(
-        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.8.8", "port": 443}),
-    )
-    .await;
+    let r =
+        act(json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.8.8", "port": 443}))
+            .await;
     assert_eq!(
         (r.code, r.json["closed"].as_u64()),
         (200, Some(0)),
@@ -283,10 +282,9 @@ async fn a_yes_finishes_only_with_the_owners_ticket_for_this_card_and_choice() {
     );
     assert_eq!(items[0]["state"], "ok", "{}", r.body);
 
-    let r = act(
-        json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.4.4", "port": 443}),
-    )
-    .await;
+    let r =
+        act(json!({"type": "net_allow_revoke", "seat_id": "a1b2c", "ip": "8.8.4.4", "port": 443}))
+            .await;
     assert_eq!(r.code, 200, "{}", r.body);
     let r = act(json!({"type": "net_allow_list", "seat_id": "a1b2c"})).await;
     assert_eq!(

@@ -517,10 +517,11 @@ mod tests {
             mk("tk_ok", "p_1", "8.8.8.8:443", 5000, vec![1]),
             mk("tk_exp", "p_1", "10.0.0.6:5432", 1500, vec![1]),
             mk("tk_bad", "p_1", "10.0.0.7:5432", 5000, vec![9]),
-            mk("tk_pub", "p_1", "10.0.0.5:5432", 5000, vec![1]),
+            mk("tk_pub", "p_1", "127.0.0.1:443", 5000, vec![1]),
             mk("tk_rev", "p_1", "10.0.0.8:5432", 5000, vec![1]),
             mk("tk_other", "p_2", "10.0.0.9:5432", 5000, vec![1]),
         ];
+        let own = ["127.0.0.1".parse().unwrap()];
         let mut out = Vec::new();
         let mut bad_events = Vec::new();
         append_db_allow_rows(
@@ -529,7 +530,7 @@ mod tests {
             Some("a1b2c"),
             Some("p_1"),
             true,
-            &[],
+            &own,
             2000,
             &|t| t == "tk_rev",
             &|_, sig| sig == [1],
@@ -553,7 +554,7 @@ mod tests {
             Some("a1b2c"),
             Some("p_1"),
             false,
-            &[],
+            &own,
             2000,
             &|_| false,
             &|_, sig| sig == [1],
