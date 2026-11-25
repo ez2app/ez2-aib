@@ -2406,6 +2406,101 @@ fn pair_key_init() -> Result<(), String> {
     Err("an owner pairing key is macOS and Windows only".into())
 }
 
+/// The machine side of `aibd setup` ([`aibd::winsetup`]): copies, the pairing key, the Run
+/// value, starting aibd and opening the page.
+struct SetupOps;
+
+impl aibd::winsetup::Ops for SetupOps {
+    fn same_file(&self, a: &Path, b: &Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
+    fn copy(&self, from: &Path, to: &Path) -> Result<(), String> {
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        if to.exists() {
+            // a running aibd.exe cannot be overwritten on Windows, but it can be renamed
+            let old = to.with_extension("old.exe");
+            let _ = std::fs::remove_file(&old);
+            std::fs::rename(to, &old).map_err(|e| format!("moving the older copy aside: {e}"))?;
+        }
+        std::fs::copy(from, to)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn pair_key_exists(&self) -> bool {
+        data_dir().is_ok_and(|d| aibd::touch::key_dir(&d).join("key.pub").exists())
+    }
+    fn pair_key_init(&self) -> Result<(), String> {
+        pair_key_init()
+    }
+    fn set_run(&self, name: &str, command: &str) -> Result<(), String> {
+        aib_sys::winrun::set(name, command).map_err(|e| e.to_string())
+    }
+    fn healthy(&self) -> bool {
+        Client::from_runtime()
+            .and_then(|c| c.request("GET", "/api/v1/health", None))
+            .is_ok_and(|h| h.get("status").and_then(Value::as_str) == Some("ok"))
+    }
+    fn start(&self, exe: &Path) -> Result<(), String> {
+        let mut c = std::process::Command::new(exe);
+        c.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, and closing the setup's
+            // window does not end it
+            c.creation_flags(0x0000_0008 | 0x0000_0200);
+        }
+        c.spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn pace(&self, d: Duration) {
+        aibd::install::pace(d);
+    }
+    fn open_page(&self) -> Result<(), String> {
+        run(&["web"])
+    }
+}
+
+/// `aibd setup` (and `AIB-Setup.exe` with no arguments): Windows only. `pause` keeps the window
+/// open at the end when it was double-clicked, so the last lines can be read.
+pub fn setup(pause: bool) -> Result<(), String> {
+    let r = setup_inner();
+    if let Err(e) = &r {
+        eprintln!("aibd setup: {e}");
+    }
+    if pause {
+        println!("Press Enter to close this window.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+    r
+}
+
+fn setup_inner() -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("aibd setup is the Windows installer; on a Mac use `aibd install`".into());
+    }
+    let here = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
+    let p = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref())?;
+    let done = aibd::winsetup::run(&p, &here, &SetupOps, &mut |l| println!("{l}"))?;
+    if let Some(why) = done.pair_key_later {
+        println!("Windows Hello is not ready on this computer yet ({why}); the page shows how.");
+    }
+    if done.already_running {
+        println!(
+            "An aibd was already running; the copy in {} starts at the next sign-in.",
+            p.dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// `aibd ctl owner-check probe`: one JSON line of what this Mac's owner check would be
 /// ([`aibd::owner_probe`]); no window, no key.
 #[cfg(target_os = "macos")]
