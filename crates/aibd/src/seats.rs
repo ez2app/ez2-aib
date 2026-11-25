@@ -1292,24 +1292,36 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The account's home folder: `HOME`, else `USERPROFILE` (Windows); absolute only. Inside a
-/// preview (`AIBD_PREVIEW=1`) the preview's own HOME is a stand-in folder, so the real one it
-/// was handed (`AIBD_SEAT_HOME`) comes first (0eed7 VERIFY-realentry-79c88372 H: the walk for
-/// project settings went past the stand-in up to the real home's `.claude` and refused the
-/// second work seat).
+/// The account's home folder, absolute only: `HOME`, else `USERPROFILE`; on Windows
+/// `USERPROFILE` first, `HOME` only as a fallback ([`home_dir_here`]). Inside a preview
+/// (`AIBD_PREVIEW=1`) the preview's own HOME is a stand-in folder, so the real one it was handed
+/// (`AIBD_SEAT_HOME`) comes first (0eed7 VERIFY-realentry-79c88372 H: the walk for project
+/// settings went past the stand-in up to the real home's `.claude` and refused the second work
+/// seat).
 pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
+    home_dir_here(lookup, cfg!(windows))
+}
+
+/// [`home_dir`] for a given platform. On Windows `USERPROFILE` comes before `HOME`: the AI
+/// programs keep their login under the profile (Node's `os.homedir()` reads `USERPROFILE`), and
+/// the page's login runs there (provider_login `home_of`), while a `HOME` set for Git for
+/// Windows may name another folder; reading `HOME` first made "logged in, still 409
+/// not_logged_in" (08de5 STEPS-win-claude-relogin r2 D, c2f0b REVIEW-winlogin-87d4dc30 N1).
+pub(crate) fn home_dir_here(
+    lookup: impl Fn(&str) -> Option<String>,
+    windows: bool,
+) -> Option<std::path::PathBuf> {
     let preview = lookup("AIBD_PREVIEW").as_deref() == Some("1");
-    let keys: &[&str] = if preview {
-        &[
-            crate::platform::session::SEAT_HOME_ENV,
-            "HOME",
-            "USERPROFILE",
-        ]
+    let order: [&str; 2] = if windows {
+        ["USERPROFILE", "HOME"]
     } else {
-        &["HOME", "USERPROFILE"]
+        ["HOME", "USERPROFILE"]
     };
-    keys.iter()
-        .filter_map(|k| lookup(k))
+    let handed = preview.then_some(crate::platform::session::SEAT_HOME_ENV);
+    handed
+        .into_iter()
+        .chain(order)
+        .filter_map(lookup)
         .map(std::path::PathBuf::from)
         .find(|p| p.is_absolute())
 }
@@ -3451,6 +3463,46 @@ mod tests {
             Some(fake.path()),
             "reason: relative_seat_home_taken"
         );
+    }
+
+    #[test]
+    fn on_windows_the_profile_comes_before_home() {
+        let (profile, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (p, h) = (
+            profile.path().display().to_string(),
+            home.path().display().to_string(),
+        );
+        let both = |k: &str| match k {
+            "USERPROFILE" => Some(p.clone()),
+            "HOME" => Some(h.clone()),
+            _ => None,
+        };
+        assert_eq!(
+            home_dir_here(both, true).as_deref(),
+            Some(profile.path()),
+            "reason: windows_read_home_first"
+        );
+        assert_eq!(
+            home_dir_here(both, false).as_deref(),
+            Some(home.path()),
+            "reason: unix_read_profile_first"
+        );
+        // HOME stays the fallback on Windows; a relative profile is not taken
+        let only_home = |k: &str| match k {
+            "USERPROFILE" => Some("rel/profile".to_owned()),
+            "HOME" => Some(h.clone()),
+            _ => None,
+        };
+        assert_eq!(home_dir_here(only_home, true).as_deref(), Some(home.path()));
+        // inside a preview the handed home still comes first, on both
+        let preview = |k: &str| match k {
+            "AIBD_PREVIEW" => Some("1".to_owned()),
+            "AIBD_SEAT_HOME" => Some(h.clone()),
+            "USERPROFILE" => Some(p.clone()),
+            _ => None,
+        };
+        assert_eq!(home_dir_here(preview, true).as_deref(), Some(home.path()));
+        assert_eq!(home_dir_here(preview, false).as_deref(), Some(home.path()));
     }
 
     #[test]
