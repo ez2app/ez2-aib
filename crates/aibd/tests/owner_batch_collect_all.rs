@@ -17,6 +17,8 @@
 mod harness;
 use harness::{seat_dir, Daemon, Reply};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -107,23 +109,31 @@ fn init_repo(root: &Path, name: &str, with_web_branch: bool) -> PathBuf {
     repo
 }
 
-fn tree(root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
+/// Every path under `root` with what it holds: a folder, a link, or a file's SHA-256. Left out
+/// are the two databases and their -wal / -shm (what they gain is counted as events below).
+fn tree(root: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(d) = dirs.pop() {
         for e in std::fs::read_dir(&d).unwrap().flatten() {
             let p = e.path();
             let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
-            if rel.starts_with("repo-") || rel.ends_with("-wal") || rel.ends_with("-shm") {
+            if rel.ends_with("-wal") || rel.ends_with("-shm") || rel.ends_with(".sqlite") {
                 continue;
             }
-            if p.is_dir() {
+            let meta = std::fs::symlink_metadata(&p).unwrap();
+            let what = if meta.file_type().is_symlink() {
+                format!("link {}", std::fs::read_link(&p).unwrap().display())
+            } else if meta.is_dir() {
                 dirs.push(p);
-            }
-            out.push(rel);
+                "dir".to_owned()
+            } else {
+                let d = Sha256::digest(std::fs::read(&p).unwrap_or_default());
+                d.iter().map(|b| format!("{b:02x}")).collect()
+            };
+            out.insert(rel, what);
         }
     }
-    out.sort();
     out
 }
 
@@ -134,10 +144,13 @@ fn collect_may_write(rel: &str) -> bool {
         return true;
     }
     rel.strip_prefix("demo/.git/objects/pack/pack-")
-        .is_some_and(|f| [".pack", ".idx", ".rev"].iter().any(|e| f.ends_with(e)))
+        .is_some_and(|f| {
+            !f.contains('/') && [".pack", ".idx", ".rev"].iter().any(|e| f.ends_with(e))
+        })
 }
 
-/// What git says of the registered repo: every ref with what it names, and the work tree's state.
+/// What git says of a repo: every ref with what it names and its own settings, and the work
+/// tree's state (asked without the index refresh, which would write).
 fn repo_state(repo: &Path) -> (String, String) {
     let out = |args: &[&str]| {
         let o = Command::new("git")
@@ -150,8 +163,15 @@ fn repo_state(repo: &Path) -> (String, String) {
         String::from_utf8_lossy(&o.stdout).into_owned()
     };
     (
-        out(&["for-each-ref", "--format=%(refname) %(objectname)"]) + &out(&["rev-parse", "HEAD"]),
-        out(&["status", "--porcelain", "--untracked-files=all"]),
+        out(&["for-each-ref", "--format=%(refname) %(objectname)"])
+            + &out(&["rev-parse", "HEAD"])
+            + &out(&["config", "--list", "--local"]),
+        out(&[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ]),
     )
 }
 
@@ -250,8 +270,8 @@ async fn collecting_all_seven_acts_asks_each_and_writes_only_what_is_named() {
     OPEN.store(false, Ordering::SeqCst);
     windows.store(0, Ordering::SeqCst);
 
+    let before_repo = (repo_state(&demo), repo_state(&fresh));
     let before_tree = tree(dir.path());
-    let before_repo = repo_state(&demo);
     let before_db_events = db.events_after(0, 10_000).unwrap().len();
     let before_api_events = d
         .call("GET", "/api/v1/events?limit=500", None, None)
@@ -312,26 +332,38 @@ async fn collecting_all_seven_acts_asks_each_and_writes_only_what_is_named() {
         0,
         "reason: collecting_raised_a_window"
     );
-    let after_tree = tree(dir.path());
-    let gone: Vec<&String> = before_tree
-        .iter()
-        .filter(|p| !after_tree.contains(p))
-        .collect();
-    assert!(gone.is_empty(), "reason: collecting_removed_files {gone:?}");
-    let wrote: Vec<&String> = after_tree
-        .iter()
-        .filter(|p| !before_tree.contains(p) && !collect_may_write(p))
-        .collect();
-    assert!(wrote.is_empty(), "reason: collecting_wrote_files {wrote:?}");
-    let after_repo = repo_state(&demo);
+    // git first (a ref is told as a ref), then every path
+    let after_repo = (repo_state(&demo), repo_state(&fresh));
     assert_eq!(
-        after_repo.0, before_repo.0,
+        (&after_repo.0 .0, &after_repo.1 .0),
+        (&before_repo.0 .0, &before_repo.1 .0),
         "reason: collecting_wrote_a_ref"
     );
     assert_eq!(
-        after_repo.1, before_repo.1,
+        (&after_repo.0 .1, &after_repo.1 .1),
+        (&before_repo.0 .1, &before_repo.1 .1),
         "reason: collecting_touched_the_work_tree"
     );
+    let after_tree = tree(dir.path());
+    let gone: Vec<&String> = before_tree
+        .keys()
+        .filter(|p| !after_tree.contains_key(*p))
+        .collect();
+    assert!(gone.is_empty(), "reason: collecting_removed_files {gone:?}");
+    let changed: Vec<&String> = before_tree
+        .iter()
+        .filter(|(p, what)| after_tree.get(*p).is_some_and(|w| w != *what))
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "reason: collecting_changed_files {changed:?}"
+    );
+    let wrote: Vec<&String> = after_tree
+        .keys()
+        .filter(|p| !before_tree.contains_key(*p) && !collect_may_write(p))
+        .collect();
+    assert!(wrote.is_empty(), "reason: collecting_wrote_files {wrote:?}");
     assert_eq!(
         db.events_after(0, 10_000).unwrap().len(),
         before_db_events,
