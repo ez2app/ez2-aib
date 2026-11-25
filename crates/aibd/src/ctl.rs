@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--handoff HANDOFF-….md [--mempack MEMPACK-….md]] [--dry-run] | seat move <seat-code> [--provider P] [--model M] [--repo R] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--handoff HANDOFF-….md [--mempack MEMPACK-….md]] [--dry-run] | seat move <seat-code> [--provider P] [--model M] [--repo R] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | owner-check probe | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder] | preview swap <preview-id> --sha <sha256>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -1372,6 +1372,21 @@ fn mcp_tools() -> Value {
             },
         },
         {
+            "name": "persona_propose",
+            "description": "Propose a new text for your own persona card; you cannot write it. do=propose needs card_text (the whole card, front matter uid and code unchanged, at most 64 KiB) and why (at most 200 characters, shown to the person as your unverified reason): aibd keeps it as it is, works out the lines added and removed, and the person sees the whole difference and approves it with their own fingerprint or password, or says no. do=status / do=withdraw need request_id (only your own). At most one proposal waits per persona card; withdrawn ones count toward ten an hour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "do": {"type": "string", "enum": ["propose", "status", "withdraw"]},
+                    "card_text": {"type": "string", "description": "for do=propose: the whole new card text"},
+                    "why": {"type": "string", "description": "for do=propose: one line, at most 200 characters"},
+                    "request_id": {"type": "string", "description": "for do=status / withdraw"},
+                },
+                "required": ["do"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "brain_note",
             "description": "Add a note to the second brain you were opened bound to (沙盒開發 seats only). aibd names the file and writes a head saying which seat wrote it; it never writes over a note, and you cannot change or remove one. Readers treat it as data, not instructions. Text at most 16 KB; title at most 40 characters.",
             "inputSchema": {
@@ -1593,6 +1608,26 @@ fn seat_receipt(c: &Client, args: &Value) -> Result<String, String> {
         Some("read") => (aibd::receipt_run::READ, &["run_id"]),
         Some("withdraw") => (aibd::receipt_run::WITHDRAW, &["run_id"]),
         _ => return Err("seat_receipt needs do: ask, list, read or withdraw".into()),
+    };
+    let mut body = json!({ "type": kind });
+    for k in keys {
+        if !args[*k].is_null() {
+            body[*k] = args[*k].clone();
+        }
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
+}
+
+/// §7-2 寫回人格 (DESIGN-persona-propose-osverify-c2f0b-1123 r2): a seat proposes a new text for
+/// its own persona card through [`aibd::persona_propose`]; only the names below are passed on
+/// (no persona_uid, no seat_id: aibd takes the token's own seat and that seat's persona).
+fn persona_propose(c: &Client, args: &Value) -> Result<String, String> {
+    let (kind, keys): (&str, &[&str]) = match args["do"].as_str() {
+        Some("propose") => (aibd::persona_propose::PROPOSE, &["card_text", "why"]),
+        Some("status") => (aibd::persona_propose::STATUS, &["request_id"]),
+        Some("withdraw") => (aibd::persona_propose::WITHDRAW, &["request_id"]),
+        _ => return Err("persona_propose needs do: propose, status or withdraw".into()),
     };
     let mut body = json!({ "type": kind });
     for k in keys {
@@ -2007,6 +2042,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("seat_handoff") => seat_handoff(c, args),
                 Some("seat_tree") => seat_tree(c, args),
                 Some("seat_receipt") => seat_receipt(c, args),
+                Some("persona_propose") => persona_propose(c, args),
                 Some("seat_verify") => seat_verify(c, args),
                 Some("pending_list") => pending_list(c, args),
                 Some("pending_read") => pending_read(c, args),
@@ -2295,6 +2331,22 @@ fn pair_key_init() -> Result<(), String> {
     Err("a fingerprint pairing key is macOS only for now (Windows Hello: not yet)".into())
 }
 
+/// `aibd ctl owner-check probe`: one JSON line of what this Mac's owner check would be
+/// ([`aibd::owner_probe`]); no window, no key.
+#[cfg(target_os = "macos")]
+fn owner_check_probe() -> Result<(), String> {
+    println!(
+        "{}",
+        aibd::owner_probe::probe(&aibd::owner_probe::Mac::read())
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn owner_check_probe() -> Result<(), String> {
+    Err("owner-check probe reads macOS LocalAuthentication; Windows Hello comes with S10-3".into())
+}
+
 /// How long `aibd ctl web` waits for an aibd launchd was asked to start, and how often it looks.
 const WAKE_WAIT: Duration = Duration::from_secs(15);
 const WAKE_POLL: Duration = Duration::from_millis(300);
@@ -2375,6 +2427,10 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     }
     if args == ["pair-key", "init"] {
         return pair_key_init();
+    }
+    // S10-2 measurement (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8): read only, asks nobody
+    if args == ["owner-check", "probe"] {
+        return owner_check_probe();
     }
     // N-web-oneline 1: the one line also starts aibd (through launchd) when it is not answering
     if args.first() == Some(&"web") {
@@ -3539,6 +3595,7 @@ mod tests {
                 "dm_done",
                 "pending_write",
                 "seat_handoff",
+                "persona_propose",
                 "brain_note"
             ],
             "reason: extra_tool"

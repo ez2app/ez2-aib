@@ -1483,7 +1483,14 @@ mod tests {
         let asked = rec.asked.lock().unwrap();
         assert_eq!(asked.len(), 1);
         // plain words on top, then the window's old words as they were (Andy 11-21 01:44)
-        let (top, rest) = asked[0].0.split_once('\n').expect("reason: window_words");
+        // four lines now (ebab8 11-23 05:47); the old words are the last
+        let lines: Vec<&str> = asked[0].0.lines().collect();
+        assert_eq!(
+            lines.len(),
+            crate::touch::WINDOW_LINES,
+            "reason: window_words"
+        );
+        let (top, rest) = (lines[0], lines[3]);
         assert!(
             top.starts_with(&crate::touch::plain(&Who::Terminal, false)),
             "reason: window_words {top}"
@@ -1805,10 +1812,14 @@ mod tests {
         let asked = rec.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1, "reason: act_not_listed");
         // 5d33a L1: it says the whole page goes up to this run's rights, to when, and why
-        let (top, w) = asked[0]
-            .0
-            .split_once('\n')
-            .expect("reason: window_two_lines");
+        // four lines as an approval's (ebab8 11-23 05:47): the plain words first, the old ones last
+        let lines: Vec<&str> = asked[0].0.lines().collect();
+        assert_eq!(
+            lines.len(),
+            crate::touch::WINDOW_LINES,
+            "reason: window_four_lines"
+        );
+        let (top, w) = (lines[0], lines[3]);
         assert!(
             top.starts_with("讓這一頁繼續用完整權限到 ") && top.contains("(起因:開席)"),
             "reason: window_top {top}"
@@ -1929,9 +1940,16 @@ mod tests {
         assert_eq!(no.asked.lock().unwrap().len(), 1, "reason: no_cool_down");
         // the window says it plainly first, until when and the short code, then what it said
         let said = no.asked.lock().unwrap()[0].0.clone();
-        let (top, rest) = said.split_once('\n').expect("reason: window_two_lines");
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(
+            lines.len(),
+            crate::touch::WINDOW_LINES,
+            "reason: window_four_lines"
+        );
+        let (top, rest) = (lines[0], lines[3]);
         assert!(
-            top.starts_with("讓這個瀏覽器分頁配對成 AIB 的") && top.contains(",過了這張就作廢)"),
+            top.starts_with("讓這個瀏覽器分頁配對成 AIB 的")
+                && lines[2].ends_with(",過了這張就作廢"),
             "reason: window_top {top}"
         );
         let code: String = rest
@@ -1939,7 +1957,7 @@ mod tests {
             .map(|(_, r)| r.chars().take_while(char::is_ascii_digit).collect())
             .unwrap_or_default();
         assert!(
-            !code.is_empty() && top.ends_with(&format!("對照碼 {code}")),
+            !code.is_empty() && lines[2].starts_with(&format!("對照碼 {code} · ")),
             "reason: window_code {said}"
         );
         advance(&o, TOUCH_COOL);

@@ -1,0 +1,764 @@
+//! The owner's passphrase, for a machine with no fingerprint, login password or Windows Hello
+//! (Andy DECISION 第十七節「要密語備援」; DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7,
+//! f163c PREREAD r6 / r7). This is S11-2's first part: pure functions only, not wired to any
+//! window or owner ask.
+//!
+//! - [`Record`]: what is kept — the KDF's name and costs, a 32-byte salt, the 32-byte result,
+//!   when it was set. Never the passphrase. A record with costs below [`MIN`] is refused when
+//!   read (a seat that lowers them in the file gets nothing: the passphrase is asked again).
+//! - [`Kdf`]: the key derivation is passed in; [`Argon2id`] is the backend (argon2 =0.5.3, m =
+//!   256 MiB, t = 3, p = 1, about a second, f163c r7 L1). Its Cargo.lock lines come from 90856
+//!   on a test machine (this one runs no cargo); a new external crate: f163c reviews it.
+//! - [`check_new`]: the rules for a sentence the owner thinks up (§11h M1 fallback): at least
+//!   5 words or 24 characters, not the account or computer name.
+//! - [`lock_after`]: the software lock — 5 wrong in a row lock 15 minutes, each further wrong
+//!   doubles it, at most 24 hours. Only a brake on guessing through aibd: a seat can delete the
+//!   count, so it is no defence against guessing offline (§11e).
+//! - [`same`]: the comparison takes the same time wherever the bytes differ.
+
+use serde::{Deserialize, Serialize};
+
+/// The KDF a record names.
+pub const ARGON2ID: &str = "argon2id";
+
+/// The lowest costs a kept record may have (§11b layer 3: 256 MiB, 3 passes, 1 lane).
+pub const MIN: Costs = Costs {
+    m_kib: 256 * 1024,
+    t: 3,
+    p: 1,
+};
+
+/// The highest costs a kept record may name (f163c PREREAD e5f942dd L1): a seat that raises
+/// them in the file would make every check take all memory and stop aibd.
+pub const MAX: Costs = Costs {
+    m_kib: 1024 * 1024,
+    t: 10,
+    p: 4,
+};
+
+pub const SALT_LEN: usize = 32;
+pub const OUT_LEN: usize = 32;
+
+/// Wrong answers in a row before the lock.
+pub const FREE_TRIES: u32 = 5;
+pub const FIRST_LOCK_SECS: u64 = 15 * 60;
+pub const MAX_LOCK_SECS: u64 = 24 * 60 * 60;
+
+pub const MIN_WORDS: usize = 5;
+pub const MIN_CHARS: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Costs {
+    pub m_kib: u32,
+    pub t: u32,
+    pub p: u32,
+}
+
+/// What is kept for the passphrase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    pub v: u32,
+    pub kdf: String,
+    pub costs: Costs,
+    /// hex
+    pub salt: String,
+    /// hex
+    pub out: String,
+    pub set_at: u64,
+}
+
+/// The key derivation: `out` from the passphrase, the salt and the costs.
+pub trait Kdf {
+    fn name(&self) -> &'static str;
+    fn derive(&self, phrase: &[u8], salt: &[u8; SALT_LEN], c: Costs) -> Option<[u8; OUT_LEN]>;
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Equal, in time that does not depend on where the bytes differ.
+pub fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Why a record is not used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// Not this version, not this KDF, or costs below [`MIN`].
+    Weak,
+    /// Costs above [`MAX`].
+    TooCostly,
+    Malformed,
+}
+
+/// A kept record, only when it is the version, the KDF and at least the costs this aibd asks.
+pub fn usable(r: &Record, kdf: &dyn Kdf) -> Result<([u8; SALT_LEN], [u8; OUT_LEN]), Refused> {
+    if r.v != 1 || r.kdf != kdf.name() {
+        return Err(Refused::Weak);
+    }
+    let c = r.costs;
+    if c.m_kib < MIN.m_kib || c.t < MIN.t || c.p < MIN.p {
+        return Err(Refused::Weak);
+    }
+    if c.m_kib > MAX.m_kib || c.t > MAX.t || c.p > MAX.p {
+        return Err(Refused::TooCostly);
+    }
+    let salt = unhex::<SALT_LEN>(&r.salt).ok_or(Refused::Malformed)?;
+    let out = unhex::<OUT_LEN>(&r.out).ok_or(Refused::Malformed)?;
+    Ok((salt, out))
+}
+
+/// The record's own hash (f163c PREREAD e5f942dd L2): aibd keeps the one it read at start and
+/// the one its setting window wrote; a record that changed otherwise is shown red and not used
+/// until the owner sets it again in the window (wired in the window's part).
+pub fn record_sha(r: &Record) -> String {
+    use sha2::{Digest, Sha256};
+    let line = format!(
+        "aibd/passphrase-record/v1\n{}\n{}\n{}/{}/{}\n{}\n{}\n{}\n",
+        r.v, r.kdf, r.costs.m_kib, r.costs.t, r.costs.p, r.salt, r.out, r.set_at
+    );
+    hex(&Sha256::digest(line.as_bytes()))
+}
+
+/// The record for a new passphrase (the salt from the caller's random source).
+pub fn record(kdf: &dyn Kdf, phrase: &[u8], salt: [u8; SALT_LEN], now: u64) -> Option<Record> {
+    let out = kdf.derive(phrase, &salt, MIN)?;
+    Some(Record {
+        v: 1,
+        kdf: kdf.name().to_owned(),
+        costs: MIN,
+        salt: hex(&salt),
+        out: hex(&out),
+        set_at: now,
+    })
+}
+
+/// Whether `phrase` is the kept one. A refused record is never a yes.
+pub fn verify(r: &Record, kdf: &dyn Kdf, phrase: &[u8]) -> bool {
+    let Ok((salt, out)) = usable(r, kdf) else {
+        return false;
+    };
+    kdf.derive(phrase, &salt, r.costs)
+        .is_some_and(|got| same(&got, &out))
+}
+
+/// Why a sentence the owner thought up is not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weak {
+    TooShort,
+    /// It holds the account or the computer name.
+    Personal,
+}
+
+/// The rules for a sentence the owner thinks up (§11h M1 fallback). Its real strength cannot
+/// be measured (f163c r7 L1): the page says so whatever this returns.
+pub fn check_new(phrase: &str, account: &str, computer: &str) -> Result<(), Weak> {
+    let words = phrase.split_whitespace().count();
+    let chars = phrase.chars().filter(|c| !c.is_whitespace()).count();
+    if words < MIN_WORDS && chars < MIN_CHARS {
+        return Err(Weak::TooShort);
+    }
+    let low = phrase.to_lowercase();
+    for name in [account, computer] {
+        let n = name.trim().to_lowercase();
+        if n.chars().count() >= 3 && low.contains(&n) {
+            return Err(Weak::Personal);
+        }
+    }
+    Ok(())
+}
+
+/// After `wrong` wrong answers in a row, how long no answer is taken (0: not locked).
+pub fn lock_after(wrong: u32) -> u64 {
+    if wrong < FREE_TRIES {
+        return 0;
+    }
+    let doublings = (wrong - FREE_TRIES).min(16);
+    FIRST_LOCK_SECS
+        .saturating_mul(1u64 << doublings)
+        .min(MAX_LOCK_SECS)
+}
+
+/// The Argon2id backend (argon2 0.5, version 0x13), at the costs the record names.
+pub struct Argon2id;
+
+impl Kdf for Argon2id {
+    fn name(&self) -> &'static str {
+        ARGON2ID
+    }
+    fn derive(&self, phrase: &[u8], salt: &[u8; SALT_LEN], c: Costs) -> Option<[u8; OUT_LEN]> {
+        let params = argon2::Params::new(c.m_kib, c.t, c.p, Some(OUT_LEN)).ok()?;
+        let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+        let mut out = [0u8; OUT_LEN];
+        a.hash_password_into(phrase, salt, &mut out).ok()?;
+        Some(out)
+    }
+}
+
+// ---- S11-2 second part: the acts (set / answer / what the page shows), still pure ----------
+
+/// The count of wrong answers kept between asks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tries {
+    pub wrong: u32,
+    /// unix seconds; 0 = not locked
+    pub locked_until: u64,
+}
+
+/// Why a new passphrase is not set. The page shows [`SetError::code`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetError {
+    /// The system's own owner check works here: no passphrase (§11a).
+    UseSystem,
+    /// The two typings differ.
+    NotSame,
+    Weak(Weak),
+    /// The KDF failed (out of memory).
+    Kdf,
+    /// The record could not be written (passphrase_keep).
+    Store,
+}
+
+impl SetError {
+    pub fn code(self) -> &'static str {
+        match self {
+            SetError::UseSystem => "owner_check_use_system",
+            SetError::NotSame => "passphrase_not_same",
+            SetError::Weak(Weak::TooShort) => "passphrase_too_short",
+            SetError::Weak(Weak::Personal) => "passphrase_personal",
+            SetError::Kdf => "passphrase_kdf_failed",
+            SetError::Store => "passphrase_store_failed",
+        }
+    }
+}
+
+/// Who thought up the sentence: aibd's six words are taken as they are, the owner's own go
+/// through [`check_new`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Generated,
+    Owner,
+}
+
+/// What the setting window hands over.
+pub struct NewPhrase<'a> {
+    pub phrase: &'a str,
+    pub again: &'a str,
+    pub source: Source,
+    pub account: &'a str,
+    pub computer: &'a str,
+}
+
+/// Set (or set again) the passphrase. The caller has the owner's yes for the setting window
+/// and keeps [`record_sha`] of the result as the known record; the tries start over.
+pub fn set(
+    kdf: &dyn Kdf,
+    n: &NewPhrase<'_>,
+    system_usable: bool,
+    salt: [u8; SALT_LEN],
+    now: u64,
+) -> Result<(Record, Tries), SetError> {
+    if system_usable {
+        return Err(SetError::UseSystem);
+    }
+    if !same(n.phrase.as_bytes(), n.again.as_bytes()) {
+        return Err(SetError::NotSame);
+    }
+    if n.source == Source::Owner {
+        check_new(n.phrase, n.account, n.computer).map_err(SetError::Weak)?;
+    }
+    let r = record(kdf, n.phrase.as_bytes(), salt, now).ok_or(SetError::Kdf)?;
+    Ok((r, Tries::default()))
+}
+
+/// What one answer came to. The page shows [`Answer::code`] for everything but `Yes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    /// Wrong; `locked_until` is 0 while tries are left.
+    No {
+        wrong: u32,
+        locked_until: u64,
+    },
+    /// Locked: not even derived.
+    Locked {
+        until: u64,
+    },
+    NotSet,
+    /// The record is not the one aibd knows (f163c e5f942dd L2): set it again in the window.
+    Swapped,
+    Refused(Refused),
+    /// The system's own owner check works here (§11a: before every ask).
+    UseSystem,
+}
+
+impl Answer {
+    pub fn code(self) -> &'static str {
+        match self {
+            Answer::Yes => "ok",
+            Answer::No { .. } => "passphrase_wrong",
+            Answer::Locked { .. } => "passphrase_locked",
+            Answer::NotSet => "passphrase_not_set",
+            Answer::Swapped => "passphrase_record_swapped",
+            Answer::Refused(Refused::Weak) => "passphrase_record_weak",
+            Answer::Refused(Refused::TooCostly) => "passphrase_record_too_costly",
+            Answer::Refused(Refused::Malformed) => "passphrase_record_malformed",
+            Answer::UseSystem => "owner_check_use_system",
+        }
+    }
+}
+
+/// One answer to "type your passphrase". The order is the rule: the system check first, then
+/// a record at all, then the record aibd knows, then the lock (nothing derived while locked),
+/// then the costs, then the phrase. Only a derived wrong answer counts against the tries.
+pub fn answer(
+    kdf: &dyn Kdf,
+    rec: Option<&Record>,
+    known_sha: Option<&str>,
+    tries: &mut Tries,
+    phrase: &[u8],
+    system_usable: bool,
+    now: u64,
+) -> Answer {
+    if system_usable {
+        return Answer::UseSystem;
+    }
+    let Some(r) = rec else {
+        return Answer::NotSet;
+    };
+    if known_sha != Some(record_sha(r).as_str()) {
+        return Answer::Swapped;
+    }
+    if now < tries.locked_until {
+        return Answer::Locked {
+            until: tries.locked_until,
+        };
+    }
+    if let Err(e) = usable(r, kdf) {
+        return Answer::Refused(e);
+    }
+    if verify(r, kdf, phrase) {
+        *tries = Tries::default();
+        return Answer::Yes;
+    }
+    tries.wrong = tries.wrong.saturating_add(1);
+    let lock = lock_after(tries.wrong);
+    tries.locked_until = if lock == 0 {
+        0
+    } else {
+        now.saturating_add(lock)
+    };
+    Answer::No {
+        wrong: tries.wrong,
+        locked_until: tries.locked_until,
+    }
+}
+
+/// What the page shows about the passphrase (IFACE-passphrase-c2f0b-1123 §1); never the
+/// record's salt, result or hash.
+pub fn view(
+    rec: Option<&Record>,
+    known_sha: Option<&str>,
+    tries: &Tries,
+    system_usable: bool,
+    now: u64,
+) -> serde_json::Value {
+    let swapped = rec.is_some_and(|r| known_sha != Some(record_sha(r).as_str()));
+    let locked = now < tries.locked_until;
+    serde_json::json!({
+        "v": 1,
+        "available": !system_usable,
+        "set": rec.is_some(),
+        "set_at": rec.map(|r| r.set_at),
+        "swapped": swapped,
+        "wrong": tries.wrong,
+        "tries_left": FREE_TRIES.saturating_sub(tries.wrong),
+        "locked": locked,
+        "locked_until": if locked { Some(tries.locked_until) } else { None },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    use super::*;
+
+    /// A stand-in KDF: SHA-256 over the costs, the salt and the phrase (tests only).
+    struct Fake;
+    impl Kdf for Fake {
+        fn name(&self) -> &'static str {
+            ARGON2ID
+        }
+        fn derive(&self, phrase: &[u8], salt: &[u8; SALT_LEN], c: Costs) -> Option<[u8; OUT_LEN]> {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(format!("{}/{}/{}", c.m_kib, c.t, c.p));
+            h.update(salt);
+            h.update(phrase);
+            let mut o = [0u8; OUT_LEN];
+            o.copy_from_slice(&h.finalize());
+            Some(o)
+        }
+    }
+
+    fn rec() -> Record {
+        record(&Fake, "正確 的 那 一 句".as_bytes(), [7; SALT_LEN], 100).unwrap()
+    }
+
+    #[test]
+    fn the_right_phrase_is_a_yes_and_anything_else_a_no() {
+        let r = rec();
+        assert!(!r.out.is_empty() && !r.out.contains("正確"));
+        assert!(verify(&r, &Fake, "正確 的 那 一 句".as_bytes()));
+        assert!(!verify(&r, &Fake, "正確 的 那 一 字".as_bytes()));
+        assert!(!verify(&r, &Fake, b""));
+    }
+
+    /// A seat that lowers the costs (or names another KDF) in the kept file gets no yes.
+    #[test]
+    fn a_record_with_lower_costs_or_another_kdf_is_refused() {
+        for c in [
+            Costs {
+                m_kib: MIN.m_kib / 2,
+                ..MIN
+            },
+            Costs { t: 1, ..MIN },
+            Costs { p: 0, ..MIN },
+        ] {
+            let mut r = rec();
+            r.costs = c;
+            assert_eq!(usable(&r, &Fake), Err(Refused::Weak), "{c:?}");
+            assert!(!verify(&r, &Fake, "正確 的 那 一 句".as_bytes()));
+        }
+        let mut r = rec();
+        r.kdf = "sha256".into();
+        assert_eq!(usable(&r, &Fake), Err(Refused::Weak));
+        let mut r = rec();
+        r.v = 0;
+        assert_eq!(usable(&r, &Fake), Err(Refused::Weak));
+        let mut r = rec();
+        r.salt.pop();
+        assert_eq!(usable(&r, &Fake), Err(Refused::Malformed));
+    }
+
+    /// RFC 9106 §5.3 Argon2id test vector shape is not used here (it needs secret / ad); this
+    /// checks the backend is Argon2id at small costs, deterministic, salt- and phrase-bound.
+    #[test]
+    fn the_argon2id_backend_is_deterministic_and_bound_to_salt_and_phrase() {
+        let small = Costs {
+            m_kib: 64,
+            t: 1,
+            p: 1,
+        };
+        let a = Argon2id.derive(b"phrase", &[1; SALT_LEN], small).unwrap();
+        assert_eq!(
+            a,
+            Argon2id.derive(b"phrase", &[1; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id.derive(b"phrase", &[2; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id.derive(b"phrasf", &[1; SALT_LEN], small).unwrap()
+        );
+        assert_ne!(
+            a,
+            Argon2id
+                .derive(b"phrase", &[1; SALT_LEN], Costs { t: 2, ..small })
+                .unwrap()
+        );
+        assert_eq!(Argon2id.name(), ARGON2ID);
+    }
+
+    /// L1: costs above the ceiling are refused before anything is derived.
+    #[test]
+    fn a_record_with_costs_above_the_ceiling_is_refused() {
+        for c in [
+            Costs {
+                m_kib: 4 * 1024 * 1024,
+                ..MIN
+            },
+            Costs { t: 1000, ..MIN },
+            Costs { p: 64, ..MIN },
+        ] {
+            let mut r = rec();
+            r.costs = c;
+            assert_eq!(usable(&r, &Fake), Err(Refused::TooCostly), "{c:?}");
+        }
+        assert!(usable(&rec(), &Fake).is_ok());
+    }
+
+    /// L2: any field changed changes the record's hash.
+    #[test]
+    fn the_record_hash_moves_with_every_field() {
+        let base = record_sha(&rec());
+        assert_eq!(base, record_sha(&rec()));
+        let mut r = rec();
+        r.out.replace_range(0..2, "zz");
+        assert_ne!(record_sha(&r), base);
+        let mut r = rec();
+        r.salt.replace_range(0..2, "zz");
+        assert_ne!(record_sha(&r), base);
+        let mut r = rec();
+        r.set_at += 1;
+        assert_ne!(record_sha(&r), base);
+    }
+
+    /// f163c e5f942dd L3: a known answer from two other implementations — the reference
+    /// `argon2` CLI (phc-winner-argon2: `argon2 <salt> -id -t 3 -k 64 -p 1 -l 32 -r`) and
+    /// OpenSSL 4 `kdf ARGON2ID` agree on it; Argon2i gives 61e5d232…, so a wrong algorithm fails.
+    #[test]
+    fn the_argon2id_backend_gives_the_known_answer() {
+        let out = Argon2id
+            .derive(
+                b"correct horse battery",
+                &[b'a'; SALT_LEN],
+                Costs {
+                    m_kib: 64,
+                    t: 3,
+                    p: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            hex(&out),
+            "692f3a57797a0a146543cf9bdfc2df4a28dd46209b7ee6f1833ebdb90fd04116"
+        );
+    }
+
+    const P: &str = "正確 的 那 一 句";
+
+    fn np<'a>(phrase: &'a str, again: &'a str, source: Source) -> NewPhrase<'a> {
+        NewPhrase {
+            phrase,
+            again,
+            source,
+            account: "sample",
+            computer: "laptop9",
+        }
+    }
+
+    #[test]
+    fn set_needs_the_same_twice_a_good_owner_sentence_and_no_system_check() {
+        let long = "河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地方";
+        assert_eq!(
+            set(
+                &Fake,
+                &np(long, long, Source::Owner),
+                true,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::UseSystem)
+        );
+        assert_eq!(
+            set(
+                &Fake,
+                &np(long, "河邊", Source::Owner),
+                false,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::NotSame)
+        );
+        assert_eq!(
+            set(
+                &Fake,
+                &np("太短", "太短", Source::Owner),
+                false,
+                [7; SALT_LEN],
+                1
+            )
+            .err(),
+            Some(SetError::Weak(Weak::TooShort))
+        );
+        // aibd's own words are not put through the owner's rules
+        assert!(set(
+            &Fake,
+            &np("太短", "太短", Source::Generated),
+            false,
+            [7; SALT_LEN],
+            1
+        )
+        .is_ok());
+        let (r, t) = set(
+            &Fake,
+            &np(long, long, Source::Owner),
+            false,
+            [7; SALT_LEN],
+            1,
+        )
+        .unwrap();
+        assert!(verify(&r, &Fake, long.as_bytes()));
+        assert_eq!(t, Tries::default());
+        assert_eq!(SetError::UseSystem.code(), "owner_check_use_system");
+    }
+
+    #[test]
+    fn the_answer_checks_the_system_then_the_record_then_the_lock() {
+        let r = rec();
+        let k = record_sha(&r);
+        let mut t = Tries::default();
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), true, 0),
+            Answer::UseSystem
+        );
+        assert_eq!(
+            answer(&Fake, None, None, &mut t, P.as_bytes(), false, 0),
+            Answer::NotSet
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some("00"), &mut t, P.as_bytes(), false, 0),
+            Answer::Swapped
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), false, 0),
+            Answer::Yes
+        );
+        assert_eq!(t, Tries::default());
+    }
+
+    /// The right phrase while locked is still refused, and nothing is derived.
+    #[test]
+    fn five_wrong_lock_and_the_right_phrase_waits_for_the_lock() {
+        let r = rec();
+        let k = record_sha(&r);
+        let mut t = Tries::default();
+        for i in 1..=4 {
+            assert_eq!(
+                answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, 100),
+                Answer::No {
+                    wrong: i,
+                    locked_until: 0
+                }
+            );
+        }
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, 100),
+            Answer::No {
+                wrong: 5,
+                locked_until: 100 + FIRST_LOCK_SECS
+            }
+        );
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, P.as_bytes(), false, 101),
+            Answer::Locked {
+                until: 100 + FIRST_LOCK_SECS
+            }
+        );
+        assert_eq!(t.wrong, 5, "a locked answer does not count");
+        let after = 100 + FIRST_LOCK_SECS;
+        assert_eq!(
+            answer(&Fake, Some(&r), Some(&k), &mut t, b"x", false, after),
+            Answer::No {
+                wrong: 6,
+                locked_until: after + 2 * FIRST_LOCK_SECS
+            }
+        );
+        let later = after + 2 * FIRST_LOCK_SECS;
+        assert_eq!(
+            answer(
+                &Fake,
+                Some(&r),
+                Some(&k),
+                &mut t,
+                P.as_bytes(),
+                false,
+                later
+            ),
+            Answer::Yes
+        );
+        assert_eq!(t, Tries::default());
+    }
+
+    #[test]
+    fn the_page_view_has_no_secret_and_says_swapped_and_locked() {
+        let r = rec();
+        let k = record_sha(&r);
+        let t = Tries {
+            wrong: 5,
+            locked_until: 200,
+        };
+        let v = view(Some(&r), Some(&k), &t, false, 100);
+        let s = v.to_string();
+        assert!(!s.contains(&r.salt) && !s.contains(&r.out) && !s.contains(&k));
+        assert_eq!(v["locked"], true);
+        assert_eq!(v["locked_until"], 200);
+        assert_eq!(v["tries_left"], 0);
+        assert_eq!(v["swapped"], false);
+        assert_eq!(view(Some(&r), Some("00"), &t, false, 300)["swapped"], true);
+        assert_eq!(view(Some(&r), Some(&k), &t, false, 300)["locked"], false);
+        assert_eq!(
+            view(None, None, &Tries::default(), true, 0)["available"],
+            false
+        );
+    }
+
+    #[test]
+    fn same_is_byte_equality() {
+        assert!(same(b"abc", b"abc"));
+        assert!(!same(b"abc", b"abd"));
+        assert!(!same(b"xbc", b"abc"));
+        assert!(!same(b"ab", b"abc"));
+    }
+
+    #[test]
+    fn a_short_or_personal_sentence_is_not_taken() {
+        assert_eq!(check_new("太短了", "sample", "mac"), Err(Weak::TooShort));
+        assert_eq!(
+            check_new("one two three four", "x1", "y1"),
+            Err(Weak::TooShort)
+        );
+        assert!(check_new("one two three four five", "x1", "y1").is_ok());
+        // no spaces: counted by characters, 24 at least (MIN_CHARS); 23 is short
+        assert!(check_new(
+            "河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地方",
+            "x1",
+            "y1"
+        )
+        .is_ok());
+        assert_eq!(
+            check_new("河邊那棵老榕樹下第三塊石頭底下的鑰匙還在原來地", "x1", "y1"),
+            Err(Weak::TooShort)
+        );
+        assert_eq!(
+            check_new("my name is Sample and this is long", "sample", "laptop9"),
+            Err(Weak::Personal)
+        );
+        assert_eq!(
+            check_new("laptop9 is the best laptop i own", "zz9", "Laptop9"),
+            Err(Weak::Personal)
+        );
+    }
+
+    #[test]
+    fn five_wrong_lock_fifteen_minutes_then_double_up_to_a_day() {
+        assert_eq!(lock_after(0), 0);
+        assert_eq!(lock_after(4), 0);
+        assert_eq!(lock_after(5), 15 * 60);
+        assert_eq!(lock_after(6), 30 * 60);
+        assert_eq!(lock_after(7), 60 * 60);
+        assert_eq!(lock_after(11), 16 * 60 * 60);
+        assert_eq!(lock_after(12), MAX_LOCK_SECS);
+        assert_eq!(lock_after(u32::MAX), MAX_LOCK_SECS);
+    }
+}

@@ -107,6 +107,9 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::preview::RETIRE,
     crate::preview::FIX,
     crate::preview::ACTIVE,
+    crate::persona_propose::LIST,
+    crate::persona_propose::DENY,
+    crate::passphrase_keep::STATE,
     crate::receipt_run::REQUEST,
     crate::receipt_run::READ,
     crate::receipt_run::WITHDRAW,
@@ -390,6 +393,18 @@ pub async fn act(
                     );
                 };
                 return crate::receipt_run::seat_act(st, &seat, body).await;
+            }
+            // §7-2 寫回人格 (DESIGN-persona-propose-osverify-c2f0b-1123 r2): a seat proposes a new
+            // text for its own persona card, never another's; the seat is the token's
+            if crate::persona_propose::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::persona_propose::seat_act(st, &seat, body).await;
             }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
@@ -907,6 +922,14 @@ pub async fn act(
             | crate::preview::ACTIVE,
         ) => {
             return crate::preview::edit(st, page, body).await
+        }
+        // §7-2 寫回人格: the built-in page lists the waiting proposals and says no
+        Some(crate::persona_propose::LIST | crate::persona_propose::DENY) => {
+            return crate::persona_propose::page_act(&st, &page, body).await
+        }
+        // S11-3 密語備援: the built-in page reads the passphrase state (never the phrase)
+        Some(crate::passphrase_keep::STATE) => {
+            return crate::passphrase_keep::page_act(&page).await;
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(

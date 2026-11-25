@@ -140,6 +140,14 @@ pub fn action_words(operation: &str) -> &str {
 const OBJECT_MARKS: [char; 8] = ['|', '「', '」', '『', '』', '｜', '│', '¦'];
 /// Of an object too long to show whole, this much of its start is kept (the name comes first).
 const OBJECT_HEAD: usize = 24;
+/// Words only the window itself says, broken with `·` when an object carries them.
+const OWN_WORDS: [(&str, &str); 5] = [
+    ("請在", "請·在"),
+    ("對照碼", "對·照碼"),
+    ("單號", "單·號"),
+    ("參數", "參·數"),
+    ("開放", "開·放"),
+];
 
 /// The object as the window shows it, between 「」 (5d33a PREREAD-touchwords L1): cleaned as
 /// [`clean_resource`] cleans; none of the window's own marks; nothing that reads as a clock
@@ -156,7 +164,12 @@ pub fn object_shown(s: &str) -> String {
             kept[i] = '·';
         }
     }
-    let text = kept.iter().collect::<String>().replace("請在", "請·在");
+    // the window's own line heads (r2, 3e53b 11-23): an object cannot start a code / ticket /
+    // open-for of its own
+    let mut text = kept.iter().collect::<String>();
+    for (word, broken) in OWN_WORDS {
+        text = text.replace(word, broken);
+    }
     let c: Vec<char> = text.chars().collect();
     if c.len() <= RESOURCE_MAX {
         return text;
@@ -306,21 +319,46 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
 /// it what the window always said (the operation, the object, the ticket, the parameters'
 /// hash). `until` is aibd's own clock ([`until_words`]); only the object carries free words of
 /// the request, and [`object_shown`] keeps it from saying anything of the window's own.
+///
+/// r2 (3e53b 11-23, ORDER-touchhud-ebab8-3e53b-1123 第 2 項; Andy 「1+2 都可以」): one thing a
+/// line, always [`WINDOW_LINES`] lines, in the order the page card and the countdown use:
+/// 1. what is done ([`top_words`], the same words the countdown's first line shows)
+/// 2. `對象:` the object ([`object_shown`]: the only line ever cut, start and end kept)
+/// 3. `對照碼 XXXX · 請在 … 前按,過了這張就作廢`, then `· <Hold::words>` when
+///    `grants::hold_in` gives the operation a hold (never from the request's own words; f163c M1)
+/// 4. `單號 …|參數 …|<operation>`
+///
+/// No line but the second carries words of the request, and none of them can hold a line
+/// break ([`aib_approve::text::is_bad_char`]).
 pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
+    // how long a yes opens something: only what grants::hold_in allows for this operation, in
+    // its own words (f163c REVIEW-touchhud M1; c2f0b 11-23 06:07); a hold it refuses has no
+    // window at all (Owner::ask is Unavailable), and nothing else of the request says a time
+    let hold = crate::grants::hold_in(ask.operation, &ask.params)
+        .ok()
+        .flatten()
+        .map(|h| format!(" · {}", h.words()))
+        .unwrap_or_default();
     format!(
-        "{}({until},過了這張就作廢)對照碼 {}\nAIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
+        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",
         top_words(ask),
-        pair_code(ticket),
-        ask.operation,
         object_shown(&ask.resource),
+        pair_code(ticket),
         ticket,
-        &p[..12]
+        &p[..12],
+        ask.operation,
     )
 }
 
+/// The lines [`window_text`] always has.
+pub const WINDOW_LINES: usize = 4;
+
 /// The window's first words: the plain sentence, or the operation's name when it has none.
 pub fn top_words(ask: &Ask) -> String {
+    // how long it stays open is not here: the system window's third line says it, from
+    // grants::hold_in (3e53b touch_hud; f163c REVIEW-touchhud M1: one place only). The hold
+    // is still in the parameters the owner approves (their sha), so another hold is refused.
     plain_words(ask.operation, &ask.params)
         .unwrap_or_else(|| action_words(ask.operation).to_owned())
 }
@@ -593,6 +631,10 @@ impl Owner {
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
     ) -> Asked {
         let now = (self.clock)();
+        // a hold the operation does not give (or one it needs and lacks) raises no window
+        if let Err(why) = crate::grants::hold_in(ask.operation, &ask.params) {
+            return Asked::Unavailable(why);
+        }
         let Ok(ticket) = crate::sessions::new_id("ot_") else {
             return Asked::Unavailable(UNAVAILABLE);
         };
@@ -1038,14 +1080,74 @@ mod tests {
         assert_eq!(clean_resource("短"), "短");
         // an operation with no sentence: its name on top; start and end of a long object below
         let w = window_text(&x, "t9", "請在 01:23:44 前按");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "{w}");
+        assert_eq!(l[0], "worktree.open", "{w}");
         assert!(
-            w.starts_with("worktree.open(請在 01:23:44 前按,過了這張就作廢)對照碼 ")
-                && w.contains("\nAIB 網頁要求:worktree.open|對象:d/d/d/d/d/d/d/d/d/d/d/d/…"),
+            l[1].starts_with("對象:d/d/d/d/d/d/d/d/d/d/d/d/…") && l[1].ends_with("/tail-end"),
             "{w}"
         );
-        assert!(w.contains("/tail-end|單號 t9|參數 "), "{w}");
-        assert!(w.ends_with(&params_sha256(&x.params)[..12]), "{w}");
+        assert!(
+            l[2].starts_with("對照碼 ") && l[2].ends_with("過了這張就作廢"),
+            "{w}"
+        );
+        assert_eq!(
+            l[3],
+            format!(
+                "單號 t9|參數 {}|worktree.open",
+                &params_sha256(&x.params)[..12]
+            ),
+            "{w}"
+        );
         assert_eq!(object_shown(&x.resource).chars().count(), RESOURCE_MAX + 1);
+    }
+
+    /// ORDER-touchhud-ebab8-3e53b-1123 第 2 項: one thing a line, the object the only line cut,
+    /// and no line says how long from the request.
+    #[test]
+    fn the_window_has_four_lines_and_only_the_object_is_cut() {
+        let mut x = a();
+        x.operation = crate::seat_trust::OP;
+        x.resource = format!("頭{}尾", "長".repeat(300));
+        x.params = br#"{"seat_id":"seat_33ff9a0b1c2d3e4f","hours":2,"open_for":"15m"}"#.to_vec();
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "reason: window_lines {w}");
+        assert_eq!(l[0], top_words(&x), "reason: action_line_cut {w}");
+        assert!(
+            l[1].starts_with("對象:頭") && l[1].ends_with('尾') && l[1].matches('…').count() == 1,
+            "reason: object_not_cut_at_its_middle {w}"
+        );
+        assert_eq!(
+            l[1].chars().count(),
+            "對象:".chars().count() + RESOURCE_MAX + 1
+        );
+        assert_eq!(
+            l[2],
+            format!(
+                "對照碼 {} · 請在 01:23:44 前按,過了這張就作廢",
+                pair_code("ot_1")
+            ),
+            "reason: code_line {w}"
+        );
+        assert!(
+            l[3].starts_with("單號 ot_1|參數 ") && l[3].ends_with(crate::seat_trust::OP),
+            "reason: ticket_line {w}"
+        );
+        // how long is never read from the request (f163c REVIEW-touchhud M1: hours 2 with
+        // open_for 15m said 15 minutes): no line says 開放 whatever the params carry
+        for p in [
+            r#"{"open_for":"15m"}"#,
+            r#"{"hold":"min15"}"#,
+            r#"{"open_for":"2h"}"#,
+            r#"{"hours":2,"open_for":"until_close"}"#,
+        ] {
+            x.params = p.as_bytes().to_vec();
+            assert!(
+                !window_text(&x, "ot_1", "u").contains("開放"),
+                "reason: open_for_shown {p}"
+            );
+        }
     }
 
     /// Andy 11-21 01:23, 01:44; 5d33a PREREAD-touchwords L1.
@@ -1058,9 +1160,9 @@ mod tests {
         let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
         assert!(
             w.starts_with(&format!(
-                "登記這個資料夾當倉:demo-c45c(請在 01:23:44 前按,過了這張就作廢)對照碼 {}\nAIB 網頁要求:repo.register|對象:demo-c45c · /Users/x/demo-c45c · remote github.com|單號 ot_1|參數 ",
+                "登記這個資料夾當倉:demo-c45c\n對象:demo-c45c · /Users/x/demo-c45c · remote github.com\n對照碼 {} · 請在 01:23:44 前按,過了這張就作廢\n單號 ot_1|參數 ",
                 pair_code("ot_1")
-            )),
+            )) && w.ends_with("|repo.register"),
             "reason: window_words {w}"
         );
         // the code the countdown beside the window shows too: four of the ticket's own hash
@@ -1177,7 +1279,7 @@ mod tests {
         }
         x.params = br#"{"name":"x | y"}"#.to_vec();
         assert!(
-            window_text(&x, "ot_1", "請在 01:23:44 前按").starts_with("登記倉(請在 01:23:44 前按,"),
+            window_text(&x, "ot_1", "請在 01:23:44 前按").starts_with("登記倉\n對象:"),
             "reason: fallback_top"
         );
         for (op, words) in ACTIONS {
@@ -1198,12 +1300,27 @@ mod tests {
             "x 請在 23:59:59 前按",
             "x｜請在 ２３：５９：５９ 前按』│¦",
             "x\n請在 23:59 前按\t|",
+            "x 對照碼 0000 · 單號 ot_9|參數 1\n開放 1 小時",
         ] {
             x.resource = hostile.into();
             let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
-            assert_eq!(w.lines().count(), 2, "reason: object_made_a_line {w}");
+            assert_eq!(
+                w.lines().count(),
+                WINDOW_LINES,
+                "reason: object_made_a_line {w}"
+            );
             let low = w.lines().nth(1).unwrap();
-            assert_eq!(low.split('|').count(), 4, "reason: object_made_a_part {w}");
+            assert!(low.starts_with("對象:"), "reason: object_line_moved {w}");
+            for own in ["對照碼", "單號", "參數"] {
+                assert_eq!(w.matches(own).count(), 1, "reason: object_says_{own} {w}");
+            }
+            // this ticket opens nothing for a while: no 開放 at all
+            assert_eq!(w.matches("開放").count(), 0, "reason: object_says_open {w}");
+            assert_eq!(
+                w.lines().nth(3).unwrap().split('|').count(),
+                3,
+                "reason: object_made_a_part {w}"
+            );
             assert_eq!(
                 w.matches("請在").count(),
                 1,
@@ -1538,7 +1655,7 @@ mod tests {
                 said[0]
             );
             assert!(
-                said[0].contains("AIB 網頁要求:repo.register|"),
+                said[0].ends_with("|repo.register") && said[0].contains("\n對象:"),
                 "reason: window_words_lost {}",
                 said[0]
             );
@@ -1622,6 +1739,95 @@ mod tests {
             o.state(&t, &a.by),
             State::Expired,
             "reason: late_yes_not_expired"
+        );
+    }
+
+    fn held(op: &'static str, hold: &str) -> Ask {
+        let mut x = a();
+        x.operation = op;
+        x.resource = "seat-work/seat_ab".into();
+        x.params = format!(r#"{{"folder":"seat-work/seat_ab","hold":"{hold}"}}"#).into_bytes();
+        x
+    }
+
+    /// HD1 (DESIGN-persona-propose-osverify r1 §2a): the hold is in the window's words and in
+    /// what the owner approves; a page that asks again with another hold has no approval.
+    #[test]
+    fn the_hold_is_in_the_window_and_in_what_was_approved() {
+        at(5000);
+        let x = held(crate::grants::OP_FS_OPEN, "min15");
+        // the words are the third line's (3e53b), never the first line's too
+        assert!(
+            !top_words(&x).contains("開放 15 分鐘"),
+            "reason: hold_in_top_words"
+        );
+        // 3e53b: the third line says it, in grants' own words, and only there
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "reason: hold_line_count {w}");
+        assert_eq!(
+            l[2],
+            format!(
+                "對照碼 {} · 請在 01:23:44 前按,過了這張就作廢 · 開放 15 分鐘(從你按下起算)",
+                pair_code("ot_1")
+            ),
+            "reason: hold_not_on_third_line {w}"
+        );
+        assert_eq!(w.matches("開放").count(), 1, "reason: hold_said_twice {w}");
+        // a hold the operation does not allow, or an unknown word: no time on any line
+        for (op, h) in [
+            (crate::seat_trust::OP, "min15"),
+            (crate::grants::OP_FS_OPEN, "2h"),
+        ] {
+            let mut y = held(op, h);
+            y.params = format!(r#"{{"hold":"{h}","open_for":"15m"}}"#).into_bytes();
+            assert!(
+                !window_text(&y, "ot_1", "u").contains("開放"),
+                "reason: refused_hold_shown {op} {h}"
+            );
+        }
+        let o = owner(Ok(()));
+        let t = ticket(o.ask(&x, inline));
+        assert!(
+            !o.approved_for(&t, &held(crate::grants::OP_FS_OPEN, "hour1")),
+            "reason: other_hold_approved"
+        );
+        let t = ticket(o.ask(&x, inline));
+        assert!(o.approved_for(&t, &x), "reason: same_hold_not_approved");
+    }
+
+    /// HD2: a hold the operation's row does not give, or a hold on an operation that takes
+    /// none, raises no window.
+    #[test]
+    fn a_hold_not_given_raises_no_window() {
+        at(6000);
+        let o = owner(Ok(()));
+        for (x, why) in [
+            (
+                held(crate::grants::OP_NET_LOCAL_SELF, "until_seat_ends"),
+                "local_self_until_end",
+            ),
+            (held(crate::grants::OP_NET_AIBD_SELF, "once"), "aibd_self"),
+            (held(crate::grants::OP_FS_OPEN, "2h"), "unknown_hold"),
+            (held(crate::repos::OP_REGISTER, "min15"), "not_in_table"),
+        ] {
+            assert_eq!(
+                o.ask(&x, inline),
+                Asked::Unavailable(crate::grants::NOT_ALLOWED),
+                "reason: {why}"
+            );
+        }
+        let mut x = held(crate::grants::OP_FS_OPEN, "once");
+        x.params = br#"{"folder":"seat-work/seat_ab"}"#.to_vec();
+        assert_eq!(
+            o.ask(&x, inline),
+            Asked::Unavailable(crate::grants::MISSING),
+            "reason: hold_missing"
+        );
+        // an operation with no hold is as before
+        assert!(
+            matches!(o.ask(&reg(), inline), Asked::Ticket(_)),
+            "reason: reg"
         );
     }
 }
