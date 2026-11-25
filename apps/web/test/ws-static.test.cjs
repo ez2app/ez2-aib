@@ -2038,7 +2038,7 @@ lateChecks.push((async () => {
   let h = F.rfHtml(A('lifecycle_verify_failed'));
   ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
   h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('>安裝驗過的版本</button>'), 'reason: rf_unmeasured_zh');
-  h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了捷徑') && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
+  h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了連結(symlink / junction)') && !/捷徑|shortcut|ショートカット|바로 가기/.test(src) && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
   ok(!/略過|照開|Skip|skip|スキップ|건너/.test(src), 'reason: rf_no_skip_button');
   for (const x of ['constructor', 'done', 'busy', 'zz', null]) ok(F.rfHtml(A(x)) === '', 'reason: rf_unknown_code_nothing ' + x);
   c.has = false; ok(!F.rfHtml(A('lifecycle_verify_failed')).includes('<button'), 'reason: rf_no_button_without_act'); c.has = true;

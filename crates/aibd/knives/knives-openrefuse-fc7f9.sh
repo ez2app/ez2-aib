@@ -24,3 +24,5 @@ k 'A.grp = null; A.refuse = null; render();' 'A.grp = null; render();'
 k '    if (S.add && x.closest('\''[data-addrfx]'\'')) { rfFix(); return; }' ' '
 # RF10 (韓文退回中文)
 k '  const rfT = () => OPEN_RF[typeof askLang === '\''function'\'' ? askLang() : '\''zh-TW'\''] || OPEN_RF['\''zh-TW'\''];' '  const rfT = () => OPEN_RF['\''zh-TW'\''];'
+# RF11 (又寫成捷徑;Windows 的捷徑是 .lnk,f163c REVIEW-l2 02e02b04 N1)
+k '被換成了連結(symlink / junction),AIB' '被換成了捷徑,AIB'
