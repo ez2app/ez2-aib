@@ -109,16 +109,38 @@ fn init_repo(root: &Path, name: &str, with_web_branch: bool) -> PathBuf {
     repo
 }
 
+/// aibd's two databases (what they gain is counted as events below), with their -wal / -shm.
+const DBS: [&str; 2] = ["data/aibd.sqlite", "data/messages.sqlite"];
+
 /// Every path under `root` with what it holds: a folder, a link, or a file's SHA-256. Left out
-/// are the two databases and their -wal / -shm (what they gain is counted as events below).
-fn tree(root: &Path) -> BTreeMap<String, String> {
+/// are [`DBS`], and the test's own stand-in for the AI program writing its two logs in the
+/// folders of the seats opened before the count (`stand_ins`): it writes them when it starts,
+/// which may be after the first look. Its log in any other folder is a seat that collecting
+/// started, and is counted.
+fn tree(root: &Path, stand_ins: &[PathBuf]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(d) = dirs.pop() {
         for e in std::fs::read_dir(&d).unwrap().flatten() {
             let p = e.path();
             let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
-            if rel.ends_with("-wal") || rel.ends_with("-shm") || rel.ends_with(".sqlite") {
+            if DBS.iter().any(|d| {
+                rel == *d
+                    || rel
+                        .strip_prefix(d)
+                        .is_some_and(|x| x == "-wal" || x == "-shm")
+            }) {
+                continue;
+            }
+            let own_log = matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("fake-provider.log" | "fake-provider-args.log")
+            );
+            if own_log
+                && p.parent()
+                    .and_then(|d| d.canonicalize().ok())
+                    .is_some_and(|d| stand_ins.contains(&d))
+            {
                 continue;
             }
             let meta = std::fs::symlink_metadata(&p).unwrap();
@@ -271,7 +293,11 @@ async fn collecting_all_seven_acts_asks_each_and_writes_only_what_is_named() {
     windows.store(0, Ordering::SeqCst);
 
     let before_repo = (repo_state(&demo), repo_state(&fresh));
-    let before_tree = tree(dir.path());
+    let stand_ins = [
+        seat_dir(dir.path(), "plain"),
+        repo_tree.canonicalize().unwrap(),
+    ];
+    let before_tree = tree(dir.path(), &stand_ins);
     let before_db_events = db.events_after(0, 10_000).unwrap().len();
     let before_api_events = d
         .call("GET", "/api/v1/events?limit=500", None, None)
@@ -344,7 +370,7 @@ async fn collecting_all_seven_acts_asks_each_and_writes_only_what_is_named() {
         (&before_repo.0 .1, &before_repo.1 .1),
         "reason: collecting_touched_the_work_tree"
     );
-    let after_tree = tree(dir.path());
+    let after_tree = tree(dir.path(), &stand_ins);
     let gone: Vec<&String> = before_tree
         .keys()
         .filter(|p| !after_tree.contains_key(*p))
