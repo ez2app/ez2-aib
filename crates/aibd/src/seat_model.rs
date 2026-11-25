@@ -88,7 +88,10 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         .map(|b| format!("{b:02x}"))
         .collect();
     let asker = format!("page:{asker}");
-    if let Some(r) = crate::repos::dgrs_restart_gate(&st, &seat_id, ticket, asker).await {
+    if let Some(r) =
+        crate::repos::dgrs_restart_gate(&st, &seat_id, ticket, asker, crate::repos::GateAct::Model)
+            .await
+    {
         return r;
     }
     let (store, id, m) = (st.store.clone(), seat_id.clone(), model.clone());

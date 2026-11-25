@@ -67,6 +67,6 @@ wv '    crate::workspace::set_data_dir(dirs.data_dir());' \
    '    // knife' \
    the_workspace_reads_the_tree_the_host_and_what_aibd_can_do
 # WS14 GET personas names where the card text is (043dd add-a-seat picker; uid and name only)
-we '                .map(|c| json!({"uid": c.uid, "display_name": c.name}))' \
-   '                .map(|c| json!({"uid": c.uid, "display_name": c.name, "persona_sha": c.persona_sha})) // knife' \
+we '            .map(|(uid, name)| json!({"uid": uid, "display_name": name,' \
+   '            .map(|(uid, name)| json!({"uid": uid, "display_name": name, "where": "card", // knife' \
    the_workspace_reads_the_tree_the_host_and_what_aibd_can_do

@@ -93,6 +93,22 @@ pub fn is_code(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// A persona's name as its card says it, or its uid when there is no such card or the cards are
+/// not read (a window still names someone).
+async fn persona_name_or_uid(st: &AppState, uid: &str) -> String {
+    let (personas, u) = (st.personas.clone(), uid.to_owned());
+    tokio::task::spawn_blocking(move || {
+        personas
+            .cards()
+            .ok()
+            .and_then(|c| c.into_iter().find(|x| x.uid == u).map(|x| x.name))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| uid.to_owned())
+}
+
 pub fn seat_code(seat_id: &str) -> String {
     seat_id
         .strip_prefix("seat_")
@@ -704,6 +720,8 @@ pub async fn list(
         _ => None,
     };
     let live = st.sessions.live_seats();
+    // IFACE-netcard r1 (fc7f9 08:00): how many network cards wait, for the person's page only
+    let net_cards = me.is_none().then(crate::net_card_web::waiting_now);
     let counted = move || -> aib_store::Result<Vec<serde_json::Value>> {
         let mut v = read_all(&st)?;
         if let Some(page) = page {
@@ -720,7 +738,11 @@ pub async fn list(
                 Some(me) => same_cabin(v, &me, &live),
                 None => v,
             };
-            Json(serde_json::json!({ "seats": v })).into_response()
+            let mut out = serde_json::json!({ "seats": v });
+            if let Some(n) = net_cards {
+                out["net_cards"] = serde_json::json!(n);
+            }
+            Json(out).into_response()
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat list failed");
@@ -1723,17 +1745,7 @@ pub async fn page_open(
         && req.tpl_uid.is_none()
         && aib_seatopen::pipe_modes(&req.provider).contains(&"dgrs")
     {
-        let (personas, uid) = (st.personas.clone(), req.persona_uid.clone());
-        let name = tokio::task::spawn_blocking(move || {
-            personas
-                .cards()
-                .ok()
-                .and_then(|c| c.into_iter().find(|x| x.uid == uid).map(|x| x.name))
-        })
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| req.persona_uid.clone());
+        let name = persona_name_or_uid(&st, &req.persona_uid).await;
         let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
         let a = crate::repos::open_ask_plain(
             &req.provider,
@@ -1776,11 +1788,20 @@ pub async fn page_open(
                     .get("pairing")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("?");
-                let a = crate::perm_apply::ask(
+                let mut a = crate::perm_apply::ask(
                     &e,
                     None,
                     serde_json::json!({"provider": req.provider, "persona_uid": req.persona_uid}),
                     format!("page:{page}"),
+                );
+                // pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): the window says who and which brand
+                // first (the ticket was already bound to both); the start of a long line is kept
+                let name = persona_name_or_uid(&st, &req.persona_uid).await;
+                a.resource = crate::perm_apply::open_line(
+                    &name,
+                    &req.persona_uid,
+                    &req.provider,
+                    &a.resource,
                 );
                 let Some(t) = req.ticket.as_deref() else {
                     return crate::repos::asked(&a);

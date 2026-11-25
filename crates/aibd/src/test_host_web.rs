@@ -62,14 +62,16 @@ fn half_now() -> Vec<String> {
 /// One read-modify-write of the host list at a time.
 static LIST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn programs() -> (PathBuf, PathBuf) {
+/// The system's ssh and ssh-keygen: on Windows under the system directory the OS reports
+/// (never a fixed `C:\\Windows`; f163c REVIEW-px3 N3), unreadable ⇒ refused.
+fn programs() -> Result<(PathBuf, PathBuf), &'static str> {
     if cfg!(windows) {
-        (
-            "C:\\Windows\\System32\\OpenSSH\\ssh.exe".into(),
-            "C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe".into(),
-        )
+        let d = aib_sys::sysdir::system_dir()
+            .ok_or("system_dir_unreadable")?
+            .join("OpenSSH");
+        Ok((d.join("ssh.exe"), d.join("ssh-keygen.exe")))
     } else {
-        ("/usr/bin/ssh".into(), "/usr/bin/ssh-keygen".into())
+        Ok(("/usr/bin/ssh".into(), "/usr/bin/ssh-keygen".into()))
     }
 }
 
@@ -342,7 +344,7 @@ fn status_of(why: &str) -> StatusCode {
 
 /// The machine, what its read said, and aibd's public line, read now.
 fn facts(data: &Path, name: &str) -> Result<(Machine, th::Read, String), &'static str> {
-    let (ssh, keygen) = programs();
+    let (ssh, keygen) = programs()?;
     let m = machines_now(data)
         .ok_or("no_home")?
         .into_iter()
@@ -391,7 +393,7 @@ pub async fn add(st: AppState, body: Value, by: String) -> Response {
         os: "mac".into(),
     };
     let done = tokio::task::spawn_blocking(move || {
-        let (ssh, _) = programs();
+        let (ssh, _) = programs()?;
         let (home, _) = owner().ok_or("no_home")?;
         let known = Path::new(&home).join(".ssh").join("known_hosts");
         let cmd = th::remote_command(th::ADD).ok_or("write_failed")?;
@@ -456,7 +458,7 @@ pub async fn remove(st: AppState, body: Value, by: String) -> Response {
     }
     let name = req.name.clone();
     let done = tokio::task::spawn_blocking(move || {
-        let (ssh, _) = programs();
+        let (ssh, _) = programs()?;
         let (home, _) = owner().ok_or("no_home")?;
         let known = Path::new(&home).join(".ssh").join("known_hosts");
         let cmd = th::remote_command(th::REMOVE).ok_or("remove_failed")?;

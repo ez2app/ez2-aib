@@ -18,6 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::api::AppState;
@@ -167,7 +168,92 @@ pub fn roles_body(r: &Registry) -> Value {
     })).collect::<Vec<_>>()})
 }
 
-pub fn brains_body(r: &Registry, q: Option<&str>) -> Value {
+/// §7-4 (SPEC-ai-partner-open-ebab8-1122 §7 4, CHECKLIST-aipartner-aibd-9918e-1122): the
+/// second brain a persona is usually opened with, read from the seats aibd opened with it
+/// (their meta keeps the brain's route key). Only registered brains count; a seat with no
+/// brain or one no longer in the registry is not counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usual {
+    /// The brain's uid (`brn_…`), never its route key.
+    pub brain: String,
+    /// How many of the persona's seats were opened with it.
+    pub seats: usize,
+}
+
+/// Each persona's [`Usual`] brain: the one most of its seats were opened with; on a tie the
+/// one used most recently (`updated_at`), then the smaller uid, so the answer never depends
+/// on the order the seats are read in.
+pub fn usual_brains(r: &Registry, metas: &[aib_store::SeatMeta]) -> BTreeMap<String, Usual> {
+    let uid_of: HashMap<&str, &str> = r
+        .brains
+        .iter()
+        .filter_map(|e| e.route_key.as_deref().map(|k| (k, e.uid.as_str())))
+        .collect();
+    // (persona, brain) -> (seats, newest updated_at)
+    let mut tally: BTreeMap<(&str, &str), (usize, &str)> = BTreeMap::new();
+    for m in metas {
+        let (Some(p), Some(route)) = (m.persona_uid.as_deref(), m.brain_route.as_deref()) else {
+            continue;
+        };
+        let Some(b) = uid_of.get(route) else {
+            continue;
+        };
+        let t = tally.entry((p, b)).or_insert((0, ""));
+        t.0 += 1;
+        t.1 = t.1.max(utc_stamp(&m.updated_at));
+    }
+    let mut out: BTreeMap<String, (Usual, &str)> = BTreeMap::new();
+    for ((p, b), (n, at)) in tally {
+        let better = match out.get(p) {
+            None => true,
+            Some((u, uat)) => (n, at) > (u.seats, *uat),
+        };
+        if better {
+            let u = Usual {
+                brain: b.to_string(),
+                seats: n,
+            };
+            out.insert(p.to_string(), (u, at));
+        }
+    }
+    out.into_iter().map(|(p, (u, _))| (p, u)).collect()
+}
+
+/// f163c REVIEW-s4a N2: `updated_at` is compared as text, which is time order only for
+/// aibd's own stamp (`sessions::now_rfc3339`: UTC, milliseconds, `Z`, 24 characters). Any
+/// other shape (an offset, no fraction) counts as the oldest instead of being misordered.
+fn utc_stamp(s: &str) -> &str {
+    let b = s.as_bytes();
+    let shaped = b.len() == 24 && b[10] == b'T' && b[19] == b'.' && b[23] == b'Z';
+    if shaped {
+        s
+    } else {
+        ""
+    }
+}
+
+/// [`usual_brains`] from the registry file and the store; nothing when either cannot be
+/// read (a list without suggestions still answers). Blocking.
+pub fn usual_of(data: &Path, store: &aib_store::Store) -> BTreeMap<String, Usual> {
+    let r = match load(data) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(why = %e, "usual brains: registry unreadable");
+            return BTreeMap::new();
+        }
+    };
+    match store.seat_metas() {
+        Ok(m) => usual_brains(&r, &m),
+        Err(e) => {
+            tracing::warn!(error = %e, "usual brains: seats unreadable");
+            BTreeMap::new()
+        }
+    }
+}
+
+/// `GET /api/v1/brains`'s body. `suggested_for`: the personas whose [`usual_brains`] is
+/// this brain (the page preselects it when one of them is picked).
+pub fn brains_body(r: &Registry, q: Option<&str>, usual: &BTreeMap<String, Usual>) -> Value {
     let q = q.map(str::to_lowercase);
     let names: Vec<(String, String)> = r
         .brains
@@ -184,7 +270,14 @@ pub fn brains_body(r: &Registry, q: Option<&str>) -> Value {
                 .is_none_or(|q| e.name.to_lowercase().contains(q) || e.uid.contains(q))
         })
         .take(QUERY_MAX)
-        .map(|(e, (_, l))| json!({"uid": e.uid, "name": l, "what": e.what}))
+        .map(|(e, (_, l))| {
+            let for_: Vec<&str> = usual
+                .iter()
+                .filter(|(_, u)| u.brain == e.uid)
+                .map(|(p, _)| p.as_str())
+                .collect();
+            json!({"uid": e.uid, "name": l, "what": e.what, "suggested_for": for_})
+        })
         .collect();
     // 能看: no candidate roots yet, so an empty list is a stand-in the page marks 示意
     json!({"brains": list, "demo": r.brains.is_empty()})
@@ -248,19 +341,25 @@ pub struct BrainQuery {
 
 /// `GET /api/v1/brains?q=`
 pub async fn brains(State(st): State<AppState>, Query(q): Query<BrainQuery>) -> Response {
-    match load(&data_dir(&st)) {
-        Ok(r) => {
-            let Some(gone) = crate::persona_edit::archived_uids(&st.messages, "brain") else {
-                return internal("archived brains unreadable");
-            };
-            Json(split_archived(
-                brains_body(&r, q.q.as_deref()),
-                "brains",
-                &gone,
-            ))
-            .into_response()
-        }
-        Err(e) => internal(&e),
+    let (data, store, messages) = (data_dir(&st), st.store.clone(), st.messages.clone());
+    let read = tokio::task::spawn_blocking(move || {
+        load(&data).map(|r| {
+            let u = usual_of(&data, &store);
+            let gone = crate::persona_edit::archived_uids(&messages, "brain");
+            (r, u, gone)
+        })
+    })
+    .await;
+    match read {
+        Ok(Ok((r, u, Some(gone)))) => Json(split_archived(
+            brains_body(&r, q.q.as_deref(), &u),
+            "brains",
+            &gone,
+        ))
+        .into_response(),
+        Ok(Ok((_, _, None))) => internal("archived brains unreadable"),
+        Ok(Err(e)) => internal(&e),
+        Err(_) => internal("brains read did not end"),
     }
 }
 
@@ -721,18 +820,142 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let b = brains_body(&r, Some("核心"));
+        let b = brains_body(&r, Some("核心"), &BTreeMap::new());
         assert_eq!(b["brains"][0]["uid"], "brn_x1y2z3");
         assert_eq!(b["demo"], false);
         assert!(!b.to_string().contains("proj.aib2-core"));
         assert_eq!(
-            brains_body(&r, Some("nothing"))["brains"]
+            brains_body(&r, Some("nothing"), &BTreeMap::new())["brains"]
                 .as_array()
                 .unwrap()
                 .len(),
             0
         );
-        assert_eq!(brains_body(&Registry::default(), None)["demo"], true);
+        assert_eq!(
+            brains_body(&Registry::default(), None, &BTreeMap::new())["demo"],
+            true
+        );
+    }
+
+    fn meta(
+        seat: &str,
+        persona: Option<&str>,
+        route: Option<&str>,
+        at: &str,
+    ) -> aib_store::SeatMeta {
+        aib_store::SeatMeta {
+            seat_id: seat.into(),
+            provider: "claude".into(),
+            role: None,
+            cwd: "/w".into(),
+            model: None,
+            model_pinned: false,
+            resume_id: None,
+            project_uid: None,
+            persona_uid: persona.map(Into::into),
+            brain_route: route.map(Into::into),
+            updated_at: at.into(),
+            mode: None,
+            axis_id: None,
+            cabin: None,
+        }
+    }
+
+    fn two_brains() -> Registry {
+        let b = |uid: &str, key: &str| Entry {
+            uid: uid.into(),
+            name: uid.into(),
+            route_key: Some(key.into()),
+            ..Default::default()
+        };
+        Registry {
+            roles: vec![],
+            brains: vec![b("brn_aaaaaa", "proj.a"), b("brn_bbbbbb", "proj.b")],
+        }
+    }
+
+    /// §7-4: a persona's usual brain is the one most of its seats were opened with; a tie
+    /// goes to the newest, a seat with no brain or an unregistered one does not count.
+    #[test]
+    fn a_persona_s_usual_brain_is_the_one_its_seats_use_most() {
+        let r = two_brains();
+        let m = vec![
+            meta("s1", Some("p1"), Some("proj.a"), "2026-11-20T00:00:00.000Z"),
+            meta("s2", Some("p1"), Some("proj.b"), "2026-11-21T00:00:00.000Z"),
+            meta("s3", Some("p1"), Some("proj.a"), "2026-11-19T00:00:00.000Z"),
+            // a tie: one each, the newer wins whatever the order
+            meta("s4", Some("p2"), Some("proj.b"), "2026-11-22T00:00:00.000Z"),
+            meta("s5", Some("p2"), Some("proj.a"), "2026-11-18T00:00:00.000Z"),
+            // not counted: no brain, a brain no longer registered, no persona
+            meta("s6", Some("p3"), None, "2026-11-22T00:00:00.000Z"),
+            meta(
+                "s7",
+                Some("p3"),
+                Some("proj.gone"),
+                "2026-11-22T00:00:00.000Z",
+            ),
+            meta("s8", None, Some("proj.a"), "2026-11-22T00:00:00.000Z"),
+        ];
+        let u = usual_brains(&r, &m);
+        assert_eq!(
+            u.get("p1"),
+            Some(&Usual {
+                brain: "brn_aaaaaa".into(),
+                seats: 2
+            }),
+            "reason: most_used_not_picked"
+        );
+        assert_eq!(
+            u.get("p2").map(|x| x.brain.as_str()),
+            Some("brn_bbbbbb"),
+            "reason: tie_not_newest"
+        );
+        let mut rev = m.clone();
+        rev.reverse();
+        assert_eq!(usual_brains(&r, &rev), u, "reason: depends_on_seat_order");
+        assert!(!u.contains_key("p3"), "reason: unregistered_brain_counted");
+        assert_eq!(u.len(), 2);
+        // the brain list says whom each is usual for, never a route key
+        let b = brains_body(&r, None, &u);
+        assert_eq!(b["brains"][0]["suggested_for"], serde_json::json!(["p1"]));
+        assert_eq!(b["brains"][1]["suggested_for"], serde_json::json!(["p2"]));
+        assert!(!b.to_string().contains("proj."), "reason: route_key_shown");
+        // and the persona list says each persona's, null when none
+        let p = crate::workspace::personas_body([("p1", "一"), ("p3", "三")].into_iter(), &u);
+        assert_eq!(p["personas"][0]["usual_brain"], "brn_aaaaaa");
+        assert!(p["personas"][1]["usual_brain"].is_null());
+        assert_eq!(p["personas"][1]["display_name"], "三");
+    }
+
+    /// f163c REVIEW-s4a N1 / N2: one seat each at the same moment goes to the smaller uid;
+    /// a stamp not in aibd's own UTC shape never wins a tie by looking newer.
+    #[test]
+    fn a_tie_at_the_same_moment_is_the_smaller_uid_and_odd_stamps_are_oldest() {
+        let r = two_brains();
+        let at = "2026-11-22T00:00:00.000Z";
+        let m = vec![
+            meta("s1", Some("p1"), Some("proj.b"), at),
+            meta("s2", Some("p1"), Some("proj.a"), at),
+            // 09:00+08:00 is 01:00Z, older than 02:00Z, but as text it sorts after it
+            meta("s3", Some("p2"), Some("proj.a"), "2026-11-22T02:00:00.000Z"),
+            meta(
+                "s4",
+                Some("p2"),
+                Some("proj.b"),
+                "2026-11-22T09:00:00+08:00",
+            ),
+        ];
+        let u = usual_brains(&r, &m);
+        assert_eq!(
+            u.get("p1").map(|x| x.brain.as_str()),
+            Some("brn_aaaaaa"),
+            "reason: same_moment_not_smaller_uid"
+        );
+        assert_eq!(
+            u.get("p2").map(|x| x.brain.as_str()),
+            Some("brn_aaaaaa"),
+            "reason: odd_stamp_won"
+        );
     }
 
     #[test]

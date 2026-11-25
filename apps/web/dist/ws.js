@@ -3040,6 +3040,8 @@
     const f = document.createElement('input'); f.type = 'file'; f.accept = 'image/png,image/jpeg,image/webp,image/gif';
     f.addEventListener('change', () => { if (f.files && f.files[0]) annOpen(f.files[0], false); }); f.click();
   }
+  // 鍵名照平台寫:Mac 寫 ⌘ / ⇧⌘,其他(Windows)寫 Ctrl+ / Ctrl+Shift+(鍵盤本來就兩種都收)
+  const annKeyName = (k) => (/Mac|iPhone|iPad/.test((typeof navigator !== 'undefined' && navigator.platform) || '') ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   // 標註窗:常駐在 body(整頁重畫不動它)。第一步拖框裁切(或整張),之後六樣工具;所有筆畫記成清單,⌘Z / ⇧⌘Z 照清單重畫
   const ANN = { el: null };
   const ANN_TOOLS = [['rect', '▭ 框'], ['ellipse', '◯ 圈'], ['arrow', '➚ 箭頭'], ['zoom', '🔍 放大鏡'], ['mosaic', '▦ 馬賽克'], ['text', 'T 文字']];
@@ -3058,7 +3060,7 @@
   function annBuild(img, fromShot) {
     annClose();
     const d = document.createElement('div'); d.className = 'anndlg'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', '截圖標註');
-    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>⌘Z</button><button type="button" class="k" data-annredo="1" disabled>⇧⌘Z</button><span class="annouts"><button type="button" class="k annout" data-annclip="1" disabled>複製到剪貼簿</button><button type="button" class="k annout" data-annwebp="1" disabled>存成 webp</button><button type="button" class="go annok" data-annok="1" disabled>送進對話</button></span></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
+    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>${annKeyName('⌘Z')}</button><button type="button" class="k" data-annredo="1" disabled>${annKeyName('⇧⌘Z')}</button><span class="annouts"><button type="button" class="k annout" data-annclip="1" disabled>複製到剪貼簿</button><button type="button" class="k annout" data-annwebp="1" disabled>存成 webp</button><button type="button" class="go annok" data-annok="1" disabled>送進對話</button></span></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
     document.body.appendChild(d); ANN.el = d; ctPaint(d);
     Object.assign(ANN, { img, crop: null, drag: null, ops: [], redo: [], tool: 'rect', col: ANN_COLORS[0], picking: false, work: null });
     const cv = d.querySelector('[data-annv]');
@@ -3097,7 +3099,7 @@
     c.width = Math.max(1, Math.round(r.w)); c.height = Math.max(1, Math.round(r.h));
     c.getContext('2d').drawImage(s, Math.round(r.x), Math.round(r.y), c.width, c.height, 0, 0, c.width, c.height);
     ANN.crop = r; ANN.work = c; annFit(); annDraw(); annBtns();
-    const st = ANN.el.querySelector('[data-annst]'); if (st) st.textContent = `${c.width} × ${c.height} · 選工具在圖上拖 · ⌘Z 復原`;
+    const st = ANN.el.querySelector('[data-annst]'); if (st) st.textContent = `${c.width} × ${c.height} · 選工具在圖上拖 · ${annKeyName('⌘Z')} 復原`;
   }
   function annBtns() {
     const d = ANN.el; if (!d) return;
@@ -4049,6 +4051,7 @@
     else S.reg.rolesLive = false;
     if (b && Array.isArray(b.brains) && !b.demo) { S.reg.brains = b.brains.filter((x) => x && x.uid).map((x) => ({ uid: String(x.uid), name: String(x.name || x.uid), what: String(x.what || ''), notes: x.notes, sug: Array.isArray(x.suggested_for) ? x.suggested_for.map(String) : [] })); S.reg.brainsLive = true; }
     else { S.reg.brains = []; S.reg.brainsLive = false; }
+    S.arch = Object.assign(S.arch || {}, { role: rgArchOf(r), brain: rgArchOf(b) }); // A1:已封存的角色 / 大腦
     if (A && S.add === A) { brainPreselect(A); render(); }
   }
   // 預設帶人格建議的那一個(suggested_for);用戶自己點過就不動
@@ -4103,6 +4106,8 @@
     render();
   }
   // ---------- S4 人格 / 第二大腦 / 角色:改、封存、還原(fc7f9 11-23,ebab8 ORDER-page2 第 2 項;SPEC-ai-partner-open §5 + 示意 app.js data-medit / data-mdel)----------
+  // 看不見的字:跟 aibd aib_approve::text::is_bad_char 同一張(Unicode 類別 Cc Cf Zl Zp Co Cn Cs、半形空白以外的 Zs,加 invisible_extra 那幾個);瀏覽器的 Unicode 版本跟 aibd 釘的不一定一樣,未分配字元可能差幾個
+  const AIB_UNSEEN = String.raw`[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\p{Cs}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]|(?! )\p{Zs}`;
   // aibd §1(08de5,未寫碼)才有改 / 封存 / 還原 6+3 支;名字 08de5 11-23 02:56 回覆照這張表定(對照 pending/IFACE-page2-fc7f9-1123.md),只經過 RG_ACTS。
   // <kind>_set {uid, name?, what?} / <kind>_archive {uid} / <kind>_restore {uid};要驗證的先回 202 ticket(fingerAct 處理),最後 2xx 就算成;version.acts 有才送,沒有就寫「這一版還沒有」、不送、不假裝改了。
   // 人格刪 = 封存(編號保留、可還原);第二大腦刪 = 從清單拿掉、筆記檔案不動;內建角色 🔒。要不要驗證由 aibd 決定(全走 fingerAct)
@@ -4121,7 +4126,7 @@
     if (t.length > 4000) return '每一欄最多 4000 字';
     if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(t)) return '有看不見的控制字元,請重打';
     // 08de5 IFACE-a1 補:零寬 / 方向字元 aibd 回 400 section_hidden_char ⇒ 頁面先擋
-    if (/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/.test(t)) return '有看不見的零寬或方向字元,請刪掉再存';
+    if (new RegExp(AIB_UNSEEN, 'u').test(t.replace(/[\p{Cc}\u3000]/gu, ''))) return '有看不見的零寬或方向字元,請刪掉再存'; // aibd 先去控制字元、全形空白放行,其餘看不見的拒收
     if (t.split('\n').some((l) => /^\s*(#|---)/.test(l))) return '不能有 # 或 --- 開頭的行(會切壞人格卡的段落);改用 - 條列';
     return '';
   }
@@ -4134,7 +4139,7 @@
   const RG_WORD = { persona: ['人格', '封存'], brain: ['第二大腦', '移除'], role: ['角色', '刪除'] };
   const rgHas = (kind, op) => !!RG_ACTS[kind] && hasAct(RG_ACTS[kind][op]) === true;
   const rgOff = (kind, op) => (op === 'set' ? '改' : RG_WORD[kind][1]) + RG_WORD[kind][0] + ':這一版 AIB 還沒有(要新版 AIB),沒有' + (op === 'set' ? '改' : RG_WORD[kind][1]);
-  const RG_WHY = { unknown_act_type: '這一版 AIB 還沒有', section_hidden_char: '段落裡有看不見的零寬或方向字元(差異區標成 ⟦U+…⟧),刪掉再存', name_not_yet: '這版 AIB 還不能改人格名稱', persona_changed: '這個人格剛被別人改過;已重新讀一次,請再看一下再存', persona_in_use: '有夥伴正在用這個人格,先收掉或換人格', builtin_locked: '內建角色不能改或刪', role_builtin: '內建角色不能改或刪', name_taken: '名稱跟另一個重複', not_found: '找不到這一項(可能別的分頁改過)', page_only: '只有這台內建的頁面能改' };
+  const RG_WHY = { unknown_act_type: '這一版 AIB 還沒有', not_archived: '它已經不在封存區了', archive_io: 'AIB 讀寫封存區失敗,稍後再試', section_hidden_char: '段落裡有看不見的零寬或方向字元(差異區標成 ⟦U+…⟧),刪掉再存', name_not_yet: '這版 AIB 還不能改人格名稱', persona_changed: '這個人格剛被別人改過;已重新讀一次,請再看一下再存', persona_in_use: '有夥伴正在用這個人格,先收掉或換人格', builtin_locked: '內建角色不能改或刪', role_builtin: '內建角色不能改或刪', name_taken: '名稱跟另一個重複', not_found: '找不到這一項(可能別的分頁改過)', page_only: '只有這台內建的頁面能改' };
   const rgOk = (r) => !!r && (r.done === true || (Number(r.__status) >= 200 && Number(r.__status) < 300 && Number(r.__status) !== 202));
   const rgCode = (e) => String((e && ((e.body && e.body.error && e.body.error.code) || e.reason || (e.body && e.body.reason) || e.code)) || '');
   const rgWhy = (e) => { const c = rgCode(e); return RG_WHY[c] || REPO_WHY[c] || errText(e); };
@@ -4188,7 +4193,7 @@
   }
   function rgChanged(R) { const o = R.orig || {}; return RG_CARD.map(([k]) => k).filter((k) => String(R[k] || '') !== String(o[k] || '')); }
   // c2f0b persona_diff 同一種畫法:純文字、逐行,看不見的字標出來(⇥ tab、· 行尾空白、⍽ 不換行空白、⟦U+…⟧ 零寬 / 方向字元)
-  const rgShow = (t) => String(t).replace(/\t/g, '⇥').replace(/\r/g, '␍').replace(/\u00a0/g, '⍽').replace(/[\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, (c) => '⟦U+' + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟧').replace(/ +$/, (m) => '·'.repeat(m.length));
+  const rgShow = (t) => String(t).replace(/\t/g, '⇥').replace(/\r/g, '␍').replace(/\u00a0/g, '⍽').replace(new RegExp(AIB_UNSEEN, 'gu'), (c) => c === '\u3000' ? c : '⟦U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟧').replace(/ +$/, (m) => '·'.repeat(m.length));
   function rgDiffLines(a, b) {
     // f163c page2r10 L4:逐行 LCS(行換順序也看得出:移走的標 −、移到的標 +);每段 ≤ 4000 字,n·m 夠
     const A = String(a || '').split('\n'), B = String(b || '').split('\n'), n = A.length, m = B.length, out = [];
@@ -4250,6 +4255,26 @@
     } catch (e) { S.rgMsg = { bad: true, text: '沒有還原:' + rgWhy(e), undo: U }; }
     render();
   }
+  // 08de5 IFACE-a1-a15 A1(2b959d2275,主線還沒有):GET personas / brains / roles 多一個 archived 陣列(列形狀同原陣列);頁面「已封存」區列出、按 ↺ 送 *_restore(走 fingerAct)。
+  // 沒有 restore act 或沒有 archived ⇒ 不畫這一區;還原成功就從封存區拿掉、回到清單(人格直接加回、大腦 / 角色重讀);not_archived ⇒ 也拿掉
+  const rgArchOf = (r) => (r && Array.isArray(r.archived) ? r.archived : []).filter((x) => x && x.uid).slice(0, 100).map((x) => [String(x.uid), String(x.display_name || x.name || x.uid)]);
+  function rgArchHtml(kind) {
+    const L = (S.arch && S.arch[kind]) || []; if (!L.length || !rgHas(kind, 'restore')) return '';
+    const open = !!(S.archOpen && S.archOpen[kind]);
+    return `<div class="rgarch"><button type="button" class="k" data-rgao="${kind}" aria-expanded="${open}">已${RG_WORD[kind][1]}的${RG_WORD[kind][0]} ${L.length} 個 ${open ? '▴' : '▾'}</button>${open ? L.map(([u, nm]) => `<div class="rgr"><span class="apn"><b>${esc(nm)}</b> <i>${esc(u.slice(-6))}</i></span><button type="button" class="k" data-rgrs="${kind}:${esc(u)}" ${S.rgArchBusy ? 'disabled' : ''}>↺ 還原</button></div>`).join('') : ''}</div>`;
+  }
+  async function rgRestoreArch(kind, uid) {
+    const L = (S.arch && S.arch[kind]) || [], it = L.find(([u]) => u === uid); if (!it || !rgHas(kind, 'restore') || S.rgArchBusy) return;
+    S.rgArchBusy = uid; S.rgMsgKind = kind; S.rgMsg = { text: FP_SEE }; render();
+    try {
+      const r = await fingerAct(RG_ACTS[kind].restore, { uid });
+      if (!rgOk(r)) throw Object.assign(new Error('not_done'), { code: 'not_done', arch: true });
+      S.arch[kind] = L.filter(([u]) => u !== uid); // 從封存區拿掉
+      if (kind === 'persona') S.personaList = personas().filter(([u]) => u !== uid).concat([[uid, it[1]]]); else loadRegistry();
+      S.rgMsg = { text: '已還原' + RG_WORD[kind][0] + '「' + it[1] + '」,清單裡又有了' };
+    } catch (e) { S.rgMsg = { bad: true, text: '沒有還原:' + rgWhy(e) }; if (rgCode(e) === 'not_archived') S.arch[kind] = L.filter(([u]) => u !== uid); }
+    S.rgArchBusy = null; render();
+  }
   // 列底下的一行結果(含 ↺ 還原)
   function rgNote(kind) {
     const M = S.rgMsg; if (!M || (M.undo && M.undo.kind !== kind) || (!M.undo && S.rgMsgKind !== kind)) return '';
@@ -4272,6 +4297,8 @@
     if (x.closest('[data-rgback]')) { if (S.rg) S.rg.review = false; render(); return true; }
     if (x.closest('[data-rgdelok]')) { S.rgMsgKind = S.rg && S.rg.kind; await rgArchive(); return true; }
     if (x.closest('[data-rgundo]')) { await rgRestore(); return true; }
+    const ao = x.closest('[data-rgao]'); if (ao) { const S2 = (S.archOpen = S.archOpen || {}); S2[ao.dataset.rgao] = !S2[ao.dataset.rgao]; render(); return true; }
+    const rs = x.closest('[data-rgrs]'); if (rs) { const i = rs.dataset.rgrs.indexOf(':'); await rgRestoreArch(rs.dataset.rgrs.slice(0, i), rs.dataset.rgrs.slice(i + 1)); return true; }
     return false;
   }
   const ICO_SAFE = '<svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.3-7 10-4-1.7-7-5.4-7-10V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
@@ -4707,7 +4734,7 @@
     // 3e53b IFACE-netcard:網路例外卡要驗證的選項(15 分鐘 / 1 小時 / 到這一位關掉 / 一直允許)
     // c2f0b S2-2:窗上(aibd 寫)是人格名 · +N −M 行 · 對照碼 diff12;卡上照同一份提案印
     persona_propose_approve: (b) => { const p = ppCard(b.request_id) || {}; return ['把提案寫回人格卡「' + String(p.persona_name || p.persona_uid || '') + '」', [['夥伴', p.seat_id ? fpAt(p.seat_id) : ''], ['改動', '+' + (Number(p.added) || 0) + ' −' + (Number(p.removed) || 0) + ' 行', true], ['對照碼', String(p.diff12 || String(b.diff_sha || '').slice(0, 12)), true]]]; },
-    net_card_answer: (b) => { const c = netCard(b.request_id) || {}, o = (c.choices || []).find((x) => x && x.id === b.choice) || {}; return ['讓 ' + (c.seat_id ? fpAt(c.seat_id) : '夥伴') + ' 連 ' + String(c.dest_name || c.dest_ip || '內網'), [['夥伴', c.seat_id ? fpAt(c.seat_id) : ''], ['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true], ['開放', String(o.words || b.choice), true]]]; },
+    net_card_answer: (b) => { const c = netCard(b.request_id) || {}, o = (c.choices || []).find((x) => x && x.id === b.choice) || {}; return ['讓 ' + (c.seat_id ? fpAt(c.seat_id) : '夥伴') + ' 連 ' + String(c.dest_name || c.dest_ip || '內網'), [['夥伴', c.seat_id ? fpAt(c.seat_id) : ''], ['目的地', String(c.dest_ip || '') + ':' + String(c.dest_port || ''), true], ['開放', o.id ? netAlwaysWords(o, c) : String(b.choice), true]].concat(b.choice === 'always' ? [['影響', netAlwaysWho(c), true]] : [])]; },
     // 08de5 A11(734e430144):完全權限的席重開 / 換模型 / 清空也要本人驗證
     seat_restart: (b) => ['重開 ' + fpAt(b.seat_id), [['夥伴', fpAt(b.seat_id), true], ['之後', '接原本的對話,照原本的權限繼續跑']]],
     seat_model_set: (b) => ['把 ' + fpAt(b.seat_id) + ' 換成 ' + b.model, [['夥伴', fpAt(b.seat_id)], ['模型', b.model, true], ['之後', '下一個回合起用新模型']]],
@@ -5094,7 +5121,7 @@
   // c2f0b S2-2(頭 1000abaa95,等 A12 進整合線;主線還沒有):夥伴提案改自己的人格卡,內建頁列出(persona_proposals)、整段差異照純文字畫(不當 HTML / markdown)。
   // 核准 = persona_propose_approve {request_id, diff_sha} 走 fingerAct(202 + 驗證窗,窗上對照碼 = diff12)⇒ 200 {state:"written", new_sha};不要 = persona_propose_deny {ids}。act 沒有 ⇒ 這一版還沒有
   const PP_ACTS = { list: 'persona_proposals', deny: 'persona_propose_deny', approve: 'persona_propose_approve' };
-  const PP_WHY = { request_not_found: '找不到這份提案(可能已逾時或被撤回)', request_not_waiting: '這份提案已經不在等了(撤回、拒絕、逾時或正在寫)', request_changed: '提案跟你看到的不一樣了,請重新看一次', persona_changed: '人格卡在提案之後被改過,這份提案作廢;請夥伴照新版再提', persona_archived: '這個人格已封存,寫不回去', persona_aliased: '這個人格已併到別的人格,寫不回去', persona_none: '找不到這個人格', persona_unreadable: '讀不到人格卡,沒有寫', persona_registry_edited: '人格清單檔被手動改過,沒有寫;先看一下清單', persona_registry_changed: '人格清單剛被改過,沒有寫;再按一次', persona_built_in_page_only: '只有這台電腦內建的頁面能核准或拒絕', persona_write_mismatch: '寫入核對不一致,沒有寫成', persona_write_io: '寫入失敗,沒有寫成', persona_path_outside: '人格卡不在人格資料夾裡,沒有寫', persona_path_symlink: '人格卡是捷徑檔,沒有寫', request_not_writing: '寫入被打斷,沒有寫成', owner_check_not_approved: '指紋沒過,沒有寫回;提案還在,可以再按一次', item_off: '這一項被關掉了', not_done: 'AIB 沒有回「寫好了」' };
+  const PP_WHY = { request_not_found: '找不到這份提案(可能已逾時或被撤回)', request_not_waiting: '這份提案已經不在等了(撤回、拒絕、逾時或正在寫)', request_changed: '提案跟你看到的不一樣了,請重新看一次', persona_changed: '這張人格卡剛被改過或登記表剛重掃,這份提案作廢;請夥伴重掃一次卡片後再提', persona_archived: '這個人格已封存,寫不回去', persona_aliased: '這個人格已併到別的人格,寫不回去', persona_none: '找不到這個人格', persona_unreadable: '讀不到人格卡,沒有寫', persona_registry_edited: '人格清單檔被手動改過,沒有寫;先看一下清單', persona_registry_changed: '人格清單剛被改過,沒有寫;再按一次', persona_built_in_page_only: '只有這台電腦內建的頁面能核准或拒絕', persona_write_mismatch: '寫入核對不一致,沒有寫成', persona_write_io: '寫入失敗,沒有寫成', persona_path_outside: '人格卡不在人格資料夾裡,沒有寫', persona_path_symlink: '人格卡是捷徑檔,沒有寫', request_not_writing: '寫入被打斷,沒有寫成', owner_check_not_approved: '指紋沒過,沒有寫回;提案還在,可以再按一次', item_off: '這一項被關掉了', not_done: 'AIB 沒有回「寫好了」' };
   const PP_GONE = new Set(['request_not_found', 'request_not_waiting', 'request_changed', 'persona_changed', 'persona_archived', 'persona_aliased', 'persona_none']);
   const ppHas = (k) => hasAct(PP_ACTS[k]) === true;
   const ppWhy = (e) => PP_WHY[rgCode(e)] || errText(e);
@@ -5153,6 +5180,18 @@
   const NET_HINT = '這只是提示,夥伴也可能不經過這裡直接連';
   // 3e53b(f163c REVIEW-sandboxnet19 N2):允許綁「位址 + 埠」;換位址的網站(CDN)會一直出卡,一直允許也只記這一個位址
   const NET_BIND = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡,選「一直允許」也只記這一個位址';
+  const NET_BIND_NA = '允許是綁這個「位址 + 埠」:像 CDN 這種每次換位址的網站會一直出卡'; // 卡上沒有一直允許時不提它
+  // ebab8 DECISION-council-netallow-store r1:一直允許綁人格 + 這台、每筆最長 30 天(aibd 給 always_days 就用它的);頁面字照實寫
+  const netAlwaysDays = (c) => { const n = Number(c && c.always_days); return Number.isInteger(n) && n > 0 && n <= 3650 ? n : 30; };
+  const netPersonaSeats = (uid) => (uid ? (S.seats || []).filter((x) => x && x.persona_uid === uid && String(x.state || '').toLowerCase() !== 'archived').length : 0);
+  const netAlwaysWords = (o, c) => String(o.words || '') + (o.id === 'always' && !/\d+\s*天/.test(String(o.words || '')) ? '(每 ' + netAlwaysDays(c) + ' 天再確認一次)' : '');
+  const netAlwaysWho = (c) => '綁人格「' + String(c.persona_name || c.persona_uid || '這個人格') + '」:現在 ' + netPersonaSeats(c.persona_uid) + ' 位,之後開的同人格也算;合併或封存這個人格就收回';
+  // ae921 post-b4(c2f0b REVIEW-netallow-wire M2 / M3):aibd 簽不出一直允許(沒開硬體本人驗證)就不給這個選項 ⇒ 頁面寫原因;清單每列帶 state,不是 ok 的標紅寫原因、不藏
+  const NET_NO_ALWAYS = '沒有「一直允許」:這台 AIB 沒開硬體本人驗證(配對的 Touch ID / Windows Hello 金鑰),一直允許的紀錄簽不出來;只能選有時限的';
+  const NET_ST = { expired: '已過期(超過 30 天或到期),不算數;要用就再允許一次', class_changed: '這個位址現在不算內網了,不算數', persona_inactive: '這個人格現在沒在用(封存或合併了),不算數', bad_sig: '簽章對不上,不算數;建議收回', revoked_reappeared: '收回過又出現,不算數;建議收回' };
+  const netStWhy = (x) => (x && x.state !== undefined && x.state !== 'ok' ? NET_ST[x.state] || '不算數:' + String(x.state) : '');
+  const netMs = (v) => (typeof v === 'number' ? v * (v < 1e12 ? 1000 : 1) : Date.parse(String(v || '')));
+  const netPName = (uid) => { const p = (typeof personas === 'function' ? personas() : []).find(([u]) => u === uid); return p ? String(p[1]) : ''; };
   const netHas = (k) => hasAct(NET_ACTS[k]) === true;
   const netWhy = (e) => NET_WHY[rgCode(e)] || errText(e);
   const netCard = (rid) => ((S.net && S.net.items) || []).find((x) => x && x.request_id === rid) || null;
@@ -5180,13 +5219,13 @@
   }
   const netLeft = (exp) => { const s = Math.ceil((exp - Date.now()) / 1000); return s <= 0 ? '已逾時,拒絕了' : s <= 10 ? '快逾時了(約 ' + s + ' 秒),沒選就拒絕' : '還有約 ' + s + ' 秒,沒選就拒絕'; };
   function netCardHtml(c) {
-    const N = S.net || {}, se = seatById(c.seat_id), exp = Date.parse(String(c.expires_at || '')), left = Number.isFinite(exp) ? Math.max(0, Math.ceil((exp - Date.now()) / 1000)) : null;
+    const N = S.net || {}, se = seatById(c.seat_id), exp = netMs(c.expires_at), left = Number.isFinite(exp) ? Math.max(0, Math.ceil((exp - Date.now()) / 1000)) : null;
     const net = S.version && S.version.capabilities && S.version.capabilities.net, pv = net && se ? net[String(se.provider || 'claude').toLowerCase()] : null, cell = pv && se ? pv[se.mode] : '';
     const why = c.source === 'net_ask' && c.why ? `<div class="netwhy"><i>夥伴寫的理由:</i>${esc(String(c.why))}</div>` : '';
     // f163c r5km L1:驗證窗開過(沒過)⇒ aibd 那張卡只剩拒絕(別的選項回 net_card_used),只畫拒絕
     const asked = !!(N.asked && N.asked[c.request_id]);
-    const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(o.words)}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
-    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc(NET_BIND)}</div>` : ''}</div>`;
+    const ch = (Array.isArray(c.choices) ? c.choices : []).filter((o) => !asked || (o && o.id === 'deny')).map((o) => `<button type="button" class="k" data-netans="${esc(c.request_id)}|${esc(o.id)}" ${N.ans ? 'disabled' : ''}>${esc(netAlwaysWords(o, c))}${o.needs_owner ? ' · 要驗證' : ''}</button>`).join('');
+    return `<div class="netc"><div class="neth"><b>${se ? '@' + esc(seatShort(se)) : esc(String(c.seat_id || ''))}</b>${c.persona_name ? ' ' + esc(c.persona_name) : ''} 想連內網</div><div class="netd">${c.dest_name ? esc(c.dest_name) + ' ' : ''}<code>${esc(String(c.dest_ip || ''))}:${esc(String(c.dest_port || ''))}</code></div>${why}${cell === 'hint' ? `<div class="apn apwarn">${esc(NET_HINT)}</div>` : ''}${c.risk === 'high' ? `<div class="apn apwarn">連到這台電腦自己的服務(在聽的程式:${esc(String(c.listener || '查不到'))});每個允許都要驗證,沒有「一直允許」</div>` : ''}${!asked && c.risk !== 'high' && c.category !== 'local_self' && Array.isArray(c.choices) && c.choices.length && !c.choices.some((o) => o && o.id === 'always') ? `<div class="apn">${esc(NET_NO_ALWAYS)}</div>` : ''}<div class="apn"${left === null ? '>沒選就拒絕' : ` data-netexp="${exp}">${netLeft(exp)}`}</div><div class="ptact">${ch}</div>${!asked && (c.choices || []).some((o) => o && o.id !== 'deny' && o.id !== 'once') ? `<div class="apn">${esc((c.choices || []).some((o) => o && o.id === 'always') ? NET_BIND : NET_BIND_NA)}</div>` : ''}</div>`;
   }
   function netAskHtml() {
     if (!netHas('list')) return `<div class="apn">${esc(AP_ASK_NO)}</div>`;
@@ -5224,7 +5263,7 @@
     const msg = N.amsg && N.amsg.seat === sid ? `<div class="trm${N.amsg.bad ? ' bad' : ''}">${esc(N.amsg.text)}</div>` : '';
     if (!Array.isArray(L)) return `<div class="trm bad">讀不到:${esc(L.err || '')}</div>` + msg;
     const rv = netHas('revoke');
-    return (L.length ? `<div class="netal">${L.map((x) => `<div class="netar"><code>${esc(String(x.ip))}:${esc(String(x.port))}</code>${rv ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
+    return (L.length ? `<div class="netal">${L.map((x) => { const ipp = x.ip !== undefined && x.port !== undefined, un = x.until !== undefined ? x.until : x.expires_at, bad = netStWhy(x), pn = x.persona_uid ? netPName(x.persona_uid) || String(x.persona_uid) : ''; return `<div class="netar${bad ? ' bad' : ''}"><span><code>${esc(ipp ? String(x.ip) + ':' + String(x.port) : String(x.addr || ''))}</code>${un ? ` <span class="apn">到 ${esc(fpWhen(un))} 要再確認</span>` : ''}${pn ? ` <span class="apn">綁人格「${esc(pn)}」</span>` : ''}${bad ? `<span class="netbad">${esc(bad)}</span>` : ''}</span>${rv && ipp ? `<button type="button" class="k" data-netrv="${esc(sid)}|${esc(String(x.ip))}|${esc(String(x.port))}" ${N.rv ? 'disabled' : ''}>收回</button>` : ''}</div>`; }).join('')}</div>` : '<div class="apn">沒有一直允許的位址</div>') + '<div class="apn">「到這一位關掉」那種不在這裡:這一位結束或重開就沒了</div>' + msg;
   }
   async function netRevoke(sid, ip, port) {
     const N = (S.net = S.net || {}); if (!netHas('revoke') || N.rv) return;
@@ -5320,7 +5359,8 @@
   // 6770f IFACE-merge r3 §2「每條可改」的 name / seat_to / rebind:受影響的名單照預覽回來、aibd 補好預設的 plan 畫(頁面不自己猜誰受影響);
   // 改了那組才送那一欄,送整張表(plan 那份 + 改的);沒改 = aibd 預設(名稱照舊、夥伴改用留下的、人格改綁留下的大腦)
   const mgPlanG = (M, keep) => { const P = M.pv && M.pv.plan; return (P && Array.isArray(P.groups) ? P.groups : []).find((x) => x && x.keep === keep) || null; };
-  const mgClean = (t) => Array.from(String(t || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()).slice(0, 20).join('');
+  // f163c r6 N1:控制字之外,零寬 / 方向字元(看不見、會讓名字看起來跟別的一樣)也拿掉;aibd 端仍會再驗
+  const mgClean = (t) => Array.from(String(t || '').replace(new RegExp(AIB_UNSEEN, 'gu'), '').trim()).slice(0, 20).join('');
   const mgOrig = (g) => String((g.items.find((x) => x.uid === g.keep) || {}).name || '');
   function mgGrpBody(M, g) {
     const q = (M.gopt || {})[g.keep] || {}, b = {}, pg = mgPlanG(M, g.keep) || {}, nm = mgClean(q.name);
@@ -5679,7 +5719,7 @@
     const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' && A.mode !== 'host' ? 'on' : ''}" data-addm="safe"><span class="amh">${ICO_SAFE}<b>討論研究</b></span><i>不碰檔案、不跑指令${apNetWords(pv, 'safe') ? ';' + esc(apNetWords(pv, 'safe')) : ''}</i><em class="adang d1">危險程度:低</em></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}><span class="amh">${ICO_WORK}<b>沙盒開發</b></span><i>${canW ? '只動自己的資料夾,不推送' + (apNetWords(pv, 'work') ? ';' + esc(apNetWords(pv, 'work')) : '') : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 AIB 還不能開'}</i><em class="adang d2">危險程度:中</em></button>${hsModeBtn(A, pv) || apHostCard(A, pv)}<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD && !inPreview() ? '' : 'off'}" data-addm="dgrs" ${canD && !inPreview() ? '' : 'disabled aria-disabled="true"'}><span class="amh">${ICO_DGRS}<b>完全權限</b></span><i>${inPreview() ? '預覽區不能開完全權限,到正式版才行' : canD ? '跟你本人一樣,每次開都要驗證' + (apNetWords(pv, 'dgrs') ? ';' + esc(apNetWords(pv, 'dgrs')) : '') : '這個品牌在這台只能開討論研究'}</i><em class="adang d4">危險程度:最高</em></button>`; // S1b 5(Andy 11-23 03:01「只有二個」):開不了也畫出來、變灰寫原因,不要整顆消失
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
-    const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => rgWrap('role', r.uid, `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`, r.builtin)).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 AIB 還沒給,先用內建六種</div>' : ''}${rgNote('role')}${regForm('role')}`;
+    const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => rgWrap('role', r.uid, `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`, r.builtin)).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 AIB 還沒給,先用內建六種</div>' : ''}${rgNote('role')}${rgArchHtml('role')}${regForm('role')}`;
     // Andy 11-19 11:3x「最下方有一個下拉但又很怪的東西」⇒ 跟人格 / 第二大腦同一種:找 + 清單,選了的寫在上面
     A.node = node;
     const where = `<div class="apl"><button type="button" class="apr ${!node ? 'on' : ''}" data-addnu="" aria-pressed="${!node}"><b>不指定</b><i>自由發揮,不綁專案</i></button></div><div class="aps"><input class="apq" data-addnq="1" value="${esc(A.nq || '')}" placeholder="找已有專案(標題或編號)" aria-label="找已有專案" autocomplete="off"><div class="apl" id="addnl">${nodeRows(A)}</div></div><div class="apn">讀自進度樹;選了之後它只專注做這個專案,不會再默默帶入左樹選中的那一項${node && A.roleAuto ? ';掛到專案要一個角色,先幫你選了「作者」,角色那列可改' : node && !A.role ? ';掛到專案要一個角色,請在角色那列選一個(不選就只開席、不掛)' : ''}</div>`;
@@ -5709,8 +5749,8 @@
       ${apRow(A, 'mode', '模式與權限', (A.tpl && ptOf(A.tpl) ? esc(ptOf(A.tpl).name) + ' <em class="ptex">我的模板 · 底 ' + esc((AP_MODE[A.mode] || AP_MODE.safe)[0]) + '</em> ' : esc((AP_MODE[A.mode] || AP_MODE.safe)[0])) + ` <em class="adang d${A.mode === 'dgrs' ? 4 : A.mode === 'host' ? 3 : A.mode === 'work' ? 2 : 1}">危險程度:${esc((AP_MODE[A.mode] || AP_MODE.safe)[1])}</em>`, `<div class="amds">${mode}</div>${winHost && !(S.version && S.version.capabilities && (S.version.capabilities.net || S.version.capabilities.mode_net)) ? `<div class="apn">${esc(HS_WIN_NET)}</div>` : ''}${ptBlock(A)}${apCmp(A, { work: canW, dgrs: canD && !inPreview(), host: hsCan(pv) && !hsWinWait(), net: pv })}${ptFine(A)}`)}
       ${A.mode === 'host' ? hsRow(A) : hsRowOff(A)}
       ${repoBlk.trim() ? apRow(A, 'repo', '存哪裡', esc(curRepo(A) || (A.withSeat ? '跟 @' + seatShort(seatById(A.withSeat) || { seat_id: A.withSeat }) + ' 同一個資料夾' : '系統新開的資料夾')), repoBlk) : ''}
-      ${apRow(A, 'persona', '人格', esc(pn || (A.pkMiss ? '找不到「' + A.pkMiss + '」,請自己選' : '還沒選')), `${mgBtn(A, 'persona')}${mgPanel(A, 'persona')}${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${rgNote('persona')}${regForm('persona')}`)}
-      ${apRow(A, 'brain', '第二大腦', esc(brN || '不綁'), `${mgBtn(A, 'brain')}${mgPanel(A, 'brain')}<div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${rgNote('brain')}${regForm('brain')}`)}
+      ${apRow(A, 'persona', '人格', esc(pn || (A.pkMiss ? '找不到「' + A.pkMiss + '」,請自己選' : '還沒選')), `${mgBtn(A, 'persona')}${mgPanel(A, 'persona')}${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${rgNote('persona')}${rgArchHtml('persona')}${regForm('persona')}`)}
+      ${apRow(A, 'brain', '第二大腦', esc(brN || '不綁'), `${mgBtn(A, 'brain')}${mgPanel(A, 'brain')}<div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${rgNote('brain')}${rgArchHtml('brain')}${regForm('brain')}`)}
       ${apRow(A, 'role', '角色', esc(roN), `${mgBtn(A, 'role')}${mgPanel(A, 'role')}<div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}`)}
       ${apRow(A, 'node', '專注已有專案', esc(nodeT || node || '不指定'), where)}
       ${apRow(A, 'mates', '一次多 AI', (A.mates || []).length ? (A.mates || []).map((u) => `<span class="apill">+ ${esc(((personas().find(([x]) => x === u) || [])[1]) || u)}</span>`).join('') : '<span class="apex">只開這一席</span>', `<div class="aps"><input class="apq" data-apmq="1" value="${esc(A.mq || '')}" placeholder="找搭檔人格" aria-label="找搭檔人格" autocomplete="off"><div class="apl" id="addml">${mateRows(A)}</div></div><div class="apn">勾了就一起開;每位各佔一個名額(同時最多 8 位)</div>${(A.mates || []).length ? '<div class="apn">按「開這一組」= 主夥伴先開,搭檔再一位一位開;要驗證的那幾位各跳各的卡</div>' + (A.mode === 'dgrs' ? '<div class="apn apwarn">完全權限的搭檔每位各要驗證一次,不是按一次就全開</div>' : '') : ''}`)}
@@ -6563,7 +6603,7 @@
   async function onMainClick(e) {
     const x = e.target;
     if (x.closest('[data-hspick],[data-hsnew],[data-hsno],[data-hsok],[data-hsdel],[data-hsdelno],[data-hsdelok]') && await hsClick(x)) return; // S2 管理主機
-    if (x.closest('[data-rgedit],[data-rgdel],[data-rgno],[data-rgok],[data-rgback],[data-rgdelok],[data-rgundo]') && await rgClick(x)) return; // S4 人格 / 大腦 / 角色
+    if (x.closest('[data-rgedit],[data-rgdel],[data-rgno],[data-rgok],[data-rgback],[data-rgdelok],[data-rgundo],[data-rgao],[data-rgrs]') && await rgClick(x)) return; // S4 人格 / 大腦 / 角色
     if (x.closest('[data-ptnew],[data-ptfine],[data-ptedit],[data-ptdel],[data-ptdelno],[data-ptdelok],[data-ptbase],[data-ptit],[data-ptno],[data-ptok],[data-ptpick],[data-ptsa],[data-ptap],[data-ptrv]') && await ptClick(x)) return; // S3 權限模板
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
     const hob = x.closest('[data-handoff]'); if (hob && !S.sending) return hoAsk(hob.dataset.handoff);
@@ -6801,6 +6841,7 @@
       const r = await soft(get('/api/v1/personas')).catch(() => null);
       const L = r && (Array.isArray(r.personas) ? r.personas : Array.isArray(r) ? r : null);
       if (L && S.add) { S.personaList = L.filter((p) => p && p.uid).map((p) => [String(p.uid), String(p.display_name || p.name || p.uid)]); brainPreselect(S.add); }
+      S.arch = Object.assign(S.arch || {}, { persona: rgArchOf(r) }); // A1:已封存的人格
       if (S.add) { S.add.personasIn = true; render(); } // 拿到或拿不到都算回來了,這時才預選上次的人格
       return;
     }

@@ -159,6 +159,18 @@ async fn a_dgrs_seat_starts_from_the_page_only_through_the_owner() {
     let r = post(restart("a11-r3", Some(&rt))).await;
     assert_eq!(r.code, 200, "reason: approved_restart_refused {}", r.body);
 
+    // 重開 a dgrs seat that runs now: refused by the gate with the act's words, no window
+    // (08de5 1125: only 重開 is refused on a running seat; 換模型 / 清對話 below ask)
+    let asked = n.load(Ordering::SeqCst);
+    let r = post(restart("a11-r4", None)).await;
+    assert_eq!(r.code, 409, "reason: running_restart_asked {}", r.body);
+    assert_eq!(r.json["code"], "seat_running", "{}", r.body);
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        asked,
+        "reason: window_for_a_running_restart"
+    );
+
     // (L2) 換模型 on a running dgrs seat: asked before the model is written or the seat stopped
     let asked = n.load(Ordering::SeqCst);
     let r = post(
@@ -178,7 +190,7 @@ async fn a_dgrs_seat_starts_from_the_page_only_through_the_owner() {
         .unwrap_or_default();
     assert_ne!(me["model"], "sonnet", "reason: model_written_unasked {me}");
 
-    // (L2) 清對話 on a dgrs seat: asked before anything is stopped
+    // (L2) 清對話 on a running dgrs seat: asked before anything is stopped
     let asked = n.load(Ordering::SeqCst);
     let r = post(json!({"type": "seat_clear", "seat_id": seat,
                         "handoff_at": "2026-11-23T03:00:00Z", "idem_key": "a11-c1"}))

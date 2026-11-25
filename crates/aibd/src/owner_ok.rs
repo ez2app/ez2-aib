@@ -111,7 +111,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 15] = [
+pub const ACTIONS: [(&str, &str); 18] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -127,6 +127,15 @@ pub const ACTIONS: [(&str, &str); 15] = [
     (crate::provider_login::OP, "重新登入 AI"),
     (crate::drive_switch::OP, "打開自動推進派工"),
     (crate::persona_propose::OP_WRITE_BACK, "改寫人格卡"),
+    (crate::net_card::OP_PRIVATE, "讓 AI 夥伴連內網的一個位址"),
+    (
+        crate::net_card::OP_LOCAL_SELF,
+        "高風險:讓 AI 夥伴連這台電腦上的服務",
+    ),
+    (
+        crate::net_card::OP_NET_ALLOW_ALWAYS,
+        "一直允許 AI 夥伴連這個位址",
+    ),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -180,6 +189,23 @@ pub fn object_shown(s: &str) -> String {
     format!("{head}…{tail}")
 }
 
+/// The most of an AI-writable name a window's object shows after aibd's fixed words.
+pub const NAME_SHOWN: usize = 8;
+
+/// A window's object with aibd's fixed words first (brand, uid, what is opened) and a name an
+/// AI of the same account can write (a persona card's name) after them, cut to [`NAME_SHOWN`]
+/// characters (c2f0b REVIEW-pa2ls L-a; ebab8 11-25 13:37). The window keeps only the first
+/// [`OBJECT_HEAD`] characters of a long object: a name put first pushed the fixed words out,
+/// and a name written to look like them stood where the real ones should be.
+pub fn fixed_then_name(fixed: &[&str], name: &str) -> String {
+    let mut n: String = name.chars().take(NAME_SHOWN).collect();
+    if name.chars().count() > NAME_SHOWN {
+        n.push('…');
+    }
+    let fixed = fixed.join(" · ");
+    format!("{fixed} · {n}")
+}
+
 /// One part of a plain sentence: a name, a branch or `owner/name` as aibd already checked it
 /// when the ask was made. Read again here so that the sentence can only ever hold this shape.
 fn piece(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -208,11 +234,20 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
         crate::repos::OP_REGISTER => format!("登記這個資料夾當倉:{}", piece(&v, "name")?),
         // A11: a dgrs open with no repo, and a page's restart of a dgrs seat
         crate::repos::OP_OPEN => match v["kind"].as_str() {
-            Some("open") => format!(
-                "開一個完全權限的席({}),人格 {}",
-                piece(&v, "provider")?,
-                piece(&v, "persona_uid")?
-            ),
+            // f163c REVIEW-a11 N2 + pre-8947d325 L1: the persona by its name (a person's words,
+            // cleaned as every object is) and its uid, as a name can be changed or copied
+            Some("open") => {
+                let uid = piece(&v, "persona_uid")?;
+                let name = v["persona_name"]
+                    .as_str()
+                    .map(object_shown)
+                    .filter(|n| !n.is_empty());
+                format!(
+                    "開一個完全權限的席({}),人格 {}",
+                    piece(&v, "provider")?,
+                    name.map_or_else(|| uid.clone(), |n| format!("{n}({uid})"))
+                )
+            }
             Some("restart") => format!(
                 "重開完全權限的席 @{}({})",
                 seat_code(&v)?,
@@ -338,17 +373,28 @@ pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     // window at all (Owner::ask is Unavailable), and nothing else of the request says a time
     let hold = crate::grants::hold_in(ask.operation, &ask.params)
         .ok()
-        .flatten()
-        .map(|h| format!(" · {}", h.words()))
-        .unwrap_or_default();
+        .flatten();
     format!(
-        "{}\n對象:{}\n對照碼 {} · {until},過了這張就作廢{hold}\n單號 {}|參數 {}|{}",
+        "{}\n對象:{}\n{}\n單號 {}|參數 {}|{}",
         top_words(ask),
         object_shown(&ask.resource),
-        pair_code(ticket),
+        code_line(ticket, until, hold),
         ticket,
         &p[..12],
         ask.operation,
+    )
+}
+
+/// The window's third line: the code, until when, and how long a yes opens it (only what
+/// [`crate::grants::hold_in`] gave, in its own words). One sentence for every system window,
+/// a single ask's and a batch's (08de5 B1), so the person learns one.
+pub fn code_line(ticket: &str, until: &str, hold: Option<crate::grants::Hold>) -> String {
+    let hold = hold
+        .map(|h| format!(" · {}", h.words()))
+        .unwrap_or_default();
+    format!(
+        "對照碼 {} · {until},過了這張就作廢{hold}",
+        pair_code(ticket)
     )
 }
 
@@ -415,6 +461,10 @@ pub const WIRED: &[&str] = &[
     // real address and host key in the window (DESIGN-add-test-host-b4297-1121, 5d33a B1 L1)
     crate::test_host_add::OP_ADD,
     crate::test_host_add::OP_REMOVE,
+    // a seat's held connection, answered on the network card (IFACE-netcard r1, 3e53b)
+    crate::net_card::OP_PRIVATE,
+    crate::net_card::OP_LOCAL_SELF,
+    crate::net_card::OP_NET_ALLOW_ALWAYS,
     // A1: a persona card's sections changed from the built-in page (DESIGN-a1-edit-archive)
     crate::persona_edit::OP_SET,
     // aibd §7: a permission template change that turns an item on or raises the base
@@ -470,6 +520,10 @@ pub fn set_presence(p: crate::touch::SharedPresence, gate: std::sync::Arc<dyn Wi
 
 /// The one gate every fingerprint window of this aibd passes ([`crate::pairing::Pairing`]).
 pub trait WindowGate: Send + Sync {
+    /// 指紋批次簽: a page's access as the pairing holds it now (none: gone, or no pairing).
+    fn page_now(&self, _digest: [u8; 32]) -> Option<crate::pairing::PageAccess> {
+        None
+    }
     fn open(&self) -> Result<(), &'static str>;
     fn closed(&self, yes: bool);
     /// How long until [`Self::open`] stops answering `pair_touch_limited`; none when it would not.
@@ -479,6 +533,9 @@ pub trait WindowGate: Send + Sync {
 }
 
 impl WindowGate for crate::pairing::Pairing {
+    fn page_now(&self, digest: [u8; 32]) -> Option<crate::pairing::PageAccess> {
+        self.access_digest(digest)
+    }
     fn open(&self) -> Result<(), &'static str> {
         self.window_open()
     }
@@ -509,6 +566,72 @@ pub(crate) fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+tokio::task_local! {
+    /// 指紋批次簽 (`crate::owner_batch`): while one item is collected its asks are kept here.
+    /// Bound to that one call (f163c list r0 L2): another request, on another task, is never
+    /// collected and never refused because of it.
+    static COLLECT: std::cell::RefCell<Vec<Ask>>;
+}
+
+/// The answer a collected ask gets: not a ticket's shape ([`ticket_ok`] refuses the dot), so
+/// reading it or resending with it is never a ticket.
+pub const COLLECTED: &str = "collected.";
+
+/// Runs `f` with its fingerprint asks kept instead of raised: what it gave and the asks.
+pub async fn collecting<F: std::future::Future>(f: F) -> (F::Output, Vec<Ask>) {
+    COLLECT
+        .scope(std::cell::RefCell::new(Vec::new()), async move {
+            let out = f.await;
+            let asks = COLLECT.with(std::cell::RefCell::take);
+            (out, asks)
+        })
+        .await
+}
+
+/// 指紋批次簽: one window for a whole list (`crate::owner_batch` checked it). `ticket` is made
+/// by the caller (its list is kept under it before the window can answer); `answered` gets the
+/// ticket and the yes once the owner answers.
+pub struct BatchAsk {
+    pub ticket: String,
+    pub batch_sha: String,
+    pub lines: Vec<String>,
+    pub by: String,
+    pub answered: Told,
+}
+
+/// What a batch ticket tells once the owner answers: the ticket and the yes.
+pub type Told = Box<dyn FnOnce(String, bool) + Send>;
+
+/// [`Owner::ask_batch`] with this aibd's owner (Unavailable without the switch).
+pub fn ask_batch(b: BatchAsk) -> Asked {
+    match OWNER.get() {
+        Some(o) => o.ask_batch(b, |f| {
+            std::thread::spawn(f);
+        }),
+        None => Asked::Unavailable(UNAVAILABLE),
+    }
+}
+
+/// [`Owner::child`] with this aibd's owner.
+pub fn child(batch: &str, ask: &Ask) -> Option<String> {
+    OWNER.get().and_then(|o| o.child(batch, ask))
+}
+
+/// [`Owner::take_batch`] with this aibd's owner.
+pub fn take_batch(batch: &str, by: &str) -> Result<(), &'static str> {
+    OWNER
+        .get()
+        .map_or(Err(UNAVAILABLE), |o| o.take_batch(batch, by))
+}
+
+/// The page's access as the pairing holds it now (none: gone, or no owner check here).
+pub fn page_now(digest: [u8; 32]) -> Option<crate::pairing::PageAccess> {
+    OWNER.get().and_then(|o| o.gate.page_now(digest))
+}
+
+/// The operation a batch ticket is kept under.
+pub const OP_BATCH: &str = "owner.batch";
+
 /// Opens a ticket and raises the owner's fingerprint window for it (off the caller's thread);
 /// the page polls [`state`] and resends with the ticket.
 pub fn ask(ask: &Ask) -> Asked {
@@ -517,6 +640,15 @@ pub fn ask(ask: &Ask) -> Asked {
     }
     if !WIRED.contains(&ask.operation) {
         return Asked::Unavailable(UNAVAILABLE);
+    }
+    // 指紋批次簽: an item being collected keeps its ask here; no window, no gate count, no
+    // ticket in the table (f163c list r0 A1 A2)
+    if let Ok(n) = COLLECT.try_with(|c| {
+        let mut v = c.borrow_mut();
+        v.push(ask.clone());
+        v.len()
+    }) {
+        return Asked::Ticket(format!("{COLLECTED}{n}"));
     }
     match OWNER.get() {
         Some(o) => o.ask(ask, |f| {
@@ -587,6 +719,8 @@ struct Slot {
     /// The key's signature of this ticket's [`binding`], once approved (none from a presence
     /// with no key).
     sig: Vec<u8>,
+    /// 指紋批次簽: told the yes or no once the owner answers (a batch ticket only).
+    on_answer: Option<Told>,
 }
 
 /// The tickets of this aibd, in memory only: a restart drops them all.
@@ -666,6 +800,7 @@ impl Owner {
                     by: ask.by.clone(),
                     state: State::Pending,
                     sig: Vec::new(),
+                    on_answer: None,
                 },
             );
         }
@@ -726,6 +861,134 @@ impl Owner {
             Err(crate::touch::TIMEOUT) => State::Expired,
             Err(e) => State::Refused(e.to_owned()),
         };
+        let (told, yes) = (slot.on_answer.take(), slot.rec.approved);
+        drop(s);
+        if let Some(f) = told {
+            f(ticket.to_owned(), yes);
+        }
+    }
+
+    /// 指紋批次簽: one window listing every line, one ticket for the list. The ticket keeps the
+    /// list's hash as its params; the key signs [`crate::owner_batch::binding`].
+    pub fn ask_batch(
+        self: &std::sync::Arc<Self>,
+        b: BatchAsk,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
+    ) -> Asked {
+        let now = (self.clock)();
+        if !ticket_ok(&b.ticket) {
+            return Asked::Unavailable(UNAVAILABLE);
+        }
+        // the same gate as one ask: the whole list counts as one window
+        if let Err(w) = self.gate.open() {
+            return Asked::Unavailable(w);
+        }
+        let n = b.lines.len();
+        {
+            let mut s = self.slots();
+            s.retain(|_, v| now < v.rec.expires_at + 600);
+            s.insert(
+                b.ticket.clone(),
+                Slot {
+                    rec: Record {
+                        ticket: b.ticket.clone(),
+                        category: Category::Command,
+                        operation: OP_BATCH.to_owned(),
+                        resource: format!("{n} 項"),
+                        params_sha256: b.batch_sha.clone(),
+                        approved: false,
+                        expires_at: now + TICKET_SECS,
+                        used: false,
+                    },
+                    by: b.by.clone(),
+                    state: State::Pending,
+                    sig: Vec::new(),
+                    on_answer: Some(b.answered),
+                },
+            );
+        }
+        let me = self.clone();
+        let mut closing = Closing {
+            gate: self.gate.clone(),
+            yes: bool::default(),
+        };
+        let code = pair_code(&b.ticket);
+        let until = until_words(now + TICKET_SECS);
+        let why = format!(
+            "{}一次簽 {n} 項(對照碼 {code},{until}):\n{}",
+            self.mark,
+            b.lines.join("\n")
+        );
+        let msg = crate::owner_batch::binding(&b.ticket, &b.batch_sha, &b.by);
+        let hud_words = format!("{}一次簽 {n} 項", self.mark);
+        let t = b.ticket.clone();
+        spawn(Box::new(move || {
+            let _hud = crate::touch_hud::Hud::show(&hud_words, now + TICKET_SECS, &code);
+            let mut sig = Vec::new();
+            let limit = std::time::Duration::from_secs(TICKET_SECS);
+            let got = me.presence.ask_until_keep(&why, &msg, limit, &mut sig);
+            let quiet = crate::touch::ends_quietly(&got);
+            closing.yes = quiet;
+            drop(closing);
+            me.answered(&t, got, sig);
+        }));
+        Asked::Ticket(b.ticket)
+    }
+
+    /// 指紋批次簽: the whole list used once, before its first item is done (r4 §2d): `batch_used`
+    /// the second time, `not_approved` when it is not an approved batch of this page.
+    pub fn take_batch(&self, batch: &str, by: &str) -> Result<(), &'static str> {
+        let now = (self.clock)();
+        let mut s = self.slots();
+        let Some(v) = s.get_mut(batch) else {
+            return Err("not_approved");
+        };
+        if v.by != by || v.rec.operation != OP_BATCH || !v.rec.approved || now >= v.rec.expires_at {
+            return Err("not_approved");
+        }
+        if v.rec.used {
+            return Err("batch_used");
+        }
+        v.rec.used = true;
+        Ok(())
+    }
+
+    /// 指紋批次簽: a one-use approved ticket for one item of an approved, taken batch, bound to
+    /// the ask that item gave when collected; it ends with the batch.
+    pub fn child(&self, batch: &str, ask: &Ask) -> Option<String> {
+        let now = (self.clock)();
+        let mut s = self.slots();
+        let b = s.get(batch)?;
+        let ok = b.rec.operation == OP_BATCH && b.rec.approved && b.rec.used;
+        if !ok || now >= b.rec.expires_at {
+            return None;
+        }
+        let expires_at = b.rec.expires_at;
+        let ticket = crate::sessions::new_id("ot_").ok()?;
+        let params_sha256 = params_sha256(&ask.params);
+        s.insert(
+            ticket.clone(),
+            Slot {
+                rec: Record {
+                    ticket: ticket.clone(),
+                    category: ask.category,
+                    operation: ask.operation.to_owned(),
+                    resource: ask.resource.clone(),
+                    params_sha256: params_sha256.clone(),
+                    approved: true,
+                    expires_at,
+                    used: false,
+                },
+                by: ask.by.clone(),
+                state: State::Approved {
+                    at: now,
+                    digest: params_sha256,
+                },
+                sig: Vec::new(),
+                on_answer: None,
+            },
+        );
+        Some(ticket)
     }
 
     pub fn state(&self, ticket: &str, by: &str) -> State {
@@ -762,6 +1025,11 @@ impl Owner {
     /// Whether `sig` is the owner's key's signature of `msg` (a stored approval checked again).
     pub fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
         self.presence.verify(msg, sig)
+    }
+
+    /// Whether a yes here comes with a signature [`Owner::approved_signed_for`] hands back.
+    pub fn can_sign(&self) -> bool {
+        self.presence.signs()
     }
 }
 
@@ -819,7 +1087,13 @@ pub async fn ticket_state(
     } else {
         String::new()
     };
-    axum::Json(state_word(&state(&id, &format!("page:{by}")))).into_response()
+    let by = format!("page:{by}");
+    let mut v = state_word(&state(&id, &by));
+    // 指紋批次簽: each item's end, in the page's order (r4 §2b)
+    if let Some(items) = crate::owner_batch::items_of(&id, &by) {
+        v["items"] = items;
+    }
+    axum::Json(v).into_response()
 }
 
 /// Right before acting: the ticket is approved, not expired, not used, from the same page and
@@ -854,6 +1128,13 @@ pub fn approved_signed_for(ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
     OWNER.get().and_then(|o| o.approved_signed_for(ticket, ask))
 }
 
+/// Whether this aibd's owner window signs (what "always" needs), not only that it is on
+/// ([`available`]): a window that checks the person without a key signs nothing (c2f0b
+/// REVIEW-netallow-incr L-a). Without the switch: no.
+pub fn can_sign() -> bool {
+    OWNER.get().is_some_and(|o| o.can_sign())
+}
+
 /// Whether `sig` is the owner's key's signature of `msg`: the key this aibd checked at start.
 /// Without the switch or a key: never.
 pub fn verify(msg: &[u8], sig: &[u8]) -> bool {
@@ -876,6 +1157,36 @@ pub fn record_matches(rec: &Record, ticket: &str, ask: &Ask, now: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// c2f0b REVIEW-pa2ls L-a (ebab8 11-25 13:37): aibd's fixed words come first and stay in
+    /// the part of a long object the window keeps, whatever the name: a long one, or one
+    /// written to look like a uid and a brand.
+    #[test]
+    fn fixed_words_come_first_and_a_name_is_cut() {
+        let tail = "用權限模板 很長很長很長很長很長很長很長很長很長的模板名字 底 dgrs:對話、寫程式、自己資料夾、名單指令、第二大腦";
+        for name in ["小安", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let o = fixed_then_name(&["claude", "un0eba"], name);
+            assert!(
+                o.starts_with("claude · un0eba · "),
+                "reason: fixed_not_first {o}"
+            );
+            let shown = object_shown(&format!("{o} · {tail}"));
+            let head: String = shown.chars().take(OBJECT_HEAD).collect();
+            assert!(
+                head.starts_with("claude · un0eba · "),
+                "reason: fixed_cut_off {shown}"
+            );
+            assert!(
+                !head.contains("zz9zz9") && !head.contains("codex"),
+                "reason: name_stood_for_the_fixed {shown}"
+            );
+        }
+        assert_eq!(
+            fixed_then_name(&["claude", "un0eba"], "AIB 本人核准安全工程師"),
+            "claude · un0eba · AIB 本人核准…"
+        );
+        assert_eq!(fixed_then_name(&["claude"], "小安"), "claude · 小安");
+    }
 
     fn a() -> Ask {
         Ask {
@@ -1430,6 +1741,12 @@ mod tests {
     fn owner(says: Result<(), &'static str>) -> std::sync::Arc<Owner> {
         std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(says)), gate(), now))
     }
+
+    /// c2f0b L-a: an owner whose window only says yes (no key) cannot sign.
+    #[test]
+    fn an_owner_without_a_key_cannot_sign() {
+        assert!(!owner(Ok(())).can_sign(), "reason: keyless_owner_can_sign");
+    }
     fn inline(f: Box<dyn FnOnce() + Send>) {
         f()
     }
@@ -1764,6 +2081,12 @@ mod tests {
         );
     }
 
+    /// An owner on a clock of its own: the shared one is moved by the other tests running at the
+    /// same time (a ticket asked at 5000 read at 5000 + TICKET_SECS is gone).
+    fn owner_still(clock: fn() -> u64) -> std::sync::Arc<Owner> {
+        std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(Ok(()))), gate(), clock))
+    }
+
     fn held(op: &'static str, hold: &str) -> Ask {
         let mut x = a();
         x.operation = op;
@@ -1775,9 +2098,26 @@ mod tests {
     /// HD1 (DESIGN-persona-propose-osverify r1 §2a): the hold is in the window's words and in
     /// what the owner approves; a page that asks again with another hold has no approval.
     #[test]
+    fn the_code_line_is_the_windows_third_line_for_a_batch_too() {
+        let ask = held(crate::grants::OP_FS_OPEN, "min15");
+        let w = window_text(&ask, "ot_abcdef", "請在 01:02:03 前按");
+        let third = w.lines().nth(2).unwrap();
+        let min15 = crate::grants::hold_in(crate::grants::OP_FS_OPEN, &ask.params).unwrap();
+        assert_eq!(third, code_line("ot_abcdef", "請在 01:02:03 前按", min15));
+        assert_eq!(
+            code_line("ot_abcdef", "請在 01:02:03 前按", None),
+            format!(
+                "對照碼 {} · 請在 01:02:03 前按,過了這張就作廢",
+                pair_code("ot_abcdef")
+            ),
+            "reason: code_line_words"
+        );
+        assert!(code_line("t", "u", Some(crate::grants::Hold::Hour1))
+            .ends_with(crate::grants::Hold::Hour1.words()));
+    }
+
+    #[test]
     fn the_hold_is_in_the_window_and_in_what_was_approved() {
-        let _clock = clock();
-        at(5000);
         let x = held(crate::grants::OP_FS_OPEN, "min15");
         // the words are the third line's (3e53b), never the first line's too
         assert!(
@@ -1809,7 +2149,10 @@ mod tests {
                 "reason: refused_hold_shown {op} {h}"
             );
         }
-        let o = owner(Ok(()));
+        fn at_5000() -> u64 {
+            5000
+        }
+        let o = owner_still(at_5000);
         let t = ticket(o.ask(&x, inline));
         assert!(
             !o.approved_for(&t, &held(crate::grants::OP_FS_OPEN, "hour1")),
@@ -1823,9 +2166,10 @@ mod tests {
     /// none, raises no window.
     #[test]
     fn a_hold_not_given_raises_no_window() {
-        let _clock = clock();
-        at(6000);
-        let o = owner(Ok(()));
+        fn at_6000() -> u64 {
+            6000
+        }
+        let o = owner_still(at_6000);
         for (x, why) in [
             (
                 held(crate::grants::OP_NET_LOCAL_SELF, "until_seat_ends"),
@@ -1852,6 +2196,138 @@ mod tests {
         assert!(
             matches!(o.ask(&reg(), inline), Asked::Ticket(_)),
             "reason: reg"
+        );
+    }
+
+    // ---------------------------------------------------------------- 指紋批次簽 B1
+
+    /// f163c list r0 A1 A2 / L2: a collected ask raises nothing, keeps nothing in the table and
+    /// answers with no ticket's shape; another task at the same time is not collected.
+    #[tokio::test]
+    async fn a_collected_ask_raises_nothing_and_stays_with_its_call() {
+        let ((), asks) = collecting(async {
+            let here = ask(&reg());
+            assert_eq!(
+                here,
+                Asked::Ticket(format!("{COLLECTED}1")),
+                "reason: collected_ask_raised"
+            );
+            let Asked::Ticket(t) = here else { return };
+            assert!(!ticket_ok(&t), "reason: collected_ticket_is_a_ticket {t}");
+            // another task (another request) is never collected
+            let other = tokio::spawn(async { ask(&reg()) }).await.unwrap();
+            assert_ne!(
+                other,
+                Asked::Ticket(format!("{COLLECTED}2")),
+                "reason: other_task_collected"
+            );
+        })
+        .await;
+        assert_eq!(asks.len(), 1, "reason: asks_not_kept");
+        assert_eq!(asks[0].operation, crate::repos::OP_REGISTER);
+        assert_ne!(
+            ask(&reg()),
+            Asked::Ticket(format!("{COLLECTED}1")),
+            "reason: collector_outlived"
+        );
+    }
+
+    struct Window {
+        shown: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    }
+    impl crate::touch::Presence for Window {
+        fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str> {
+            self.shown
+                .lock()
+                .unwrap()
+                .push((reason.to_owned(), msg.to_vec()));
+            Ok(())
+        }
+    }
+
+    fn push_ask(branch: &str) -> Ask {
+        Ask {
+            category: Category::Command,
+            operation: crate::repo_push::OP,
+            resource: format!("ez2-aib · {branch}"),
+            params: serde_json::to_vec(&serde_json::json!({"repo": "ez2-aib", "branch": branch}))
+                .unwrap(),
+            by: "page:0123abcd".into(),
+        }
+    }
+
+    /// r4 §2c §2d: one window lists every line and the key signs the list's hash; the list is
+    /// taken once; each item gets a one-use ticket bound to the ask it gave, only after that.
+    #[test]
+    fn one_window_for_a_list_then_one_ticket_an_item() {
+        // a clock of its own: the shared one moves under the other tests
+        static BNOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5000);
+        fn bnow() -> u64 {
+            BNOW.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        let w = std::sync::Arc::new(Window {
+            shown: std::sync::Mutex::default(),
+        });
+        let o = std::sync::Arc::new(Owner::new(w.clone(), gate(), bnow));
+        let items = [push_ask("web/a"), push_ask("web/b")];
+        let lines = crate::owner_batch::window_lines(&items);
+        let sha = crate::owner_batch::batch_sha(&items);
+        let told = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let t2 = told.clone();
+        let t = ticket(o.ask_batch(
+            BatchAsk {
+                ticket: "ot_batch1".into(),
+                batch_sha: sha.clone(),
+                lines: lines.clone(),
+                by: "page:0123abcd".into(),
+                answered: Box::new(move |t, yes| *t2.lock().unwrap() = Some((t, yes))),
+            },
+            inline,
+        ));
+        assert_eq!(
+            *told.lock().unwrap(),
+            Some((t.clone(), true)),
+            "reason: not_told"
+        );
+        let shown = w.shown.lock().unwrap().clone();
+        assert_eq!(shown.len(), 1, "reason: not_one_window");
+        assert!(
+            lines.iter().all(|l| shown[0].0.contains(l.as_str())),
+            "reason: a_line_not_in_the_window {}",
+            shown[0].0
+        );
+        let signed = String::from_utf8(shown[0].1.clone()).unwrap();
+        assert!(
+            signed.starts_with("aibd/owner-batch/v1\n") && signed.contains(&sha),
+            "reason: list_not_signed {signed}"
+        );
+        // no child before the list is taken; another page does not take it
+        assert_eq!(o.child(&t, &items[0]), None, "reason: child_before_take");
+        assert_eq!(o.take_batch(&t, "page:ffffffff"), Err("not_approved"));
+        assert_eq!(o.take_batch(&t, "page:0123abcd"), Ok(()));
+        assert_eq!(
+            o.take_batch(&t, "page:0123abcd"),
+            Err("batch_used"),
+            "reason: taken_twice"
+        );
+        let c = o.child(&t, &items[0]).unwrap();
+        // bound to that very ask: other params are not approved (params_changed), and once only
+        assert!(
+            !o.approved_for(&c, &push_ask("web/z")),
+            "reason: child_other_params"
+        );
+        assert!(o.approved_for(&c, &items[0]), "reason: child_not_approved");
+        assert!(!o.approved_for(&c, &items[0]), "reason: child_used_twice");
+        // the children end with the list
+        let c2 = o.child(&t, &items[1]).unwrap();
+        BNOW.store(5000 + TICKET_SECS, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !o.approved_for(&c2, &items[1]),
+            "reason: child_outlived_batch"
+        );
+        assert!(
+            !o.approved_for(&t, &items[0]),
+            "reason: batch_ticket_approves_an_act"
         );
     }
 }

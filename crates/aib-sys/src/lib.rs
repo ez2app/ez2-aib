@@ -84,6 +84,7 @@ pub mod session;
 pub mod settle;
 #[cfg(target_os = "macos")]
 pub mod stdio_only;
+pub mod sysdir;
 #[cfg(test)]
 mod test_only_calls;
 pub mod thermal;
