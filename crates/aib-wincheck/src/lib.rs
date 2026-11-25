@@ -80,7 +80,8 @@ pub fn extras(found: &[String], sums: &BTreeMap<String, String>) -> Vec<String> 
 pub const TESTS_LIST: &str = "wincheck-tests.tsv";
 
 /// What `--help` prints (ebab8 11-25 18:37: an unknown `--help` left the person on site guessing).
-pub const USAGE: &str = "aib-wincheck [--pack <folder>] [--root <folder>] [--out <file>] [--no-ask] [--help]
+pub const USAGE: &str =
+    "aib-wincheck [--pack <folder>] [--root <folder>] [--out <file>] [--no-ask] [--help]
 
   Double-click it in the unpacked folder: it checks every file against SHA256SUMS, puts the
   tree back at C:\\aibw\\ez2-aib, runs the tests and the Windows Hello steps, and writes
@@ -939,7 +940,16 @@ mod tests {
 
     #[test]
     fn the_usage_names_every_option_and_the_exit_codes() {
-        for w in ["--pack", "--root", "--out", "--no-ask", "--help", "0 all green", "1 something red", "64"] {
+        for w in [
+            "--pack",
+            "--root",
+            "--out",
+            "--no-ask",
+            "--help",
+            "0 all green",
+            "1 something red",
+            "64",
+        ] {
             assert!(USAGE.contains(w), "{w}");
         }
     }
