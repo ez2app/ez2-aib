@@ -87,3 +87,9 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '        out.push(format!("--session-id={sid}"));' \
   --expect-fail 'copilot_wire::tests::turn_args_adds_resume_only_when_session_id_is_present' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::turn_args_adds_resume_only_when_session_id_is_present'
+# c-model (no model given: the user's config default is used, which copilot may not serve)
+python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
+  '                model.unwrap_or(COPILOT_ANY_MODEL).to_owned(),' \
+  '                model.unwrap_or("grok-4.6").to_owned(),' \
+  --expect-fail 'pipe::tests::copilot_safe_has_all_safety_flags_and_refuses_other_modes' \
+  -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::copilot_safe_has_all_safety_flags_and_refuses_other_modes'

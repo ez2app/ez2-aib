@@ -5,9 +5,9 @@
 //! `stream-json` lines (`assistant`, `result`) so `ctl`, `usage`, `session_output`, and the web
 //! UI read them uniformly. One program per turn through [`crate::turn_wire`]; the persona card
 //! and the user's words go on the turn's stdin, never in argv (08de5 11-25, ebab8 q_cd554b24
-//! condition 4: `-p <prompt>` put them where `ps` shows them). That copilot reads a piped
-//! stdin as the prompt is from its own `--help` (`-p, or piped stdin`), not run here yet:
-//! UNVERIFIED until the seat is measured signed in (condition 6).
+//! condition 4: `-p <prompt>` put them where `ps` shows them). copilot 1.0.115 takes a piped
+//! stdin as the prompt: measured signed in on a Mac with the seat's words, its tools all off
+//! and every MCP server disabled (EVIDENCE-brand-copilot-08de5-1125); Windows UNVERIFIED.
 
 use crate::turn_wire::{Brand, PromptBy};
 use serde_json::{json, Value};

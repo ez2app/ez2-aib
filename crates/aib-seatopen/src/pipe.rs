@@ -195,6 +195,9 @@ pub const COPILOT_SAFE_FORBIDDEN: &[&str] = &[
     "--interactive",
 ];
 
+/// The model a copilot seat asks for when none is given: copilot picks among those the plan has.
+pub const COPILOT_ANY_MODEL: &str = "auto";
+
 /// The first reason a copilot argv is not a safe seat's ([`safe_refusal`]).
 pub fn copilot_safe_refusal(argv: &[String]) -> Option<String> {
     safe_refusal(argv, COPILOT_SAFE_REQUIRED, COPILOT_SAFE_FORBIDDEN)
@@ -516,11 +519,12 @@ fn argv_with(
                 "--deny-url".to_owned(),
                 "*".to_owned(),
                 "--no-custom-instructions".to_owned(),
+                "--model".to_owned(),
+                // no model given: copilot's own pick, never the user's config default (on this
+                // Mac a grok model copilot does not serve: every turn failed, EVIDENCE-brand-
+                // copilot-08de5-1125)
+                model.unwrap_or(COPILOT_ANY_MODEL).to_owned(),
             ];
-            if let Some(m) = model {
-                a.push("--model".into());
-                a.push(m.into());
-            }
             Ok(a)
         }
         "grok" => {
@@ -848,6 +852,12 @@ mod tests {
                 "--model",
                 "gpt-5",
             ]
+        );
+        let none = pipe_argv("copilot", "safe", None, ID).unwrap();
+        assert_eq!(
+            &none[none.len() - 2..],
+            ["--model", "auto"],
+            "reason: user_default_model_used"
         );
         assert_eq!(
             pipe_argv("copilot", "dgrs", None, ID),
