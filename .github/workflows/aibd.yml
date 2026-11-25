@@ -3894,13 +3894,43 @@ jobs:
           # c2f0b REVIEW-wincheck L2: the result file's SUMS-FILE-SHA256 must be this value
           echo "::notice title=wincheck SUMS-FILE-SHA256::$(sha256sum winexe/SHA256SUMS | cut -c1-64)"
           echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      # ebab8 11-25 18:37 (first run on the laptop: WINCHECK-RED, 23 SUMS-MISSING): upload-artifact@v4
+      #   leaves out files whose name starts with a dot (.gitignore, .github/, .claude-plugin/) unless
+      #   include-hidden-files is true, while SHA256SUMS was written from the folder with them.
       - uses: actions/upload-artifact@v4
+        id: winup
         if: steps.winexe.outcome == 'success'
         with:
           name: ${{ steps.winexe.outputs.name }}
           path: winexe/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      # The laptop found the last one; this cell finds the next: download what was uploaded and check
+      #   it the way aib-wincheck will (every SHA256SUMS line present and equal, no file that is not in it).
+      - uses: actions/download-artifact@v4
+        if: steps.winup.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe-check/
+      - name: the uploaded pack matches its SHA256SUMS
+        if: steps.winup.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd winexe-check
+          [ -s SHA256SUMS ] || { echo "::error::the uploaded pack has no SHA256SUMS"; exit 1; }
+          sha256sum --quiet -c SHA256SUMS || { echo "::error::files of the uploaded pack are missing or differ from SHA256SUMS (above)"; exit 1; }
+          want=$(wc -l < SHA256SUMS); got=$(find . -type f ! -name SHA256SUMS | wc -l)
+          if [ "$got" != "$want" ]; then
+            echo "::error::the uploaded pack has $got files, SHA256SUMS lists $want"
+            find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort > ../got.txt
+            sed 's/^[0-9a-f]*  //' SHA256SUMS | LC_ALL=C sort > ../want.txt
+            LC_ALL=C comm -3 ../want.txt ../got.txt | head -40
+            exit 1
+          fi
+          hidden=$(grep -cE '^[0-9a-f]{64}  (.*/)?\.' SHA256SUMS || true)
+          echo "::notice title=wincheck pack uploaded::$got files match SHA256SUMS ($hidden with a dot-folder or dot-file name)"
 
   cloud-knives:
     name: cloud decision knives (macOS)

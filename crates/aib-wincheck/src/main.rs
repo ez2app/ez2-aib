@@ -7,7 +7,7 @@
 use aib_wincheck::{
     check_pack, decode_saved, failed_names, icacls_lock_args, icacls_owner_args, kept_env, may_run,
     parse_results, parse_sums, parse_tests, place_tree, sddl_only, sha256_hex, step_args,
-    suite_name, whoami_user, Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST,
+    suite_name, whoami_user, Counts, Guard, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, USAGE,
     WINDOWS_ROOT,
 };
 use std::io::{BufRead, Write};
@@ -40,7 +40,12 @@ fn args() -> Result<Args, String> {
             "--root" => a.root = Some(PathBuf::from(it.next().ok_or("--root needs a folder")?)),
             "--out" => a.out = Some(PathBuf::from(it.next().ok_or("--out needs a file")?)),
             "--no-ask" => a.ask = false,
-            other => return Err(format!("unknown argument {other:?}")),
+            // ebab8 11-25 18:37: the person on site types --help first
+            "--help" | "-h" | "/?" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
     }
     Ok(a)
