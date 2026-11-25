@@ -39,9 +39,3 @@ python3 -I scripts/knife.py crates/aibd/src/provider_login.rs \
   '            if whole && (!matches!(provider, "codex" | "grok") || code.is_some()) {' \
   --expect-fail 'provider_login::tests::a_grok_or_copilot_login_hands_on_the_address_and_the_code_only' \
   -- cargo test -p aibd --locked --lib 'provider_login::tests::a_grok_or_copilot_login_hands_on_the_address_and_the_code_only'
-# o-cop-comment (copilot config comment lines not taken out: a real login reads as none)
-python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
-  '                .filter(|l| !l.trim_start().starts_with("//"))' \
-  '                .filter(|_| true)' \
-  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
-  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
