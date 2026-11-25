@@ -2003,6 +2003,12 @@ mod tests {
         );
     }
 
+    /// An owner on a clock of its own: the shared one is moved by the other tests running at the
+    /// same time (a ticket asked at 5000 read at 5000 + TICKET_SECS is gone).
+    fn owner_still(clock: fn() -> u64) -> std::sync::Arc<Owner> {
+        std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(Ok(()))), gate(), clock))
+    }
+
     fn held(op: &'static str, hold: &str) -> Ask {
         let mut x = a();
         x.operation = op;
@@ -2034,7 +2040,6 @@ mod tests {
 
     #[test]
     fn the_hold_is_in_the_window_and_in_what_was_approved() {
-        at(5000);
         let x = held(crate::grants::OP_FS_OPEN, "min15");
         // the words are the third line's (3e53b), never the first line's too
         assert!(
@@ -2066,7 +2071,10 @@ mod tests {
                 "reason: refused_hold_shown {op} {h}"
             );
         }
-        let o = owner(Ok(()));
+        fn at_5000() -> u64 {
+            5000
+        }
+        let o = owner_still(at_5000);
         let t = ticket(o.ask(&x, inline));
         assert!(
             !o.approved_for(&t, &held(crate::grants::OP_FS_OPEN, "hour1")),
@@ -2080,8 +2088,10 @@ mod tests {
     /// none, raises no window.
     #[test]
     fn a_hold_not_given_raises_no_window() {
-        at(6000);
-        let o = owner(Ok(()));
+        fn at_6000() -> u64 {
+            6000
+        }
+        let o = owner_still(at_6000);
         for (x, why) in [
             (
                 held(crate::grants::OP_NET_LOCAL_SELF, "until_seat_ends"),
