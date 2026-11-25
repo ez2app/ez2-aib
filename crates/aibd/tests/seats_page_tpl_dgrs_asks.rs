@@ -17,11 +17,15 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Says yes to every window, and counts them.
+/// The words of every window asked, in order.
+static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Says yes to every window, and counts them (and keeps their words).
 struct Yes(Arc<AtomicUsize>);
 
 impl aibd::touch::Presence for Yes {
-    fn ask(&self, _reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+    fn ask(&self, reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+        SEEN.lock().unwrap().push(reason.to_owned());
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -142,6 +146,13 @@ async fn a_full_permission_seat_from_a_template_is_always_asked() {
         "reason: two_windows_for_one_open"
     );
     assert_eq!(list().await, before, "reason: opened_before_the_owner");
+    // pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): the window says who (no card: the uid) and which
+    // brand, first
+    let w = SEEN.lock().unwrap().last().cloned().unwrap_or_default();
+    assert!(
+        w.contains("un0eba(un0eba)· claude · "),
+        "reason: open_window_without_who {w}"
+    );
 
     // (b) a ticket the owner gave for a plain dgrs open does not open one from a template
     let r = post(open("t-2", None, None)).await;
