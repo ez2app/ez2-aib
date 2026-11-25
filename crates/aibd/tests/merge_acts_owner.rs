@@ -9,7 +9,7 @@
 
 #[path = "support/seat_input_harness.rs"]
 mod harness;
-use harness::{Daemon, Reply};
+use harness::{seat_dir, Daemon, Reply};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -37,6 +37,27 @@ async fn act(d: &Daemon, cred: &str, body: Value) -> Reply {
         .await
 }
 
+/// The roles a seat is assigned, sorted.
+async fn roles_of(d: &Daemon, page: &str, seat: &str) -> Vec<String> {
+    let r = d
+        .call(
+            "GET",
+            &format!("/api/v1/assignments?seat={seat}"),
+            Some(page),
+            None,
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let mut v: Vec<String> = r.json["assignments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["role"].as_str().unwrap().to_owned())
+        .collect();
+    v.sort();
+    v
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     let windows = Arc::new(AtomicUsize::new(0));
@@ -57,6 +78,16 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
         "brains": []
     });
     std::fs::write(data.join("registry.json"), reg.to_string()).unwrap();
+
+    // M2 (f163c REVIEW-macts): a seat assigned the role that is merged away
+    let (seat, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "assign_add", "node_id": "G7", "seat_id": seat, "role": "r_two"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
 
     // User folder page is refused
     let r = act(
@@ -126,6 +157,20 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(windows.load(Ordering::SeqCst), 0);
     let batch_id = r.json["batch_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        roles_of(&d, &page, &seat).await,
+        vec!["r_one"],
+        "reason: assignment_not_moved"
+    );
+
+    // N1: a plan runs once
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "merge_run", "plan_sha": sha, "plan": plan}),
+    )
+    .await;
+    assert_eq!(r.code, 409, "reason: plan_ran_twice {}", r.body);
 
     // merge_log lists the batch
     let r = act(
@@ -147,6 +192,12 @@ async fn merge_acts_enforce_page_only_owner_gate_plan_sha_and_undo() {
     .await;
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(r.json["state"], "undone", "{}", r.body);
+    assert_eq!(
+        roles_of(&d, &page, &seat).await,
+        vec!["r_two"],
+        "reason: assignment_not_moved_back"
+    );
+    assert_eq!(r.json["kept_changed"], json!([]), "{}", r.body);
 
     d.shutdown().await;
 }

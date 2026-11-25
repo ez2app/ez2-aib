@@ -56,7 +56,7 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # mn-undo
 python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
-  '                if state == StepState::Done {' \
-  '                if state == StepState::Done && false {' \
+  '                    if let Some(t) = undo_notes(&data, batch_id, s.seq) {' \
+  '                    if let Some(t) = undo_notes(&data, batch_id, s.seq).filter(|_| false) {' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run

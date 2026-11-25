@@ -696,7 +696,7 @@ pub async fn run(st: AppState, body: Value, by: String) -> Response {
     let (seats_next_open, days) = count_seats_and_days(&plan);
 
     if merge_plan::needs_owner(&kind) {
-        let Some(_words) =
+        let Some(words) =
             merge_plan::window_text(&kind, false, groups_len, seats_next_open, days, &plan_sha)
         else {
             return bad("window_too_long", "驗證視窗文字過長");
@@ -709,7 +709,8 @@ pub async fn run(st: AppState, body: Value, by: String) -> Response {
         let ask = crate::owner_ok::Ask {
             category: aib_approve::category::Category::Command,
             operation: op,
-            resource: plan_sha.clone(),
+            // M1 (f163c REVIEW-macts): the window shows what is merged, not a hash
+            resource: words, // M1 run
             params: serde_json::to_vec(&plan).unwrap_or_default(),
             by: by.clone(),
         };
@@ -732,6 +733,69 @@ pub async fn run(st: AppState, body: Value, by: String) -> Response {
     }
 }
 
+/// The run's journal (DESIGN-merge §5): every step is written `pending` before it changes
+/// anything, numbered from 0 with no gap as `merge_step_pending` requires, then `done`. A
+/// journal write that fails stops the run: a step the journal does not hold could not be put
+/// back (f163c REVIEW-macts M2: no store error is dropped).
+struct Journal<'a> {
+    st: &'a AppState,
+    batch_id: &'a str,
+    seq: i64,
+}
+
+impl Journal<'_> {
+    fn step(
+        &mut self,
+        op: &str,
+        target: &str,
+        before: &Value,
+        after: &Value,
+        act: impl FnOnce() -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let s = self.seq;
+        self.st
+            .messages
+            .merge_step_pending(MergeStep {
+                batch_id: self.batch_id.to_string(),
+                seq: s,
+                op: op.to_string(),
+                target: target.to_string(),
+                before_json: before.to_string(),
+                planned_after_json: after.to_string(),
+                state: "pending".to_string(),
+            })
+            .map_err(|_| "merge_journal")?;
+        self.seq += 1;
+        act()?;
+        match self.st.messages.merge_step_state(self.batch_id, s, "done") {
+            Ok(true) => Ok(()),
+            _ => Err("merge_journal"),
+        }
+    }
+}
+
+/// L1 (f163c REVIEW-macts): what the plan keeps and merges is still there and not archived
+/// now (another preview may have run since this one).
+fn plan_still_live(st: &AppState, kind: &str, groups: &[Value]) -> Result<(), Box<Response>> {
+    let live: HashSet<String> = load_live_items(st, kind)?
+        .into_iter()
+        .map(|i| i.uid)
+        .collect();
+    let stale = groups.iter().any(|g| {
+        std::iter::once(&g["keep"])
+            .chain(g["merge"].as_array().into_iter().flatten())
+            .any(|u| u.as_str().is_none_or(|u| !live.contains(u)))
+    });
+    if stale {
+        return Err(Box::new(err(
+            StatusCode::CONFLICT,
+            "plan_stale",
+            "計畫裡有項目已經被封存或拿掉，請重新預覽",
+        )));
+    }
+    Ok(())
+}
+
 fn execute_merge(
     st: &AppState,
     plan: &Value,
@@ -742,6 +806,7 @@ fn execute_merge(
     let groups = plan["groups"]
         .as_array()
         .ok_or_else(|| Box::new(bad("plan", "groups 缺漏")))?;
+    plan_still_live(st, kind, groups)?;
     let batch_id = crate::sessions::new_id("mb_").map_err(|_| {
         Box::new(err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -772,20 +837,61 @@ fn execute_merge(
             ))
         })?;
 
-    let mut seq: i64 = 0;
     let data = crate::registry::data_of(st);
-
-    if kind == "brain" {
-        if let Err(code) = copy_notes(st, groups, &batch_id, &data, &mut seq) {
+    let mut j = Journal {
+        st,
+        batch_id: &batch_id,
+        seq: 0,
+    };
+    let ran = run_steps(&mut j, kind, groups, &data, at, keep_until).and_then(|()| {
+        match st.messages.merge_batch_state(&batch_id, "done") {
+            Ok(true) => Ok(()),
+            _ => Err("merge_journal"),
+        }
+    });
+    match ran {
+        Ok(()) => {
+            // N1: a plan runs once; a second send needs a new preview
+            if let Ok(mut c) = plan_cache().lock() {
+                c.remove(plan_sha);
+            }
+            Ok(json!({
+                "batch_id": batch_id,
+                "state": "done",
+            }))
+        }
+        Err(code) => {
+            // L2: stopped midway ⇒ what was done is put back now, the batch is `failed`
+            let _ = undo_steps(st, kind, &batch_id);
             let _ = st.messages.merge_batch_state(&batch_id, "failed");
-            return Err(Box::new(err(
-                StatusCode::CONFLICT,
-                code,
-                "筆記複製沒有完成，已全部收回，什麼都沒改",
-            )));
+            let (status, message) = if code.starts_with("notes_") || code.starts_with("brain_") {
+                (
+                    StatusCode::CONFLICT,
+                    "筆記複製沒有完成，已全部收回，什麼都沒改",
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "合併中途失敗，已做的步驟已倒回",
+                )
+            };
+            Err(Box::new(err(status, code, message)))
         }
     }
+}
 
+fn run_steps(
+    j: &mut Journal<'_>,
+    kind: &str,
+    groups: &[Value],
+    data: &Path,
+    at: i64,
+    keep_until: Option<i64>,
+) -> Result<(), &'static str> {
+    let (st, batch_id) = (j.st, j.batch_id);
+    if kind == "brain" {
+        copy_notes(j, groups, data)?;
+    }
     for g in groups {
         let keep = g["keep"].as_str().unwrap_or_default();
         let merge_list = g["merge"].as_array().map_or(&[][..], Vec::as_slice);
@@ -793,141 +899,421 @@ fn execute_merge(
 
         for m in merge_list {
             let old_uid = m.as_str().unwrap_or_default();
-            seq += 1;
-            let before = json!({"archived": false});
-            let after = json!({"archived": true, "keep": keep});
-            let _ = st.messages.merge_step_pending(MergeStep {
-                batch_id: batch_id.clone(),
-                seq,
-                op: "archive".to_string(),
-                target: old_uid.to_string(),
-                before_json: before.to_string(),
-                planned_after_json: after.to_string(),
-                state: "pending".to_string(),
-            });
-            if st
-                .messages
-                .archive_add(ArchivedItem {
-                    kind: kind.to_string(),
-                    uid: old_uid.to_string(),
-                    archived_at: at,
-                    keep_until,
-                    reason: "merge".to_string(),
-                    batch_id: Some(batch_id.clone()),
-                    copy_dir: None,
-                    sha256: None,
-                    restored_at: None,
-                })
-                .is_err()
-            {
-                let _ = st.messages.merge_batch_state(&batch_id, "failed");
-                return Err(Box::new(err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "merge_failed",
-                    "封存失敗，已中止",
-                )));
-            }
-            let _ = st.messages.merge_step_state(&batch_id, seq, "done");
-
+            j.step(
+                "archive",
+                old_uid,
+                &json!({"archived": false}),
+                &json!({"archived": true, "keep": keep}),
+                || {
+                    st.messages
+                        .archive_add(ArchivedItem {
+                            kind: kind.to_string(),
+                            uid: old_uid.to_string(),
+                            archived_at: at,
+                            keep_until,
+                            reason: "merge".to_string(),
+                            batch_id: Some(batch_id.to_string()),
+                            copy_dir: None,
+                            sha256: None,
+                            restored_at: None,
+                        })
+                        .map_err(|_| "archive_failed")
+                },
+            )?;
             if kind == "persona" {
-                seq += 1;
-                let _ = st.messages.merge_step_pending(MergeStep {
-                    batch_id: batch_id.clone(),
-                    seq,
-                    op: "alias".to_string(),
-                    target: old_uid.to_string(),
-                    before_json: json!({"alias": Value::Null}).to_string(),
-                    planned_after_json: json!({"alias": keep}).to_string(),
-                    state: "pending".to_string(),
-                });
-                if st.messages.alias_set(old_uid, keep, &batch_id, at).is_err() {
-                    let _ = st.messages.merge_batch_state(&batch_id, "failed");
-                    return Err(Box::new(err(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "merge_failed",
-                        "別名寫入失敗",
-                    )));
-                }
-                let _ = st.messages.merge_step_state(&batch_id, seq, "done");
+                j.step(
+                    "alias",
+                    old_uid,
+                    &json!({"alias": Value::Null}),
+                    &json!({"alias": keep}),
+                    || {
+                        st.messages
+                            .alias_set(old_uid, keep, batch_id, at)
+                            .map_err(|_| "alias_failed")
+                    },
+                )?;
             }
         }
 
         if kind == "persona" {
-            if let Some(seat_to) = g.get("seat_to").and_then(Value::as_object) {
-                for (sid, target) in seat_to {
-                    let target_uid = target.as_str().unwrap_or(keep);
-                    seq += 1;
-                    let _ = st.messages.merge_step_pending(MergeStep {
-                        batch_id: batch_id.clone(),
-                        seq,
-                        op: "seat_next_persona".to_string(),
-                        target: sid.clone(),
-                        before_json: json!({"persona_next": Value::Null}).to_string(),
-                        planned_after_json: json!({"persona_next": target_uid}).to_string(),
-                        state: "pending".to_string(),
-                    });
-                    if st
-                        .messages
-                        .seat_next_set(sid, Some(target_uid), None, &batch_id, at)
-                        .is_err()
-                    {
-                        let _ = st.messages.merge_batch_state(&batch_id, "failed");
-                        return Err(Box::new(err(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "merge_failed",
-                            "寫入下次開切換失敗",
-                        )));
-                    }
-                    let _ = st.messages.merge_step_state(&batch_id, seq, "done");
-                }
+            for (sid, target) in g
+                .get("seat_to")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                let target_uid = target.as_str().unwrap_or(keep);
+                // L3: the switch the seat had before (an earlier batch's) is what undo puts back
+                let prev = st.messages.seat_next(sid).map_err(|_| "seat_next_failed")?;
+                let before = json!({"row": prev.map(|r| json!({
+                    "persona_next": r.persona_next,
+                    "brain_next": r.brain_next,
+                    "batch_id": r.batch_id,
+                    "at": r.at,
+                }))});
+                j.step(
+                    "seat_next_persona",
+                    sid,
+                    &before,
+                    &json!({"persona_next": target_uid}),
+                    || {
+                        st.messages
+                            .seat_next_set(sid, Some(target_uid), None, batch_id, at)
+                            .map_err(|_| "seat_next_failed")
+                    },
+                )?;
             }
         } else if kind == "role" {
-            if let Ok(mut reg) = crate::registry::load(&data) {
-                if let Some(entry) = reg.roles.iter_mut().find(|r| r.uid == keep) {
-                    if !merged_name.is_empty() && entry.name != merged_name {
-                        let old_name = entry.name.clone();
-                        seq += 1;
-                        let _ = st.messages.merge_step_pending(MergeStep {
-                            batch_id: batch_id.clone(),
-                            seq,
-                            op: "role_rename".to_string(),
-                            target: keep.to_string(),
-                            before_json: json!({"name": old_name}).to_string(),
-                            planned_after_json: json!({"name": merged_name}).to_string(),
-                            state: "pending".to_string(),
-                        });
-                        entry.name = merged_name.to_string();
-                        let _ = crate::registry::save_for_merge(&data, &reg);
-                        let _ = st.messages.merge_step_state(&batch_id, seq, "done");
+            let mut reg = crate::registry::load(data).map_err(|_| "registry_failed")?;
+            if let Some(i) = reg.roles.iter().position(|r| r.uid == keep) {
+                if !merged_name.is_empty() && reg.roles[i].name != merged_name {
+                    let old_name =
+                        std::mem::replace(&mut reg.roles[i].name, merged_name.to_string());
+                    j.step(
+                        "role_rename",
+                        keep,
+                        &json!({"name": old_name}),
+                        &json!({"name": merged_name}),
+                        || {
+                            crate::registry::save_for_merge(data, &reg)
+                                .map_err(|_| "role_rename_failed")
+                        },
+                    )?;
+                }
+            }
+            move_assignments(j, merge_list, keep)?;
+        }
+    }
+    Ok(())
+}
+
+/// M2 (f163c REVIEW-macts): every assignment on a merged role moves to the kept one as its
+/// own step (`before` = the row as it was), so undo can move it back.
+fn move_assignments(
+    j: &mut Journal<'_>,
+    merge_list: &[Value],
+    keep: &str,
+) -> Result<(), &'static str> {
+    let Some(ws) = crate::assign::workspace_db() else {
+        return Ok(());
+    };
+    let merge_set: HashSet<&str> = merge_list.iter().filter_map(Value::as_str).collect();
+    let rows = ws.list(None, None).map_err(|_| "role_assign_failed")?;
+    for row in rows
+        .into_iter()
+        .filter(|r| merge_set.contains(r.role.as_str()))
+    {
+        let keep_was_there = ws
+            .list(Some(&row.node_id), Some(&row.seat_id))
+            .map_err(|_| "role_assign_failed")?
+            .iter()
+            .any(|r| r.role == keep);
+        let before = json!({
+            "node": row.node_id,
+            "seat": row.seat_id,
+            "role": row.role,
+            "created": row.created,
+            "by_key": row.by_key,
+            "keep_was_there": keep_was_there,
+        });
+        let seat = row.seat_id.clone();
+        j.step(
+            "role_assign",
+            &seat,
+            &before,
+            &json!({"role": keep}),
+            || {
+                ws.remove(&row.node_id, &row.seat_id, &row.role)
+                    .map_err(|_| "role_assign_failed")?;
+                match ws.add(aib_store::AssignRow {
+                    role: keep.to_string(),
+                    ..row.clone()
+                }) {
+                    Ok(aib_store::Added::New | aib_store::Added::Exists) => Ok(()),
+                    _ => {
+                        let _ = ws.add(row.clone());
+                        Err("role_assign_failed")
+                    }
+                }
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Where a brain's folder is: its route key and the folder under the brain library.
+fn brain_dir(
+    root: &Path,
+    reg: &crate::registry::Registry,
+    uid: &str,
+) -> Result<(String, PathBuf), &'static str> {
+    let rk = reg
+        .brains
+        .iter()
+        .find(|b| b.uid == uid)
+        .and_then(|b| b.route_key.clone())
+        .ok_or("brain_unknown")?;
+    let rel = crate::registry::brain_folder(root, &rk)?;
+    Ok((rk, root.join(rel)))
+}
+
+type Made = (PathBuf, merge_notes::Copied, PathBuf, i64);
+
+fn copy_all(
+    j: &mut Journal<'_>,
+    groups: &[Value],
+    data: &Path,
+    root: &Path,
+    reg: &crate::registry::Registry,
+    made: &mut Vec<Made>,
+) -> Result<(), &'static str> {
+    for g in groups.iter().filter(|g| g["notes"] == "copy") {
+        let keep = g["keep"].as_str().unwrap_or_default();
+        let (keep_rk, keep_dir) = brain_dir(root, reg, keep)?;
+        for m in g["merge"].as_array().into_iter().flatten() {
+            let old_uid = m.as_str().unwrap_or_default();
+            let (rk, dir) = brain_dir(root, reg, old_uid)?;
+            let s = j.seq;
+            let mpath =
+                merge_notes::manifest_path(data, j.batch_id, s).ok_or("notes_copy_failed")?;
+            j.step(
+                "notes_copy",
+                old_uid,
+                &json!({"copied": false}),
+                &json!({"copied": true, "into": keep}),
+                || {
+                    let c = merge_notes::copy_into(&dir, &keep_dir, &rk)?;
+                    if let Err(e) = merge_notes::write_manifest(&mpath, &keep_rk, &c) {
+                        merge_notes::remove_copy(&keep_dir, &c);
+                        return Err(e);
+                    }
+                    made.push((keep_dir.clone(), c, mpath.clone(), s));
+                    Ok(())
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// 8c (DESIGN-merge §4b-2): every `notes: copy` group copies its merged brains' notes into the
+/// kept brain before anything else in the run changes. One copy failing removes every copy
+/// this run made (folders and manifests): a refused run leaves no half copy.
+fn copy_notes(j: &mut Journal<'_>, groups: &[Value], data: &Path) -> Result<(), &'static str> {
+    if !groups.iter().any(|g| g["notes"] == "copy") {
+        return Ok(());
+    }
+    let root = crate::brain_note::library()?;
+    let reg = crate::registry::load(data).map_err(|_| "brain_index_unreadable")?;
+    let mut made: Vec<Made> = Vec::new();
+    let res = copy_all(j, groups, data, &root, &reg, &mut made);
+    if res.is_err() {
+        for (keep_dir, c, mpath, s) in made.iter().rev() {
+            merge_notes::remove_copy(keep_dir, c);
+            let _ = std::fs::remove_file(mpath);
+            let _ = j.st.messages.merge_step_state(j.batch_id, *s, "undone");
+        }
+    }
+    res
+}
+
+/// Undo one `notes_copy` step: what is still as copied goes to `<data>/archive/merge-undo/`.
+fn undo_notes(data: &Path, batch_id: &str, seq: i64) -> Option<merge_notes::TookBack> {
+    let mpath = merge_notes::manifest_path(data, batch_id, seq)?;
+    let (keep_rk, c) = merge_notes::read_manifest(&mpath)?;
+    let root = crate::brain_note::library().ok()?;
+    let keep_dir = root.join(crate::registry::brain_folder(&root, &keep_rk).ok()?);
+    let undo_dir = data.join("archive").join("merge-undo").join(batch_id);
+    Some(merge_notes::take_back(&keep_dir, &c, &undo_dir))
+}
+
+fn execute_undo(st: &AppState, batch: &MergeBatch) -> Result<Value, Box<Response>> {
+    let kept_changed = undo_steps(st, &batch.kind, &batch.batch_id).map_err(|()| {
+        Box::new(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store",
+            "步驟讀取失敗",
+        ))
+    })?;
+    let final_state = if kept_changed.is_empty() {
+        "undone"
+    } else {
+        "partial_undo"
+    };
+    let _ = st.messages.merge_batch_state(&batch.batch_id, final_state);
+    Ok(json!({
+        "batch_id": batch.batch_id,
+        "state": final_state,
+        "kept_changed": kept_changed,
+    }))
+}
+
+/// Put a batch's steps back, last first (its undo, or a run that stopped midway); what was
+/// changed since and is left alone.
+fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, ()> {
+    let steps = st.messages.merge_steps(batch_id).map_err(|_| ())?;
+    let at = now_i64();
+    let data = crate::registry::data_of(st);
+    let mut kept_changed: Vec<Value> = Vec::new();
+    let undone = |seq: i64| {
+        let _ = st.messages.merge_step_state(batch_id, seq, "undone");
+    };
+
+    for s in steps.iter().rev() {
+        let state = match s.state.as_str() {
+            "pending" => StepState::Pending,
+            "done" => StepState::Done,
+            _ => StepState::Undone,
+        };
+        let before: Value = serde_json::from_str(&s.before_json).unwrap_or(Value::Null);
+        let after: Value = serde_json::from_str(&s.planned_after_json).unwrap_or(Value::Null);
+        match s.op.as_str() {
+            "archive" => {
+                let is_archived = st
+                    .messages
+                    .archived(kind, &s.target)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let now_val = json!({"archived": is_archived, "keep": after["keep"]});
+                if merge_plan::back(state, &now_val, &before, &after) == merge_plan::Back::Restore {
+                    let _ = st.messages.archive_restore(kind, &s.target, at);
+                    undone(s.seq);
+                }
+            }
+            "alias" => {
+                if state != StepState::Undone {
+                    let _ = st.messages.alias_remove_batch(batch_id);
+                    undone(s.seq);
+                }
+            }
+            "seat_next_persona" => {
+                if state == StepState::Done {
+                    let now = st.messages.seat_next(&s.target).ok().flatten();
+                    match now {
+                        Some(r)
+                            if r.batch_id == batch_id
+                                && r.persona_next.as_deref() == after["persona_next"].as_str() =>
+                        {
+                            let _ = st.messages.seat_next_done(&s.target, batch_id, r.at);
+                            let b = &before["row"];
+                            if let (Some(pb), Some(pat)) =
+                                (b["batch_id"].as_str(), b["at"].as_i64())
+                            {
+                                let _ = st.messages.seat_next_set(
+                                    &s.target,
+                                    b["persona_next"].as_str(),
+                                    b["brain_next"].as_str(),
+                                    pb,
+                                    pat,
+                                );
+                            }
+                            undone(s.seq);
+                        }
+                        _ => kept_changed.push(json!({
+                            "target": s.target,
+                            "why": "這位已經開會換過，或之後又排了別的換法",
+                        })),
                     }
                 }
             }
-            if let Some(ws) = crate::assign::workspace_db() {
-                if let Ok(rows) = ws.list(None, None) {
-                    let merge_set: HashSet<&str> =
-                        merge_list.iter().filter_map(Value::as_str).collect();
-                    for row in rows {
-                        if merge_set.contains(row.role.as_str()) {
-                            let _ = ws.remove(&row.node_id, &row.seat_id, &row.role);
-                            let _ = ws.add(aib_store::AssignRow {
-                                node_id: row.node_id,
-                                seat_id: row.seat_id,
-                                role: keep.to_string(),
-                                created: row.created,
-                                by_key: row.by_key,
-                            });
+            "role_rename" => {
+                if let Ok(mut reg) = crate::registry::load(&data) {
+                    if let Some(entry) = reg.roles.iter_mut().find(|r| r.uid == s.target) {
+                        let now_val = json!({"name": entry.name});
+                        match merge_plan::back(state, &now_val, &before, &after) {
+                            merge_plan::Back::Restore => {
+                                if let Some(old) = before["name"].as_str() {
+                                    entry.name = old.to_string();
+                                    let _ = crate::registry::save_for_merge(&data, &reg);
+                                }
+                                undone(s.seq);
+                            }
+                            merge_plan::Back::Changed => {
+                                kept_changed
+                                    .push(json!({"target": s.target, "why": "合併後已改過"}));
+                            }
+                            merge_plan::Back::Skip => {}
                         }
                     }
                 }
             }
+            "role_assign" => {
+                if state == StepState::Done {
+                    if undo_assignment(&before, &after) {
+                        undone(s.seq);
+                    } else {
+                        kept_changed.push(json!({
+                            "target": s.target,
+                            "why": "這個指派合併後改過，沒有動它",
+                        }));
+                    }
+                }
+            }
+            "notes_copy" => {
+                if state == StepState::Done {
+                    if let Some(t) = undo_notes(&data, batch_id, s.seq) {
+                        if !t.changed.is_empty() {
+                            kept_changed.push(json!({
+                                "target": s.target,
+                                "why": "複製過去的筆記合併後改過，留在原地",
+                                "files": t.changed,
+                            }));
+                        }
+                    }
+                    undone(s.seq);
+                }
+            }
+            _ => {}
         }
     }
+    Ok(kept_changed)
+}
 
-    let _ = st.messages.merge_batch_state(&batch_id, "done");
-    Ok(json!({
-        "batch_id": batch_id,
-        "state": "done",
-    }))
+/// M2: move one assignment back from the kept role to the merged one; `false` when it was
+/// changed since (the merged role's row is back already counts as done).
+fn undo_assignment(before: &Value, after: &Value) -> bool {
+    let Some(ws) = crate::assign::workspace_db() else {
+        return false;
+    };
+    let (Some(node), Some(seat), Some(old), Some(keep)) = (
+        before["node"].as_str(),
+        before["seat"].as_str(),
+        before["role"].as_str(),
+        after["role"].as_str(),
+    ) else {
+        return false;
+    };
+    let Ok(rows) = ws.list(Some(node), Some(seat)) else {
+        return false;
+    };
+    let has = |r: &str| rows.iter().any(|x| x.role == r);
+    if has(old) {
+        return true;
+    }
+    let keep_was_there = before["keep_was_there"].as_bool().unwrap_or(true);
+    if !has(keep) && !keep_was_there {
+        return false;
+    }
+    let keep_row = rows.iter().find(|x| x.role == keep).cloned();
+    // the kept role's row first (the node's limit counts rows), then the merged one's back
+    if !keep_was_there && ws.remove(node, seat, keep).is_err() {
+        return false;
+    }
+    let back = ws.add(aib_store::AssignRow {
+        node_id: node.to_string(),
+        seat_id: seat.to_string(),
+        role: old.to_string(),
+        created: before["created"].as_str().unwrap_or_default().to_string(),
+        by_key: before["by_key"].as_str().unwrap_or_default().to_string(),
+    });
+    if matches!(back, Ok(aib_store::Added::New | aib_store::Added::Exists)) {
+        return true;
+    }
+    if let (false, Some(k)) = (keep_was_there, keep_row) {
+        let _ = ws.add(k);
+    }
+    false
 }
 
 /// `merge_log {limit?, batch_id?}`.
@@ -1040,7 +1426,7 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
         let plan: Value = serde_json::from_str(&batch.plan_json).unwrap_or(Value::Null);
         let groups_len = plan["groups"].as_array().map_or(0, Vec::len);
         let (seats_next_open, days) = count_seats_and_days(&plan);
-        let Some(_words) = merge_plan::window_text(
+        let Some(words) = merge_plan::window_text(
             &batch.kind,
             true,
             groups_len,
@@ -1058,7 +1444,7 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
         let ask = crate::owner_ok::Ask {
             category: aib_approve::category::Category::Command,
             operation: op,
-            resource: batch.batch_id.clone(),
+            resource: words, // M1 undo
             params: serde_json::to_vec(&json!({"batch_id": batch.batch_id})).unwrap_or_default(),
             by: by.clone(),
         };
@@ -1079,210 +1465,6 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
         Ok(Err(r)) => *r,
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", "還原失敗"),
     }
-}
-
-/// Where a brain's folder is: its route key and the folder under the brain library.
-fn brain_dir(
-    root: &Path,
-    reg: &crate::registry::Registry,
-    uid: &str,
-) -> Result<(String, PathBuf), &'static str> {
-    let rk = reg
-        .brains
-        .iter()
-        .find(|b| b.uid == uid)
-        .and_then(|b| b.route_key.clone())
-        .ok_or("brain_unknown")?;
-    let rel = crate::registry::brain_folder(root, &rk)?;
-    Ok((rk, root.join(rel)))
-}
-
-type Made = (PathBuf, merge_notes::Copied, PathBuf, i64);
-
-#[allow(clippy::too_many_arguments)]
-fn copy_all(
-    st: &AppState,
-    groups: &[Value],
-    batch_id: &str,
-    data: &Path,
-    seq: &mut i64,
-    root: &Path,
-    reg: &crate::registry::Registry,
-    made: &mut Vec<Made>,
-) -> Result<(), &'static str> {
-    for g in groups.iter().filter(|g| g["notes"] == "copy") {
-        let keep = g["keep"].as_str().unwrap_or_default();
-        let (keep_rk, keep_dir) = brain_dir(root, reg, keep)?;
-        for m in g["merge"].as_array().into_iter().flatten() {
-            let old_uid = m.as_str().unwrap_or_default();
-            let (rk, dir) = brain_dir(root, reg, old_uid)?;
-            *seq += 1;
-            st.messages
-                .merge_step_pending(MergeStep {
-                    batch_id: batch_id.to_string(),
-                    seq: *seq,
-                    op: "notes_copy".to_string(),
-                    target: old_uid.to_string(),
-                    before_json: json!({"copied": false}).to_string(),
-                    planned_after_json: json!({"copied": true, "into": keep}).to_string(),
-                    state: "pending".to_string(),
-                })
-                .map_err(|_| "notes_copy_failed")?;
-            let c = merge_notes::copy_into(&dir, &keep_dir, &rk)?;
-            let Some(mpath) = merge_notes::manifest_path(data, batch_id, *seq) else {
-                merge_notes::remove_copy(&keep_dir, &c);
-                return Err("notes_copy_failed");
-            };
-            if let Err(e) = merge_notes::write_manifest(&mpath, &keep_rk, &c) {
-                merge_notes::remove_copy(&keep_dir, &c);
-                return Err(e);
-            }
-            made.push((keep_dir.clone(), c, mpath, *seq));
-            let _ = st.messages.merge_step_state(batch_id, *seq, "done");
-        }
-    }
-    Ok(())
-}
-
-/// 8c (DESIGN-merge §4b-2): every `notes: copy` group copies its merged brains' notes into the
-/// kept brain before anything else in the run changes. One copy failing takes back every copy
-/// this run made (folders and manifests), so a refused run leaves no half copy.
-fn copy_notes(
-    st: &AppState,
-    groups: &[Value],
-    batch_id: &str,
-    data: &Path,
-    seq: &mut i64,
-) -> Result<(), &'static str> {
-    if !groups.iter().any(|g| g["notes"] == "copy") {
-        return Ok(());
-    }
-    let root = crate::brain_note::library()?;
-    let reg = crate::registry::load(data).map_err(|_| "brain_index_unreadable")?;
-    let mut made: Vec<Made> = Vec::new();
-    let res = copy_all(st, groups, batch_id, data, seq, &root, &reg, &mut made);
-    if res.is_err() {
-        for (keep_dir, c, mpath, s) in made.iter().rev() {
-            merge_notes::remove_copy(keep_dir, c);
-            let _ = std::fs::remove_file(mpath);
-            let _ = st.messages.merge_step_state(batch_id, *s, "undone");
-        }
-    }
-    res
-}
-
-/// Undo one `notes_copy` step: what is still as copied goes to `<data>/archive/merge-undo/`.
-fn undo_notes(data: &Path, batch_id: &str, seq: i64) -> Option<merge_notes::TookBack> {
-    let mpath = merge_notes::manifest_path(data, batch_id, seq)?;
-    let (keep_rk, c) = merge_notes::read_manifest(&mpath)?;
-    let root = crate::brain_note::library().ok()?;
-    let keep_dir = root.join(crate::registry::brain_folder(&root, &keep_rk).ok()?);
-    let undo_dir = data.join("archive").join("merge-undo").join(batch_id);
-    Some(merge_notes::take_back(&keep_dir, &c, &undo_dir))
-}
-
-fn execute_undo(st: &AppState, batch: &MergeBatch) -> Result<Value, Box<Response>> {
-    let steps = st.messages.merge_steps(&batch.batch_id).map_err(|_| {
-        Box::new(err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store",
-            "步驟讀取失敗",
-        ))
-    })?;
-    let at = now_i64();
-    let data = crate::registry::data_of(st);
-    let mut kept_changed: Vec<Value> = Vec::new();
-
-    for s in steps.iter().rev() {
-        let state = match s.state.as_str() {
-            "pending" => StepState::Pending,
-            "done" => StepState::Done,
-            _ => StepState::Undone,
-        };
-        let before: Value = serde_json::from_str(&s.before_json).unwrap_or(Value::Null);
-        let after: Value = serde_json::from_str(&s.planned_after_json).unwrap_or(Value::Null);
-        match s.op.as_str() {
-            "archive" => {
-                let is_archived = st
-                    .messages
-                    .archived(&batch.kind, &s.target)
-                    .ok()
-                    .flatten()
-                    .is_some();
-                let now_val = json!({"archived": is_archived, "keep": after["keep"]});
-                if merge_plan::back(state, &now_val, &before, &after) == merge_plan::Back::Restore {
-                    let _ = st.messages.archive_restore(&batch.kind, &s.target, at);
-                    let _ = st
-                        .messages
-                        .merge_step_state(&batch.batch_id, s.seq, "undone");
-                }
-            }
-            "alias" => {
-                let _ = st.messages.alias_remove_batch(&batch.batch_id);
-                let _ = st
-                    .messages
-                    .merge_step_state(&batch.batch_id, s.seq, "undone");
-            }
-            "seat_next_persona" => {
-                let _ = st.messages.seat_next_clear_batch(&batch.batch_id);
-                let _ = st
-                    .messages
-                    .merge_step_state(&batch.batch_id, s.seq, "undone");
-            }
-            "role_rename" => {
-                if let Ok(mut reg) = crate::registry::load(&data) {
-                    if let Some(entry) = reg.roles.iter_mut().find(|r| r.uid == s.target) {
-                        let now_val = json!({"name": entry.name});
-                        match merge_plan::back(state, &now_val, &before, &after) {
-                            merge_plan::Back::Restore => {
-                                if let Some(old) = before["name"].as_str() {
-                                    entry.name = old.to_string();
-                                    let _ = crate::registry::save_for_merge(&data, &reg);
-                                }
-                                let _ =
-                                    st.messages
-                                        .merge_step_state(&batch.batch_id, s.seq, "undone");
-                            }
-                            merge_plan::Back::Changed => {
-                                kept_changed
-                                    .push(json!({"target": s.target, "why": "合併後已改過"}));
-                            }
-                            merge_plan::Back::Skip => {}
-                        }
-                    }
-                }
-            }
-            "notes_copy" => {
-                if state == StepState::Done {
-                    if let Some(t) = undo_notes(&data, &batch.batch_id, s.seq) {
-                        if !t.changed.is_empty() {
-                            kept_changed.push(json!({
-                                "target": s.target,
-                                "why": "複製過去的筆記合併後改過，留在原地",
-                                "files": t.changed,
-                            }));
-                        }
-                    }
-                    let _ = st
-                        .messages
-                        .merge_step_state(&batch.batch_id, s.seq, "undone");
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let final_state = if kept_changed.is_empty() {
-        "undone"
-    } else {
-        "partial_undo"
-    };
-    let _ = st.messages.merge_batch_state(&batch.batch_id, final_state);
-    Ok(json!({
-        "batch_id": batch.batch_id,
-        "state": final_state,
-        "kept_changed": kept_changed,
-    }))
 }
 
 #[cfg(test)]
