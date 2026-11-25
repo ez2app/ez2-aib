@@ -259,35 +259,49 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// display_name}]}` in the cards file's order (043dd: the add-a-seat picker had only the
 /// uids of seats already open). The name only: never where the card text is, nor its hash.
 /// Cards that cannot be read: 503 `persona_source_unavailable`, as when a seat is opened.
+/// §7-4: each also says `usual_brain`, the uid of the second brain its seats are usually
+/// opened with ([`crate::registry::usual_brains`]), or null.
 pub async fn personas(State(st): State<AppState>) -> Response {
-    let (src, db) = (st.personas.clone(), st.messages.clone());
+    let (src, data, store, db) = (
+        st.personas.clone(),
+        crate::registry::data_of(&st),
+        st.store.clone(),
+        st.messages.clone(),
+    );
     match tokio::task::spawn_blocking(move || {
-        src.cards()
-            .map(|c| (c, crate::persona_edit::archived_uids(&db, "persona")))
+        src.cards().map(|c| {
+            (
+                c,
+                crate::registry::usual_of(&data, &store),
+                crate::persona_edit::archived_uids(&db, "persona"),
+            )
+        })
     })
     .await
     {
         // f163c regarch L3: the archived ones unread ⇒ no list, never one showing them live
-        Ok(Ok((_, None))) => (
+        Ok(Ok((_, _, None))) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"code": "internal", "reason": "archived_unreadable",
             "message": "the archived personas cannot be read", "request_id": request_id()})),
         )
             .into_response(),
         // A1: an archived card is listed apart (the page's 已封存 with ↺), not in the picker
-        Ok(Ok((cards, Some(gone)))) => Json(json!({
-            "personas": cards
-                .iter()
-                .filter(|c| !gone.contains(&c.uid))
-                .map(|c| json!({"uid": c.uid, "display_name": c.name}))
-                .collect::<Vec<_>>(),
-            "archived": cards
+        Ok(Ok((cards, usual, Some(gone)))) => {
+            let mut body = personas_body(
+                cards
+                    .iter()
+                    .filter(|c| !gone.contains(&c.uid))
+                    .map(|c| (c.uid.as_str(), c.name.as_str())),
+                &usual,
+            );
+            body["archived"] = json!(cards
                 .iter()
                 .filter(|a| gone.contains(&a.uid))
                 .map(|a| json!({"uid": a.uid, "display_name": a.name}))
-                .collect::<Vec<_>>(),
-        }))
-        .into_response(),
+                .collect::<Vec<_>>());
+            Json(body).into_response()
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "persona cards unreadable");
             crate::sessions::ApiError::new(
@@ -303,6 +317,19 @@ pub async fn personas(State(st): State<AppState>) -> Response {
         )
             .into_response(),
     }
+}
+
+/// `GET /api/v1/personas`'s body from `(uid, name)` in the cards' order.
+pub fn personas_body<'a>(
+    cards: impl Iterator<Item = (&'a str, &'a str)>,
+    usual: &std::collections::BTreeMap<String, crate::registry::Usual>,
+) -> Value {
+    json!({
+        "personas": cards
+            .map(|(uid, name)| json!({"uid": uid, "display_name": name,
+                "usual_brain": usual.get(uid).map(|u| u.brain.as_str())}))
+            .collect::<Vec<_>>(),
+    })
 }
 
 // ---------------------------------------------------------------- host
