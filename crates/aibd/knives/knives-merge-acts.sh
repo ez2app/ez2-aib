@@ -2,7 +2,8 @@
 # aibd §8 8b-3 (IFACE-merge r3): built-in page only, plan_sha verified against preview,
 # a merged name loses the A13 format set and stays within NAME_MAX_CHARS; f163c REVIEW-macts
 # M1 (window words), M2 (assignments as steps), L1 (stale plan), L2 (put back midway),
-# L3 (the switch a seat had), N1 (a plan runs once), and the journal numbered from 0.
+# L3 (the switch a seat had), N1 (a plan runs once), the journal numbered from 0, and on the
+# undo side a put-back that fails is kept, not marked undone (da8e773f L1, N1).
 # Every knife keeps each name it touches in use (a knife that leaves a name unused is a
 # compile error, not a bite: receipt ae921-merge-acts-8b3-r2 line 66).
 set -euo pipefail
@@ -70,8 +71,8 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # ma-rollback
 python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
-  '            let _ = undo_steps(st, kind, &batch_id);' \
-  '            let _ = false && undo_steps(st, kind, &batch_id).is_ok();' \
+  '            let back = undo_steps(st, kind, &batch_id);' \
+  '            let back = Ok::<Vec<Value>, ()>(Vec::new()).or_else(|()| undo_steps(st, kind, &batch_id));' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
 # ma-before
@@ -84,5 +85,17 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
 python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   '                c.remove(plan_sha);' \
   '                let _ = c.get(plan_sha);' \
+  --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
+  -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
+# ma-settle
+python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
+  '    if did && marked() {' \
+  '    if did && marked() || true {' \
+  --expect-fail 'merge_acts::tests::a_put_back_counts_only_when_the_store_took_it_and_the_journal_says_undone' \
+  -- cargo test -p aibd --locked --lib 'merge_acts::tests::a_put_back_counts_only_when_the_store_took_it_and_the_journal_says_undone'
+# ma-n1
+python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
+  '            let (status, message) = if left != 0 {' \
+  '            let (status, message) = if left != 0 || true {' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run

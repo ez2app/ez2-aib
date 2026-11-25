@@ -341,6 +341,11 @@ async fn mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refu
     assert_eq!(r.code, 500, "reason: half_run_passed {}", r.body);
     assert!(r.body.contains("seat_next_failed"), "{}", r.body);
     assert!(
+        r.body.contains("已做的步驟已倒回"),
+        "reason: rollback_words_wrong {}",
+        r.body
+    );
+    assert!(
         msgs.archived("persona", "ccccc2").unwrap().is_none(),
         "reason: half_run_left_archived"
     );

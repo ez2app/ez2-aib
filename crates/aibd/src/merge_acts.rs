@@ -862,20 +862,36 @@ fn execute_merge(
         }
         Err(code) => {
             // L2: stopped midway ⇒ what was done is put back now, the batch is `failed`
-            let _ = undo_steps(st, kind, &batch_id);
+            let back = undo_steps(st, kind, &batch_id);
             let _ = st.messages.merge_batch_state(&batch_id, "failed");
-            let (status, message) = if code.starts_with("notes_") || code.starts_with("brain_") {
+            // N1 (f163c REVIEW-macts da8e773f): say "nothing changed" only when every step
+            // went back; else how many did not, and the batch's merge_log lists them
+            let left = match &back {
+                Ok(kept) => kept.len(),
+                Err(()) => usize::MAX,
+            };
+            let (status, message) = if left != 0 {
+                let n = if left == usize::MAX {
+                    "步驟讀不到，".to_owned()
+                } else {
+                    format!("有 {left} 步沒有倒回，")
+                };
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("合併中途失敗，{n}請看合併紀錄 {batch_id}"),
+                )
+            } else if code.starts_with("notes_") || code.starts_with("brain_") {
                 (
                     StatusCode::CONFLICT,
-                    "筆記複製沒有完成，已全部收回，什麼都沒改",
+                    "筆記複製沒有完成，已全部收回，什麼都沒改".to_owned(),
                 )
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "合併中途失敗，已做的步驟已倒回",
+                    "合併中途失敗，已做的步驟已倒回".to_owned(),
                 )
             };
-            Err(Box::new(err(status, code, message)))
+            Err(Box::new(err(status, code, &message)))
         }
     }
 }
@@ -1155,8 +1171,12 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
     let at = now_i64();
     let data = crate::registry::data_of(st);
     let mut kept_changed: Vec<Value> = Vec::new();
+    // L1 (f163c REVIEW-macts da8e773f): a step is undone only when the store took the
+    // put-back and the journal says so; else it is listed as kept and the batch is partial
     let undone = |seq: i64| {
-        let _ = st.messages.merge_step_state(batch_id, seq, "undone");
+        st.messages
+            .merge_step_state(batch_id, seq, "undone")
+            .is_ok()
     };
 
     for s in steps.iter().rev() {
@@ -1177,14 +1197,14 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                     .is_some();
                 let now_val = json!({"archived": is_archived, "keep": after["keep"]});
                 if merge_plan::back(state, &now_val, &before, &after) == merge_plan::Back::Restore {
-                    let _ = st.messages.archive_restore(kind, &s.target, at);
-                    undone(s.seq);
+                    let did = st.messages.archive_restore(kind, &s.target, at).is_ok();
+                    settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                 }
             }
             "alias" => {
                 if state != StepState::Undone {
-                    let _ = st.messages.alias_remove_batch(batch_id);
-                    undone(s.seq);
+                    let did = st.messages.alias_remove_batch(batch_id).is_ok();
+                    settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                 }
             }
             "seat_next_persona" => {
@@ -1195,20 +1215,26 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                             if r.batch_id == batch_id
                                 && r.persona_next.as_deref() == after["persona_next"].as_str() =>
                         {
-                            let _ = st.messages.seat_next_done(&s.target, batch_id, r.at);
+                            let mut did = st
+                                .messages
+                                .seat_next_done(&s.target, batch_id, r.at)
+                                .is_ok();
                             let b = &before["row"];
-                            if let (Some(pb), Some(pat)) =
-                                (b["batch_id"].as_str(), b["at"].as_i64())
+                            if let (true, Some(pb), Some(pat)) =
+                                (did, b["batch_id"].as_str(), b["at"].as_i64())
                             {
-                                let _ = st.messages.seat_next_set(
-                                    &s.target,
-                                    b["persona_next"].as_str(),
-                                    b["brain_next"].as_str(),
-                                    pb,
-                                    pat,
-                                );
+                                did = st
+                                    .messages
+                                    .seat_next_set(
+                                        &s.target,
+                                        b["persona_next"].as_str(),
+                                        b["brain_next"].as_str(),
+                                        pb,
+                                        pat,
+                                    )
+                                    .is_ok();
                             }
-                            undone(s.seq);
+                            settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                         }
                         _ => kept_changed.push(json!({
                             "target": s.target,
@@ -1218,30 +1244,35 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                 }
             }
             "role_rename" => {
-                if let Ok(mut reg) = crate::registry::load(&data) {
-                    if let Some(entry) = reg.roles.iter_mut().find(|r| r.uid == s.target) {
-                        let now_val = json!({"name": entry.name});
-                        match merge_plan::back(state, &now_val, &before, &after) {
-                            merge_plan::Back::Restore => {
-                                if let Some(old) = before["name"].as_str() {
-                                    entry.name = old.to_string();
-                                    let _ = crate::registry::save_for_merge(&data, &reg);
-                                }
-                                undone(s.seq);
+                if state == StepState::Undone {
+                    continue;
+                }
+                let Ok(mut reg) = crate::registry::load(&data) else {
+                    settle(false, || false, &s.target, &mut kept_changed);
+                    continue;
+                };
+                if let Some(i) = reg.roles.iter().position(|r| r.uid == s.target) {
+                    let now_val = json!({"name": reg.roles[i].name});
+                    match merge_plan::back(state, &now_val, &before, &after) {
+                        merge_plan::Back::Restore => {
+                            let mut did = true;
+                            if let Some(old) = before["name"].as_str() {
+                                reg.roles[i].name = old.to_string();
+                                did = crate::registry::save_for_merge(&data, &reg).is_ok();
                             }
-                            merge_plan::Back::Changed => {
-                                kept_changed
-                                    .push(json!({"target": s.target, "why": "合併後已改過"}));
-                            }
-                            merge_plan::Back::Skip => {}
+                            settle(did, || undone(s.seq), &s.target, &mut kept_changed);
                         }
+                        merge_plan::Back::Changed => {
+                            kept_changed.push(json!({"target": s.target, "why": "合併後已改過"}));
+                        }
+                        merge_plan::Back::Skip => {}
                     }
                 }
             }
             "role_assign" => {
                 if state == StepState::Done {
                     if undo_assignment(&before, &after) {
-                        undone(s.seq);
+                        settle(true, || undone(s.seq), &s.target, &mut kept_changed);
                     } else {
                         kept_changed.push(json!({
                             "target": s.target,
@@ -1260,14 +1291,26 @@ fn undo_steps(st: &AppState, kind: &str, batch_id: &str) -> Result<Vec<Value>, (
                                 "files": t.changed,
                             }));
                         }
+                        settle(true, || undone(s.seq), &s.target, &mut kept_changed);
+                    } else {
+                        // the manifest or the brain folder could not be read: nothing taken back
+                        settle(false, || undone(s.seq), &s.target, &mut kept_changed);
                     }
-                    undone(s.seq);
                 }
             }
             _ => {}
         }
     }
     Ok(kept_changed)
+}
+
+/// L1: a put-back counts only when the store took it (`did`) and the step was then marked
+/// undone; otherwise the target is listed as kept, so the batch ends `partial_undo`.
+fn settle(did: bool, marked: impl FnOnce() -> bool, target: &str, kept: &mut Vec<Value>) {
+    if did && marked() {
+        return;
+    }
+    kept.push(json!({"target": target, "why": "這一步還原時寫入失敗，沒有倒回"}));
 }
 
 /// M2: move one assignment back from the kept role to the merged one; `false` when it was
@@ -1469,6 +1512,19 @@ pub async fn undo(st: AppState, body: Value, by: String) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use super::settle;
+
+    #[test]
+    fn a_put_back_counts_only_when_the_store_took_it_and_the_journal_says_undone() {
+        let mut kept = Vec::new();
+        settle(true, || true, "t1", &mut kept);
+        assert!(kept.is_empty());
+        settle(false, || true, "t2", &mut kept);
+        settle(true, || false, "t3", &mut kept);
+        let t: Vec<_> = kept.iter().map(|k| k["target"].clone()).collect();
+        assert_eq!(t, vec!["t2", "t3"]);
+    }
+
     use super::*;
 
     #[test]

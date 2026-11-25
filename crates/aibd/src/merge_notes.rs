@@ -241,15 +241,41 @@ fn place(staging: &Path, keep_dir: &Path, tag: &str) -> Result<String, &'static 
             format!("{base}-{n}")
         };
         let at = keep_dir.join(&name);
-        match std::fs::symlink_metadata(&at) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::rename(staging, &at).map_err(|_| "notes_copy_failed")?;
-                return Ok(name);
-            }
-            _ => continue,
+        if !claim(&at)? {
+            continue;
         }
+        if std::fs::rename(staging, &at).is_err() {
+            #[cfg(unix)]
+            let _ = std::fs::remove_dir(&at);
+            return Err("notes_copy_failed");
+        }
+        return Ok(name);
     }
     Err("notes_name_taken")
+}
+
+/// N2 (f163c REVIEW-macts da8e773f): take the name before the rename. On unix a rename onto
+/// an empty folder replaces it, so a name checked free and then made by someone else would be
+/// renamed over; creating it first is one step that fails when the name is there, and the
+/// rename then only replaces the empty folder made here. Windows refuses a rename onto any
+/// folder, so there a free name is enough (UNVERIFIED on a Windows machine).
+fn claim(at: &Path) -> Result<bool, &'static str> {
+    #[cfg(unix)]
+    {
+        match std::fs::create_dir(at) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(_) => Err("notes_copy_failed"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match std::fs::symlink_metadata(at) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Ok(_) => Ok(false),
+            Err(_) => Err("notes_copy_failed"),
+        }
+    }
 }
 
 fn real_dir(p: &Path) -> Result<PathBuf, &'static str> {
@@ -385,14 +411,15 @@ pub fn take_back(keep_dir: &Path, c: &Copied, undo_dir: &Path) -> TookBack {
             t.gone += 1;
             continue;
         };
-        if !m.is_file() || m.file_type().is_symlink() {
+        // N2: a file grown past what a copy may hold is not the copied one; never read it whole
+        if !m.is_file() || m.file_type().is_symlink() || m.len() > MAX_FILE_BYTES {
             t.changed.push(rel.clone());
             continue;
         }
         let same = open_source(&p)
-            .and_then(|mut f| {
+            .and_then(|f| {
                 let mut b = Vec::new();
-                f.read_to_end(&mut b).map(|_| b)
+                f.take(MAX_FILE_BYTES + 1).read_to_end(&mut b).map(|_| b)
             })
             .map(|b| {
                 sha2::Sha256::digest(&b)
@@ -541,6 +568,23 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn an_empty_folder_already_there_is_never_renamed_over() {
+        let t = tempfile::tempdir().unwrap();
+        let (from, keep) = (t.path().join("from"), t.path().join("keep"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(keep.join("merged-from-rk")).unwrap();
+        std::fs::write(from.join("a.md"), "a").unwrap();
+        let c = copy_into(&from, &keep, "rk").unwrap();
+        assert_eq!(c.folder, "merged-from-rk-2");
+        assert_eq!(
+            std::fs::read_dir(keep.join("merged-from-rk"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
     #[test]
     fn links_are_not_followed() {
         let (t, src, keep) = tree();

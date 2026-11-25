@@ -60,3 +60,9 @@ python3 -I scripts/knife.py crates/aibd/src/merge_acts.rs \
   '                    if let Some(t) = undo_notes(&data, batch_id, s.seq).filter(|_| false) {' \
   --expect-fail mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run \
   -- cargo test -p aibd --locked --test merge_notes_owner mg13_mg14_brain_notes_copy_whole_undo_takes_back_and_a_placeholder_refuses_the_run
+# mn-claim
+python3 -I scripts/knife.py crates/aibd/src/merge_notes.rs \
+  '            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),' \
+  '            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),' \
+  --expect-fail 'merge_notes::tests::an_empty_folder_already_there_is_never_renamed_over' \
+  -- cargo test -p aibd --locked --lib 'merge_notes::tests::an_empty_folder_already_there_is_never_renamed_over'
