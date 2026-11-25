@@ -27,8 +27,12 @@ k '    if (x.closest('\''[data-relogcopy]'\'')) return relogCopy();' ' '
 # RLC10 事件窗複製鈕沒接
 k ', .evact [data-relogsend], .evact [data-relogcopy]'\'');' ', .evact [data-relogsend]'\'');'
 # RLC11 網址帶碼仍畫碼框
-k 'const code = auto ? '\'''\'' :' 'const code = false ? '\'''\'' :'
+k 'const code = auto ?' 'const code = false ?'
 # RLC12 沒碼不說
 k ''\''<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>'\''' ''\'''\'''
 # RLC13 按了不真的寫剪貼簿
 k 'try { await navigator.clipboard.writeText(R.dcode); R.copied = true; }' 'try { R.copied = true; }'
+# RLC14 網址帶碼時不給對照碼(f163c N1)
+k 'const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div>` :' 'const code = auto ? '\'''\'' :'
+# RLC15 對照碼不跳脫
+k '<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>' '<div class="rlcref">對照碼 <b>${R.dcode}</b>'

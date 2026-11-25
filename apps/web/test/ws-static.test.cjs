@@ -1834,8 +1834,9 @@ const relogChecks = (async () => {
   ok(h.includes('有效時間:這一版 AIB 還沒給') && !h.includes('已複製'), 'reason: relogcard_ttl_not_given_and_not_copied_unasked');
   win.S.relog = dev(); ok(win.html('codex').includes('打開登入頁,在輸入框按 Ctrl+V 貼上碼'), 'reason: relogcard_windows_says_ctrl_v');
   mac.S.relog = dev({ url: 'https://auth.example.test/device?user_code=WXYZ-1234' }); const ha = mac.html('codex');
-  ok(mac.auto(mac.S.relog) === true && !ha.includes('rlcode') && !ha.includes('data-relogcopy') && ha.includes('碼已經帶在網址裡') && ha.includes('href="https://auth.example.test/device?user_code=WXYZ-1234"'), 'reason: relogcard_code_in_url_no_paste_step ' + ha.slice(0, 200));
+  ok(mac.auto(mac.S.relog) === true && !ha.includes('rlcode') && !ha.includes('data-relogcopy') && ha.includes('碼已經帶在網址裡') && ha.includes('<div class="rlcref">對照碼 <b>WXYZ-1234</b>(登入頁上應該一樣)</div>') && ha.includes('href="https://auth.example.test/device?user_code=WXYZ-1234"'), 'reason: relogcard_code_in_url_no_paste_step ' + ha.slice(0, 200));
   mac.S.relog = dev({ dcode: '<b>x</b>' }); ok(mac.html('codex').includes('&lt;b&gt;x&lt;/b&gt;') && !mac.html('codex').includes('<b>x</b>'), 'reason: relogcard_code_escaped');
+  mac.S.relog = dev({ dcode: '<i>', url: 'https://auth.example.test/d?c=<i>' }); ok(mac.html('codex').includes('對照碼 <b>&lt;i&gt;</b>') && !mac.html('codex').includes('<b><i></b>'), 'reason: relogcard_ref_code_escaped');
   mac.S.relog = dev({ dcode: '' }); ok(mac.html('codex').includes('AIB 沒給登入碼') && !mac.html('codex').includes('data-relogcopy'), 'reason: relogcard_no_code_said');
   mac.S.relog = dev({ copied: true }); ok(mac.html('codex').includes('已複製,到登入頁按 ⌘V 貼上') && mac.html('codex').includes('>再複製一次</button>'), 'reason: relogcard_copied_said');
   mac.S.relog = dev({ copied: false }); ok(mac.html('codex').includes('沒複製到'), 'reason: relogcard_copy_failed_said');

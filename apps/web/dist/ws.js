@@ -4583,7 +4583,8 @@
   function relogCard(R, N, link, msg) {
     const auto = relogAuto(R), key = relogKey();
     const said = R.copied === true ? `<span class="trs on" role="status">已複製,到登入頁按 ${key} 貼上</span>` : R.copied === false ? '<span class="bad" role="status">沒複製到(瀏覽器不准):請手動選取上面的碼</span>' : '';
-    const code = auto ? '' : !R.dcode ? '<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>' : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div><div class="rlcb"><button type="button" class="k g" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${said}</div>`;
+    // f163c REVIEW-relogcard N1(RFC 8628 5.4):網址帶碼也留一行對照碼,讓人核登入頁上的碼一樣(不給複製,不用貼)
+    const code = auto ? `<div class="rlcref">對照碼 <b>${esc(R.dcode)}</b>(登入頁上應該一樣)</div>` : !R.dcode ? '<div class="bad">AIB 沒給登入碼,這一輪先取消再按一次</div>' : `<div class="rlcode" aria-label="登入碼">${esc(R.dcode)}</div><div class="rlcb"><button type="button" class="k g" data-relogcopy="1">${R.copied === true ? '再複製一次' : '複製碼'}</button>${said}</div>`;
     const steps = auto ? ['打開登入頁,按授權(碼已經帶在網址裡,不用貼)', '授權完這裡會自己更新'] : ['打開登入頁,在輸入框按 ' + key + ' 貼上碼', '按授權;授權完這裡會自己更新'];
     return `<div class="rlc"><div class="rlch"><b>登入 ${esc(N)}</b><span>共 ${steps.length} 步</span></div>${code}<div class="rlcb">${link}</div><ol class="rlcs">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol><div class="rlct">${RELOG_TTL_NA}</div></div>${msg}`;
   }
