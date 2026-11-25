@@ -1296,18 +1296,19 @@ mod tests {
 
     const PAGE: &str = "cargo test -p aibd --locked --test page_static";
 
-    /// ebab8 11-25: knives-page2 is 142 node-light knives that took 695s (~4.9s a knife) while
+    /// ebab8 11-25: knives-page2 ran 142 node-light knives in 695s (~4.9s a knife; here 140 in 685s,
+    /// inside the 140-knife limit) while
     /// aibd's other scripts take ~27s a knife. A new page script must be judged by the page
     /// scripts, not by aibd's median, or it is refused for nothing.
     fn page_tree() -> (Vec<crate::knife_anchors::Knife>, BTreeMap<String, u64>) {
-        let mut k = knives_running("crates/aibd/knives/knives-page2-fc7f9.sh", 142, PAGE);
+        let mut k = knives_running("crates/aibd/knives/knives-page2-fc7f9.sh", 140, PAGE);
         k.extend(knives_running(
             "crates/aibd/knives/knives-page2b-fc7f9.sh",
             100,
             PAGE,
         ));
         let mut rows = vec![
-            ("crates/aibd/knives/knives-page2-fc7f9.sh", 695),
+            ("crates/aibd/knives/knives-page2-fc7f9.sh", 685),
             ("crates/aibd/knives/knives-page2b-fc7f9.sh", 500),
         ];
         let names = ["a1", "a2", "a3", "a4", "a5"];
@@ -1338,9 +1339,9 @@ mod tests {
         assert_eq!(e.source, "target", "{e:?}");
         assert_eq!(e.key, "cargo -p aibd --test page_static");
         assert_eq!(e.samples, 2);
-        // per knife 695/142 = 4.894s and 500/100 = 5.000s; lower median 4.894 ⇒ 140 x 4.894 = 685.16 ⇒ 686
-        assert_eq!(e.per_knife_ms, 4894);
-        assert_eq!(e.secs, 686);
+        // per knife 685/140 = 4.892s and 500/100 = 5.000s; lower median 4.892 ⇒ 140 x 4.892 = 684.88 ⇒ 685
+        assert_eq!(e.per_knife_ms, 4892);
+        assert_eq!(e.secs, 685);
         let s = check_size(
             &k,
             &secs,
@@ -1629,10 +1630,10 @@ mod tests {
         assert_eq!(est.get("crates/aibd/knives/knives-new.sh"), Some(&810));
         let list: Vec<String> = script_infos(&k).into_keys().collect();
         let p = plan_with(&list, &secs, &est, 1).unwrap();
-        // 695 + 500 + 5 x 270 + 810
-        assert_eq!(loads_with(&p, &secs, &est, 1), vec![3355]);
+        // 685 + 500 + 5 x 270 + 810
+        assert_eq!(loads_with(&p, &secs, &est, 1), vec![3345]);
         // without estimates it would weigh the table's median (270)
-        assert_eq!(loads(&p, &secs, 1), vec![2815]);
+        assert_eq!(loads(&p, &secs, 1), vec![2805]);
         assert_eq!(
             target_of(&[
                 "a".into(),
