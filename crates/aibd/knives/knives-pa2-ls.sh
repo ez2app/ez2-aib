@@ -3,31 +3,30 @@
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 cd "$(git rev-parse --show-toplevel)"
-L1=brain_note::tests::a_take_back_moves_only_a_path_aibd_writes
 # pa2-l1-dir (a path outside AIB-notes is moved)
 python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '        && *dir == FOLDER' \
   '        && !dir.is_empty()' \
-  --expect-fail "$L1" \
-  -- cargo test -p aibd --locked --lib "$L1"
+  --expect-fail 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes'
 # pa2-l1-seat (a note of another seat is moved)
 python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '    let Some(stamp) = head.strip_suffix(code).and_then(|h| h.strip_suffix('"'"'-'"'"')) else {' \
   '    let Some(stamp) = head.rsplit_once('"'"'-'"'"').map(|(h, _)| h) else {' \
-  --expect-fail "$L1" \
-  -- cargo test -p aibd --locked --lib "$L1"
+  --expect-fail 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes'
 # pa2-l1-month (a month folder that is not the stamp's)
 python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '        && t[4..6] == m[5..]' \
   '        && t[4..6] == t[4..6]' \
-  --expect-fail "$L1" \
-  -- cargo test -p aibd --locked --lib "$L1"
+  --expect-fail 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes'
 # pa2-l1-row (the take-back of a row moves before the path is checked)
 python3 -I scripts/knife.py crates/aibd/src/brain_note.rs \
   '    if !note_rel_ok(rel, code) {' \
   '    if false && !note_rel_ok(rel, code) {' \
-  --expect-fail "$L1" \
-  -- cargo test -p aibd --locked --lib "$L1"
+  --expect-fail 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes' \
+  -- cargo test -p aibd --locked --lib 'brain_note::tests::a_take_back_moves_only_a_path_aibd_writes'
 # pa2-l2-line (L-a: the name back before the brand and the uid, where a long or copied name pushes them out)
 python3 -I scripts/knife.py crates/aibd/src/perm_apply.rs \
   '    format!("{who} · {line}")' \
