@@ -1585,4 +1585,15 @@ label.rvr{cursor:pointer}
 .lc .lcpg::-webkit-progress-bar{background:var(--panel2);border-radius:7px}
 .lc .lcpg::-webkit-progress-value{background:var(--rlb);border-radius:7px}
 .lc .lcpg::-moz-progress-bar{background:var(--rlb);border-radius:7px}
+.lcq{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:12px;font-size:17px}
+.lcq .lcqp{color:var(--text)}.lcq .lcqp a{color:var(--rlb);font-weight:700}
+.lcq .lcqr{display:grid;grid-template-columns:auto minmax(4.5em,auto) auto auto 1fr;align-items:center;column-gap:12px;row-gap:4px}
+.lcq .lcqr .rlcmark{width:28px;height:28px;font-size:14px}.lcq .lcqr .rlcmark img{width:28px;height:28px}
+.lcq .lcqn{font-weight:700}.lcq .lcqg{display:inline-flex;gap:3px}.lcq .lcqg i{display:block;width:16px;height:20px;border-radius:4px;background:var(--line2)}
+.lcq .lcqv{font-variant-numeric:tabular-nums;font-size:19px;font-weight:800}.lcq .lcqr em{font-style:normal;font-weight:700;color:#ff6b6b}
+.lcq .lcqr small{grid-column:2/-1;color:var(--dim);font-size:15px}.lcq .lcqr.none small{grid-column:3/-1}
+.lcq .t0 .lcqg i.on,.lcq .t0 .lcqv{background:#58a6ff;color:#58a6ff}.lcq .t1 .lcqg i.on,.lcq .t1 .lcqv{background:#ffd400;color:#ffd400}
+.lcq .t2 .lcqg i.on,.lcq .t2 .lcqv{background:#ff9f43;color:#ff9f43}.lcq .t3 .lcqg i.on,.lcq .t3 .lcqv{background:#ff6b6b;color:#ff6b6b}
+.lcq .lcqv{background:none!important}.lcq .old .lcqg i.on{opacity:.45}
+.lcq .lcqx{color:var(--dim);font-size:15px}.lcq .lcqf{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.lcq .lcqrb{min-height:48px;font-size:17px;font-weight:700;padding:10px 22px;border-radius:12px}
 .lc .rlcrow .k{font-size:17px;font-weight:700;padding:14px 22px;border-radius:14px;min-height:52px}.rlccp,.rlcgo{flex:1 1 200px;min-height:56px;border-radius:14px;font-size:19px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}.rlccp{border:0;background:var(--rlb);color:var(--rli)}.rlcgo{background:transparent;color:var(--text);border:2px solid var(--line)}.rlcs{margin:24px 0 0;padding-left:1.3em;font-size:18px;line-height:1.7}.rlcs li::marker{color:var(--rlb);font-weight:800}.rlcfoot{display:flex;align-items:center;padding:14px 28px;border-top:1px solid var(--line);background:var(--panel2);font-size:15px}.rlcfoot{gap:10px;color:var(--dim)}.rlct{margin-left:auto;font-weight:700;color:var(--gold)}

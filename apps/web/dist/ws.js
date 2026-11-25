@@ -4720,7 +4720,7 @@
   function lcWhy(c, n, a) { const W = lcW(), w = (a === 'update' && W.whyU[c]) || W.why[c]; return typeof w === 'function' ? w(n) : w || W.other(c || '?'); }
   function lcCard(k) {
     const p = lcEntry(k); if (!p) return '';
-    if (p.next === 'login' && !lcRun(p)) return relogHtml(k);
+    if (p.next === 'login' && !lcRun(p)) return relogHtml(k) + lcQuotaHtml(k, 'login');
     const a = lcAct(p); if (a !== 'install' && a !== 'update') return '';
     const L = S.lc, W = lcW(), N = lcName(k), j = p.job && typeof p.job === 'object' ? p.job : null, c = p.card && typeof p.card === 'object' ? p.card : {};
     if (L.no[k] && !lcRun(p)) return '';
@@ -4739,7 +4739,79 @@
       btn = lcHas('provider_' + a) ? `<button type="button" class="rlccp" data-lcgo="${esc(k)}" ${L.busy[k] ? 'disabled' : ''}>${esc(done ? W.again : W.go[a])}</button><button type="button" class="k" data-lcno="${esc(k)}">${esc(W.no)}</button>` : `<span class="rlcno">${esc(W.na)}</span>`;
     }
     const foot = [c.source ? W.src(String(c.source)) : '', lcRun(p) ? '' : W.owner].filter(Boolean).join(' · ');
-    return `<div class="rlc rlc-${b} lc"><div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">${esc(W.tag[a])}</span></div><div class="rlcbody"><h4>${esc(title)}</h4><p class="rlcsub">${esc(body)}</p>${state}<div class="rlcrow">${btn}</div></div><div class="rlcfoot"><span>${esc(foot)}</span></div></div>`;
+    return `<div class="rlc rlc-${b} lc"><div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">${esc(W.tag[a])}</span></div><div class="rlcbody"><h4>${esc(title)}</h4><p class="rlcsub">${esc(body)}</p>${state}<div class="rlcrow">${btn}</div>${lcQuotaHtml(k, a)}</div><div class="rlcfoot"><span>${esc(foot)}</span></div></div>`;
+  }
+  // ---------- §10.6 卡片下方「方案與用量」(c2f0b IFACE-provider-lifecycle §10 / §10.6;Andy 11-26 03:0x「用類似的方格顯示」,ebab8 轉)----------
+  // 樣子照座艙右欄「用量」面板:每個時段一列 = 家別圖示 + 時段名 + 10 格方格條(一格 10%,四捨五入到格,同 render_lib.usage_bar)+ 百分比;第二行小字 = 量於多久前 · 重置。
+  // 顏色門檻照抄 render_lib.CTX_TIERS(≥95 紅、≥75 橙、≥50 黃、其他藍),到上限整列紅;過期三態(fresh / counting / rolled_over / no_reset)由 aibd 算,頁面照 state 畫。
+  // 連結只用這裡的常數(§10.3:不從 aibd 回應或席位輸出拿網址);數字只供參考,頁面不拿來判斷任何事。
+  // 出處:copilot = `copilot help billing`(08de5 FACTS-provider-quota r2);claude / codex / grok 是各家官方方案頁,沒有 CLI 出處,c2f0b 核字時一起核
+  const LC_PLAN_URL = { claude: 'https://claude.com/pricing', codex: 'https://chatgpt.com/pricing', copilot: 'https://github.com/settings/copilot', grok: 'https://x.ai/grok' };
+  const LC_Q_TIERS = [[95, 't3'], [75, 't2'], [50, 't1'], [0, 't0']];
+  const LC_Q_CELLS = 10;
+  const LC_QW = {
+    'zh-TW': { win: { '5h': '5 小時', '7d': '每 1 週' }, link: '看方案 ↗', official: '方案與價格以官方頁為準', na: '用量:這一版 AIB 還沒有',
+      none: { not_seen_yet: '還沒有用量資料:開一席跑一回合就會有', not_available: '查不到' }, recheck: '重驗', rechecking: '重驗中…', nonew: '沒有更新的資料:開一席跑一回合就會有',
+      ago: (m, h, d) => (d ? `量於 ${d} 天前` : h ? `量於 ${h} 小時前` : m ? `量於 ${m} 分鐘前` : '量於剛剛'), reset: (t) => `${t} 重置`, least: (p) => `(至少 ${p}%)`, cd: (t) => `重置倒數 ${t}`,
+      rolled: '資訊過期(舊讀數不採用)', nextcd: (t) => `下次重置倒數 ${t}`, noreset: '無重置時刻', limit: (t) => (t ? `已達上限 · ${t}後恢復` : '已達上限'),
+      dur: (d, h, m) => (d ? `${d} 天${h ? ` ${h} 小時` : ''}` : h ? `${h} 小時${m ? ` ${m} 分鐘` : ''}` : `${m} 分鐘`), wd: '日一二三四五六', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+    en: { win: { '5h': '5 hours', '7d': 'Weekly' }, link: 'See plans ↗', official: 'Plans and prices are as shown on the official page', na: 'Usage: this version of AIB doesn\'t have this yet',
+      none: { not_seen_yet: 'No usage data yet: open a partner and run one turn', not_available: 'Not available' }, recheck: 'Recheck', rechecking: 'Rechecking…', nonew: 'No newer data: open a partner and run one turn',
+      ago: (m, h, d) => (d ? `Checked ${d} days ago` : h ? `Checked ${h} h ago` : m ? `Checked ${m} min ago` : 'Checked just now'), reset: (t) => `resets ${t}`, least: (p) => ` (at least ${p}%)`, cd: (t) => `resets in ${t}`,
+      rolled: 'Out of date (old reading not used)', nextcd: (t) => `next reset in ${t}`, noreset: 'no reset time', limit: (t) => (t ? `Limit reached · back in ${t}` : 'Limit reached'),
+      dur: (d, h, m) => (d ? `${d} d${h ? ` ${h} h` : ''}` : h ? `${h} h${m ? ` ${m} min` : ''}` : `${m} min`), wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], date: (md, w, hm) => `${w} ${md} ${hm}` },
+    ja: { win: { '5h': '5 時間', '7d': '1 週間ごと' }, link: 'プランを見る ↗', official: 'プランと価格は公式ページの内容が優先されます', na: '使用量:この版の AIB にはまだありません',
+      none: { not_seen_yet: '使用量のデータはまだありません。パートナーを開いて 1 回動かすと出ます', not_available: '取得できません' }, recheck: '再確認', rechecking: '再確認中…', nonew: '新しいデータはありません。パートナーを開いて 1 回動かすと出ます',
+      ago: (m, h, d) => (d ? `${d} 日前に取得` : h ? `${h} 時間前に取得` : m ? `${m} 分前に取得` : 'たった今取得'), reset: (t) => `${t} にリセット`, least: (p) => `(少なくとも ${p}%)`, cd: (t) => `リセットまで ${t}`,
+      rolled: '情報が古い(古い値は使いません)', nextcd: (t) => `次のリセットまで ${t}`, noreset: 'リセット時刻なし', limit: (t) => (t ? `上限に達しました · ${t}後に回復` : '上限に達しました'),
+      dur: (d, h, m) => (d ? `${d} 日${h ? ` ${h} 時間` : ''}` : h ? `${h} 時間${m ? ` ${m} 分` : ''}` : `${m} 分`), wd: '日月火水木金土', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+    ko: { win: { '5h': '5시간', '7d': '1주마다' }, link: '요금제 보기 ↗', official: '요금제와 가격은 공식 페이지 기준입니다', na: '사용량: 이 버전의 AIB에는 아직 없습니다',
+      none: { not_seen_yet: '아직 사용량 데이터가 없습니다. 파트너를 열어 한 번 실행하면 생깁니다', not_available: '확인할 수 없음' }, recheck: '다시 확인', rechecking: '다시 확인하는 중…', nonew: '새 데이터가 없습니다. 파트너를 열어 한 번 실행하면 생깁니다',
+      ago: (m, h, d) => (d ? `${d}일 전 확인` : h ? `${h}시간 전 확인` : m ? `${m}분 전 확인` : '방금 확인'), reset: (t) => `${t} 초기화`, least: (p) => ` (최소 ${p}%)`, cd: (t) => `초기화까지 ${t}`,
+      rolled: '정보가 오래됨(이전 값은 쓰지 않음)', nextcd: (t) => `다음 초기화까지 ${t}`, noreset: '초기화 시각 없음', limit: (t) => (t ? `한도 도달 · ${t} 후 회복` : '한도 도달'),
+      dur: (d, h, m) => (d ? `${d}일${h ? ` ${h}시간` : ''}` : h ? `${h}시간${m ? ` ${m}분` : ''}` : `${m}분`), wd: '일월화수목금토', date: (md, w, hm) => `${md}(${w}) ${hm}` },
+  };
+  const lcQW = () => LC_QW[askLang()] || LC_QW['zh-TW'];
+  const lcQNow = () => Math.floor(Date.now() / 1000);
+  const lcQSec = (x) => { const n = Number(x); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+  function lcQDur(sec) { const W = lcQW(), t = Math.max(60, Math.floor(sec)), d = Math.floor(t / 86400), h = Math.floor((t % 86400) / 3600), m = Math.floor((t % 3600) / 60); return W.dur(d, h, d ? 0 : m); }
+  function lcQAgo(at) { const a = Math.max(0, lcQNow() - at); return lcQW().ago(a >= 60 && a < 3600 ? Math.floor(a / 60) : 0, a >= 3600 && a < 86400 ? Math.floor(a / 3600) : 0, a >= 86400 ? Math.floor(a / 86400) : 0); }
+  function lcQDate(at) { const W = lcQW(), d = new Date(at * 1000), z = (n) => String(n).padStart(2, '0'); return W.date(z(d.getMonth() + 1) + '/' + z(d.getDate()), W.wd[d.getDay()], z(d.getHours()) + ':' + z(d.getMinutes())); }
+  const lcQTier = (pct) => (LC_Q_TIERS.find(([f]) => pct >= f) || LC_Q_TIERS[LC_Q_TIERS.length - 1])[1];
+  function lcQRow(r, mark) {
+    const W = lcQW(), now = lcQNow(), st = String(r.state || ''), seen = lcQSec(r.seen_at), rs = lcQSec(r.resets_at), rec = lcQSec(r.recover_at) || rs;
+    const pct = Math.max(0, Math.min(100, Math.round(Number(r.used_percent != null ? r.used_percent : r.used_pct) || 0))), nm = W.win[r.window] || String(r.window || '');
+    const head = `${mark}<span class="lcqn">${esc(nm)}</span>`;
+    if (st === 'rolled_over') return `<div class="lcqr none">${head}<small>${esc([W.rolled, rs > now ? W.nextcd(lcQDur(rs - now)) : ''].filter(Boolean).join(' · '))}</small></div>`;
+    const f = Math.max(0, Math.min(LC_Q_CELLS, Math.round(pct / 10))), lim = r.at_limit === true, old = st === 'counting' || st === 'no_reset';
+    const grid = `<span class="lcqg" role="img" aria-label="${pct}%">${'<i class="on"></i>'.repeat(f)}${'<i></i>'.repeat(LC_Q_CELLS - f)}</span>`;
+    const sub = st === 'counting' ? [lcQAgo(seen) + W.least(pct), rs > now ? W.cd(lcQDur(rs - now)) : ''] : st === 'no_reset' ? [seen ? lcQAgo(seen) : '', W.noreset] : [seen ? lcQAgo(seen) : '', rs ? W.reset(lcQDate(rs)) : ''];
+    return `<div class="lcqr ${lim ? 'lim t3' : lcQTier(pct)}${old ? ' old' : ''}">${head}${grid}<b class="lcqv">${pct}%</b>${lim ? `<em>${esc(W.limit(rec > now ? lcQDur(rec - now) : ''))}</em>` : ''}<small>${esc(sub.filter(Boolean).join(' · '))}</small></div>`;
+  }
+  // a = install | update | login:安裝還沒登入 ⇒ 只放連結;換版 / 登入照 quota 畫;quota 欄不存在(舊 aibd)⇒ 連結 +「這一版 AIB 還沒有」
+  function lcQuotaHtml(k, a) {
+    const p = lcEntry(k); if (!p) return '';
+    const W = lcQW(), N = lcName(k), b = RELOG_BRAND.includes(k) ? k : 'other', url = Object.prototype.hasOwnProperty.call(LC_PLAN_URL, k) ? LC_PLAN_URL[k] : '', L = S.lc;
+    const ln = url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(W.link)}</a>` : '';
+    if (a === 'install') return ln ? `<div class="lcq"><div class="lcqp">${ln} · ${esc(W.official)}</div></div>` : '';
+    if (!Object.prototype.hasOwnProperty.call(p, 'quota')) return `<div class="lcq"><div class="lcqp">${ln}</div><div class="lcqx">${esc(W.na)}</div></div>`;
+    const q = p.quota && typeof p.quota === 'object' ? p.quota : null, R = q && Array.isArray(q.rows) ? q.rows.filter((r) => r && typeof r === 'object').slice(0, 4) : [];
+    const plan = q && typeof q.plan === 'string' && /^[a-z0-9_]{1,24}$/.test(q.plan) ? q.plan.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : '';
+    const mark = rlcMark(b, N), why = String((q && q.reason) || p.quota_reason || 'not_seen_yet');
+    const rows = R.length ? R.map((r) => lcQRow(r, mark)).join('') : `<div class="lcqr none">${mark}<span class="lcqn">${esc(W.win['7d'])}</span><small>${esc(W.none[why] || W.none.not_available)}</small></div>`;
+    const stale = !R.length || R.some((r) => r.state !== 'fresh'), can = q && q.can_recheck === true && (k === 'claude' || k === 'codex') && lcHas('provider_quota_recheck');
+    const rb = stale && can ? `<button type="button" class="k lcqrb" data-lcqr="${esc(k)}" ${L.qbusy && L.qbusy[k] ? 'disabled' : ''}>${esc(L.qbusy && L.qbusy[k] ? W.rechecking : W.recheck)}</button>` : '';
+    const msg = L.qmsg && L.qmsg[k] ? `<div class="lcqx" role="status">${esc(L.qmsg[k])}</div>` : '';
+    return `<div class="lcq"><div class="lcqp">${plan ? `<b>${esc(plan)}</b>${ln ? ' · ' : ''}` : ''}${ln}</div>${rows}${rb || msg ? `<div class="lcqf">${rb}${msg}</div>` : ''}</div>`;
+  }
+  // 重驗 = aibd 重讀它手上最新的席位事件(不跳窗、不開 CLI、不花額度);seen_at 沒變 ⇒ 照實說沒有新資料
+  async function lcQRecheck(k) {
+    const L = S.lc, p = lcEntry(k); if (!L || !p || (k !== 'claude' && k !== 'codex') || !lcHas('provider_quota_recheck')) return;
+    L.qbusy = L.qbusy || {}; L.qmsg = L.qmsg || {}; if (L.qbusy[k]) return;
+    const seen = (x) => Math.max(0, ...((x && x.quota && Array.isArray(x.quota.rows) ? x.quota.rows : []).map((r) => lcQSec(r && r.seen_at))));
+    const before = seen(p); L.qbusy[k] = true; L.qmsg[k] = ''; render();
+    try { await act('provider_quota_recheck', { provider: k }); await lcLoad(); L.qmsg[k] = seen(lcEntry(k)) > before ? '' : lcQW().nonew; } catch (e) { L.qmsg[k] = lcWhy(rgCode(e), lcName(k)); }
+    L.qbusy[k] = false; render();
   }
   async function lcLoad() {
     const L = S.lc = S.lc || { d: null, no: {}, msg: {}, busy: {}, run: {} };
@@ -4771,6 +4843,7 @@
   function lcClick(x) {
     const g = x.closest('[data-lcgo]'); if (g) { lcGo(g.dataset.lcgo); return true; }
     const c = x.closest('[data-lccancel]'); if (c) { lcCancel(c.dataset.lccancel); return true; }
+    const qr = x.closest('[data-lcqr]'); if (qr) { lcQRecheck(qr.dataset.lcqr); return true; }
     const n = x.closest('[data-lcno]'); if (n && S.lc) { S.lc.no[n.dataset.lcno] = true; render(); return true; }
     return false;
   }

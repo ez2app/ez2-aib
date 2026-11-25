@@ -56,7 +56,7 @@ for (const t of acts) {
   // 519d0 DEV-drive-web D6 / D7:aibd 的 drive_status / drive_toggle 還沒寫(形狀在 OPINION-driveweb-1a93b-1121);頁面只在有時呼叫,沒有就用「自動推進的信」拼
   if (/^drive_(status|toggle)$/.test(t)) continue;
   // c2f0b IFACE-provider-lifecycle r1(L1 08de5 / L2 c2f0b 還沒寫)才有 provider_install / _update / _job_cancel;頁面只在 GET lifecycle 的 acts 有才送。合進來後拿掉這行
-  if (/^provider_(install|update|job_cancel)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('c2f0b IFACE-provider-lifecycle r1(L3') && ws.includes("|| !lcHas('provider_' + a)) return;") && ws.includes("|| !lcHas('provider_job_cancel')) return;"), 'branch-only act is marked: ' + t); continue; }
+  if (/^provider_(install|update|job_cancel|quota_recheck)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('c2f0b IFACE-provider-lifecycle r1(L3') && ws.includes("|| !lcHas('provider_' + a)) return;") && ws.includes("|| !lcHas('provider_job_cancel')) return;") && ws.includes("(k !== 'claude' && k !== 'codex') || !lcHas('provider_quota_recheck')) return;"), 'branch-only act is marked: ' + t); continue; }
   // 08de5 7a feat/permtpl-08de5-1123(f511716fc1 / 855a8b487d)才有 perm_template_list / _add / _set / _remove;perm_template_apply 是 7b(未開)。
   // 頁面收到 unknown_act_type 就寫「這一版還沒有」;apply 只在 version.acts 有才放。合進來後拿掉這行
   if (/^perm_template_(list|add|set|remove|apply)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7a f511716fc1') && ws.includes("hasAct('perm_template_apply') === true"), 'branch-only act is marked: ' + t); continue; }
@@ -1889,7 +1889,7 @@ const lcChecks = (async () => {
     act: async (t, b) => { sent.push([t, b]); if (st.actErr) throw Object.assign(new Error('x'), { code: st.actErr }); return {}; },
     fingerAct: async (t, b) => { fp.push([t, b]); if (st.fpErr) throw Object.assign(new Error('x'), { code: st.fpErr }); return { started: true }; },
     setTimeout: (f) => { timers.push(f); return 1; }, spLoad: () => { st.spLoads = (st.spLoads || 0) + 1; } });
-  vm.runInContext('const askLang = () => lang;\n' + mark + '//' + blk + spI + '\nthis.F = { LC_W, lcCard, lcLoad, lcGo, lcCancel, lcClick, lcNeeds, spInstallHtml };', c);
+  vm.runInContext('const askLang = () => lang;\n' + mark + '//' + blk + spI + '\nthis.F = { LC_W, lcCard, lcLoad, lcGo, lcCancel, lcClick, lcNeeds, spInstallHtml, lcQuotaHtml, LC_QW, LC_PLAN_URL, LC_Q_TIERS, LC_Q_CELLS };', c);
   const F = c.F, tick = () => new Promise((r) => setImmediate(r));
   const ck = (d) => ({ closest: (q) => { const k = q.slice(6, -1); return Object.prototype.hasOwnProperty.call(d, k) ? { dataset: { [k.replace(/-([a-z])/g, (m, x) => x.toUpperCase())]: d[k] } } : null; } });
   const ACTS = ['provider_install', 'provider_update', 'provider_job_cancel', 'provider_login'];
@@ -1923,13 +1923,54 @@ const lcChecks = (async () => {
       const hc = P({ action: 'update', state: 'cancelled' }), ho = P({ action: 'update', state: 'failed', error: 'lifecycle_offline' }), hi = P({ action: 'install', state: 'failed', error: 'lifecycle_offline' }), hn = P(null);
       ok(hc.includes(can) && ho.includes(off) && !hi.includes(off) && hn.includes(pw), 'reason: lc_update_cancel_keeps_version_' + (lg || 'zh') + ' ' + hc.slice(0, 200)); }
     c.lang = keep; }
+  // §10.6 方案與用量(Andy 03:0x「用類似的方格顯示」):樣子照座艙右欄用量面板 —— 10 格、門檻 95 / 75 / 50(render_lib.CTX_TIERS)、到上限整列紅;過期三態照 aibd 的 state;連結只用頁面常數
+  { const now = Math.floor(Date.now() / 1000), cells = (h) => (h.match(/<i class="on"><\/i>/g) || []).length, rowOf = (h, i) => (h.split('<div class="lcqr')[i + 1] || '');
+    const Q = (o) => Object.assign({ plan: 'max_20x', plan_link: 'claude', can_recheck: true, reason: null, rows: [{ window: '5h', used_percent: 62, seen_at: now - 10, resets_at: now + 3 * 3600, state: 'fresh', at_limit: false }, { window: '7d', used_percent: 68, seen_at: now - 3 * 3600 - 60, resets_at: now + 5 * 86400 + 100, state: 'counting', at_limit: false }, { window: '7d', used_percent: 100, seen_at: now - 10, resets_at: now + 2 * 86400 + 4 * 3600 + 30, state: 'fresh', at_limit: true, recover_at: now + 2 * 86400 + 4 * 3600 + 30 }] }, o);
+    const put = (p, acts) => { st.lc.d = { providers: [p], acts: acts || ACTS.concat('provider_quota_recheck') }; st.lc.no = {}; st.lc.msg = {}; };
+    ok(F.LC_Q_CELLS === 10 && JSON.stringify(F.LC_Q_TIERS) === '[[95,"t3"],[75,"t2"],[50,"t1"],[0,"t0"]]' && F.LC_PLAN_URL.copilot === 'https://github.com/settings/copilot', 'reason: lc_quota_constants_from_cockpit');
+    c.lang = 'zh-TW'; put(inst({ next: 'install', job: null })); let h = F.lcCard('claude');
+    ok(h.includes('<div class="lcq"><div class="lcqp"><a href="https://claude.com/pricing" target="_blank" rel="noopener noreferrer">看方案 ↗</a> · 方案與價格以官方頁為準</div></div>') && !h.includes('lcqr'), 'reason: lc_quota_install_link_only');
+    put(inst({ next: 'update', installed: { kind: 'found', version: '2.0.1' }, job: null })); h = F.lcCard('claude');
+    ok(h.includes('<div class="lcqx">用量:這一版 AIB 還沒有</div>') && !h.includes('lcqr'), 'reason: lc_quota_old_aibd_says_na');
+    put(inst({ next: 'update', installed: { kind: 'found', version: '2.0.1' }, job: null, quota: Q() })); h = F.lcQuotaHtml('claude', 'update');
+    const r0 = rowOf(h, 0), r1 = rowOf(h, 1), r2 = rowOf(h, 2);
+    ok(h.includes('<div class="lcqp"><b>Max 20x</b> · <a href="https://claude.com/pricing"') && r0.startsWith(' t1"') && cells(r0) === 6 && (r0.match(/<i><\/i>/g) || []).length === 4 && r0.includes('<span class="lcqn">5 小時</span>') && r0.includes('<b class="lcqv">62%</b>') && /<small>量於剛剛 · \d\d\/\d\d\([日一二三四五六]\) \d\d:\d\d 重置<\/small>/.test(r0), 'reason: lc_quota_fresh_row ' + r0);
+    ok(r1.startsWith(' t1 old"') && r1.includes('<small>量於 3 小時前(至少 68%) · 重置倒數 5 天</small>') && r1.includes('每 1 週'), 'reason: lc_quota_counting_row ' + r1);
+    ok(r2.startsWith(' lim t3"') && cells(r2) === 10 && r2.includes('<em>已達上限 · 2 天 4 小時後恢復</em>'), 'reason: lc_quota_at_limit_row ' + r2);
+    ok(h.includes('<button type="button" class="k lcqrb" data-lcqr="claude" >重驗</button>'), 'reason: lc_quota_recheck_when_stale ' + h.slice(-300));
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [Q().rows[0]] }) })); ok(!F.lcQuotaHtml('claude', 'update').includes('lcqrb'), 'reason: lc_quota_no_recheck_when_fresh');
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [Object.assign({}, Q().rows[0], { state: 'rolled_over', resets_at: now - 60 })] }) })); h = F.lcQuotaHtml('claude', 'update');
+    ok(h.includes('<div class="lcqr none">') && h.includes('<small>資訊過期(舊讀數不採用)</small>') && !h.includes('lcqg') && !h.includes('62%'), 'reason: lc_quota_rolled_over_no_bar ' + h);
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [Object.assign({}, Q().rows[0], { state: 'no_reset', resets_at: null, seen_at: now - 2 * 3600 - 5 })] }) })); h = F.lcQuotaHtml('claude', 'update');
+    ok(h.includes('<small>量於 2 小時前 · 無重置時刻</small>') && h.includes(' old"') && !h.includes('倒數'), 'reason: lc_quota_no_reset ' + h);
+    put(inst({ next: 'update', job: null, quota: Q({ rows: [], reason: 'not_seen_yet', plan: '<b>x' }) })); h = F.lcQuotaHtml('claude', 'update');
+    ok(h.includes('<span class="lcqn">每 1 週</span><small>還沒有用量資料:開一席跑一回合就會有</small>') && !h.includes('lcqg') && !h.includes('&lt;b') && h.includes('data-lcqr="claude"'), 'reason: lc_quota_not_seen_only_label ' + h);
+    put(inst({ name: 'grok', next: 'update', job: null, quota: Q({ plan: null, can_recheck: true, rows: [], reason: 'not_available' }) })); st.lc.d.providers[0].name = 'grok'; h = F.lcQuotaHtml('grok', 'update');
+    ok(h.includes('href="https://x.ai/grok"') && h.includes('查不到') && !h.includes('lcqrb'), 'reason: lc_quota_grok_no_recheck ' + h);
+    put(inst({ next: 'update', job: null, quota: Q() }), ACTS); ok(!F.lcQuotaHtml('claude', 'update').includes('lcqrb'), 'reason: lc_quota_recheck_needs_act');
+    for (const [pct, t] of [[95, 't3'], [94, 't2'], [75, 't2'], [74, 't1'], [50, 't1'], [49, 't0'], [4, 't0']]) { put(inst({ next: 'update', job: null, quota: Q({ rows: [Object.assign({}, Q().rows[0], { used_percent: pct })] }) })); const rr = rowOf(F.lcQuotaHtml('claude', 'update'), 0); ok(rr.startsWith(' ' + t + '"') && cells(rr) === Math.round(pct / 10), 'reason: lc_quota_tier_' + pct + ' ' + rr.slice(0, 40)); }
+    c.lang = 'en'; put(inst({ next: 'update', job: null, quota: Q() })); h = F.lcQuotaHtml('claude', 'update');
+    ok(h.includes('>See plans ↗</a>') && h.includes('Checked just now · resets ') && h.includes('<em>Limit reached · back in 2 d 4 h</em>') && h.includes('Checked 3 h ago (at least 68%) · resets in 5 d') && h.includes('>Recheck</button>'), 'reason: lc_quota_en ' + h.slice(0, 300));
+    c.lang = 'ko'; ok(F.lcQuotaHtml('claude', 'update').includes('한도 도달 · 2일 4시간 후 회복'), 'reason: lc_quota_ko');
+    c.lang = 'zh-TW'; put(inst({ next: 'update', job: null, quota: Q() })); sent.length = 0; gets.push({ providers: [inst({ next: 'update', job: null, quota: Q() })], acts: ACTS.concat('provider_quota_recheck') });
+    F.lcClick(ck({ lcqr: 'claude' })); await tick(); await tick(); await tick();
+    ok(sent.some((x) => x[0] === 'provider_quota_recheck' && JSON.stringify(x[1]) === '{"provider":"claude"}') && fp.every((x) => x[0] !== 'provider_quota_recheck') && F.lcQuotaHtml('claude', 'update').includes('<div class="lcqx" role="status">沒有更新的資料:開一席跑一回合就會有</div>'), 'reason: lc_quota_recheck_no_new_data ' + JSON.stringify(sent));
+    const fresher = Q(); fresher.rows[1] = Object.assign({}, fresher.rows[1], { seen_at: now }); sent.length = 0; gets.push({ providers: [inst({ next: 'update', job: null, quota: fresher })], acts: ACTS.concat('provider_quota_recheck') });
+    F.lcClick(ck({ lcqr: 'claude' })); await tick(); await tick(); await tick();
+    ok(!F.lcQuotaHtml('claude', 'update').includes('沒有更新的資料'), 'reason: lc_quota_recheck_new_data');
+    put(inst({ name: 'grok', next: 'update', job: null, quota: Q() })); st.lc.d.providers[0].name = 'grok'; sent.length = 0; F.lcClick(ck({ lcqr: 'grok' })); await tick();
+    ok(!sent.some((x) => x[0] === 'provider_quota_recheck'), 'reason: lc_quota_recheck_only_claude_codex');
+    { const css = fs.readFileSync(path.join(__dirname, '..', 'dist', 'ws.css'), 'utf8'); ok(css.includes('.lcq .t0 .lcqg i.on,.lcq .t0 .lcqv{background:#58a6ff;color:#58a6ff}') && css.includes('.lcq .t1 .lcqg i.on,.lcq .t1 .lcqv{background:#ffd400;color:#ffd400}') && css.includes('.lcq .t2 .lcqg i.on,.lcq .t2 .lcqv{background:#ff9f43;color:#ff9f43}') && css.includes('.lcq .t3 .lcqg i.on,.lcq .t3 .lcqv{background:#ff6b6b;color:#ff6b6b}') && css.includes('.lcq .old .lcqg i.on{opacity:.45}') && css.includes('.lcq .lcqrb{min-height:48px;font-size:17px'), 'reason: lc_quota_css_cockpit_colors');
+      const used = [...new Set(css.split('\n').filter((l) => l.startsWith('.lcq')).join('\n').match(/var\(--[\w-]+\)/g) || [])].map((v) => v.slice(4, -1)), undef = used.filter((v) => !css.includes(v + ':'));
+      ok(used.length >= 3 && undef.length === 0, 'reason: lc_quota_css_vars_defined ' + undef.join(',')); }
+    c.lang = 'zh-TW'; }
   // 失敗代碼照 §5 字;工作結束 ⇒ 重抓 version、開席設定卡開著就重讀
   st.sp = {}; gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'download', done: 1, total: 2 } })], acts: ACTS }); await F.lcLoad();
   sent.length = 0; gets.push({ providers: [inst({ job: { action: 'install', state: 'failed', error: 'lifecycle_verify_failed' } })], acts: ACTS }); await F.lcLoad();
   ok(F.lcCard('claude').includes('下載下來的檔跟 AIB 記的不一樣,AIB 沒有執行它,已經刪掉。') && sent.some((x) => x[1] === '/api/v1/version') && st.spLoads === 1, 'reason: lc_failed_words_and_refetch');
   // 完成 ⇒ next = login 交給登入卡;不再出安裝卡
   gets.push({ providers: [inst({ installed: { kind: 'native', version: '2.1.326' }, next: 'login', job: { action: 'install', state: 'done' } })], acts: ACTS }); await F.lcLoad();
-  ok(F.lcCard('claude') === 'LOGIN:claude' && F.lcNeeds('claude') === false, 'reason: lc_next_login_uses_login_card');
+  { const lh = F.lcCard('claude'); ok(lh.startsWith('LOGIN:claude<div class="lcq">') && lh.includes('href="https://claude.com/pricing"') && !lh.includes('rlcband') && F.lcNeeds('claude') === false, 'reason: lc_next_login_uses_login_card ' + lh.slice(0, 200)); }
   // 換版卡:目前 = installed.version、AIB 試過 = card.version
   gets.push({ providers: [inst({ installed: { kind: 'native', version: '2.1.340' }, next: 'update', card: { action: 'update', version: '2.1.326' } })], acts: ACTS }); await F.lcLoad(); h = F.lcCard('claude');
   ok(h.includes('<span class="rlcstep">換版</span>') && h.includes('這台的 Claude 是 2.1.340,AIB 還沒試過這一版。要換成 AIB 試過的 2.1.326 嗎?') && h.includes('>換版</button>') && !h.includes('終端機'), 'reason: lc_update_card ' + h.slice(0, 300));
