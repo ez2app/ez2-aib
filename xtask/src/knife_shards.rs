@@ -37,16 +37,30 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The committed table: script path ⇒ seconds. A line that is not `<digits>\t<path>` and a
-/// path that comes twice are errors naming the line.
+/// The committed table: script path ⇒ seconds. A line that is not `<digits>\t<path>` (or
+/// `<digits>\t<path>\test`) and a path that comes twice are errors naming the line.
 pub fn parse_secs(text: &str) -> Result<BTreeMap<String, u64>, String> {
+    parse_secs_est(text).map(|(t, _)| t)
+}
+
+/// The table and which of its lines are estimates (third column `est`, ebab8 11-25: a line
+/// someone guessed, not a run's time). An estimate line still weighs its own script (plan,
+/// loads, limits, D1c "has a line") but is no sample for [`est_script_secs`]. A third column
+/// other than `est` is an error naming the line.
+pub fn parse_secs_est(text: &str) -> Result<(BTreeMap<String, u64>, BTreeSet<String>), String> {
     let mut out = BTreeMap::new();
+    let mut est = BTreeSet::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
-        let bad = || format!("line {}: not <seconds>\\t<path>: {line}", i + 1);
-        let (secs, path) = line.split_once('\t').ok_or_else(bad)?;
+        let bad = || format!("line {}: not <seconds>\\t<path>[\\test]: {line}", i + 1);
+        let (secs, rest) = line.split_once('\t').ok_or_else(bad)?;
+        let (path, guessed) = match rest.split_once('\t') {
+            Some((p, "est")) => (p, true),
+            Some(_) => return Err(bad()),
+            None => (rest, false),
+        };
         if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) {
             return Err(bad());
         }
@@ -57,8 +71,11 @@ pub fn parse_secs(text: &str) -> Result<BTreeMap<String, u64>, String> {
         if out.insert(path.to_string(), secs).is_some() {
             return Err(format!("line {}: {path} is in the table twice", i + 1));
         }
+        if guessed {
+            est.insert(path.to_string());
+        }
     }
-    Ok(out)
+    Ok((out, est))
 }
 
 /// The scripts to place: one path a line, blank lines left out; a path twice is an error.
@@ -201,7 +218,7 @@ pub struct Estimate {
 }
 
 /// Seconds a script the table does not know will take: the measured scripts' seconds per knife
-/// (table seconds / knives found now; scripts with no knife left out), the median of those with
+/// (table seconds / knives found now; scripts with no knife and `est` lines left out), the median of those with
 /// the same test target (at least [`EST_MIN_TARGET`]), else the same crate (at least
 /// [`EST_MIN_CRATE`]), else the whole table, times this script's knives, rounded up. Pure: no
 /// knife is run, nothing is written back to the table.
@@ -209,6 +226,7 @@ pub fn est_script_secs(
     file: &str,
     knives_n: usize,
     secs: &BTreeMap<String, u64>,
+    est_rows: &BTreeSet<String>,
     infos: &BTreeMap<String, ScriptInfo>,
 ) -> Estimate {
     let file = norm_path(file);
@@ -218,6 +236,9 @@ pub fn est_script_secs(
     let mut by_crate = Vec::new();
     let mut all = Vec::new();
     for (path, &s) in secs {
+        if est_rows.contains(path) {
+            continue; // a guess is no measurement
+        }
         let path = norm_path(path);
         if path == file {
             continue;
@@ -264,12 +285,18 @@ pub fn est_script_secs(
 /// Estimated seconds for every script in `infos` the table has no line for.
 pub fn estimates(
     secs: &BTreeMap<String, u64>,
+    est_rows: &BTreeSet<String>,
     infos: &BTreeMap<String, ScriptInfo>,
 ) -> BTreeMap<String, u64> {
     infos
         .iter()
         .filter(|(f, _)| !secs.contains_key(*f))
-        .map(|(f, i)| (f.clone(), est_script_secs(f, i.count, secs, infos).secs))
+        .map(|(f, i)| {
+            (
+                f.clone(),
+                est_script_secs(f, i.count, secs, est_rows, infos).secs,
+            )
+        })
         .collect()
 }
 
@@ -405,6 +432,18 @@ pub fn grew(table: &BTreeMap<String, u64>, now: &BTreeMap<String, u64>) -> Vec<G
         .collect()
 }
 
+/// `est` lines of the table that have a green run in `now`: (path, estimate, measured).
+pub fn est_measured(
+    table: &BTreeMap<String, u64>,
+    est_rows: &BTreeSet<String>,
+    now: &BTreeMap<String, u64>,
+) -> Vec<(String, u64, u64)> {
+    est_rows
+        .iter()
+        .filter_map(|f| Some((f.clone(), *table.get(f)?, *now.get(f)?)))
+        .collect()
+}
+
 const LIMIT_MIN_MINS: u64 = 5;
 const LIMIT_MAX_MINS: u64 = 240;
 
@@ -446,6 +485,7 @@ pub struct SizeSummary {
 pub fn check_size(
     knives: &[crate::knife_anchors::Knife],
     secs: &BTreeMap<String, u64>,
+    est_rows: &BTreeSet<String>,
     shards: u32,
     max_secs: u64,
     max_knives: usize,
@@ -461,7 +501,7 @@ pub fn check_size(
             non_crate_job.insert(file);
         }
     }
-    let est = estimates(secs, &infos);
+    let est = estimates(secs, est_rows, &infos);
     let mut summary = SizeSummary {
         scripts: counts.len(),
         ..SizeSummary::default()
@@ -487,7 +527,7 @@ pub fn check_size(
         } else if non_crate_job.contains(file) {
             // cloud jobs are not crate-knives cells: no estimate is judged here (as before)
         } else {
-            let e = est_script_secs(file, count, secs, &infos);
+            let e = est_script_secs(file, count, secs, est_rows, &infos);
             if e.secs > max_secs {
                 let parts = e.secs.div_ceil(max_secs.max(1)).max(2);
                 let per = (count as u64).div_ceil(parts);
@@ -568,13 +608,13 @@ fn plan_cmd(args: &[String]) -> Result<String, String> {
         Ok(n) if n >= 1 && shards.bytes().all(|b| b.is_ascii_digit()) => n,
         _ => return Err(format!("--shards {shards}: not a whole number from 1")),
     };
-    let table = parse_secs(&read(secs)?).map_err(|e| format!("{secs}: {e}"))?;
+    let (table, est_rows) = parse_secs_est(&read(secs)?).map_err(|e| format!("{secs}: {e}"))?;
     let scripts = parse_list(&read(list)?).map_err(|e| format!("{list}: {e}"))?;
     // the scripts the table does not know weigh their estimate (same as `check`); a tree whose
     // knives cannot be read gives no estimate and they weigh the median, as before.
     let (_, knives, errs) = crate::knife_anchors::collect(Path::new("."));
     let est = if errs.is_empty() {
-        estimates(&table, &script_infos(&knives))
+        estimates(&table, &est_rows, &script_infos(&knives))
     } else {
         BTreeMap::new()
     };
@@ -617,7 +657,7 @@ fn grew_cmd(args: &[String]) -> Result<String, String> {
     if flag != "--secs" || logs.is_empty() || logs.iter().any(|a| a.starts_with("--")) {
         return Err(USAGE.into());
     }
-    let table = parse_secs(&read(table)?).map_err(|e| format!("{table}: {e}"))?;
+    let (table, est_rows) = parse_secs_est(&read(table)?).map_err(|e| format!("{table}: {e}"))?;
     let texts = logs
         .iter()
         .map(|a| read(a))
@@ -625,6 +665,11 @@ fn grew_cmd(args: &[String]) -> Result<String, String> {
     let now = secs_from_logs(&texts);
     let found = grew(&table, &now);
     let mut out = String::new();
+    // an `est` line that has a green run now: the measurement replaces the guess (`secs` prints
+    // measured lines only, without `est`)
+    for (file, t, n) in est_measured(&table, &est_rows, &now) {
+        out.push_str(&format!("KNIVES-EST-MEASURED {file} est={t} now={n}\n"));
+    }
     for g in &found {
         match g {
             Grew::Over { file, table, now } => {
@@ -719,7 +764,8 @@ fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
         (None, None) => None,
         _ => return Err(format!("--base and --head go together\n{USAGE}")),
     };
-    let table = parse_secs(&read(&secs_path)?).map_err(|e| format!("{secs_path}: {e}"))?;
+    let (table, est_rows) =
+        parse_secs_est(&read(&secs_path)?).map_err(|e| format!("{secs_path}: {e}"))?;
     let (_, knives, errs) = crate::knife_anchors::collect(root_path);
     if !errs.is_empty() {
         return Err(errs.join("\n"));
@@ -727,6 +773,7 @@ fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
     let summary = check_size(
         &knives,
         &table,
+        &est_rows,
         shards,
         max_secs,
         max_knives,
@@ -1114,6 +1161,7 @@ mod tests {
         let s = check_size(
             &knives,
             &secs,
+            &BTreeSet::new(),
             1,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1137,6 +1185,7 @@ mod tests {
         let filtered = check_size(
             &knives,
             &secs,
+            &BTreeSet::new(),
             1,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1148,6 +1197,7 @@ mod tests {
 
         let ok = check_size(
             &make("crates/a/knives/ok.sh", 140),
+            &BTreeSet::new(),
             &table(&[("crates/a/knives/ok.sh", 900)]),
             4,
             MAX_SCRIPT_SECS,
@@ -1162,6 +1212,7 @@ mod tests {
         let missing_res = check_size(
             &knives,
             &secs,
+            &BTreeSet::new(),
             1,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1235,7 +1286,13 @@ mod tests {
             PAGE,
         ));
         let infos = script_infos(&k);
-        let e = est_script_secs("crates/aibd/knives/knives-page2c.sh", 140, &secs, &infos);
+        let e = est_script_secs(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            &secs,
+            &BTreeSet::new(),
+            &infos,
+        );
         assert_eq!(e.source, "target", "{e:?}");
         assert_eq!(e.key, "cargo -p aibd --test page_static");
         assert_eq!(e.samples, 2);
@@ -1245,6 +1302,7 @@ mod tests {
         let s = check_size(
             &k,
             &secs,
+            &BTreeSet::new(),
             4,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1254,7 +1312,13 @@ mod tests {
         .unwrap();
         assert!(s.violations.is_empty(), "{:?}", s.violations);
         // by the crate it would have been 140 x 27s = 3780s and refused
-        let crate_only = est_script_secs("crates/aibd/knives/knives-x.sh", 140, &secs, &infos);
+        let crate_only = est_script_secs(
+            "crates/aibd/knives/knives-x.sh",
+            140,
+            &secs,
+            &BTreeSet::new(),
+            &infos,
+        );
         assert_eq!(crate_only.source, "crate");
         assert_eq!(crate_only.secs, 3780);
     }
@@ -1270,6 +1334,7 @@ mod tests {
         let s = check_size(
             &k,
             &secs,
+            &BTreeSet::new(),
             4,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1303,6 +1368,7 @@ mod tests {
         let s2 = check_size(
             &k2,
             &secs,
+            &BTreeSet::new(),
             4,
             MAX_SCRIPT_SECS,
             MAX_SCRIPT_KNIVES,
@@ -1338,7 +1404,7 @@ mod tests {
         ]);
         let infos = script_infos(&k);
         // one script with the same target (< 2), two in the crate (< 3) ⇒ the repo: 3.333 10 20 ⇒ 10
-        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs, &infos);
+        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs, &BTreeSet::new(), &infos);
         assert_eq!(
             (e.source, e.samples, e.per_knife_ms, e.secs),
             ("repo", 3, 10000, 70)
@@ -1351,7 +1417,13 @@ mod tests {
         ));
         let mut secs3 = secs.clone();
         secs3.insert("crates/c/knives/c2.sh".into(), 10);
-        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs3, &script_infos(&k));
+        let e = est_script_secs(
+            "crates/c/knives/new.sh",
+            7,
+            &secs3,
+            &BTreeSet::new(),
+            &script_infos(&k),
+        );
         assert_eq!((e.source, e.samples), ("crate", 3));
         // a second script with the same target ⇒ the target; 100/10 and 50/3 = 10.000 / 16.666 ⇒ 10.000
         k.extend(knives_running(
@@ -1361,7 +1433,13 @@ mod tests {
         ));
         secs3.insert("crates/c/knives/t2.sh".into(), 50);
         let infos = script_infos(&k);
-        let e = est_script_secs("crates/c/knives/new.sh", 7, &secs3, &infos);
+        let e = est_script_secs(
+            "crates/c/knives/new.sh",
+            7,
+            &secs3,
+            &BTreeSet::new(),
+            &infos,
+        );
         assert_eq!(
             (e.source, e.key.as_str(), e.samples),
             ("target", "node apps/web/t.js", 2)
@@ -1371,6 +1449,7 @@ mod tests {
             "crates/d/knives/new.sh",
             1,
             &table(&[("crates/d/knives/d1.sh", 10)]),
+            &BTreeSet::new(),
             &infos,
         );
         assert_eq!((one.source, one.per_knife_ms, one.secs), ("repo", 3333, 4));
@@ -1379,6 +1458,7 @@ mod tests {
             "crates/z/knives/new.sh",
             5,
             &table(&[("crates/z/knives/gone.sh", 40)]),
+            &BTreeSet::new(),
             &infos,
         );
         assert_eq!((none.source, none.samples, none.secs), ("median", 0, 40));
@@ -1402,10 +1482,97 @@ mod tests {
                 .map(|i| i.count),
             Some(140)
         );
-        let win = est_script_secs("crates\\aibd\\knives\\knives-page2c.sh", 140, &secs, &infos);
-        let mac = est_script_secs("crates/aibd/knives/knives-page2c.sh", 140, &secs, &infos);
+        let win = est_script_secs(
+            "crates\\aibd\\knives\\knives-page2c.sh",
+            140,
+            &secs,
+            &BTreeSet::new(),
+            &infos,
+        );
+        let mac = est_script_secs(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            &secs,
+            &BTreeSet::new(),
+            &infos,
+        );
         assert_eq!(win, mac);
         assert_eq!(win.source, "target");
+    }
+
+    #[test]
+    fn an_est_line_weighs_its_script_but_is_no_sample_and_a_bad_third_column_is_refused() {
+        let (t, est) =
+            parse_secs_est("600\tcrates/a/knives/p.sh\test\n20\tcrates/a/knives/q.sh\n").unwrap();
+        assert_eq!(
+            t,
+            table(&[("crates/a/knives/p.sh", 600), ("crates/a/knives/q.sh", 20)])
+        );
+        assert_eq!(
+            est.into_iter().collect::<Vec<_>>(),
+            vec!["crates/a/knives/p.sh".to_string()]
+        );
+        for bad in [
+            "600\tcrates/a/knives/p.sh\tEST\n",
+            "600\tcrates/a/knives/p.sh\t\n",
+            "600\tp.sh\test\tx\n",
+        ] {
+            let e = parse_secs_est(&format!("3\tok\n{bad}")).unwrap_err();
+            assert!(e.starts_with("line 2: "), "{bad:?}: {e}");
+        }
+        // the two page lines are guesses (600 each): only the measured aibd scripts are samples
+        let (mut k, mut secs) = page_tree();
+        k.extend(knives_running(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            PAGE,
+        ));
+        let guessed: BTreeSet<String> = [
+            "crates/aibd/knives/knives-page2-fc7f9.sh".to_string(),
+            "crates/aibd/knives/knives-page2b-fc7f9.sh".to_string(),
+        ]
+        .into();
+        secs.insert("crates/aibd/knives/knives-page2-fc7f9.sh".into(), 600);
+        secs.insert("crates/aibd/knives/knives-page2b-fc7f9.sh".into(), 600);
+        let infos = script_infos(&k);
+        let e = est_script_secs(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            &secs,
+            &guessed,
+            &infos,
+        );
+        assert_eq!((e.source, e.samples, e.secs), ("crate", 5, 3780), "{e:?}");
+        let used = est_script_secs(
+            "crates/aibd/knives/knives-page2c.sh",
+            140,
+            &secs,
+            &BTreeSet::new(),
+            &infos,
+        );
+        assert_eq!((used.source, used.samples), ("target", 2));
+        // an est line still weighs its own script in the plan
+        let p = plan_with(
+            &list(&["crates/aibd/knives/knives-page2-fc7f9.sh"]),
+            &secs,
+            &BTreeMap::new(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(loads(&p, &secs, 1), vec![600]);
+        // a guess with a green run now is said; a measured line or a guess not run is not
+        let now = table(&[
+            ("crates/aibd/knives/knives-page2-fc7f9.sh", 695),
+            ("crates/aibd/knives/knives-a1.sh", 300),
+        ]);
+        assert_eq!(
+            est_measured(&secs, &guessed, &now),
+            vec![(
+                "crates/aibd/knives/knives-page2-fc7f9.sh".to_string(),
+                600,
+                695
+            )]
+        );
     }
 
     #[test]
@@ -1416,7 +1583,7 @@ mod tests {
             30,
             "cargo test -p aibd --locked",
         ));
-        let est = estimates(&secs, &script_infos(&k));
+        let est = estimates(&secs, &BTreeSet::new(), &script_infos(&k));
         assert_eq!(est.get("crates/aibd/knives/knives-new.sh"), Some(&810));
         let list: Vec<String> = script_infos(&k).into_keys().collect();
         let p = plan_with(&list, &secs, &est, 1).unwrap();

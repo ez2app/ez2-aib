@@ -76,3 +76,11 @@ ks '            if e.secs > max_secs {' \
 ks '            Some(t) => format!("cargo -p {pkg} --test {t}"),' \
    '            Some(t) => format!("cargo -p {pkg} --test {t} {:?}", cmd.last()),' \
    a_new_page_script_is_estimated_by_the_page_scripts_not_by_the_crate
+# KES8 est lines are taken as samples: two guessed page lines decide a new page script
+ks '        if est_rows.contains(path) {' \
+   '        if est_rows.contains(path) && path.is_empty() {' \
+   an_est_line_weighs_its_script_but_is_no_sample_and_a_bad_third_column_is_refused
+# KES9 any third column is read as a measured line
+ks '            Some(_) => return Err(bad()),' \
+   '            Some((p, _)) => (p, false),' \
+   an_est_line_weighs_its_script_but_is_no_sample_and_a_bad_third_column_is_refused
