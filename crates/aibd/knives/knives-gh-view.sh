@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # GV1–GV26 G4 gh_view for a trusted seat (DESIGN-trusted-g1g4 §1; 7b81e 11-20): one knife a line of defence
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

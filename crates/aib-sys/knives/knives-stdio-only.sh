@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # a preview starts with stdio only (519d0 11-20, #867 macOS fd_inherited)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

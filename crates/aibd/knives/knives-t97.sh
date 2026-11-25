@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # T97-1m / T97-2m knives (043dd 11-17, IFACE-T97-1m r2 §9, IFACE-T97-2m r2 §4): aibd install / status /
 # uninstall / start / stop. Each rule, broken, turns its own test red. Run by the shared crate-knives step
 # (crates/aib-knife/run-knives.sh rust; default header: macOS, job rust); aib-xtask knife-anchors reads it.

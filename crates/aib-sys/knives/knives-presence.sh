@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-knives: os=unix
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # aib-knives: env=AIB_KNIVES_NO_SE=1
 # aib-sys presence_macos knives (ebb36 11-13, PLAN-t135b): each knife takes one check
 # away and must turn its own test red. macOS with a Secure Enclave only: the tests named

@@ -3969,7 +3969,7 @@ jobs:
           retention-days: 30
 
   # S88-split (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做"): the crates/*/knives/*.sh scripts of job rust,
-  # E3: platform-independent crate knives run on ubuntu-latest (4 shards); the 7 os=macos scripts
+  # E3: platform-independent crate knives run on ubuntu-latest (4 shards); the 14 os=macos scripts
   # run in crate-knives-macos below. crate-knives-gate keeps the required check name `crate knives (macOS)`.
   crate-knives:
     name: crate knives (Linux, ${{ matrix.shard }})
