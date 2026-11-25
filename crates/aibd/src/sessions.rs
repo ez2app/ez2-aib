@@ -1058,6 +1058,15 @@ impl Sessions {
         *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
 
+    /// The policy in force now (W-10: the page can write one while aibd runs). None before
+    /// [`Self::set_policy`].
+    pub fn policy(&self) -> Option<Arc<SessionPolicy>> {
+        self.policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// The policy's env names: a child inherits aibd's own value of each (T80,
     /// [`crate::platform::session::child_env`]). None before [`Self::set_policy`].
     fn pass_names(&self) -> Vec<String> {
@@ -2740,7 +2749,7 @@ pub(crate) async fn gate(
     st: &AppState,
     req: Request,
 ) -> Result<(Request, Option<String>), ApiError> {
-    let policy = st.session_policy.clone();
+    let policy = st.policy();
     let audit = st.sessions.clone();
     let asked = req.argv.first().cloned();
     let run = move || {

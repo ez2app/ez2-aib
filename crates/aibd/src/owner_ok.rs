@@ -125,6 +125,7 @@ pub const ACTIONS: [(&str, &str); 26] = [
     (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
     (crate::gh_token::OP, "存 GitHub 權杖"),
     (crate::provider_login::OP, "重新登入 AI"),
+    (crate::session_policy_setup::OP, "允許 AIB 在這台開 AI 程式"),
     (crate::drive_switch::OP, "打開自動推進派工"),
     (crate::persona_propose::OP_WRITE_BACK, "改寫人格卡"),
     (crate::net_card::OP_PRIVATE, "讓 AI 夥伴連內網的一個位址"),
@@ -355,6 +356,11 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             "把 GitHub 權杖存進這台,給 {} 推分支與開 PR 用",
             piece(&v, "slug")?
         ),
+        // W-10: only the fixed names of the programs written; their paths are the object line
+        crate::session_policy_setup::OP => format!(
+            "允許 AIB 在這台開:{}",
+            crate::session_policy_setup::brands_of(&v)?
+        ),
         crate::provider_login::OP => {
             format!("重新登入 {}(接著在瀏覽器授權)", piece(&v, "provider")?)
         }
@@ -481,7 +487,8 @@ pub const WIRED: &[&str] = &[
     crate::gh_token::OP,            // repo.gh_token_set (DESIGN-gh-token-card)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
-    crate::provider_login::OP, // provider.login (重新登入)
+    crate::provider_login::OP,       // provider.login (重新登入)
+    crate::session_policy_setup::OP, // session_policy.init (W-10: no hold, a fresh check each time)
     crate::merge_acts::OP_PERSONA,
     crate::merge_acts::OP_BRAIN,
     crate::drive_switch::OP,

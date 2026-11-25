@@ -18,7 +18,7 @@ au() { python3 -I scripts/knife.py crates/aibd/src/allowlist.rs "$1" "$2" --expe
 ps_() { python3 -I scripts/knife.py crates/aibd/src/personas.rs "$1" "$2" --expect-fail "personas::tests::$3" \
   -- cargo test -p aibd --locked --lib "personas::tests::$3"; }
 # PP1 the preview is started without the policy
-pe '    hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;' \
+pe '    hand_policy(&data, parent_policy().as_deref())?;' \
    '    hand_policy(&data, None)?; // knife' \
    the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and_data
 # PP2 aibd never says which policy it runs under
