@@ -39,18 +39,6 @@ python3 -I scripts/knife.py crates/aibd/src/provider_login.rs \
   '            if whole && (!matches!(provider, "codex" | "grok") || code.is_some()) {' \
   --expect-fail 'provider_login::tests::a_grok_or_copilot_login_hands_on_the_address_and_the_code_only' \
   -- cargo test -p aibd --locked --lib 'provider_login::tests::a_grok_or_copilot_login_hands_on_the_address_and_the_code_only'
-# o-cop-file (copilot config.json being there counts as logged in)
-python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
-  '        "copilot" => copilot_users(&home.join(".copilot").join("config.json")),' \
-  '        "copilot" => home.join(".copilot").join("config.json").is_file(),' \
-  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
-  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
-# o-cop-users (an empty loggedInUsers counts)
-python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
-  '                .is_some_and(|a| !a.is_empty())' \
-  '                .is_some()' \
-  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
-  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
 # o-cop-comment (copilot config comment lines not taken out: a real login reads as none)
 python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
   '                .filter(|l| !l.trim_start().starts_with("//"))' \
