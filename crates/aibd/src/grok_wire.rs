@@ -38,6 +38,24 @@ pub fn nothing_loaded(listed: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(listed.trim())
         .map_err(|_| "its set-up listing could not be read".to_owned())?;
     let mut found = Vec::new();
+    // a key this listing did not have when it was read (1.0.70, 08de5 11-25) that is not
+    // empty: something grok loads now that nobody looked at (3e53b REVIEW-grok L2)
+    let top = v.as_object().ok_or("its set-up listing is not an object")?;
+    for (key, val) in top {
+        let empty = match val {
+            Value::Null | Value::Bool(false) => true,
+            Value::Array(a) => a.is_empty(),
+            Value::Object(o) => o.is_empty(),
+            Value::String(s) => s.is_empty(),
+            _ => false,
+        };
+        if !INSPECT_KEYS.contains(&key.as_str()) && !empty {
+            found.push(format!(
+                "{} (not known to aibd)",
+                key.chars().take(40).collect::<String>()
+            ));
+        }
+    }
     for key in ["mcpServers", "hooks", "lspServers"] {
         let n = v
             .get(key)
@@ -66,6 +84,42 @@ pub fn nothing_loaded(listed: &str) -> Result<(), String> {
             found.join(", ")
         ))
     }
+}
+
+/// The top-level keys `grok inspect --json` printed on 1.0.70 (08de5 11-25, this Mac signed in).
+pub const INSPECT_KEYS: &[&str] = &[
+    "grokVersion",
+    "channel",
+    "updateChannel",
+    "cwd",
+    "projectRoot",
+    "projectTrusted",
+    "projectInstructions",
+    "permissions",
+    "loginPolicy",
+    "hooks",
+    "skills",
+    "agents",
+    "plugins",
+    "marketplaces",
+    "mcpServers",
+    "lspServers",
+    "configSources",
+    "experiments",
+    "externalCompat",
+    "configWarnings",
+];
+
+/// The first line of every turn's prompt file. grok 1.0.70 runs a prompt file whose first
+/// line is a slash command as that command, on this machine, without the model (`/hooks-list`
+/// listed the user's 22 hooks; measured signed in, EVIDENCE-brand-grok-08de5-1125 §M2), and
+/// its commands include `hooks-add` and `always-approve`; on a later line it is only text.
+/// The user's words, the persona card or a handoff note an AI wrote never come first.
+pub const PROMPT_OPENER: &str = "Message from the aibd seat:";
+
+/// What a turn's prompt file holds: [`PROMPT_OPENER`], then the prompt.
+pub fn prompt_file_text(prompt: &str) -> String {
+    format!("{PROMPT_OPENER}\n{prompt}")
 }
 
 /// Extract the plain user text from one Claude-style `stream-json` user line.
@@ -191,6 +245,10 @@ pub struct Turns {
     /// Where a turn's prompt file is written: aibd's own folder, owner only
     /// ([`crate::platform::create_private_dir`]), never the shared temp folder (condition 3).
     pub prompt_dir: PathBuf,
+    /// The seat's gate run again on each turn's words before it starts: grok starts anew and
+    /// reads its set-up again every turn, so what was added after the seat opened (an MCP
+    /// server, a hook, a plugin, another version) is found before that turn (3e53b M1).
+    pub check: fn(&Spec) -> Result<(), String>,
 }
 
 /// How long a turn's stop may wait for the tree after its output closed.
@@ -374,6 +432,9 @@ fn run_turn(
         input: false,
         ..spec.clone()
     };
+    if let Err(why) = (turns.check)(&turn_spec) {
+        return Err(format!("grok turn not started: {why}"));
+    }
     let mut run = (turns.spawn)(&turn_spec, turns.lineage.clone())
         .map_err(|e| format!("grok spawn failed: {}", e.tag))?;
     let output = run.take_output();
@@ -489,7 +550,7 @@ pub fn spawn(
                             .to_string(),
                     );
                 };
-                let path = match write_prompt_file(&turns.prompt_dir, &prompt) {
+                let path = match write_prompt_file(&turns.prompt_dir, &prompt_file_text(&prompt)) {
                     Ok(p) => p,
                     Err(_) => {
                         fail(&mut out_w, "grok prompt write failed");
@@ -635,6 +696,21 @@ mod tests {
             nothing_loaded(&v.to_string()).is_err(),
             "reason: plugin_without_enabled_opened"
         );
+        // 3e53b L2: a key the measured listing did not have, not empty: refused; empty: not
+        let mut v: Value = serde_json::from_str(empty).unwrap();
+        v["commands"] = json!([{"name": "run", "shell": "x"}]);
+        let e = nothing_loaded(&v.to_string()).unwrap_err();
+        assert!(
+            e.contains("commands (not known to aibd)"),
+            "reason: unknown_key_opened {e}"
+        );
+        v["commands"] = json!([]);
+        v["newFlag"] = Value::Null;
+        assert_eq!(
+            nothing_loaded(&v.to_string()),
+            Ok(()),
+            "reason: empty_unknown_refused"
+        );
         for bad in ["", "not json", "[]"] {
             assert!(
                 nothing_loaded(bad).is_err(),
@@ -644,7 +720,16 @@ mod tests {
     }
 
     /// The specs every turn was started with, through the fake spawn below.
-    static STARTED: std::sync::Mutex<Vec<Spec>> = std::sync::Mutex::new(Vec::new());
+    static STARTED: std::sync::Mutex<Vec<(Spec, String)>> = std::sync::Mutex::new(Vec::new());
+
+    /// The seat's gate as a test has it: refused once a file `refuse` is in the seat's folder.
+    fn folder_check(spec: &Spec) -> Result<(), String> {
+        if spec.cwd.join("refuse").exists() {
+            Err("grok would load the user's own hooks 1 (grok_user_setup)".into())
+        } else {
+            Ok(())
+        }
+    }
 
     struct DoneWait;
     impl ExitWait for DoneWait {
@@ -678,12 +763,80 @@ mod tests {
     }
 
     fn fake_spawn(spec: &Spec, _l: Option<Arc<Lineage>>) -> Result<Box<dyn Running>, SpawnFail> {
-        STARTED.lock().unwrap().push(spec.clone());
+        let file = spec
+            .argv
+            .iter()
+            .position(|w| w == "--prompt-file")
+            .and_then(|i| spec.argv.get(i + 1))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        STARTED.lock().unwrap().push((spec.clone(), file));
         let out = "{\"type\":\"text\",\"data\":\"OK\"}\n{\"type\":\"end\",\"stopReason\":\"end_turn\",\"sessionId\":\"s\"}\n";
         Ok(Box::new(FakeTurn(Some(Output {
             stdout: Box::new(std::io::Cursor::new(out.as_bytes().to_vec())),
             stderr: Box::new(std::io::Cursor::new(Vec::new())),
         }))))
+    }
+
+    /// The turns started for the seat in `cwd` (tests run side by side).
+    fn mine(cwd: &std::path::Path) -> Vec<(Spec, String)> {
+        STARTED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _)| s.cwd == cwd)
+            .cloned()
+            .collect()
+    }
+
+    /// 3e53b M1: the gate is run again before every turn; a turn after something was added
+    /// to the user's set-up is refused with the reason and never started.
+    #[test]
+    fn a_turn_after_the_set_up_changed_is_refused_and_not_started() {
+        let d = tempfile::tempdir().unwrap();
+        let spec = Spec {
+            id: "s_0123456789abcdee".into(),
+            argv: vec!["/bin/grok".into(), "-s".into(), "u".into()],
+            cwd: d.path().into(),
+            env: Vec::new(),
+            pass: Vec::new(),
+            input: true,
+        };
+        let turns = Turns {
+            spawn: fake_spawn,
+            lineage: None,
+            prompt_dir: d.path().join("turn-prompts"),
+            check: folder_check,
+        };
+        let mut s = spawn(&spec, None, turns).unwrap();
+        let mut input = s.take_input().unwrap();
+        let mut out = std::io::BufReader::new(s.take_output().unwrap().stdout);
+        let mut turn = |text: &str| {
+            writeln!(
+                input,
+                "{}",
+                json!({"type":"user","message":{"role":"user","content":text}})
+            )
+            .unwrap();
+            loop {
+                let mut l = String::new();
+                assert!(out.read_line(&mut l).unwrap() > 0, "reason: no_result");
+                if l.contains("\"result\"") {
+                    return l;
+                }
+            }
+        };
+        assert!(
+            !turn("one").contains("is_error\":true"),
+            "reason: first_turn_refused"
+        );
+        std::fs::write(d.path().join("refuse"), "").unwrap();
+        let r = turn("two");
+        assert!(
+            r.contains("grok turn not started") && r.contains("grok_user_setup"),
+            "reason: changed_set_up_started {r}"
+        );
+        assert_eq!(mine(d.path()).len(), 1, "reason: refused_turn_started");
     }
 
     /// 08de5 11-25 conditions 2 and 3: a turn is started through the spawn aibd hands over
@@ -712,6 +865,7 @@ mod tests {
             spawn: fake_spawn,
             lineage: None,
             prompt_dir: dir.clone(),
+            check: folder_check,
         };
         let mut s = spawn(&spec, Some("CARD".into()), turns).unwrap();
         let mut input = s.take_input().unwrap();
@@ -719,7 +873,7 @@ mod tests {
         writeln!(
             input,
             "{}",
-            json!({"type":"user","message":{"role":"user","content":"hi"}})
+            json!({"type":"user","message":{"role":"user","content":"/hooks-add rm"}})
         )
         .unwrap();
         let mut seen = String::new();
@@ -732,8 +886,15 @@ mod tests {
             seen.push_str(&l);
         }
         assert!(seen.contains("OK"), "{seen}");
-        let started = STARTED.lock().unwrap().clone();
+        let started: Vec<Spec> = mine(d.path()).into_iter().map(|(s, _)| s).collect();
         assert_eq!(started.len(), 1, "reason: turn_not_through_spawn");
+        let file = &mine(d.path())[0].1;
+        assert_eq!(
+            file.lines().next(),
+            Some(PROMPT_OPENER),
+            "reason: prompt_file_starts_with_user_words {file:?}"
+        );
+        assert!(file.ends_with("CARD\n\n/hooks-add rm"), "{file:?}");
         let a = &started[0].argv;
         assert_eq!(&a[..5], &spec.argv[..], "reason: seat_words_changed {a:?}");
         assert_eq!(a[5], "--prompt-file");

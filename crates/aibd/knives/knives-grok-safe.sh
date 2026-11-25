@@ -29,20 +29,20 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs \
   -- cargo test -p aib-seatopen --locked --lib 'pipe::tests::only_the_measured_grok_version_starts'
 # g-gate-flags (the gate does not check the safe flags)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        if let Some(why) = aib_seatopen::grok_safe_refusal(&req.argv) {' \
-  '        if let Some(why) = aib_seatopen::grok_safe_refusal(&req.argv).filter(|_| false) {' \
+  '    if let Some(why) = aib_seatopen::grok_safe_refusal(argv) {' \
+  '    if let Some(why) = aib_seatopen::grok_safe_refusal(argv).filter(|_| false) {' \
   --expect-fail 'sessions::tests::a_grok_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_grok_seat_is_checked_at_the_gate'
 # g-gate-version (the gate takes any version)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        if !aib_seatopen::grok_version_ok(&printed) {' \
-  '        if !aib_seatopen::grok_version_ok(&printed) && printed.is_empty() {' \
+  '    if !aib_seatopen::grok_version_ok(&printed) {' \
+  '    if !aib_seatopen::grok_version_ok(&printed) && printed.is_empty() {' \
   --expect-fail 'sessions::tests::a_grok_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_grok_seat_is_checked_at_the_gate'
 # g-gate-setup (the gate ignores the user's own MCP / hooks / plugins)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-  '        if let Err(why) = crate::grok_wire::nothing_loaded(&listed) {' \
-  '        if let Err(why) = crate::grok_wire::nothing_loaded(&listed).or_else(|_| Ok::<(), String>(())) {' \
+  '    if let Err(why) = crate::grok_wire::nothing_loaded(&listed) {' \
+  '    if let Err(why) = crate::grok_wire::nothing_loaded(&listed).or_else(|_| Ok::<(), String>(())) {' \
   --expect-fail 'sessions::tests::a_grok_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_grok_seat_is_checked_at_the_gate'
 # g-plugins (a plugin that does not say enabled is let through)
@@ -93,3 +93,27 @@ python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
   '    std::fs::create_dir_all(dir)?;' \
   --expect-fail 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link' \
   -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_prompt_file_is_new_private_and_never_written_through_a_link'
+# g-turn-check (a turn started without the gate run again: what was added after the seat opened is loaded; 3e53b M1)
+python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+  '    if let Err(why) = (turns.check)(&turn_spec) {' \
+  '    if let Err(why) = (turns.check)(&turn_spec).and(Ok::<(), String>(())) {' \
+  --expect-fail 'grok_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started' \
+  -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_turn_after_the_set_up_changed_is_refused_and_not_started'
+# g-turn-gate (the per-turn check passes whatever the turn would load; 3e53b M1)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '    grok_gate(real, &spec.argv, Some(&spec.cwd), &env)' \
+  '    grok_gate(real, &spec.argv, Some(&spec.cwd), &env).or(Ok(()))' \
+  --expect-fail 'sessions::tests::a_grok_turn_is_checked_again_before_it_starts' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_grok_turn_is_checked_again_before_it_starts'
+# g-opener (the user's words first in the prompt file: a slash command there runs on this machine; 3e53b M2)
+python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+  '                let path = match write_prompt_file(&turns.prompt_dir, &prompt_file_text(&prompt)) {' \
+  '                let path = match write_prompt_file(&turns.prompt_dir, &prompt) {' \
+  --expect-fail 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported' \
+  -- cargo test -p aibd --locked --lib 'grok_wire::tests::every_turn_goes_through_aibds_spawn_and_its_stop_is_reported'
+# g-unknown (a key the measured listing did not have, not empty, opens; 3e53b L2)
+python3 -I scripts/knife.py crates/aibd/src/grok_wire.rs \
+  '        if !INSPECT_KEYS.contains(&key.as_str()) && !empty {' \
+  '        if !INSPECT_KEYS.contains(&key.as_str()) && !empty && key.is_empty() {' \
+  --expect-fail 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused' \
+  -- cargo test -p aibd --locked --lib 'grok_wire::tests::a_grok_that_would_load_the_users_own_set_up_is_refused'
