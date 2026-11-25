@@ -36,7 +36,9 @@ async fn a_paired_page_reads_the_owner_check_class_and_nothing_else_does() {
     let r = d
         .call("POST", "/api/v1/owner-check", Some(&page), Some("{}"))
         .await;
-    assert_eq!(r.code, 405, "reason: written_to {}", r.body);
+    // refused either way: the guard stops a page write first (403 page_write_not_allowed),
+    // and the route has no POST (405)
+    assert!(matches!(r.code, 403 | 405), "reason: written_to {}", r.body);
 
     d.shutdown().await;
 }
