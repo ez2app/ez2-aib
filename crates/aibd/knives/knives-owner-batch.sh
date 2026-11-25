@@ -153,9 +153,9 @@ python3 -I scripts/knife.py crates/aibd/src/owner_batch.rs \
   '            body["repo"].is_string() && body["mode"].as_str().is_some_and(|m| m != "work" && m != "dgrs")' \
   --expect-fail collecting_all_seven_acts_asks_each_and_writes_only_what_is_named \
   -- cargo test -p aibd --locked --test owner_batch_collect_all collecting_all_seven_acts_asks_each_and_writes_only_what_is_named
-# obc-ref (f163c REVIEW-ownerbatch-ebab8-f163c-07070947 L2): the plan's fetch names a ref of the owner's repo => collecting_wrote_a_ref
+# obc-ref (f163c REVIEW-ownerbatch-ebab8-f163c-07070947 L2): the plan, once it counted, writes a ref of the owner's repo => collecting_wrote_a_ref (a ref the fetch names would be "nothing to send", refused before the check)
 python3 -I scripts/knife.py crates/aibd/src/send_back.rs \
-  '            SCRATCH_REF,' \
-  '            &format!("+{SCRATCH_REF}:refs/heads/ob-knife"),' \
+  '    let commits = n' \
+  '    let _ = git(repo, hooks, &["update-ref", "refs/heads/ob-knife", sha]); let commits = n' \
   --expect-fail collecting_all_seven_acts_asks_each_and_writes_only_what_is_named \
   -- cargo test -p aibd --locked --test owner_batch_collect_all collecting_all_seven_acts_asks_each_and_writes_only_what_is_named
