@@ -1094,6 +1094,41 @@ mod tests {
         );
     }
 
+    /// 3e53b REVIEW-s102b L2: the finger-only path really sets what the constants say (no SE
+    /// runs the flow in CI, so read the code itself): the fallback title on the FingerOnly
+    /// window, and interactionNotAllowed on the context the key signs with after the finger.
+    #[test]
+    fn the_finger_only_path_sets_its_window_and_no_second_one() {
+        let src = include_str!("presence_macos.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or("");
+        let body = |from: &str, to: &str| -> String {
+            let a = code.find(from).unwrap_or(code.len());
+            let rest = &code[a..];
+            rest[..rest.find(to).unwrap_or(rest.len())].to_owned()
+        };
+        let window = body("if window == Window::FingerOnly {", "\n    }\n");
+        assert!(
+            window.contains("ctx.setLocalizedFallbackTitle(Some(&t))"),
+            "reason: fallback_title_not_set"
+        );
+        let after = body("fn finger_then_sign(", "\n}\n");
+        let no_ui = after
+            .find("ctx.setInteractionNotAllowed(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED)")
+            .unwrap_or(usize::MAX);
+        let signs = after.find("sign_key(&key, msg)").unwrap_or(0);
+        assert!(
+            no_ui < signs,
+            "reason: signs_before_interaction_not_allowed"
+        );
+        assert!(
+            after
+                .find("evaluate_finger(ctx, reason)?")
+                .unwrap_or(usize::MAX)
+                < no_ui,
+            "reason: no_finger_first"
+        );
+    }
+
     #[test]
     fn a_blob_that_gives_no_key_fails_the_probe_and_has_no_public_key() {
         // No Secure Enclave needed: the restore fails before anything is signed.

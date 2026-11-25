@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # OP1–OP3: aibd ctl owner-check probe only reads what LocalAuthentication says — it never asks the owner, and its first reading keeps "no biometry" apart from "a fingerprint" and "not enrolled" (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8; f163c REVIEW r3 N1)
 # OP4–OP8 (S10-2b-1, DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §4a §7a): the login-password pairing key only where no Touch ID is reported; a Touch ID Mac signs through the finger-only window; Touch ID not usable now is a refusal, never the password
+# OP9 (3e53b REVIEW-s102b L1): once aibd read a fingerprint, a later "no biometry" is "not usable now"
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 op() { python3 -I scripts/knife.py crates/aibd/src/owner_probe.rs "$1" "$2" --expect-fail "owner_probe::tests::$3" \
@@ -39,3 +40,7 @@ tt '        Route::FingerOnly => finger_only(),' \
 tt '    match crate::owner_probe::route(now)? {' \
    '    match crate::owner_probe::route(now).unwrap_or(Route::AsTheKeyAllows) {' \
    a_signature_goes_the_way_the_owner_check_reads_now
+# OP9 a fingerprint seen since start is forgotten (a keyboard taken away opens the password window)
+tt '    if now == Class::PasswordOnly && once_had_touch_id {' \
+   '    if false && now == Class::PasswordOnly && once_had_touch_id {' \
+   a_fingerprint_once_seen_keeps_the_password_window_shut

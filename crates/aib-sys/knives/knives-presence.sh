@@ -61,4 +61,12 @@ ks 'pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = true;' \
 ks '    if wanted_a_window {' \
    '    if false && wanted_a_window { // knife' \
    the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS12 (3e53b REVIEW-s102b L2) the finger-only window's fallback title is never set
+ks '        unsafe { ctx.setLocalizedFallbackTitle(Some(&t)) };' \
+   '        let _ = &t; // knife' \
+   the_finger_only_path_sets_its_window_and_no_second_one
+# KS13 (3e53b REVIEW-s102b L2) the signing step after the fingerprint is not set to show nothing
+ks '    unsafe { ctx.setInteractionNotAllowed(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED) };' \
+   '    // knife: interaction left allowed' \
+   the_finger_only_path_sets_its_window_and_no_second_one
 echo "aib-sys presence knives: all bit"

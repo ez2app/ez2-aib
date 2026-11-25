@@ -390,9 +390,36 @@ fn se_code(e: aib_sys::presence_macos::SeError) -> &'static str {
 /// fingerprint key this Mac should have (S10-2b-1 §8-3). Refused, no second window.
 pub const KEY_MISMATCH: &str = "owner_check_key_mismatch";
 
+/// Whether this aibd has read "fingerprint" since it started (3e53b REVIEW-s102b L1). Kept in
+/// aibd's memory only: a file would be one more thing an AI of the same account writes.
+static SEEN_FINGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the owner check reads now, remembering a fingerprint seen since aibd started: once
+/// Touch ID was there, a later "no biometry" (a Touch ID keyboard taken away may read so) is
+/// "not usable now", so a pairing key swapped for a password one never gets the password
+/// window while this aibd runs (3e53b REVIEW-s102b L1).
+pub fn remembered(
+    now: crate::owner_probe::Class,
+    seen_finger: &std::sync::atomic::AtomicBool,
+) -> crate::owner_probe::Class {
+    use crate::owner_probe::Class;
+    use std::sync::atomic::Ordering;
+    if now == Class::Fingerprint {
+        seen_finger.store(true, Ordering::SeqCst);
+    }
+    let once_had_touch_id = seen_finger.load(Ordering::SeqCst);
+    if now == Class::PasswordOnly && once_had_touch_id {
+        return Class::NotNow;
+    }
+    now
+}
+
 #[cfg(target_os = "macos")]
 fn class_now() -> crate::owner_probe::Class {
-    crate::owner_probe::class_of(&crate::owner_probe::Mac::read())
+    remembered(
+        crate::owner_probe::class_of(&crate::owner_probe::Mac::read()),
+        &SEEN_FINGER,
+    )
 }
 
 /// A window with no limit of its own ([`KeyDevice::sign`]) still closes after this on the
@@ -450,6 +477,8 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
     #[cfg(target_os = "macos")]
     {
         let key = load(&key_dir(data))?;
+        // read once at start, so a fingerprint seen now is remembered (3e53b REVIEW-s102b L1)
+        let _ = class_now();
         Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
     }
     #[cfg(not(target_os = "macos"))]
@@ -766,5 +795,27 @@ pub mod tests {
             assert_eq!(go(c), Err(why));
             assert_eq!(went.get(), "", "reason: {why}_opened_a_window");
         }
+    }
+
+    /// 3e53b REVIEW-s102b L1: once aibd read "fingerprint", a later "no biometry" (a Touch ID
+    /// keyboard taken away) is "not usable now", never the password window.
+    #[test]
+    fn a_fingerprint_once_seen_keeps_the_password_window_shut() {
+        use crate::owner_probe::Class;
+        use std::sync::atomic::AtomicBool;
+        let never = AtomicBool::new(false);
+        assert_eq!(remembered(Class::PasswordOnly, &never), Class::PasswordOnly);
+        let seen = AtomicBool::new(false);
+        assert_eq!(remembered(Class::Fingerprint, &seen), Class::Fingerprint);
+        assert_eq!(
+            remembered(Class::PasswordOnly, &seen),
+            Class::NotNow,
+            "reason: password_after_touch_id"
+        );
+        assert_eq!(
+            routed(remembered(Class::PasswordOnly, &seen), || Ok(1), || Ok(2)),
+            Err("owner_check_finger_not_now")
+        );
+        assert_eq!(remembered(Class::NotEnrolled, &seen), Class::NotEnrolled);
     }
 }
