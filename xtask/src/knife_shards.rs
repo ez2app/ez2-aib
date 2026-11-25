@@ -477,6 +477,8 @@ pub struct SizeSummary {
     pub max_knives: usize,
     pub max_shard_secs: u64,
     pub violations: Vec<String>,
+    /// Scripts judged by an estimate because the table has no line for them (not refused).
+    pub estimated: Vec<String>,
 }
 
 /// Check per-script knife count, historical seconds, and projected shard load.
@@ -528,6 +530,17 @@ pub fn check_size(
             // cloud jobs are not crate-knives cells: no estimate is judged here (as before)
         } else {
             let e = est_script_secs(file, count, secs, est_rows, &infos);
+            summary.estimated.push(format!(
+                "{file}: no measured line, ~{}s estimated ({} p50, {} samples{})",
+                e.secs,
+                e.source,
+                e.samples,
+                if e.key.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", e.key)
+                }
+            ));
             if e.secs > max_secs {
                 let parts = e.secs.div_ceil(max_secs.max(1)).max(2);
                 let per = (count as u64).div_ceil(parts);
@@ -548,16 +561,9 @@ pub fn check_size(
                 ));
             }
         }
-        if !secs.contains_key(file)
-            && only.is_some()
-            && !secs.is_empty()
-            && file.starts_with("crates/")
-            && !non_crate_job.contains(file)
-        {
-            summary.violations.push(format!(
-                "{file}: missing from crates/aib-knife/knife-secs.tsv (add an estimated/measured seconds row so shard planning does not fall back to median)"
-            ));
-        }
+        // D1c used to refuse a changed crate script with no table line (a missing line was
+        // weighed blind by the median); it is now judged by its estimate above, so nobody has
+        // to type a guessed number into the table (ebab8 11-25).
     }
     let list: Vec<String> = counts.keys().cloned().collect();
     if !list.is_empty() {
@@ -781,6 +787,9 @@ fn check_cmd(args: &[String]) -> Result<(u8, String), String> {
         only.as_ref(),
     )?;
     let mut out = String::new();
+    for v in &summary.estimated {
+        out.push_str(&format!("KNIVES-SIZE-EST {v}\n"));
+    }
     for v in &summary.violations {
         out.push_str(&format!("KNIVES-SIZE-OVER {v}\n"));
     }
@@ -1220,13 +1229,40 @@ mod tests {
             Some(&missing_only),
         )
         .unwrap();
+        // no table line is no refusal any more: 3 knives at the repo p50 (60s) = 180s ⇒ passes, said
         assert!(
-            missing_res
-                .violations
-                .iter()
-                .any(|v| v.contains("missing from crates/aib-knife/knife-secs.tsv")),
+            missing_res.violations.is_empty(),
             "{:?}",
             missing_res.violations
+        );
+        assert!(
+            missing_res.estimated.iter().any(|v| v.starts_with(
+                "crates/d/knives/new.sh: no measured line, ~180s estimated (repo p50, 3 samples)"
+            )),
+            "{:?}",
+            missing_res.estimated
+        );
+        // the same script with 20 knives (1200s) is refused by its estimate
+        let mut heavy = knives.clone();
+        heavy.extend(make("crates/d/knives/new.sh", 17));
+        let heavy_res = check_size(
+            &heavy,
+            &secs,
+            &BTreeSet::new(),
+            1,
+            MAX_SCRIPT_SECS,
+            MAX_SCRIPT_KNIVES,
+            MAX_SHARD_SECS,
+            Some(&missing_only),
+        )
+        .unwrap();
+        assert!(
+            heavy_res
+                .violations
+                .iter()
+                .any(|v| v.contains("new.sh: ~1200s estimated")),
+            "{:?}",
+            heavy_res.violations
         );
         assert_eq!(estimate_macos_queue_min(2, 3, 5), 45);
         assert_eq!(estimate_macos_queue_min(5, 5, 5), 90);
