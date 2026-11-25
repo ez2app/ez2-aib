@@ -99,6 +99,12 @@ pub async fn run(
     platform::create_private_dir(&run_dir)?;
 
     let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
+    // L1c (IFACE-provider-lifecycle §3.8, N2): a provider download the last run left behind
+    // goes; a link there goes as the link. Only now: no other aibd is running.
+    match crate::provider_fetch::clean_downloads(&dirs.data_dir()) {
+        0 => {}
+        n => tracing::info!(left = n, "provider downloads of the last run removed"),
+    }
     let revive_policy =
         crate::alive::RevivePolicy::load(&dirs.data_dir()).map_err(StartError::RevivePolicy)?;
     tracing::info!(
