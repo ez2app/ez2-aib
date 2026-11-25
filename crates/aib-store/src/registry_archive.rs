@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS merge_steps (
     state               TEXT NOT NULL,
     PRIMARY KEY (batch_id, seq)
 );
+CREATE TABLE IF NOT EXISTS seat_next (
+    seat_id       TEXT PRIMARY KEY,
+    persona_next  TEXT,
+    brain_next    TEXT,
+    batch_id      TEXT NOT NULL,
+    at            INTEGER NOT NULL
+);
 ";
 
 /// Add the tables when they are missing (every open; nothing when they are there).
@@ -636,6 +643,125 @@ impl MessageDb {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(v)
     }
+
+    /// Say what a seat switches to the next time it opens or is revived (f163c REVIEW-merge
+    /// r0 M1: a running seat keeps its persona and brain; the merge writes here, never into
+    /// the seat's own record). A later merge for the same seat replaces the row; a field
+    /// left `None` keeps the earlier one's value for that field.
+    pub fn seat_next_set(
+        &self,
+        seat_id: &str,
+        persona_next: Option<&str>,
+        brain_next: Option<&str>,
+        batch_id: &str,
+        at: i64,
+    ) -> Result<()> {
+        need(key_ok(seat_id), "seat is 1-64 of A-Za-z0-9_.:-")?;
+        need(key_ok(batch_id), "batch id is 1-64 of A-Za-z0-9_.:-")?;
+        need(
+            persona_next.is_some() || brain_next.is_some(),
+            "a persona or a brain to switch to",
+        )?;
+        need(
+            persona_next.is_none_or(key_ok),
+            "persona uid is 1-64 of A-Za-z0-9_.:-",
+        )?;
+        need(
+            brain_next.is_none_or(|b| !b.is_empty() && b.len() <= 200 && !b.contains('\0')),
+            "brain route is 1-200 bytes",
+        )?;
+        let (s, p, b, bt) = (
+            seat_id.to_string(),
+            persona_next.map(str::to_string),
+            brain_next.map(str::to_string),
+            batch_id.to_string(),
+        );
+        self.write(move |c| {
+            c.execute(
+                "INSERT INTO seat_next (seat_id, persona_next, brain_next, batch_id, at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(seat_id) DO UPDATE SET \
+                 persona_next = COALESCE(excluded.persona_next, seat_next.persona_next), \
+                 brain_next = COALESCE(excluded.brain_next, seat_next.brain_next), \
+                 batch_id = excluded.batch_id, at = excluded.at",
+                params![s, p, b, bt, at],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// What a seat switches to next time, if anything (the page shows「下次開換成 X」).
+    pub fn seat_next(&self, seat_id: &str) -> Result<Option<SeatNext>> {
+        let c = self.read()?;
+        Ok(c.query_row(
+            &format!("SELECT {NCOLS} FROM seat_next WHERE seat_id = ?1"),
+            params![seat_id],
+            nrow,
+        )
+        .optional()?)
+    }
+
+    /// Take a seat's switch when it opens or is revived: read and remove it in one
+    /// transaction, so it is applied once.
+    pub fn seat_next_take(&self, seat_id: &str) -> Result<Option<SeatNext>> {
+        let s = seat_id.to_string();
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let row = tx
+                .query_row(
+                    &format!("SELECT {NCOLS} FROM seat_next WHERE seat_id = ?1"),
+                    params![s],
+                    nrow,
+                )
+                .optional()?;
+            if row.is_some() {
+                tx.execute("DELETE FROM seat_next WHERE seat_id = ?1", params![s])?;
+            }
+            tx.commit()?;
+            Ok(row)
+        })
+    }
+
+    /// The switch `seat_next` read is applied: remove that row only (a later batch's row for
+    /// the same seat, written meanwhile, stays). Whether it was removed.
+    pub fn seat_next_done(&self, seat_id: &str, batch_id: &str, at: i64) -> Result<bool> {
+        let (s, b) = (seat_id.to_string(), batch_id.to_string());
+        self.write(move |c| {
+            Ok(c.execute(
+                "DELETE FROM seat_next WHERE seat_id = ?1 AND batch_id = ?2 AND at = ?3",
+                params![s, b, at],
+            )? > 0)
+        })
+    }
+
+    /// Take back the switches a batch wrote (its undo); how many.
+    pub fn seat_next_clear_batch(&self, batch_id: &str) -> Result<usize> {
+        let b = batch_id.to_string();
+        self.write(move |c| Ok(c.execute("DELETE FROM seat_next WHERE batch_id = ?1", params![b])?))
+    }
+}
+
+/// A seat's switch for its next open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatNext {
+    pub seat_id: String,
+    pub persona_next: Option<String>,
+    /// A brain's route key (what `seat_meta.brain_route` holds).
+    pub brain_next: Option<String>,
+    pub batch_id: String,
+    pub at: i64,
+}
+
+const NCOLS: &str = "seat_id, persona_next, brain_next, batch_id, at";
+
+fn nrow(r: &rusqlite::Row<'_>) -> rusqlite::Result<SeatNext> {
+    Ok(SeatNext {
+        seat_id: r.get(0)?,
+        persona_next: r.get(1)?,
+        brain_next: r.get(2)?,
+        batch_id: r.get(3)?,
+        at: r.get(4)?,
+    })
 }
 
 #[cfg(test)]
@@ -967,5 +1093,56 @@ mod tests {
         }
         let m = MessageDb::open(&p).unwrap();
         assert!(m.archived("role", "rol_abc123").unwrap().is_some());
+    }
+
+    #[test]
+    fn mg16_a_seat_switch_waits_for_the_next_open_and_is_taken_once() {
+        let (_d, m) = db();
+        assert!(m.seat_next("s1").unwrap().is_none());
+        m.seat_next_set("s1", Some("aaaaa1"), None, "mb_1", 10)
+            .unwrap();
+        let n = m.seat_next("s1").unwrap().unwrap();
+        assert_eq!(n.persona_next.as_deref(), Some("aaaaa1"));
+        assert_eq!(n.brain_next, None);
+        // a later batch adds the brain and keeps the persona it did not name
+        m.seat_next_set("s1", None, Some("folder.group.x.1"), "mb_2", 20)
+            .unwrap();
+        let n = m.seat_next("s1").unwrap().unwrap();
+        assert_eq!(n.persona_next.as_deref(), Some("aaaaa1"));
+        assert_eq!(n.brain_next.as_deref(), Some("folder.group.x.1"));
+        assert_eq!(n.batch_id, "mb_2");
+        // opening takes it once
+        assert_eq!(m.seat_next_take("s1").unwrap(), Some(n));
+        assert!(m.seat_next_take("s1").unwrap().is_none());
+        assert!(m.seat_next("s1").unwrap().is_none());
+    }
+
+    #[test]
+    fn mg16_a_seat_switch_needs_something_checked_and_undo_clears_one_batch() {
+        let (_d, m) = db();
+        assert!(m.seat_next_set("s1", None, None, "mb_1", 1).is_err());
+        assert!(m
+            .seat_next_set("s 1", Some("aaaaa1"), None, "mb_1", 1)
+            .is_err());
+        assert!(m.seat_next_set("s1", Some("a a"), None, "mb_1", 1).is_err());
+        assert!(m.seat_next_set("s1", None, Some(""), "mb_1", 1).is_err());
+        assert!(m
+            .seat_next_set("s1", None, Some(&"r".repeat(201)), "mb_1", 1)
+            .is_err());
+        m.seat_next_set("s1", Some("aaaaa1"), None, "mb_1", 1)
+            .unwrap();
+        m.seat_next_set("s2", Some("aaaaa1"), None, "mb_2", 1)
+            .unwrap();
+        assert_eq!(m.seat_next_clear_batch("mb_1").unwrap(), 1);
+        // done removes only the row that was read
+        m.seat_next_set("s3", Some("aaaaa1"), None, "mb_3", 5)
+            .unwrap();
+        m.seat_next_set("s3", None, Some("r.1"), "mb_4", 6).unwrap();
+        assert!(!m.seat_next_done("s3", "mb_3", 5).unwrap());
+        assert!(m.seat_next("s3").unwrap().is_some());
+        assert!(m.seat_next_done("s3", "mb_4", 6).unwrap());
+        assert!(m.seat_next("s3").unwrap().is_none());
+        assert!(m.seat_next("s1").unwrap().is_none());
+        assert!(m.seat_next("s2").unwrap().is_some());
     }
 }

@@ -90,6 +90,11 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
+    crate::merge_acts::MERGE_FIND,
+    crate::merge_acts::MERGE_PREVIEW,
+    crate::merge_acts::MERGE_RUN,
+    crate::merge_acts::MERGE_LOG,
+    crate::merge_acts::MERGE_UNDO,
     crate::gh_token::SET,
     crate::seats::PAGE_OPEN,
     RESTART,
@@ -548,6 +553,30 @@ pub async fn act(
                     crate::persona_edit::rename(st, act, body).await
                 }
                 _ => crate::persona_edit::archive(st, act, body).await,
+            };
+        }
+        Some(
+            crate::merge_acts::MERGE_FIND
+            | crate::merge_acts::MERGE_PREVIEW
+            | crate::merge_acts::MERGE_RUN
+            | crate::merge_acts::MERGE_LOG
+            | crate::merge_acts::MERGE_UNDO,
+        ) => {
+            let merge_from_user_page = held_as_user_page(&page).await;
+            if merge_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "registry_built_in_page_only",
+                    "merge is available from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match kind.as_deref().unwrap_or_default() {
+                crate::merge_acts::MERGE_FIND => crate::merge_acts::find(st, body).await,
+                crate::merge_acts::MERGE_PREVIEW => crate::merge_acts::preview(st, body).await,
+                crate::merge_acts::MERGE_RUN => crate::merge_acts::run(st, body, by).await,
+                crate::merge_acts::MERGE_LOG => crate::merge_acts::log(st, body).await,
+                _ => crate::merge_acts::undo(st, body, by).await,
             };
         }
         Some(

@@ -48,6 +48,10 @@ pub fn set_db(db: Arc<WorkspaceDb>) {
     let _ = DB.set(db);
 }
 
+pub(crate) fn workspace_db() -> Option<&'static Arc<WorkspaceDb>> {
+    DB.get()
+}
+
 /// `(seat_id, role)` on `node` itself, read now (a9136 threads-multi, 5d33a wave-2 N1 / N2:
 /// a tree item's thread members are these, so removing one takes the thread away at the next
 /// read). `None` when the workspace file did not open. Blocking (SQLite).

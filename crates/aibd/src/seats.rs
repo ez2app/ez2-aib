@@ -2194,6 +2194,20 @@ async fn open_checked(
     if let Err(e) = check_open(&req) {
         return e.into_response();
     }
+    // §8 8b-2 (6770f): an old persona uid merged into another opens as that one; an archived
+    // persona does not open
+    let (db, asked) = (st.messages.clone(), req.persona_uid.clone());
+    match tokio::task::spawn_blocking(move || crate::seat_next_apply::open_uid(&db, &asked)).await {
+        Ok(Ok(u)) => req.persona_uid = u,
+        Ok(Err("persona_archived")) => {
+            return Refusal(
+                "persona_archived",
+                "persona_uid: this persona is archived; restore it first",
+            )
+            .into_response()
+        }
+        _ => return internal(),
+    }
     if key.is_none() && !req.dry_run {
         return Refusal("key_missing", "Idempotency-Key is required to open a seat")
             .into_response();

@@ -90,6 +90,10 @@ fn save(data: &Path, r: &Registry) -> Result<(), String> {
     std::fs::rename(&tmp, file(data)).map_err(|e| e.to_string())
 }
 
+pub(crate) fn save_for_merge(data: &Path, r: &Registry) -> Result<(), String> {
+    save(data, r)
+}
+
 /// `<prefix>` + 6 of a-z 0-9 from the OS's random source, not one of `taken`.
 pub fn new_uid(
     prefix: &str,

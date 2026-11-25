@@ -34,7 +34,7 @@ pub use messages::{
 };
 pub use migrate::{Migration, MIGRATIONS};
 pub use perm_templates::{PermTemplate, PermTemplateLog, TplWrite};
-pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep};
+pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep, SeatNext};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seat_perm::{PermState, PermWrite, SeatPerm, SeatPermLog, SEAT_PERM_LOG_MAX};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
