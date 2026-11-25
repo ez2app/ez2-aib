@@ -226,7 +226,8 @@
 50	crates/aibd/knives/knives-owner-wired.sh
 63	crates/aibd/knives/knives-p11.sh
 135	crates/aibd/knives/knives-page-acts.sh
-695	crates/aibd/knives/knives-page2-fc7f9.sh
+350	crates/aibd/knives/knives-page2-fc7f9.sh
+350	crates/aibd/knives/knives-page2a-fc7f9.sh
 540	crates/aibd/knives/knives-page2b-fc7f9.sh
 540	crates/aibd/knives/knives-page2c-fc7f9.sh
 210	crates/aibd/knives/knives-perm-apply.sh
