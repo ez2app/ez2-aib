@@ -21,6 +21,18 @@ python3 -I scripts/knife.py crates/aibd/src/merge_find.rs \
   'sl * 2 >= ll * 9 {' \
   --expect-fail 'merge_find::tests::contained_name_scores_point_nine' \
   -- cargo test -p aibd --locked --lib 'merge_find::tests::contained_name_scores_point_nine'
+# mf-half
+python3 -I scripts/knife.py crates/aibd/src/merge_find.rs \
+  'sl * 2 >= ll {' \
+  'sl * 2 >= ll / 9 {' \
+  --expect-fail 'merge_find::tests::contained_name_scores_point_nine' \
+  -- cargo test -p aibd --locked --lib 'merge_find::tests::contained_name_scores_point_nine'
+# mf-four
+python3 -I scripts/knife.py crates/aibd/src/merge_find.rs \
+  'if sl >= 4 && lo.contains(sh.as_str())' \
+  'if sl >= 3 && lo.contains(sh.as_str())' \
+  --expect-fail 'merge_find::tests::contained_name_scores_point_nine' \
+  -- cargo test -p aibd --locked --lib 'merge_find::tests::contained_name_scores_point_nine'
 # mf-prefix
 python3 -I scripts/knife.py crates/aibd/src/merge_find.rs \
   '(Some(x), Some(y)) => norm(x) != norm(y),' \

@@ -438,6 +438,10 @@ mod tests {
         assert_eq!(score("核心架構", "核心架構師工作台"), 0.9);
         // too short to count as contained
         assert!(score("重構", "AIB2.0跨平台重構") < SURE_AT);
+        // contained but under half the longer name: pairs only (3 shared of 3 + 9 = 0.5)
+        assert_eq!(score("核心架構", "核心架構師工作台助理"), 0.5);
+        // contained and over half, but under 4 characters: pairs only (2 shared of 2 + 4)
+        assert!(score("核心架", "核心架構師") < SURE_AT);
     }
 
     #[test]
