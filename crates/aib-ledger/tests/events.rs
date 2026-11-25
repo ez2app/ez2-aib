@@ -115,8 +115,10 @@ fn two_processes_writing_at_once_never_interleave() {
             .expect("spawn")
     };
     let (mut a, mut b) = (spawn(), spawn());
-    assert!(a.wait().expect("wait").success());
-    assert!(b.wait().expect("wait").success());
+    // both waited for before either is judged: a panic here would remove the folder under the
+    // other child, and its "path not found" would hide the first failure
+    let (ra, rb) = (a.wait().expect("wait"), b.wait().expect("wait"));
+    assert!(ra.success() && rb.success(), "a {ra}, b {rb}");
     let f = events::dir(d.path(), "aib-drive").join("2026-11.jsonl");
     let l = lines(&f);
     assert_eq!(l.len(), 200);
@@ -127,11 +129,13 @@ fn two_processes_writing_at_once_never_interleave() {
 }
 
 /// Repeatedly race two processes creating a fresh nested events folder (guards Windows
-/// `os error 183` in `create_dir_all`).
+/// `os error 183` in `create_dir_all`) and then taking turns on its lock: 30 rounds, so a
+/// waiter starved by the other writer (Windows job 139025856402, `lock: not taken in 2 s`)
+/// shows up, not just a lucky run.
 #[test]
 fn two_processes_concurrent_mkdir_never_fails() {
     let exe = std::env::current_exe().expect("exe");
-    for _ in 0..5 {
+    for round in 0..ROUNDS {
         let d = tempfile::tempdir().expect("tmp");
         let spawn = || {
             Command::new(&exe)
@@ -141,10 +145,17 @@ fn two_processes_concurrent_mkdir_never_fails() {
                 .expect("spawn")
         };
         let (mut a, mut b) = (spawn(), spawn());
-        assert!(a.wait().expect("wait a").success());
-        assert!(b.wait().expect("wait b").success());
+        // both waited for first (see above): the folder stays until both are done
+        let (ra, rb) = (a.wait().expect("wait a"), b.wait().expect("wait b"));
+        assert!(
+            ra.success() && rb.success(),
+            "round {round}: a {ra}, b {rb}"
+        );
     }
 }
+
+/// How many rounds [`two_processes_concurrent_mkdir_never_fails`] races.
+const ROUNDS: usize = 30;
 
 /// E8: a month file goes only once its whole month ended more than keep_days ago.
 #[test]

@@ -1,7 +1,7 @@
 //! The append-only JSONL ledger mechanics shared by the seat tools (DEV-S78 §7, r-0).
 //!
-//! Moved out of aib-idea unchanged: a fixed lock file taken with `File::try_lock` (flock on
-//! Unix, LockFileEx on Windows) and waited for a bounded time; one whole line appended and
+//! Moved out of aib-idea: a fixed lock file locked exclusively (flock on Unix, LockFileEx on
+//! Windows), queued with the system and waited for a bounded time; one whole line appended and
 //! `sync_all`ed; lines replayed in file order, where a line over the size limit, a line that
 //! is not a JSON object, a line the caller's rules refuse, or a last line without its newline
 //! is reported (the ledger is then incomplete) instead of skipped. Blank lines are skipped.
@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Replay `text` in file order, handing each JSON object line to `apply`. Returns the
 /// problems as `line <n>: <why>`, in file order; any entry means the ledger is incomplete.
@@ -72,16 +72,18 @@ pub fn read(path: &Path) -> std::io::Result<Read> {
     }
 }
 
-/// ADR 0005 named exception: a short wait inside a one-shot command, bounded by the
-/// caller's lock wait.
-fn pause() {
-    #[allow(clippy::disallowed_methods)]
-    std::thread::sleep(Duration::from_millis(10));
-}
-
 /// The exclusive lock on the fixed file `path`, waited for at most `wait`. Released when the
 /// returned file is dropped. Errors read `lock open: …`, `lock: …` or `lock: not taken in
 /// <s> s`.
+///
+/// A lock not free at once is waited for in the system's own queue (a blocking `File::lock`:
+/// LockFileEx without LOCKFILE_FAIL_IMMEDIATELY on Windows, a blocking flock on Unix), on a
+/// thread of its own so the wait stays bounded. Polling `try_lock` was unfair (08de5 11-25,
+/// main f181649bdf Windows job 139025856402): a writer that let go and took it again at once
+/// left a gap of microseconds, and a waiter looking every 10 ms almost never landed in it —
+/// it starved until the other writer was done, over 2 s when the disk was slow. Queued, the
+/// waiter is handed the lock when the holder lets go. A wait given up leaves nothing held: the
+/// thread's lock goes to a receiver that is gone, and is dropped there.
 pub fn take_lock(path: &Path, wait: Duration) -> Result<File, String> {
     let f = OpenOptions::new()
         .create(true)
@@ -89,17 +91,26 @@ pub fn take_lock(path: &Path, wait: Duration) -> Result<File, String> {
         .write(true)
         .open(path)
         .map_err(|e| format!("lock open: {e}"))?;
-    let until = Instant::now() + wait;
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Ok(f),
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Error(e)) => return Err(format!("lock: {e}")),
-        }
-        if Instant::now() >= until {
-            return Err(format!("lock: not taken in {} s", wait.as_secs()));
-        }
-        pause();
+    match f.try_lock() {
+        Ok(()) => return Ok(f),
+        Err(TryLockError::WouldBlock) => {}
+        Err(TryLockError::Error(e)) => return Err(format!("lock: {e}")),
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("aib-ledger-lock".into())
+        .spawn(move || {
+            // a receiver gone (the wait given up) drops the file here, and with it the lock
+            let _ = tx.send(f.lock().map(|()| f));
+        })
+        .map_err(|e| format!("lock: {e}"))?;
+    // ADR 0005 named exception: the only clock here bounds a wait for the system's lock queue
+    #[allow(clippy::disallowed_methods)]
+    let got = rx.recv_timeout(wait);
+    match got {
+        Ok(Ok(f)) => Ok(f),
+        Ok(Err(e)) => Err(format!("lock: {e}")),
+        Err(_) => Err(format!("lock: not taken in {} s", wait.as_secs())),
     }
 }
 
@@ -221,6 +232,37 @@ mod tests {
         fs::write(&file, "x").expect("write");
         let err = ensure_dir(&file.join("child")).unwrap_err();
         assert!(err.starts_with("mkdir:"), "{err}");
+    }
+
+    /// 08de5 11-25 (Windows job 139025856402): a wait given up keeps nothing — once the holder
+    /// lets go, the lock is free again for the next caller — and a queued waiter is handed the
+    /// lock when the holder lets go, well inside its wait.
+    #[test]
+    fn a_queued_waiter_gets_the_lock_and_a_wait_given_up_keeps_nothing() {
+        let d = tempfile::tempdir().expect("tmp");
+        let p = d.path().join("events.lock");
+        let held = take_lock(&p, Duration::from_secs(2)).expect("first");
+        let e = take_lock(&p, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(e, "lock: not taken in 0 s");
+        drop(held);
+        // the given-up wait's thread is the only one asking now, so it takes the lock; give it
+        // the time, then the lock must be free: it let go at once, it never keeps it
+        #[allow(clippy::disallowed_methods)] // a test's fixed pause, no timer to register
+        std::thread::sleep(Duration::from_millis(300));
+        let again = take_lock(&p, Duration::from_millis(500)).expect("after the given-up wait");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p2 = p.clone();
+        let waiter = std::thread::spawn(move || {
+            let r = take_lock(&p2, Duration::from_secs(5)).map(|_| ());
+            let _ = tx.send(());
+            r
+        });
+        // the waiter is queued behind `again`; letting go hands it over
+        #[allow(clippy::disallowed_methods)]
+        let early = rx.recv_timeout(Duration::from_millis(200));
+        assert!(early.is_err(), "reason: taken_while_held");
+        drop(again);
+        assert_eq!(waiter.join().expect("join"), Ok(()));
     }
 
     fn keys(text: &str) -> (Vec<String>, Vec<String>) {
