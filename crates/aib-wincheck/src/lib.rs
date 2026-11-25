@@ -116,7 +116,8 @@ pub fn kept_env<I: IntoIterator<Item = (String, String)>>(vars: I) -> Vec<(Strin
 pub struct Step {
     /// the name in the result file (`STEP-BEGIN <name>`)
     pub name: &'static str,
-    /// the test executable's name in the pack's `tests` folder, without `-<hash>.exe`
+    /// the test executable, named as cargo names its target (`hello`, `aib_sys`): the file
+    /// in the pack's `TESTS` list without `-<hash>` and `.exe`
     pub exe: &'static str,
     /// the test-name filter passed to libtest (`None` = every test of the executable)
     pub filter: Option<&'static str>,
