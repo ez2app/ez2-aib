@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+#![allow(clippy::disallowed_methods)] // the shared harness waits on plain timeouts and sleeps (as the other tests that use it)
 #![cfg(unix)]
 
 //! 3e53b REVIEW-grok 4733597f N1 (08de5 11-25): a grok seat opened end to end on a grok whose
