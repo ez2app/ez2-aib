@@ -1899,7 +1899,7 @@ const lcChecks = (async () => {
   ok(st.lc.d === null && F.lcCard('claude') === '' && F.lcNeeds('claude') === false && F.spInstallHtml() === '<div class="apn">官方安裝說明的連結:這一版 AIB 還沒有</div>', 'reason: lc_old_aibd_no_card');
   // 安裝卡(中文照 IFACE §5)
   gets.push({ providers: [inst()], acts: ACTS }); await F.lcLoad(); let h = F.lcCard('claude');
-  ok(h.startsWith('<div class="rlc rlc-claude lc"><div class="rlcband"><span class="rlcmark rlclogo"><img src="data:image/svg+xml;base64,AA"') && h.includes('<b>Claude</b><span class="rlcstep">安裝</span>') && h.includes('<h4>這台還沒有 Claude,要幫你裝嗎?</h4>') && h.includes('從 Anthropic 官方下載 Claude 2.1.326(約 337 MB),裝在你自己的帳號裡,不需要系統管理員。裝好就能在這台開 Claude。') && h.includes('data-lcgo="claude"') && h.includes('>同意並安裝</button>') && h.includes('data-lcno="claude">先不要</button>') && h.includes('來源:downloads.claude.ai · 按下去會跳本人驗證'), 'reason: lc_install_card ' + h.slice(0, 300));
+  ok(h.startsWith('<div class="rlc rlc-claude lc"><div class="rlcband"><span class="rlcmark rlclogo"><img src="data:image/svg+xml;base64,AA"') && h.includes('<b>Claude</b><span class="rlcstep">安裝</span>') && h.includes('<h4>這台還沒有 Claude,要幫你裝嗎?</h4>') && h.includes('從 Anthropic 官方下載 Claude 2.1.326(約 353 MB),裝在你自己的帳號裡,不需要系統管理員。裝好就能在這台開 Claude。') && h.includes('data-lcgo="claude"') && h.includes('>同意並安裝</button>') && h.includes('data-lcno="claude">先不要</button>') && h.includes('來源:downloads.claude.ai · 按下去會跳本人驗證'), 'reason: lc_install_card ' + h.slice(0, 300));
   ok(F.lcNeeds('claude') === true && F.spInstallHtml() === h, 'reason: lc_install_in_policy_card');
   // acts 沒有 ⇒ 不給鈕、照實寫
   gets.push({ providers: [inst()], acts: ['provider_login'] }); await F.lcLoad(); h = F.lcCard('claude');
@@ -1917,6 +1917,12 @@ const lcChecks = (async () => {
   sent.length = 0; gets.push({ providers: [inst({ job: { action: 'install', state: 'cancelled' } })], acts: ACTS }); F.lcClick(ck({ lccancel: 'claude' })); await tick(); await tick(); await tick();
   ok(sent.some((x) => x[0] === 'provider_job_cancel' && JSON.stringify(x[1]) === '{"provider":"claude"}'), 'reason: lc_cancel_sent');
   h = F.lcCard('claude'); ok(h.includes('已取消,Claude 沒有裝。') && h.includes('>再按一次</button>') && sent.some((x) => x[1] === '/api/v1/version') && st.spLoads === undefined, 'reason: lc_cancelled_then_again ' + h.slice(0, 300));
+  // c2f0b / f163c N1:換版取消或連不到 ⇒「還是原本的版本」、不寫「沒有裝」;3e53b N1:owner 句四語都寫登入密碼(沒有指紋的 Mac 也能按)
+  { const keep = c.lang; for (const [lg, can, off, pw] of [['', '已取消,Claude 還是原本的版本。', '連不到官方下載站,這次沒換;還是原本的版本。', 'Windows Hello 或登入密碼'], ['en', 'Cancelled; Claude is still on the version it had.', 'nothing was changed and it is still on the version it had', 'or your login password'], ['ja', 'キャンセルしました。Claude は元のバージョンのままです。', '今回は変えていません。元のバージョンのままです。', 'またはログインパスワード'], ['ko', '취소했습니다. Claude은(는) 원래 버전 그대로입니다.', '이번에는 바꾸지 않았습니다. 원래 버전 그대로입니다.', '또는 로그인 비밀번호']]) {
+      c.lang = lg || 'zh-TW'; const P = (job) => { st.lc.d = { providers: [inst({ next: 'update', job })], acts: ACTS }; return F.lcCard('claude'); };
+      const hc = P({ action: 'update', state: 'cancelled' }), ho = P({ action: 'update', state: 'failed', error: 'lifecycle_offline' }), hi = P({ action: 'install', state: 'failed', error: 'lifecycle_offline' }), hn = P(null);
+      ok(hc.includes(can) && ho.includes(off) && !hi.includes(off) && hn.includes(pw), 'reason: lc_update_cancel_keeps_version_' + (lg || 'zh') + ' ' + hc.slice(0, 200)); }
+    c.lang = keep; }
   // 失敗代碼照 §5 字;工作結束 ⇒ 重抓 version、開席設定卡開著就重讀
   st.sp = {}; gets.push({ providers: [inst({ job: { action: 'install', state: 'running', phase: 'download', done: 1, total: 2 } })], acts: ACTS }); await F.lcLoad();
   sent.length = 0; gets.push({ providers: [inst({ job: { action: 'install', state: 'failed', error: 'lifecycle_verify_failed' } })], acts: ACTS }); await F.lcLoad();

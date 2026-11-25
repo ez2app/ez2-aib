@@ -38,3 +38,11 @@ k ': lcNeeds(p.key) ? '\''。'\'' + `<span class="anlc">${lcCard(p.key)}</span>`
 k 'if (Object.keys(now).length && !L.tm)' 'if (false)'
 # LC16 (安裝卡不寫大小)
 k '官方下載 ${n} ${v}${mb ? `(約 ${mb} MB)` : '\'''\''}' '官方下載 ${n} ${v}'
+# LC17 (MB 用 1048576(c2f0b N1))
+k 'Math.round(sz / 1e6)' 'Math.round(sz / 1048576)'
+# LC18 (換版取消也寫沒有裝(c2f0b N2 / f163c N1))
+k '(String(j.action || a) === '\''update'\'' ? W.cancelledU(N) : W.cancelled(N))' 'W.cancelled(N)'
+# LC19 (換版連不到也寫沒裝)
+k 'w = (a === '\''update'\'' && W.whyU[c]) || W.why[c];' 'w = W.why[c];'
+# LC20 (韓文 owner 句少登入密碼(3e53b N1))
+k '(Touch ID / Windows Hello 또는 로그인 비밀번호)' '(Touch ID / Windows Hello)'

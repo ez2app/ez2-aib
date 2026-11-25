@@ -4671,8 +4671,8 @@
       updateT: (n) => `${n} 換成 AIB 試過的版本`,
       updateB: (n, cur, v) => `這台的 ${n} 是 ${cur},AIB 還沒試過這一版。要換成 AIB 試過的 ${v} 嗎?`,
       phase: { download: (p) => `正在下載(${p}%)…`, verify: () => '正在核對是不是官方的檔…', place: () => '正在安裝…', install: () => '正在安裝…' },
-      owner: '按下去會跳本人驗證(Touch ID / Windows Hello),驗證窗上寫的版本跟這裡一樣才按。',
-      src: (s) => `來源:${s}`, cancelled: (n) => `已取消,${n} 沒有裝。`, other: (c) => `沒有完成(${c})`,
+      owner: '按下去會跳本人驗證(Touch ID / Windows Hello 或登入密碼),驗證窗上寫的版本跟這裡一樣才按。',
+      src: (s) => `來源:${s}`, cancelled: (n) => `已取消,${n} 沒有裝。`, cancelledU: (n) => `已取消,${n} 還是原本的版本。`, whyU: { lifecycle_offline: '連不到官方下載站,這次沒換;還是原本的版本。網路好了再按一次。' }, other: (c) => `沒有完成(${c})`,
       why: { lifecycle_offline: '連不到官方下載站,這次沒裝。網路好了再按一次。', lifecycle_verify_failed: '下載下來的檔跟 AIB 記的不一樣,AIB 沒有執行它,已經刪掉。再按一次;一直這樣就截圖給我們。', lifecycle_failed: (n) => `裝到一半停了,${n} 還不能用。再按一次。`, lifecycle_timeout: (n) => `裝到一半停了,${n} 還不能用。再按一次。`, provider_unsigned: (n) => `這台的 ${n} 不是官方簽的那一支(可能被換過),AIB 不會開它。請重新安裝。`, provider_unmeasured: (n) => `這台的 ${n} 版本 AIB 還沒試過。請換版。`, lifecycle_busy: '已經在進行了,等它跑完。' },
     },
     en: {
@@ -4682,8 +4682,8 @@
       updateT: (n) => `Switch ${n} to a version AIB has tested`,
       updateB: (n, cur, v) => `${n} on this computer is ${cur}, which AIB hasn't tested. Switch to ${v}, which AIB has tested?`,
       phase: { download: (p) => `Downloading (${p}%)…`, verify: () => 'Checking it is the official file…', place: () => 'Installing…', install: () => 'Installing…' },
-      owner: 'Pressing it asks for the owner check (Touch ID / Windows Hello). Only approve if the window shows the same version as here.',
-      src: (s) => `Source: ${s}`, cancelled: (n) => `Cancelled; ${n} was not installed.`, other: (c) => `Not finished (${c})`,
+      owner: 'Pressing it asks for the owner check (Touch ID / Windows Hello, or your login password). Only approve if the window shows the same version as here.',
+      src: (s) => `Source: ${s}`, cancelled: (n) => `Cancelled; ${n} was not installed.`, cancelledU: (n) => `Cancelled; ${n} is still on the version it had.`, whyU: { lifecycle_offline: 'Couldn\'t reach the official download site; nothing was changed and it is still on the version it had. Try again when the network is back.' }, other: (c) => `Not finished (${c})`,
       why: { lifecycle_offline: 'Couldn\'t reach the official download site; nothing was installed. Try again when the network is back.', lifecycle_verify_failed: 'The downloaded file doesn\'t match what AIB has on record. AIB didn\'t run it and has deleted it. Try again; if it keeps happening, send us a screenshot.', lifecycle_failed: (n) => `It stopped partway; ${n} can't be used yet. Try again.`, lifecycle_timeout: (n) => `It stopped partway; ${n} can't be used yet. Try again.`, provider_unsigned: (n) => `${n} on this computer isn't the one signed by its maker (it may have been replaced). AIB won't open it. Please reinstall.`, provider_unmeasured: (n) => `AIB hasn't tested this version of ${n}. Please change the version.`, lifecycle_busy: 'It\'s already running; wait for it to finish.' },
     },
     ja: {
@@ -4693,8 +4693,8 @@
       updateT: (n) => `${n} を AIB が試した版に変える`,
       updateB: (n, cur, v) => `このパソコンの ${n} は ${cur} で、AIB はまだこの版を試していません。AIB が試した ${v} に変えますか?`,
       phase: { download: (p) => `ダウンロード中(${p}%)…`, verify: () => '公式のファイルか確認中…', place: () => 'インストール中…', install: () => 'インストール中…' },
-      owner: '押すと本人確認(Touch ID / Windows Hello)が出ます。確認画面の版がここと同じときだけ承認してください。',
-      src: (s) => `入手元:${s}`, cancelled: (n) => `キャンセルしました。${n} は入れていません。`, other: (c) => `完了していません(${c})`,
+      owner: '押すと本人確認(Touch ID / Windows Hello、またはログインパスワード)が出ます。確認画面の版がここと同じときだけ承認してください。',
+      src: (s) => `入手元:${s}`, cancelled: (n) => `キャンセルしました。${n} は入れていません。`, cancelledU: (n) => `キャンセルしました。${n} は元のバージョンのままです。`, whyU: { lifecycle_offline: '公式のダウンロードサイトにつながらず、今回は変えていません。元のバージョンのままです。ネットワークが戻ったらもう一度押してください。' }, other: (c) => `完了していません(${c})`,
       why: { lifecycle_offline: '公式のダウンロードサイトにつながらず、今回は入れていません。ネットワークが戻ったらもう一度押してください。', lifecycle_verify_failed: 'ダウンロードしたファイルが AIB の記録と違うため、実行せずに削除しました。もう一度押してください。続く場合はスクリーンショットを送ってください。', lifecycle_failed: (n) => `途中で止まりました。${n} はまだ使えません。もう一度押してください。`, lifecycle_timeout: (n) => `途中で止まりました。${n} はまだ使えません。もう一度押してください。`, provider_unsigned: (n) => `このパソコンの ${n} は公式に署名されたものではありません(差し替えられた可能性があります)。AIB は開きません。入れ直してください。`, provider_unmeasured: (n) => `この版の ${n} は AIB がまだ試していません。バージョンを変えてください。`, lifecycle_busy: 'すでに実行中です。終わるまでお待ちください。' },
     },
     ko: {
@@ -4704,8 +4704,8 @@
       updateT: (n) => `${n}을(를) AIB가 시험한 버전으로 바꾸기`,
       updateB: (n, cur, v) => `이 컴퓨터의 ${n}은(는) ${cur}이며, AIB가 아직 시험하지 않은 버전입니다. AIB가 시험한 ${v}(으)로 바꿀까요?`,
       phase: { download: (p) => `내려받는 중(${p}%)…`, verify: () => '공식 파일인지 확인하는 중…', place: () => '설치하는 중…', install: () => '설치하는 중…' },
-      owner: '누르면 본인 확인(Touch ID / Windows Hello) 창이 뜹니다. 창에 표시된 버전이 여기와 같을 때만 승인하세요.',
-      src: (s) => `출처: ${s}`, cancelled: (n) => `취소했습니다. ${n}은(는) 설치되지 않았습니다.`, other: (c) => `완료되지 않았습니다(${c})`,
+      owner: '누르면 본인 확인(Touch ID / Windows Hello 또는 로그인 비밀번호) 창이 뜹니다. 창에 표시된 버전이 여기와 같을 때만 승인하세요.',
+      src: (s) => `출처: ${s}`, cancelled: (n) => `취소했습니다. ${n}은(는) 설치되지 않았습니다.`, cancelledU: (n) => `취소했습니다. ${n}은(는) 원래 버전 그대로입니다.`, whyU: { lifecycle_offline: '공식 다운로드 사이트에 연결하지 못해 이번에는 바꾸지 않았습니다. 원래 버전 그대로입니다. 네트워크가 돌아오면 다시 눌러 주세요.' }, other: (c) => `완료되지 않았습니다(${c})`,
       why: { lifecycle_offline: '공식 다운로드 사이트에 연결하지 못해 이번에는 설치하지 않았습니다. 네트워크가 돌아오면 다시 눌러 주세요.', lifecycle_verify_failed: '내려받은 파일이 AIB 기록과 달라 실행하지 않고 삭제했습니다. 다시 눌러 주세요. 계속되면 스크린샷을 보내 주세요.', lifecycle_failed: (n) => `도중에 멈췄습니다. ${n}은(는) 아직 쓸 수 없습니다. 다시 눌러 주세요.`, lifecycle_timeout: (n) => `도중에 멈췄습니다. ${n}은(는) 아직 쓸 수 없습니다. 다시 눌러 주세요.`, provider_unsigned: (n) => `이 컴퓨터의 ${n}은(는) 공식 서명된 것이 아닙니다(바뀌었을 수 있습니다). AIB는 열지 않습니다. 다시 설치해 주세요.`, provider_unmeasured: (n) => `이 버전의 ${n}은(는) AIB가 아직 시험하지 않았습니다. 버전을 바꿔 주세요.`, lifecycle_busy: '이미 진행 중입니다. 끝날 때까지 기다려 주세요.' },
     },
   };
@@ -4717,14 +4717,14 @@
   // 開席視窗 / 開席設定卡用:這家要出安裝或換版卡嗎(登入另走 relogHtml,不重複)
   const lcNeeds = (k) => { const a = lcAct(lcEntry(k)); return (a === 'install' || a === 'update') && !(S.lc.no[k] && !lcRun(lcEntry(k))); };
   const lcName = (k) => LC_NAME[k] || RELOG_NAME[k] || String(k);
-  function lcWhy(c, n) { const W = lcW(), w = W.why[c]; return typeof w === 'function' ? w(n) : w || W.other(c || '?'); }
+  function lcWhy(c, n, a) { const W = lcW(), w = (a === 'update' && W.whyU[c]) || W.why[c]; return typeof w === 'function' ? w(n) : w || W.other(c || '?'); }
   function lcCard(k) {
     const p = lcEntry(k); if (!p) return '';
     if (p.next === 'login' && !lcRun(p)) return relogHtml(k);
     const a = lcAct(p); if (a !== 'install' && a !== 'update') return '';
     const L = S.lc, W = lcW(), N = lcName(k), j = p.job && typeof p.job === 'object' ? p.job : null, c = p.card && typeof p.card === 'object' ? p.card : {};
     if (L.no[k] && !lcRun(p)) return '';
-    const b = RELOG_BRAND.includes(k) ? k : 'other', v = String(c.version || p.measured || ''), sz = Number(c.size), mb = Number.isFinite(sz) && sz > 0 ? Math.round(sz / 1048576) : 0;
+    const b = RELOG_BRAND.includes(k) ? k : 'other', v = String(c.version || p.measured || ''), sz = Number(c.size), mb = Number.isFinite(sz) && sz > 0 ? Math.round(sz / 1e6) : 0;
     const cur = String((p.installed && p.installed.version) || '?'), mk = LC_MAKER[k] || N;
     const title = a === 'install' ? W.installT(N) : W.updateT(N), body = a === 'install' ? W.installB(N, v, mb, mk) : W.updateB(N, cur, v);
     let state = '', btn = '';
@@ -4733,7 +4733,7 @@
       state = `<div class="lcst" role="status">${esc(W.phase[ph](pct))}</div>${ph === 'download' ? `<progress class="lcpg" max="100" value="${pct}" aria-label="${esc(W.phase.download(pct))}"></progress>` : ''}`;
       btn = lcHas('provider_job_cancel') ? `<button type="button" class="k" data-lccancel="${esc(k)}" ${L.busy[k] ? 'disabled' : ''}>${esc(W.cancel)}</button>` : '';
     } else {
-      const done = j && (j.state === 'failed' || j.state === 'cancelled') ? (j.state === 'cancelled' ? W.cancelled(N) : lcWhy(String(j.error || 'lifecycle_failed'), N)) : '';
+      const done = j && (j.state === 'failed' || j.state === 'cancelled') ? (j.state === 'cancelled' ? (String(j.action || a) === 'update' ? W.cancelledU(N) : W.cancelled(N)) : lcWhy(String(j.error || 'lifecycle_failed'), N, String(j.action || a))) : '';
       const m = L.msg[k] ? L.msg[k] : '';
       state = (done ? `<div class="rlcno" role="alert">${esc(done)}</div>` : '') + (m ? `<div class="rlcno" role="alert">${esc(m)}</div>` : '');
       btn = lcHas('provider_' + a) ? `<button type="button" class="rlccp" data-lcgo="${esc(k)}" ${L.busy[k] ? 'disabled' : ''}>${esc(done ? W.again : W.go[a])}</button><button type="button" class="k" data-lcno="${esc(k)}">${esc(W.no)}</button>` : `<span class="rlcno">${esc(W.na)}</span>`;
