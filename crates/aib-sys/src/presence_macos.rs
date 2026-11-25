@@ -188,6 +188,11 @@ pub enum SeError {
     /// The stored blob does not give back a key.
     #[error("key cannot be restored")]
     BadKey,
+    /// The fingerprint was given, but the key still wanted another window (a pair-key
+    /// swapped for one that takes a password or an application password): refused, no
+    /// second window (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §8-3).
+    #[error("the key wants a window other than the fingerprint")]
+    KeyMismatch,
     /// A Security / LocalAuthentication error not classified above.
     #[error("{domain} {code}")]
     Os { domain: String, code: isize },
@@ -205,6 +210,7 @@ impl SeError {
             SeError::WeakKey => "weak_key",
             SeError::KeyProbeFailed => "key_probe_failed",
             SeError::BadKey => "corrupt",
+            SeError::KeyMismatch => "key_mismatch",
             SeError::Os { .. } => "se_error",
         }
     }
@@ -628,6 +634,41 @@ pub fn sign_until(
     msg: &[u8],
     limit: std::time::Duration,
 ) -> Result<Vec<u8>, SeError> {
+    sign_until_with(blob, reason, msg, limit, Window::AsTheKeyAllows)
+}
+
+/// The fallback title a finger-only window gets. Apple: an empty string hides the
+/// "Use Password…" button (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a).
+pub const FINGER_ONLY_FALLBACK_TITLE: &str = "";
+
+/// Which window a signature lets the system show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// Whatever the key's ACL takes (a login-password key shows the password window).
+    AsTheKeyAllows,
+    /// The fingerprint only: no "Use Password…" button, even on a key whose ACL would take
+    /// the password (a pair-key swapped for one on a Touch ID Mac).
+    FingerOnly,
+}
+
+/// [`sign_until`] on a Mac whose owner check reads "fingerprint": the window offers no
+/// password, so a key swapped for a login-password one still needs the finger.
+pub fn sign_until_finger_only(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, SeError> {
+    sign_until_with(blob, reason, msg, limit, Window::FingerOnly)
+}
+
+fn sign_until_with(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+    window: Window,
+) -> Result<Vec<u8>, SeError> {
     // the same two refusals as `sign`, spelled apart (each knife anchor is once in this file)
     let no_reason = reason.trim().is_empty();
     if no_reason {
@@ -644,6 +685,11 @@ pub fn sign_until(
     let r = NSString::from_str(reason);
     // SAFETY: `ctx` is live and `r` a live NSString for the call's duration.
     unsafe { ctx.setLocalizedReason(&r) };
+    if window == Window::FingerOnly {
+        let t = NSString::from_str(FINGER_ONLY_FALLBACK_TITLE);
+        // SAFETY: `ctx` is live and `t` a live NSString for the call's duration (copied).
+        unsafe { ctx.setLocalizedFallbackTitle(Some(&t)) };
+    }
     // SAFETY: `ctx` is live; 0 = never reuse an earlier unlock for this signature.
     unsafe { ctx.setTouchIDAuthenticationAllowableReuseDuration(0.0) };
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -666,13 +712,85 @@ pub fn sign_until(
             }
         })
         .map_err(|_| SeError::KeyProbeFailed)?;
-    let signed = restore(blob, Some(&*ctx)).and_then(|key| sign_key(&key, msg));
+    let signed = match window {
+        Window::FingerOnly => finger_then_sign(&ctx, &r, blob, msg),
+        Window::AsTheKeyAllows => restore(blob, Some(&*ctx)).and_then(|key| sign_key(&key, msg)),
+    };
     drop(done_tx);
     let _ = watcher.join();
     if fired.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(SeError::Timeout);
     }
     signed
+}
+
+/// The finger-only signature (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a, §8-3): first the
+/// fingerprint alone (`evaluatePolicy` with the biometrics policy; the fallback button is
+/// hidden), then the key signs with that same context, which may show no window at all. A
+/// fingerprint key takes the evaluated context and signs; a key that still wants a window
+/// (swapped for a login-password or application-password key) answers "not interactive",
+/// which is [`SeError::KeyMismatch`], never a second window.
+fn finger_then_sign(
+    ctx: &LAContext,
+    reason: &NSString,
+    blob: &[u8],
+    msg: &[u8],
+) -> Result<Vec<u8>, SeError> {
+    evaluate_finger(ctx, reason)?;
+    // SAFETY: `ctx` is a live LAContext; setting a BOOL property has no other precondition.
+    unsafe { ctx.setInteractionNotAllowed(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED) };
+    let key = restore(blob, Some(ctx))?;
+    sign_key(&key, msg).map_err(after_finger)
+}
+
+/// What the signing step after the fingerprint may do: show nothing (§8-3).
+pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = true;
+
+/// The signing step's error after the fingerprint was given: "not interactive" means the key
+/// wanted another window.
+fn after_finger(e: SeError) -> SeError {
+    let wanted_a_window = matches!(&e, SeError::Os { domain, code }
+        if domain == "com.apple.LocalAuthentication" && *code == LA_NOT_INTERACTIVE);
+    if wanted_a_window {
+        SeError::KeyMismatch
+    } else {
+        e
+    }
+}
+
+/// `evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)` on `ctx`, waiting for the reply.
+/// The window is the system's; `-[LAContext invalidate]` from [`sign_until`]'s watcher ends it.
+fn evaluate_finger(ctx: &LAContext, reason: &NSString) -> Result<(), SeError> {
+    use objc2::runtime::Bool;
+    use objc2_foundation::NSError;
+    use objc2_local_authentication::LAPolicy;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), SeError>>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let reply = block2::RcBlock::new(move |ok: Bool, err: *mut NSError| {
+        let answer = if ok.as_bool() {
+            Ok(())
+        } else {
+            // SAFETY: on a failed evaluation LocalAuthentication passes its NSError (or null),
+            // alive for the duration of this reply.
+            match unsafe { err.as_ref() } {
+                Some(e) => Err(classify(&e.domain().to_string(), e.code())),
+                None => Err(SeError::AuthFailed),
+            }
+        };
+        if let Some(tx) = tx.lock().ok().and_then(|mut once| once.take()) {
+            let _ = tx.send(answer);
+        }
+    });
+    // SAFETY: `ctx` and `reason` are live; the reply block owns only a Mutex'd Sender, which
+    // may be used from LocalAuthentication's queue.
+    unsafe {
+        ctx.evaluatePolicy_localizedReason_reply(
+            LAPolicy::DeviceOwnerAuthenticationWithBiometrics,
+            reason,
+            &reply,
+        )
+    };
+    rx.recv().unwrap_or(Err(SeError::KeyProbeFailed))
 }
 
 /// Check an ECDSA P-256 / SHA-256 / DER signature against an X9.63 public key. Needs no
@@ -938,6 +1056,77 @@ mod tests {
         let mut p = [0u8; PUBLIC_KEY_LEN];
         p[0] = 0x02;
         assert_eq!(verify(&p, b"m", b"s"), Err(SeError::BadArg("public key")));
+    }
+
+    /// S10-2b-1 (DESIGN-s10-2b-nofinger r1 §7a): the finger-only window hides the password
+    /// button (an empty fallback title) and refuses what `sign_until` refuses, before any
+    /// window.
+    #[test]
+    fn the_finger_only_window_offers_no_password_and_refuses_the_same() {
+        assert_eq!(FINGER_ONLY_FALLBACK_TITLE, "");
+        assert_eq!(
+            u8::from(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED),
+            1,
+            "reason: the signing step after the fingerprint may show a window"
+        );
+        // after the fingerprint, a key that wants another window is a mismatch, not a window
+        assert_eq!(
+            after_finger(SeError::Os {
+                domain: "com.apple.LocalAuthentication".into(),
+                code: LA_NOT_INTERACTIVE,
+            }),
+            SeError::KeyMismatch
+        );
+        assert_eq!(after_finger(SeError::Cancel), SeError::Cancel);
+        assert_eq!(SeError::KeyMismatch.code(), "key_mismatch");
+        let lim = std::time::Duration::from_secs(5);
+        assert_eq!(
+            sign_until_finger_only(b"x", " ", b"m", lim),
+            Err(SeError::BadArg("empty reason"))
+        );
+        assert_eq!(
+            sign_until_finger_only(b"x", "ok", b"", lim),
+            Err(SeError::BadArg("message size"))
+        );
+        assert_eq!(
+            sign_until_finger_only(b"x", "ok", b"m", std::time::Duration::ZERO),
+            Err(SeError::Timeout)
+        );
+    }
+
+    /// 3e53b REVIEW-s102b L2: the finger-only path really sets what the constants say (no SE
+    /// runs the flow in CI, so read the code itself): the fallback title on the FingerOnly
+    /// window, and interactionNotAllowed on the context the key signs with after the finger.
+    #[test]
+    fn the_finger_only_path_sets_its_window_and_no_second_one() {
+        let src = include_str!("presence_macos.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or("");
+        let body = |from: &str, to: &str| -> String {
+            let a = code.find(from).unwrap_or(code.len());
+            let rest = &code[a..];
+            rest[..rest.find(to).unwrap_or(rest.len())].to_owned()
+        };
+        let window = body("if window == Window::FingerOnly {", "\n    }\n");
+        assert!(
+            window.contains("ctx.setLocalizedFallbackTitle(Some(&t))"),
+            "reason: fallback_title_not_set"
+        );
+        let after = body("fn finger_then_sign(", "\n}\n");
+        let no_ui = after
+            .find("ctx.setInteractionNotAllowed(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED)")
+            .unwrap_or(usize::MAX);
+        let signs = after.find("sign_key(&key, msg)").unwrap_or(0);
+        assert!(
+            no_ui < signs,
+            "reason: signs_before_interaction_not_allowed"
+        );
+        assert!(
+            after
+                .find("evaluate_finger(ctx, reason)?")
+                .unwrap_or(usize::MAX)
+                < no_ui,
+            "reason: no_finger_first"
+        );
     }
 
     #[test]
