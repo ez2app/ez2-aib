@@ -367,9 +367,18 @@ pub fn write_and_load(path: &Path, text: &str) -> Result<SessionPolicy, InitRefu
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(InitRefused::Exists),
         Err(_) => return Err(InitRefused::WriteFailed),
     }
-    match allowlist::from_file(path) {
-        Ok(p) => Ok(p),
-        Err(_) => {
+    loaded_as_written(path, text)
+}
+
+/// 3e53b L1 (REVIEW-w10 adbb97c6): what is put in force is the text the owner approved, never
+/// the file read back (a same-user program could replace it between the link and the read).
+/// The file is read back only to check it is that text and that aibd would load it at start
+/// (owner, mode); otherwise it is removed and nothing changes.
+pub fn loaded_as_written(path: &Path, text: &str) -> Result<SessionPolicy, InitRefused> {
+    let same = std::fs::read(path).is_ok_and(|b| b == text.as_bytes());
+    match (same, allowlist::from_file(path), allowlist::parse(text)) {
+        (true, Ok(_), Ok(p)) => Ok(p),
+        _ => {
             let _ = std::fs::remove_file(path);
             Err(InitRefused::WriteFailed)
         }
@@ -668,6 +677,30 @@ mod tests {
             p.env.iter().any(|e| e == "HTTPS_PROXY"),
             "reason: proxy_dropped {t}"
         );
+    }
+
+    /// 3e53b L1: a file swapped between the write and the read back is not put in force (nor
+    /// kept); the approved text is what aibd uses.
+    #[test]
+    fn only_the_approved_text_is_put_in_force() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("session-policy.json");
+        let one = |name: &str| {
+            format!(
+                r#"{{"programs":[{{"name":"{name}","path":"{}"}}],"env":[]}}"#,
+                d.path().join(name).to_str().unwrap().replace('\\', "\\\\")
+            )
+        };
+        std::fs::write(&p, one("codex")).unwrap();
+        assert_eq!(
+            loaded_as_written(&p, &one("claude")),
+            Err(InitRefused::WriteFailed),
+            "reason: swapped_file_in_force"
+        );
+        assert!(!p.exists(), "reason: swapped_file_kept");
+        std::fs::write(&p, one("claude")).unwrap();
+        let got = loaded_as_written(&p, &one("claude")).unwrap();
+        assert_eq!(got.programs[0].name, "claude");
     }
 
     /// r3 at the lowest layer: even with the checks above it gone, the write itself never
