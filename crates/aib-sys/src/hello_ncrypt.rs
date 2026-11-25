@@ -414,31 +414,16 @@ mod w0 {
         // is made? Record it; if it can, the key must then be refused, then turn it back on.
         let p = provider().unwrap();
         let k = open(&p, NAME).unwrap();
+        let flag = NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY;
         let zero: u32 = 0;
         // SAFETY: the key is open; a static property name and a 4-byte value, its size given
-        let off = ok(unsafe {
-            NCryptSetProperty(
-                k.0,
-                NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
-                (&raw const zero).cast(),
-                4,
-                0,
-            )
-        });
+        let off = ok(unsafe { NCryptSetProperty(k.0, flag, (&raw const zero).cast(), 4, 0) });
         println!("W0-1 turn the gesture flag off after making (want Err): {off:?}");
         if off.is_ok() {
             let refused = probe(NAME);
             let one: u32 = 1;
             // SAFETY: as above
-            let back = ok(unsafe {
-                NCryptSetProperty(
-                    k.0,
-                    NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
-                    (&raw const one).cast(),
-                    4,
-                    0,
-                )
-            });
+            let back = ok(unsafe { NCryptSetProperty(k.0, flag, (&raw const one).cast(), 4, 0) });
             println!("W0-1 with the flag off, probe: {refused:?}; turned back on: {back:?}");
             assert_eq!(
                 refused,
