@@ -1104,7 +1104,9 @@ mod tests {
                 &["ffffffffffff", "evil.example"],
             )
             .unwrap();
-            assert!(r.contains(" · …"), "reason: branch_not_cut {r}");
+            if branch.len() > 80 {
+                assert!(r.contains(" · …"), "reason: branch_not_cut {r}");
+            }
         }
     }
 

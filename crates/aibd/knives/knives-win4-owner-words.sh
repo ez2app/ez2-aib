@@ -72,7 +72,7 @@ python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
 # w4-n1-group (N1: the last subgroup dropped, two subgroups read the same)
 python3 -I scripts/knife.py crates/aibd/src/repo_push.rs \
   '        end_shown(last, GROUP_TAIL)' \
-  '        String::new()' \
+  '        end_shown(last, 0)' \
   --expect-fail 'repo_push::tests::two_subgroups_read_apart' \
   -- cargo test -p aibd --locked --lib 'repo_push::tests::two_subgroups_read_apart'
 # w4-la-owner (c2f0b REVIEW-win4 L-a: the remote path's owner dropped, two owners of one long name read the same)
