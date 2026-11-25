@@ -3951,7 +3951,8 @@
       const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台還沒登入' };
       // Andy 11-20 00:2x 親打「先把 codex 選項灰掉」:codex 席叫不出 aibd 工具、話進不了串(0eed7 VERIFY-realentry ea0885a7 H1)⇒ aibd 修好前頁面不讓開
       const held = HOLD_BRANDS[k] || null;
-      const why = (held && held.block) || (!p ? '這版還不能開' : p.open ? (held && held.note) || '' : R[p.reason] || '這台還不能開');
+      const npm = !(p && p.open) && typeof spNpm === 'function' && typeof S !== 'undefined' ? spNpm(k) : ''; // W-10 c2f0b 第 5 點
+      const why = (held && held.block) || npm || (!p ? '這版還不能開' : p.open ? (held && held.note) || '' : R[p.reason] || '這台還不能開');
       const modes = ((p && p.modes) || ['safe']).filter((m) => !held || !held.modes || held.modes.includes(m));
       const ms = p && Array.isArray(p.models) ? p.models.filter((m) => m && typeof m.id === 'string' && m.id && MODEL_RE.test(m.id)).slice(0, 40).map((m) => ({ id: m.id, label: String(m.label || m.id).slice(0, 80), dflt: m.default === true, used: m.used === true })) : null;
       return { id: p ? p.id : k, key: k, name, b, open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
@@ -4696,8 +4697,8 @@
     // 6770f IFACE-merge r1 §3 / §5:合併 / 還原要本人驗證;卡上印跟系統窗一樣的對照碼(window_sha12)
     merge_run: (b, first) => { const M = typeof S !== 'undefined' && S.add ? S.add.mx : null, P = (M && M.pv) || {}, code = String((first && first.window_sha12) || P.window_sha12 || ''); return ['合併' + (typeof MG_KN !== 'undefined' && M ? MG_KN[M.kind] || '' : ''), [['步驟', String((Array.isArray(P.steps) ? P.steps.length : 0)) + ' 步'], ['對照碼', code, true]]]; },
     merge_undo: (b) => ['整筆還原合併', [['批次', String(b.batch_id || ''), true]]],
-    // W-10:窗字「允許 AIB 在這台開:Claude」;名單用頁面剛讀到的 native(aibd 寫的以系統窗為準)
-    session_policy_init: () => ['允許 AIB 在這台開', [['程式', (typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name)).join('、') : '') + '(以系統窗為準)', true]]],
+    // W-10(c2f0b IFACE r2 第 3 點):窗字「允許 AIB 在這台開:Claude(完整路徑)」,兩家用、分隔;頁面抄剛讀到的 native,以系統窗為準
+    session_policy_init: () => ['允許 AIB 在這台開', [['程式', typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name) + '(' + f.path + ')').join('、') : '', true], ['', '名單與路徑以系統窗為準(AIB 跳窗當下會再找一次)']]],
     // 3e53b IFACE-netcard:網路例外卡要驗證的選項(15 分鐘 / 1 小時 / 到這一位關掉 / 一直允許)
     // c2f0b S2-2:窗上(aibd 寫)是人格名 · +N −M 行 · 對照碼 diff12;卡上照同一份提案印
     persona_propose_approve: (b) => { const p = ppCard(b.request_id) || {}; return ['把提案寫回人格卡「' + String(p.persona_name || p.persona_uid || '') + '」', [['夥伴', p.seat_id ? fpAt(p.seat_id) : ''], ['改動', '+' + (Number(p.added) || 0) + ' −' + (Number(p.removed) || 0) + ' 行', true], ['對照碼', String(p.diff12 || String(b.diff_sha || '').slice(0, 12)), true]]]; },
@@ -4820,6 +4821,7 @@
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
     policy_exists: '這台已經有開席設定,AIB 不覆蓋。',
     policy_write_failed: 'AIB 寫不進開席設定檔,這次沒做。',
+    policy_bad_request: '頁面送出的設定請求格式不對,這次沒做。',
   };
   // 不夠強時,c2f0b 依機器分類補一句;分類(W-3)頁面還讀不到 ⇒ Windows 上只補「有密碼沒設 Hello」那條怎麼做(ebab8:寫到 PIN (Windows Hello)),其他照實寫還沒有
   const OWNER_PIN_HOW = '如果這台有 Windows 登入密碼、只是還沒設 Windows Hello:打開「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」按「設定」,設好再按一次。';
@@ -5581,11 +5583,12 @@
   function apRow(A, k, label, sum, body) { const on = A.rowOpen === k; return `<div class="aprow ${on ? 'open' : ''}"><button type="button" class="aprh" data-aprow="${k}" aria-expanded="${on}"><span>${label}</span><b>${sum}</b><i class="apchev" aria-hidden="true">⌄</i></button><div class="aprb"><div>${on ? body : ''}</div></div></div>`; }
   // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2;ebab8 19:06 派):沒有人寫開席設定時,「+ AI 夥伴」改成這張卡
   // 讀 GET /api/v1/session-policy(不跳窗,每次讀 aibd 都重找);頁面不送任何名字或路徑,寫哪些由 aibd 自己從 found 挑 kind = native
-  // 寫設定走 fingerAct(SP_INIT):等 c2f0b 回 Q1(act type 還是獨立端點)— 舊 aibd 沒有 GET ⇒ 不出卡,照舊那一句
+  // 寫設定走既有 act 流程(c2f0b IFACE r2:type = session_policy_init,202 + ticket;body 只有 type,多帶欄位 aibd 回 400)— 舊 aibd 沒有 GET ⇒ 不出卡,照舊那一句
   const SP_INIT = 'session_policy_init';
   const SP_KINDS = ['native', 'npm', 'script', 'interpreter', 'not_found'];
   const SP_NAME = { claude: 'Claude', codex: 'Codex' };
   const SP_INSTALL_NA = '官方安裝說明的連結:這一版 AIB 還沒有';
+  const SP_NPM_WHY = (n) => `這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 ${n}。請改用官方安裝程式(下面的連結),裝好後按「重新找」。`;
   const spCut = (t, n) => { const a = Array.from(String(t == null ? '' : t)); return a.length > n ? a.slice(0, n).join('') + '…' : a.join(''); };
   const spName = (n) => SP_NAME[n] || spCut(n, 20);
   // 路徑長的留前 3 段 + … + 檔名(滑過看全文);分隔字照原樣
@@ -5597,11 +5600,12 @@
   function spFound(d) {
     return (d && Array.isArray(d.found) ? d.found : []).filter((f) => f && typeof f.name === 'string' && f.name && SP_KINDS.includes(f.kind)).slice(0, 10).map((f) => ({ name: f.name, kind: f.kind, path: typeof f.path === 'string' ? f.path : '' }));
   }
+  function spNpm(k) { return spFound(S.sp && S.sp.d).some((f) => f.name === k && f.kind === 'npm') ? SP_NPM_WHY(spName(k)) : ''; }
   function spNeed(d) { return !!d && (d.policy === 'missing' || d.policy === 'invalid' || !(Array.isArray(d.programs) && d.programs.length)); }
   function spRow(f) {
     const n = esc(spName(f.name)), pt = f.path ? `<span class="sppath" title="${esc(f.path)}">${esc(spPath(f.path))}</span>` : '';
     if (f.kind === 'native') return `<li class="spok">✅ ${n}:找到了${pt ? '(' + pt + ')' : ''}</li>`;
-    if (f.kind === 'npm') return `<li class="spwarn">⚠️ ${n}:這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 ${n}。請改用官方安裝程式(下面的連結),裝好後按「重新找」。${pt ? '<br>' + pt : ''}</li>`;
+    if (f.kind === 'npm') return `<li class="spwarn">⚠️ ${n}:${esc(SP_NPM_WHY(spName(f.name)))}${pt ? '<br>' + pt : ''}</li>`;
     if (f.kind === 'not_found') return `<li>${n}:沒找到</li>`;
     return `<li class="spwarn">⚠️ ${n}:找到的不是程式本體${pt ? '(' + pt + ')' : ''},請用官方安裝程式重裝</li>`;
   }

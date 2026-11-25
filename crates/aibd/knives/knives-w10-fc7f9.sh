@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# W-10 開席設定引導卡(fc7f9 11-25,ebab8 派;c2f0b IFACE-w10-session-policy r0 §2)。
+# W-10 開席設定引導卡(fc7f9 11-25,ebab8 派;c2f0b IFACE-w10-session-policy r2)。
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs, W-10 block) red.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -32,3 +32,11 @@ k 'return a.length > 5 && p.length > 48 ? a.slice(0, 3).join(sep) + sep + '\''�
 k 'return `<li class="spok">✅ ${n}:找到了' 'return `<li class="spok">✅ ${n}:可以用'
 # W10K13
 k 'if (S.add && x.closest('\''[data-spok]'\'')) { spInit(); return; }' 'if (S.add && x.closest('\''[data-spok]'\'')) { return; }'
+# W10K14
+k 'const why = (held && held.block) || npm || (!p ?' 'const why = (held && held.block) || (!p ?'
+# W10K15
+k 'map((f) => spName(f.name) + '\''('\'' + f.path + '\'')'\'').join('\''、'\'')' 'map((f) => f.path + '\'' '\'' + spName(f.name)).join('\''、'\'')'
+# W10K16
+k 'policy_bad_request: '\''頁面送出的設定請求格式不對,這次沒做。'\'',' 'policy_bad_request: '\''格式不對。'\'','
+# W10K17
+k 'spFound(S.sp && S.sp.d).some((f) => f.name === k && f.kind === '\''npm'\'') ? SP_NPM_WHY(spName(k)) : '\'''\''' ''\'''\'''
