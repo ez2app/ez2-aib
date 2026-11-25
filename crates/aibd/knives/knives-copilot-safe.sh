@@ -177,3 +177,21 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '            .all(|(p, n)| p.len() == n)' \
   --expect-fail 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept'
+# c-login-users (an empty loggedInUsers reads as logged in; ebab8 q_17279e54)
+python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
+  '                .is_some_and(|a| !a.is_empty())' \
+  '                .is_some()' \
+  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
+  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
+# c-login-comment (copilot config comment lines not taken out: a real login reads as none; ebab8 q_17279e54)
+python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
+  '                .filter(|l| !l.trim_start().starts_with("//"))' \
+  '                .filter(|_| true)' \
+  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
+  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'
+# c-login-keychain (a keychain item not there reads as a stored token (macOS); ebab8 q_17279e54)
+python3 -I scripts/knife.py crates/aibd/src/workspace.rs \
+  '        code == Some(0)' \
+  '        code.is_some()' \
+  --expect-fail 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in' \
+  -- cargo test -p aibd --locked --lib 'workspace::tests::a_brand_without_a_login_under_the_seat_home_is_not_logged_in'

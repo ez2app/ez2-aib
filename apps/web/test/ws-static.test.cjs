@@ -1592,4 +1592,10 @@ const hsChecks = (async () => {
   ok(/const GROK_X = 'Grok 安全席仍可搜尋 X\(關不掉\)';/.test(ws) && /grok: '[^']*' \+ GROK_X \+/.test(ws), 'reason: grok_x_search_unsaid_in_brand');
   ok(sum.includes("${pv.key === 'grok' ? ' · ' + GROK_X : ''}"), 'reason: grok_x_search_unsaid_before_open');
 }
+// 08de5 11-25(ebab8 q_17279e54):Copilot 用登入、不用金鑰;品牌說明與「怎麼登入」都這樣寫,不叫人填金鑰
+{
+  ok(/const COPILOT_LOGIN = '用 GitHub 帳號登入,不用金鑰';/.test(ws) && /copilot: '[^']*' \+ COPILOT_LOGIN \}/.test(ws), 'reason: copilot_key_wording_in_brand');
+  ok(/copilot: '終端機打 copilot login\(' \+ COPILOT_LOGIN \+ '\)'/.test(ws), 'reason: copilot_key_wording_in_login');
+  ok(!/COPILOT_GITHUB_TOKEN|GITHUB_COPILOT_TOKEN|api-key-copilot/.test(ws), 'reason: page_asks_copilot_key');
+}
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

@@ -120,8 +120,52 @@ pub fn logged_in(
             .join("auth.json")
             .is_file(),
         "grok" => home.join(".grok").join("auth.json").is_file(),
-        "copilot" => home.join(".copilot").join("config.json").is_file(),
+        "copilot" => {
+            copilot_users(&home.join(".copilot").join("config.json"))
+                && copilot_token_stored("copilot-cli")
+        }
         _ => true,
+    }
+}
+
+/// copilot's `config.json` (comment lines first) names who signed in under `loggedInUsers`;
+/// the file itself is written at first launch, before any login (copilot 1.0.115, measured
+/// 08de5 11-25), so the file being there says nothing. Only that the list has an entry is
+/// read; the token is not in it.
+pub fn copilot_users(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .is_some_and(|v| {
+            v.get("loggedInUsers")
+                .and_then(Value::as_array)
+                .is_some_and(|a| !a.is_empty())
+        })
+}
+
+/// copilot keeps its token in the system credential store (macOS: the keychain item
+/// `copilot-cli`, measured 1.0.115; EVIDENCE-brand-copilot §權杖在哪): is item `service`
+/// there? Its attributes only are asked (no `-g` / `-w`: the secret is never read) and the
+/// answer is dropped. Elsewhere: no (not tried there).
+pub fn copilot_token_stored(service: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = std::process::Command::new("/usr/bin/security");
+        c.args(["find-generic-password", "-s", service]);
+        let (code, _) =
+            crate::gh_view::run_timed(c, &crate::timers::PROVIDER_LOGIN_STATUS_WAIT, None);
+        code == Some(0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        false
     }
 }
 
@@ -1447,6 +1491,30 @@ mod tests {
         assert!(!logged_in("claude", h.path(), None));
         assert!(!logged_in("codex", h.path(), None));
         assert!(!logged_in("grok", h.path(), None));
+        assert!(!logged_in("copilot", h.path(), None));
+        // copilot (ebab8 q_17279e54): the file is there from the first launch; only a name
+        // under loggedInUsers counts, and its token in the credential store
+        std::fs::create_dir(h.path().join(".copilot")).unwrap();
+        let cfg = h.path().join(".copilot").join("config.json");
+        std::fs::write(&cfg, "// managed automatically\n{\"firstLaunchAt\": \"x\"}").unwrap();
+        assert!(!copilot_users(&cfg), "reason: copilot_config_file_alone");
+        assert!(
+            !logged_in("copilot", h.path(), None),
+            "reason: copilot_config_file_alone"
+        );
+        std::fs::write(&cfg, "// managed automatically\n{\"loggedInUsers\": []}").unwrap();
+        assert!(!copilot_users(&cfg), "reason: copilot_no_user");
+        std::fs::write(
+            &cfg,
+            "// managed automatically\n{\"loggedInUsers\": [{\"host\": \"https://github.com\", \"login\": \"u\"}]}",
+        )
+        .unwrap();
+        assert!(copilot_users(&cfg), "reason: copilot_user_not_read");
+        // an item that is not there is not a stored token (the probe's no is read as no)
+        assert!(
+            !copilot_token_stored("aibd-test-no-such-item-08de5"),
+            "reason: copilot_token_missing_read_as_stored"
+        );
         // claude: the account named in ~/.claude.json (macOS keychain) or the credentials file
         std::fs::write(
             h.path().join(".claude.json"),
