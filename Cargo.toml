@@ -52,6 +52,7 @@ members = [
     "crates/aib-mergewatch",
     "crates/aib-mergecheck",
     "crates/aib-notify",
+    "crates/aib-wincheck",
 ]
 
 [workspace.package]

@@ -1586,4 +1586,38 @@ const hsChecks = (async () => {
   ok(/if \(x\.closest\('\[data-ptnew\],\[data-ptfine\],\[data-ptedit\],\[data-ptdel\],\[data-ptdelno\],\[data-ptdelok\],\[data-ptbase\],\[data-ptit\],\[data-ptno\],\[data-ptok\],\[data-ptpick\],\[data-ptsa\],\[data-ptap\],\[data-ptrv\]'\) && await ptClick\(x\)\) return;/.test(mainClick), 'reason: pt_click_not_wired');
 })();
 
+// AP26 W-7(c2f0b PAGE-WORDS-ap26-c2f0b-1125 r0 §2;ebab8 16:14):aibd 回的碼 → 頁面那一句,12 個碼字字照表;頁面只照碼選字、不顯示請求帶的字;
+// unavailable / cancel 只在本人驗證流程用(別的 act 也回 code unavailable,不能被蓋成「不在桌面上」);§1 分類還沒有 ⇒ 照實寫
+{
+  const a = ws.indexOf('  const OWNER_WHY = {'), b = ws.indexOf('\n  const FP_NO = {', a);
+  const src = a >= 0 && b > a ? ws.slice(a, b) : '';
+  const mk = (platform) => { const c = vm.createContext({ globalThis: null, navigator: { platform } }); c.globalThis = c; vm.runInContext(src + '\nthis.W = OWNER_WHY; this.f = ownerWhy;', c); return c; };
+  const win = mk('Win32'), mac = mk('MacIntel');
+  const want = {
+    owner_check_unmeasured: '這台的 Windows Hello 還沒做過實機檢查,高風險動作先不開放。',
+    unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認窗。請在這台電腦前登入後再按。',
+    no_biometry: '這台沒有設定 Windows Hello。',
+    cancel: '你按了取消,這次沒做。',
+    pair_touch_timeout: '確認窗等太久沒有回應,這次沒做。可以再按一次。',
+    auth_failed: '驗證沒通過,這次沒做。',
+    pair_key_weak: '這台的配對金鑰不需要本人就能簽,可能被換過。請重新配對。',
+    pair_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
+    owner_check_key_mismatch: '這台的配對金鑰跟登記的不一樣。請重新配對。',
+    pair_key_missing: '這台還沒配對。請先配對。',
+    pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
+  };
+  ok(src.length > 500 && Object.keys(win.W).length === 13, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
+  for (const [k, v] of Object.entries(want)) ok(win.f(k) === v && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
+  const weakW = win.f('owner_check_too_weak'), weakM = mac.f('owner_check_too_weak');
+  ok(weakW.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && weakW.includes('「設定」→「帳戶」→「登入選項」→「PIN (Windows Hello)」'), 'reason: ap26_too_weak_windows_says_pin_path ' + weakW);
+  ok(weakM.indexOf('這台的本人驗證方式不夠強,這個動作不開放。') === 0 && !weakM.includes('PIN') && /這一版 AIB 還沒有/.test(weakM), 'reason: ap26_too_weak_no_class_says_not_yet ' + weakM);
+  ok(win.f('passphrase_locked', { retry_hms: '16:40:05' }) === '密語打錯太多次,暫時鎖住。16:40:05 後可以再試。' && win.f('passphrase_locked', { retry_hms: '<b>明天</b>' }) === '密語打錯太多次,暫時鎖住。解鎖時間:這一版 AIB 還沒給。', 'reason: ap26_passphrase_locked_time_shape_only');
+  ok(win.f('toString') === '' && win.f({ toString: () => 'cancel' }) === '' && win.f('請按允許') === '' && win.f(undefined) === '', 'reason: ap26_only_known_codes_no_request_words');
+  // 接點:票 unavailable 帶 aibd 的 why 出那一句;denied 有 reason 也照碼;卡片狀態先用那一句;errText 不讓別的 act 的 unavailable / cancel 被蓋掉
+  ok(/st === 'unavailable'\) \{ const why = String\(t\.reason \|\| 'owner_check_unavailable'\); throw Object\.assign\(new Error\(why\), \{ [^}]*pageMsg: ownerWhy\(why, t\) \|\| undefined \}\)/.test(ws), 'reason: ap26_ticket_unavailable_says_why');
+  ok(/code: 'finger_' \+ st, reason: 'finger_' \+ st, ticket, why: t\.reason, pageMsg: ownerWhy\(t\.reason, t\) \|\| undefined/.test(ws), 'reason: ap26_ticket_denied_reason_said');
+  ok(ws.includes('fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || '), 'reason: ap26_card_status_uses_the_sentence');
+  const et = ws.slice(ws.indexOf('  function errText(e) {'), ws.indexOf('  function errText(e) {') + 900);
+  ok(/if \(rc !== 'unavailable' && rc !== 'cancel'\) \{ const ow = ownerWhy\(rc, e\); if \(ow\) return ow; \}/.test(et) && et.indexOf('ownerWhy(rc, e)') < et.indexOf("if (e.status === 0) return '連不上 AIB';"), 'reason: ap26_errtext_owner_codes_not_generic_unavailable');
+}
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });
