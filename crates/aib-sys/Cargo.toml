@@ -34,9 +34,15 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "std",
 ] }
 objc2-local-authentication = { version = "=0.3.2", default-features = false, features = [
+    "LABiometryType", # S10-2 measurement: owner_check_state reads biometryType (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
     "LAContext",
+    "block2", # S10-2b-1: evaluatePolicy:localizedReason:reply: (finger first, DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a)
     "std",
 ] }
+# DECISION-t135b-objc2-deps item 1 ("block2 / LAError when the signing flow needs them";
+# ebab8 11-25 13:09): the reply block for evaluatePolicy. Exact version, no default
+# features; its only dependency is objc2 (already locked at 0.6.3).
+block2 = { version = "=0.6.2", default-features = false, features = ["alloc"] }
 
 # DECISION-11 A (bb7dc conditions): exact version, locked in Cargo.lock,
 # only the features `job` uses, plus Win32_System_RemoteDesktop for `hello`'s session check
@@ -44,12 +50,26 @@ objc2-local-authentication = { version = "=0.3.2", default-features = false, fea
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi", # AP26 W-5: CreateDesktopW / RegisterClassW need it (BitBlt etc.: test code only, source guard)
     "Win32_Security",
+    "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader", # AP26 W-5: passphrase window class (PRE-READ-w4-winsys-features)
     "Win32_System_RemoteDesktop",
+    "Win32_System_StationsAndDesktops", # AP26 W-5: aibd's own desktop
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse", # AP26 W-5 SetFocus (SendInput: test code only, source guard)
+    "Win32_UI_WindowsAndMessaging", # AP26 W-5 passphrase window, WDA_EXCLUDEFROMCAPTURE
+] }
+
+# AP26 W-4 (PRE-READ-w4-winsys-features 3e53b condition 1): features only the owner-present
+# measurement tests use (the CredUI comparison window). Dev only, so product code calling them does not compile.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Security_Credentials",
+    "Win32_System_Com",
 ] }

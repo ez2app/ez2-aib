@@ -1525,6 +1525,10 @@ impl Sessions {
         timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
         let id = spec.id.clone();
+        // a seat that starts again starts with none of its grants (grants.rs, f163c L1)
+        if let Some(seat) = seat_id.as_deref() {
+            crate::grants::seat_ended(seat);
+        }
         let res = (self.spawn)(&spec, self.lineage.clone());
         let mut g = lock(&self.inner);
         g.reserved -= 1;
@@ -2006,6 +2010,9 @@ impl Sessions {
         e.rec.holds_slot = !stop.releases_slot();
         e.stopping = false;
         let rec = e.rec.clone();
+        if let Some(ended_seat) = rec.seat_id.as_deref() {
+            crate::grants::seat_ended(ended_seat);
+        }
         let (kind, payload) = match rec.state {
             "exited" => (
                 "session.exited",

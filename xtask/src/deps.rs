@@ -30,7 +30,8 @@ pub const SYS_VIA: &[(&str, &str)] = &[
 ];
 
 /// One allowed dependency of aib-sys: `(name, target, version req, features)`.
-/// Kind is always normal (no dev / build dependencies); `features` sorted.
+/// Kind is normal ([`SYS_OWN_DEPS`]) or, for test-only Windows features, dev
+/// ([`SYS_DEV_DEPS`]); never build. `features` sorted.
 pub type OwnDep = (
     &'static str,
     Option<&'static str>,
@@ -47,15 +48,31 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "=0.61.2",
         &[
             "Win32_Foundation",
+            // AP26 W-5: windows-sys gates CreateDesktopW (DEVMODEW) and RegisterClassW
+            // (HBRUSH) behind Gdi, so it is a normal feature; BitBlt / GetDIBits /
+            // PrintWindow stay out of non-test code by aib-sys `test_only_os_calls`
+            "Win32_Graphics_Gdi",
             "Win32_Security",
+            // S10-3 / W1b hello_ncrypt (DESIGN-persona-propose-osverify-c2f0b-1123 §3)
+            "Win32_Security_Cryptography",
             // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
             "Win32_Storage_FileSystem",
             "Win32_System_Console",
             "Win32_System_Diagnostics_ToolHelp",
             "Win32_System_IO",
             "Win32_System_JobObjects",
+            // AP26 W-4 / W-5 (PRE-READ-w4-winsys-features-c2f0b-1125, 3e53b 0/0/2/2):
+            // GetModuleHandleW for the passphrase window's class
+            "Win32_System_LibraryLoader",
             "Win32_System_RemoteDesktop",
+            // W-5: aibd's own desktop (CreateDesktopW / SwitchDesktop / SetThreadDesktop)
+            "Win32_System_StationsAndDesktops",
             "Win32_System_Threading",
+            // W-5 SetFocus; SendInput comes with it and is kept out of non-test code by
+            // aib-sys `test_only_os_calls` (3e53b condition 2)
+            "Win32_UI_Input_KeyboardAndMouse",
+            // W-5: the passphrase window, SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
+            "Win32_UI_WindowsAndMessaging",
         ],
     ),
     // DECISION-t135b-objc2-deps: macOS presence keys (presence_macos). Appended after
@@ -76,11 +93,32 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "objc2-local-authentication",
         Some("cfg(target_os = \"macos\")"),
         "=0.3.2",
-        &["LAContext", "std"],
+        // LABiometryType: S10-2 owner_check_state (DESIGN-persona-propose-osverify-c2f0b-1123 r3 §8)
+        // block2: S10-2b-1 evaluatePolicy (DESIGN-s10-2b-nofinger-c2f0b-1125 r1 §7a)
+        &["LABiometryType", "LAContext", "block2", "std"],
+    ),
+    // DECISION-t135b-objc2-deps item 1 (block2 when the signing flow needs it; ebab8 11-25)
+    (
+        "block2",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.6.2",
+        &["alloc"],
     ),
 ];
 
-/// Every dependency of aib-sys that is not exactly on [`SYS_OWN_DEPS`].
+/// aib-sys's dev dependencies: Windows features only the W-4 owner-present measurement
+/// tests use (the CredUI comparison window and freeing its buffer). As dev
+/// features, a normal build has none of them, so product code calling them does not compile
+/// (PRE-READ-w4-winsys-features 3e53b condition 1).
+pub const SYS_DEV_DEPS: &[OwnDep] = &[(
+    "windows-sys",
+    Some("cfg(windows)"),
+    "=0.61.2",
+    &["Win32_Security_Credentials", "Win32_System_Com"],
+)];
+
+/// Every dependency of aib-sys that is not exactly on [`SYS_OWN_DEPS`] (or, for dev
+/// dependencies, [`SYS_DEV_DEPS`]).
 pub fn check_own(meta: &Value) -> Vec<String> {
     let mut errs = Vec::new();
     let Some(sys) = meta["packages"]
@@ -112,20 +150,21 @@ pub fn check_own(meta: &Value) -> Vec<String> {
             .collect();
         feats.sort_unstable();
         let what = format!("{name} {req} target={target:?} kind={kind:?} features={feats:?}");
-        if kind.is_some() {
-            errs.push(format!(
-                "{SYS_CRATE} has a {} dependency: {what}",
-                kind.unwrap_or("?")
-            ));
-            continue;
-        }
+        let list = match kind {
+            None => SYS_OWN_DEPS,
+            Some("dev") => SYS_DEV_DEPS,
+            Some(other) => {
+                errs.push(format!("{SYS_CRATE} has a {other} dependency: {what}"));
+                continue;
+            }
+        };
         if d["optional"].as_bool() == Some(true) || d["rename"].is_string() {
             errs.push(format!(
                 "{SYS_CRATE} dependency is optional or renamed: {what}"
             ));
             continue;
         }
-        let ok = SYS_OWN_DEPS
+        let ok = list
             .iter()
             .any(|(n, t, r, f)| *n == name && *t == target && *r == req && *f == feats.as_slice());
         if !ok {
@@ -408,6 +447,55 @@ mod tests {
         }
     }
 
+    fn dev_dep(name: &str, target: Option<&str>, req: &str, feats: &[&str]) -> Value {
+        let mut d = dep(name, target, req, feats);
+        d["kind"] = json!("dev");
+        d
+    }
+
+    /// AP26 W-4 (3e53b condition 1): the three test-only Windows features as a dev
+    /// dependency pass; one more feature, another crate, or the same features as a normal
+    /// dependency do not.
+    #[test]
+    fn only_the_three_test_features_may_be_a_dev_dependency() {
+        let (n, t, r, f) = SYS_DEV_DEPS[0];
+        let mut d = allowed();
+        d.push(dev_dep(n, t, r, f));
+        assert!(
+            check_own(&sys_with(json!(d))).is_empty(),
+            "reason: listed_dev"
+        );
+        let mut more = f.to_vec();
+        more.push("Win32_Networking_WinSock");
+        more.sort_unstable();
+        let mut d = allowed();
+        d.push(dev_dep(n, t, r, &more));
+        assert_eq!(
+            check_own(&sys_with(json!(d))).len(),
+            1,
+            "reason: extra_dev_feature"
+        );
+        let mut d = allowed();
+        d.push(dev_dep("tempfile", None, "^3", &[]));
+        assert_eq!(
+            check_own(&sys_with(json!(d))).len(),
+            1,
+            "reason: other_dev_crate"
+        );
+        let mut d = allowed();
+        d[2] = dep(n, t, r, f);
+        assert_eq!(
+            check_own(&sys_with(json!(d))).len(),
+            1,
+            "reason: test_features_as_normal"
+        );
+        for (n, _, _, f) in SYS_DEV_DEPS {
+            let mut s = f.to_vec();
+            s.sort_unstable();
+            assert_eq!(&s, f, "{n} dev features not sorted");
+        }
+    }
+
     #[test]
     fn an_extra_local_authentication_feature_or_loose_version_is_refused() {
         let i = SYS_OWN_DEPS
@@ -416,11 +504,11 @@ mod tests {
             .expect("on the list");
         let (n, t, r, _) = SYS_OWN_DEPS[i];
         let mut d = allowed();
-        d[i] = dep(n, t, r, &["LAContext", "LAError", "std"]);
+        d[i] = dep(n, t, r, &["LABiometryType", "LAContext", "LAError", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, t, "^0.3.2", &["LAContext", "std"]);
+        d[i] = dep(n, t, "^0.3.2", &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
-        d[i] = dep(n, None, r, &["LAContext", "std"]);
+        d[i] = dep(n, None, r, &["LABiometryType", "LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
     }
 
