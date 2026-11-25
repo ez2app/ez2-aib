@@ -1199,6 +1199,11 @@
     if (d.fell_back_to_strict) {
       h += '<div class="thm" role="status">未完成硬體簽章驗證，已自動退回嚴格。</div>';
     }
+    // f163c REVIEW-post884 M1:aibd plugins_page.rs 回的 dropped 是「刪掉最舊的幾組」的數字(presets.drain),不是清單
+    const dropN = Number(d.dropped);
+    if (Number.isInteger(dropN) && dropN > 0) {
+      h += `<div class="thm" role="status">範本超過 20 組，已刪掉最舊的 ${dropN} 組</div>`;
+    }
     const reuseLbl = p.reuse === 'main_exact' ? '同版完全相符' : p.reuse === 'exact' ? '同機完全相符' : '改動碰不到也沿用';
     const knivesLbl = p.knives === 'changed_all' ? '有變的全跑' : p.knives === 'affected' ? '只跑受影響的' : '只跑改動刀';
     const retryLbl = p.retry_miss === 'on' ? '當場重跑一次' : '不重跑';
