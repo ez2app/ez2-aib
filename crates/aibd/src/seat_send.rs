@@ -1090,25 +1090,70 @@ pub fn settled_item(
     Some(item)
 }
 
-/// Write `how` onto the row (revision 1, as [`queued_row`] wrote it); the new revision, or
-/// `None` when it was not written (the row then stays queued and start recovers its event).
+/// How many times [`settle_row`] writes before it gives up on a row other writers keep moving.
+const SETTLE_TRIES: usize = 3;
+
+/// Write `how` onto `row` at the revision it was read at; the new revision, or `None` when it
+/// was not written. 08de5 11-26 (ebab8 q_6f1076bb): a revision that moved on while the row is
+/// still queued (another writer touched it between the read and the write) is read again and
+/// written at the new revision, a few times at most; before, the write was dropped and the
+/// row said queued for good. A row no longer queued (the seat read or closed it) is left as it
+/// is ([`settled_item`]).
+pub fn settle_row(
+    db: &aib_store::MessageDb,
+    mut row: aib_store::MessageRow,
+    how: &Settled<'_>,
+    at: i64,
+    now: &str,
+) -> Option<i64> {
+    for _ in 0..SETTLE_TRIES {
+        let item = settled_item(row.item.clone(), how, at)?;
+        match db.update(&row.message_id, row.rev, item, now).ok()? {
+            aib_store::Updated::Done(r) => return Some(r.rev),
+            aib_store::Updated::Stale(moved) => row = *moved,
+            aib_store::Updated::Missing => return None,
+        }
+    }
+    None
+}
+
+/// [`Settled`] owned, to cross into a blocking task.
+enum SettledOwned {
+    Delivered(String),
+    Pending(String),
+    Failed(String),
+}
+
+impl SettledOwned {
+    fn of(how: &Settled<'_>) -> SettledOwned {
+        match how {
+            Settled::Delivered(s) => SettledOwned::Delivered((*s).to_owned()),
+            Settled::Pending(s) => SettledOwned::Pending((*s).to_owned()),
+            Settled::Failed(c) => SettledOwned::Failed((*c).to_owned()),
+        }
+    }
+    fn as_settled(&self) -> Settled<'_> {
+        match self {
+            SettledOwned::Delivered(s) => Settled::Delivered(s),
+            SettledOwned::Pending(s) => Settled::Pending(s),
+            SettledOwned::Failed(c) => Settled::Failed(c),
+        }
+    }
+}
+
+/// Write `how` onto the row ([`settle_row`]); the new revision, or `None` when it was not
+/// written (the row then stays queued and start recovers its event).
 async fn settle(st: &AppState, message_id: &str, how: Settled<'_>) -> Option<i64> {
     let db = st.messages.clone();
     let id = message_id.to_owned();
-    let row = tokio::task::spawn_blocking({
-        let db = db.clone();
-        let id = id.clone();
-        move || db.get(&id)
+    let how = SettledOwned::of(&how);
+    let (at, now) = (unix_now(), crate::sessions::now_rfc3339());
+    tokio::task::spawn_blocking(move || {
+        let row = db.get(&id).ok()??;
+        settle_row(&db, row, &how.as_settled(), at, &now)
     })
     .await
     .ok()?
-    .ok()??;
-    let item = settled_item(row.item, &how, unix_now())?;
-    let now = crate::sessions::now_rfc3339();
-    match tokio::task::spawn_blocking(move || db.update(&id, row.rev, item, &now)).await {
-        Ok(Ok(aib_store::Updated::Done(r))) => Some(r.rev),
-        _ => None,
-    }
 }
 
 /// Whether a seat of `mode` may write into a 1.x seat's ledger: work or dgrs only, whatever
@@ -1790,6 +1835,44 @@ mod tests {
                     settled_item(item.clone(), &how, 9).is_none(),
                     "reason: settled_over_{status}"
                 );
+            }
+        }
+    }
+
+    /// 08de5 11-26 (ebab8 q_6f1076bb): another writer moves the row on between the settle's read
+    /// and its write. Still queued: it is read again and settled at the new revision, not left
+    /// queued for good. Read by the seat meanwhile: what the seat did stands.
+    #[test]
+    fn a_settle_that_meets_a_newer_revision_reads_again() {
+        let d = tempfile::tempdir().unwrap();
+        let db = aib_store::MessageDb::open(&d.path().join("msg.db")).unwrap();
+        let now = crate::sessions::now_rfc3339();
+        for (other, want) in [("queued", Some("delivered")), ("read", None)] {
+            let r = queued_row("seat_a", "seat_b", Some("safe"), "你好", "ab").unwrap();
+            let id = r.message_id.clone();
+            db.insert(r).unwrap();
+            // what the settle read
+            let seen = db.get(&id).unwrap().unwrap();
+            // another writer moves the row on (an extra field; or the seat read it)
+            let mut moved = seen.item.clone();
+            moved.insert("status".into(), json!(other));
+            moved.insert("touched_by".into(), json!("other"));
+            assert!(matches!(
+                db.update(&id, seen.rev, moved, &now).unwrap(),
+                aib_store::Updated::Done(_)
+            ));
+            let got = settle_row(&db, seen, &Settled::Delivered("s1"), 9, &now);
+            let row = db.get(&id).unwrap().unwrap();
+            match want {
+                Some(status) => {
+                    assert!(got.is_some(), "reason: stale_settle_dropped");
+                    assert_eq!(row.item["status"], status, "reason: stale_settle_dropped");
+                    assert_eq!(row.item["touched_by"], "other", "reason: other_write_lost");
+                }
+                None => {
+                    assert_eq!(got, None, "reason: settled_over_read");
+                    assert_eq!(row.item["status"], "read", "reason: settled_over_read");
+                }
             }
         }
     }
