@@ -238,6 +238,7 @@ fn pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers() {
         "cireuse-ledger-crate-knives-3",
         "cireuse-ledger-crate-knives-macos-0",
         "cireuse-ledger-crate-knives-macos-1",
+        "cireuse-ledger-crate-knives-macos-2",
         "cireuse-ledger-cloud-knives",
         "cireuse-ledger-cloud-host-knives",
     ];

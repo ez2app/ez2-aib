@@ -4141,8 +4141,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      # Read-only, the rust job's key (as in cloud-knives above): only the rust job saves it
+      # E3 N2 / CI 15-minute plan step 1 (ebab8 11-26): no job saved an ubuntu cache (the rust job runs
+      # macOS / Windows only), so every Linux cell built from nothing (55-78 minutes, #895). A main push now
+      # saves one (cell 1, below); pull requests only restore it
       - uses: actions/cache/restore@v4
+        id: kcache
         if: env.RUN == 'true'
         with:
           path: |
@@ -4154,6 +4157,47 @@ jobs:
           restore-keys: aibd-ubuntu-latest-${{ runner.environment }}-
       # (f163c a5f760d2af N3: these cells moved to ubuntu in E3, and the timer / shadow / ledger steps
       #   still said runner.os == 'macOS', so they never ran; they go by the job now, not the os)
+      # main push only, cell 1 only, on a cache miss: build every test target once with the knife step's
+      # profile (incremental, no debug, -D warnings from the job) so the dependencies are what a knife build
+      # reuses, drop the incremental folder (rebuilt per checkout anyway) and save; a pull request never saves
+      # (S66-0: each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB)
+      - name: build the Linux knife cache (main push, cell 1)
+        id: kwarm
+        if: >-
+          env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && strategy.job-index == 0 && steps.kcache.outputs.cache-hit != 'true'
+        # f163c 7659cc6296 L1: a cold build past 40 minutes or out of disk must not turn main's cell 1 red
+        # (the knives below still run; the save only follows a success)
+        continue-on-error: true
+        timeout-minutes: 40
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          s=$SECONDS
+          cargo test --workspace --locked --no-run
+          rm -rf target/debug/incremental
+          echo "Linux knife cache built in $((SECONDS - s)) s; target $(du -sh target | cut -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/save@v4
+        if: steps.kwarm.outcome == 'success'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.kcache.outputs.cache-primary-key }}
+      - name: Linux knife cache read
+        if: env.RUN == 'true'
+        shell: bash
+        env:
+          HIT: ${{ steps.kcache.outputs.cache-hit }}
+          MATCHED: ${{ steps.kcache.outputs.cache-matched-key }}
+          WARM: ${{ steps.kwarm.outcome }}
+        run: |
+          echo "Linux knife cache: hit=${HIT:-false} matched=${MATCHED:-none} build=${WARM:-skipped}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: knife timer
         if: env.RUN == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -4250,14 +4294,15 @@ jobs:
     name: crate knives (macOS, ${{ matrix.shard }})
     needs: changes
     if: ${{ !cancelled() }}
-    # Two cells (ebab8 11-26): three queued macOS cells waited 4 hours for a machine on #895 (run
-    # 45610010326: 48 macOS jobs queued repo-wide, 4 running), and the three took about 105 minutes in
-    # all, so two cells of about 53 each; one cell would sit too near the 140-minute shard limit
-    # (MAX_SHARD_SECS). The step limit is 80 minutes and the job 100 for that.
+    # Three cells again (stack10, ebab8 11-26): the stack's other pull requests add 39 knife scripts with
+    # no os= header, which default to macos. `knife-shards plan` on 84bdef21b1 (lin, 90856): 80 macOS
+    # scripts (56 with seconds, 24 estimated), two cells 4670 / 4671 s (78 minutes each + the build:
+    # the 80-minute step limit), three cells 3113 / 3114 / 3114 s (52). Marking them unix needs a real
+    # knife run on Linux first (a later slice). Two cells was 234c0458c3 (#895: three cells queued 4 hours).
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/2", "2/2"]
+        shard: ["1/3", "2/3", "3/3"]
     timeout-minutes: 100
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
@@ -4391,7 +4436,7 @@ jobs:
           CELLS: ${{ needs.crate-knives.result }}
           MACOS_CELL: ${{ needs.crate-knives-macos.result }}
           SHARDS: "4"
-          MAC_SHARDS: "2"
+          MAC_SHARDS: "3"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}

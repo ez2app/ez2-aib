@@ -269,13 +269,14 @@ const ARTIFACTS: &[&str] = &[
     "cireuse-ledger",
     "cireuse-ledger-knives-rust",
     // E2a / E3 (f163c a5f760d2af N3): the crate knife cells upload one ledger each, by cell index
-    // (4 Linux, 2 macOS); before this list had them, pull never read their lines
+    // (4 Linux, 3 macOS); before this list had them, pull never read their lines
     "cireuse-ledger-crate-knives-0",
     "cireuse-ledger-crate-knives-1",
     "cireuse-ledger-crate-knives-2",
     "cireuse-ledger-crate-knives-3",
     "cireuse-ledger-crate-knives-macos-0",
     "cireuse-ledger-crate-knives-macos-1",
+    "cireuse-ledger-crate-knives-macos-2",
     "cireuse-ledger-cloud-knives",
     "cireuse-ledger-cloud-host-knives",
 ];
