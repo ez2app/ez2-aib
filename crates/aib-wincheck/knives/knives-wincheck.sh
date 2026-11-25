@@ -33,3 +33,15 @@ k '        if self.red.is_empty() {' \
 k '                "failed" => c.failed += n,' \
   '                "failed" => {}' \
   libtest_results_are_added_up_and_failed_names_read
+# WC8 a folder someone else made at the root is emptied (c2f0b REVIEW M1)
+k '        (true, false) => Err("ROOT-NOT-OURS"),' \
+  '        (true, false) => Ok(true),' \
+  a_root_is_emptied_only_when_it_is_ours
+# WC9 an executable changed after the check is run (c2f0b REVIEW M1)
+k '        (Some(b), Some(w)) => *w == sha256_hex(b),' \
+  '        (Some(_), Some(_)) => true,' \
+  an_executable_runs_only_while_it_is_the_one_in_the_sums
+# WC10 a DLL put beside a test executable is not seen (c2f0b REVIEW L1)
+k '                && !sums.contains_key(&format!("{TREE}{f}"))' \
+  '                && false' \
+  a_file_in_the_root_the_pack_did_not_bring_is_found

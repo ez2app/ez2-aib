@@ -321,6 +321,8 @@ jobs:
           printf '%s\n' "$HEAD_SHA" > winexe/HEAD
           (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
           echo "::notice title=wincheck pack::$(wc -l < winexe-tests.tsv) test executables, $(du -sh winexe | cut -f1)"
+          # c2f0b REVIEW-wincheck L2: the result file's SUMS-FILE-SHA256 must be this value
+          echo "::notice title=wincheck SUMS-FILE-SHA256::$(sha256sum winexe/SHA256SUMS | cut -c1-64)"
           echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && steps.winexe.outcome == 'success'

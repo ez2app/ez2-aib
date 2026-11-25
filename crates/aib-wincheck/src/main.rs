@@ -5,9 +5,9 @@
 //! elsewhere (a Mac): the test executables there must have been built at that root.
 
 use aib_wincheck::{
-    check_pack, failed_names, kept_env, parse_results, parse_sums, parse_tests, sha256_hex,
-    step_args, suite_name, Counts, Report, TestExe, SCREEN_ASKS, STEPS, TESTS_LIST, TREE,
-    WINDOWS_ROOT,
+    check_pack, extras, failed_names, kept_env, may_clear, parse_results, parse_sums, parse_tests,
+    run_allowed, sha256_hex, step_args, suite_name, Counts, Report, TestExe, MARK, SCREEN_ASKS,
+    STEPS, TESTS_LIST, TREE, WINDOWS_ROOT,
 };
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -109,28 +109,52 @@ fn run(exe: &Path, args: &[String], cwd: &Path) -> (Option<i32>, String, u128) {
 /// folder may be one other accounts of the machine can write (c2f0b 16:19 L), so the check at
 /// the start is not enough.
 fn still_same(file: &Path, name: &str, sums: &BTreeMap<String, String>) -> bool {
-    std::fs::read(file)
-        .ok()
-        .is_some_and(|b| sums.get(name).is_some_and(|w| *w == sha256_hex(&b)))
+    run_allowed(std::fs::read(file).ok().as_deref(), name, sums)
 }
 
-/// The marker that says a root folder is this program's own: a folder without it is never
-/// emptied.
-const MARK: &str = ".aib-wincheck";
+/// The files under `dir` (all levels when `deep`), relative to `root` with `/`.
+fn files_in(root: &Path, dir: &Path, deep: bool, out: &mut Vec<String>) -> std::io::Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let ft = e.file_type()?;
+        if ft.is_dir() {
+            if deep {
+                files_in(root, &e.path(), deep, out)?;
+            }
+        } else if let Ok(rel) = e.path().strip_prefix(root) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
+/// Files the pack did not bring in the folder of `exe` (relative to `root`), where Windows looks
+/// for a DLL first (c2f0b REVIEW L1). A folder that cannot be listed counts as one.
+fn extras_beside(root: &Path, exe: &str, sums: &BTreeMap<String, String>) -> Vec<String> {
+    let dir = root.join(exe).parent().map(Path::to_path_buf);
+    let mut found = Vec::new();
+    match dir.map(|d| files_in(root, &d, false, &mut found)) {
+        Some(Ok(())) => extras(&found, sums),
+        _ => vec![format!("{exe} (its folder cannot be listed)")],
+    }
+}
 
 /// Put the pack's tree at `root` (emptied first only when it is this program's own) and check
 /// every file written against its sum. Returns the problems; empty = the tree is in place.
 fn place_tree(pack: &Path, root: &Path, sums: &BTreeMap<String, String>) -> Vec<String> {
-    if root.exists() {
-        if !root.join(MARK).is_file() {
+    match may_clear(root.exists(), root.join(MARK).is_file()) {
+        Err(why) => {
             return vec![format!(
-                "ROOT-NOT-OURS {} is there and was not made by aib-wincheck; nothing is written",
+                "{why} {} is there and was not made by aib-wincheck; nothing is written",
                 root.display()
-            )];
+            )]
         }
-        if let Err(e) = std::fs::remove_dir_all(root) {
-            return vec![format!("ROOT-CLEAR {}: {e}", root.display())];
+        Ok(true) => {
+            if let Err(e) = std::fs::remove_dir_all(root) {
+                return vec![format!("ROOT-CLEAR {}: {e}", root.display())];
+            }
         }
+        Ok(false) => {}
     }
     if let Err(e) = std::fs::create_dir_all(root).and_then(|()| std::fs::write(root.join(MARK), ""))
     {
@@ -155,6 +179,16 @@ fn place_tree(pack: &Path, root: &Path, sums: &BTreeMap<String, String>) -> Vec<
     // env!("CARGO_TARGET_TMPDIR") of integration tests
     if let Err(e) = std::fs::create_dir_all(root.join("target").join("tmp")) {
         problems.push(format!("ROOT-MAKE target/tmp: {e}"));
+    }
+    // nothing else got in while the tree was written (c2f0b REVIEW L1)
+    let mut found = Vec::new();
+    match files_in(root, root, true, &mut found) {
+        Ok(()) => problems.extend(
+            extras(&found, sums)
+                .into_iter()
+                .map(|f| format!("ROOT-EXTRA {f}")),
+        ),
+        Err(e) => problems.push(format!("ROOT-LIST {}: {e}", root.display())),
     }
     problems
 }
@@ -216,7 +250,11 @@ fn main() -> ExitCode {
     // 1. the pack is what CI built, or nothing runs
     let sums = std::fs::read_to_string(a.pack.join("SHA256SUMS"))
         .map_err(|e| format!("SHA256SUMS: {e}"))
-        .and_then(|t| parse_sums(&t));
+        .and_then(|t| {
+            // the CI run that made the pack prints the same value (c2f0b REVIEW L2)
+            r.line(format!("SUMS-FILE-SHA256 {}", sha256_hex(t.as_bytes())));
+            parse_sums(&t)
+        });
     let files = pack_files(&a.pack);
     let trusted = match (&sums, &files) {
         (Ok(s), Ok(f)) => {
@@ -284,6 +322,14 @@ fn main() -> ExitCode {
                 ));
                 continue;
             }
+            let beside = extras_beside(root, &t.exe, sums);
+            if !beside.is_empty() {
+                suite_red = true;
+                for f in beside {
+                    r.red(format!("ROOT-EXTRA {f} (beside {}; not run)", t.exe));
+                }
+                continue;
+            }
             let (rc, out, ms) = run(&exe, &[], &root.join(&t.package));
             let c = parse_results(&out);
             println!(" {} 過 / {} 紅", c.passed, c.failed);
@@ -330,6 +376,16 @@ fn main() -> ExitCode {
                     "SUMS-CHANGED {} (changed after the check; step {} not run)",
                     t.exe, s.name
                 ));
+                continue;
+            }
+            let beside = extras_beside(root, &t.exe, sums);
+            if !beside.is_empty() {
+                for f in beside {
+                    r.red(format!(
+                        "ROOT-EXTRA {f} (beside {}; step {} not run)",
+                        t.exe, s.name
+                    ));
+                }
                 continue;
             }
             if let Some(say) = s.say {

@@ -34,6 +34,46 @@ pub const TREE: &str = "aibw/ez2-aib/";
 /// fixtures), so it is not moved; the tree is put back where it was built.
 pub const WINDOWS_ROOT: &str = r"C:\aibw\ez2-aib";
 
+/// The marker that says a root folder is this program's own: a folder without it is never
+/// emptied.
+pub const MARK: &str = ".aib-wincheck";
+
+/// Whether the root may be emptied before the tree is put there: `Ok(false)` = there is nothing
+/// to empty, `Ok(true)` = it is ours (it holds [`MARK`]), `Err` = someone else's folder, so
+/// nothing is written (c2f0b REVIEW-wincheck M1).
+pub fn may_clear(exists: bool, marked: bool) -> Result<bool, &'static str> {
+    match (exists, marked) {
+        (false, _) => Ok(false),
+        (true, true) => Ok(true),
+        (true, false) => Err("ROOT-NOT-OURS"),
+    }
+}
+
+/// Whether a file may be run: its bytes, read right before, are the ones its sum names. A file
+/// that cannot be read or a name without a sum is never run (c2f0b 16:19 L; REVIEW M1).
+pub fn run_allowed(bytes: Option<&[u8]>, name: &str, sums: &BTreeMap<String, String>) -> bool {
+    match (bytes, sums.get(name)) {
+        (Some(b), Some(w)) => *w == sha256_hex(b),
+        _ => false,
+    }
+}
+
+/// Files found in the root (relative to it, with `/`) that the pack did not bring: anything but
+/// [`MARK`], what tests write under `target/tmp/`, and the tree's own files. Windows loads a DLL
+/// from the executable's folder first, so one put there by another account would run inside
+/// the tests (c2f0b REVIEW L1).
+pub fn extras(found: &[String], sums: &BTreeMap<String, String>) -> Vec<String> {
+    found
+        .iter()
+        .filter(|f| {
+            f.as_str() != MARK
+                && !f.starts_with("target/tmp/")
+                && !sums.contains_key(&format!("{TREE}{f}"))
+        })
+        .cloned()
+        .collect()
+}
+
 /// The list of test executables, at the pack's root (not inside the tree: on a file system that
 /// ignores case, which Windows' and macOS' do, `TESTS` there is the source's `tests` folder).
 pub const TESTS_LIST: &str = "wincheck-tests.tsv";
@@ -440,6 +480,48 @@ mod tests {
             ..s
         };
         assert_eq!(step_args(&all), ["--nocapture", "--test-threads=1"]);
+    }
+
+    #[test]
+    fn a_root_is_emptied_only_when_it_is_ours() {
+        assert_eq!(may_clear(false, false), Ok(false));
+        assert_eq!(may_clear(false, true), Ok(false));
+        assert_eq!(may_clear(true, true), Ok(true));
+        assert_eq!(may_clear(true, false), Err("ROOT-NOT-OURS"));
+    }
+
+    #[test]
+    fn an_executable_runs_only_while_it_is_the_one_in_the_sums() {
+        let exe = b"MZ test executable".as_slice();
+        let sums = BTreeMap::from([(
+            "aibw/ez2-aib/target/debug/deps/title-0123456789abcdef.exe".to_string(),
+            sha256_hex(exe),
+        )]);
+        let name = "aibw/ez2-aib/target/debug/deps/title-0123456789abcdef.exe";
+        assert!(run_allowed(Some(exe), name, &sums));
+        let mut changed = exe.to_vec();
+        changed[0] ^= 1;
+        assert!(!run_allowed(Some(&changed), name, &sums));
+        assert!(!run_allowed(None, name, &sums));
+        assert!(!run_allowed(Some(exe), "aibw/ez2-aib/other.exe", &sums));
+    }
+
+    #[test]
+    fn a_file_in_the_root_the_pack_did_not_bring_is_found() {
+        let sums = BTreeMap::from([(
+            "aibw/ez2-aib/target/debug/deps/title-0123456789abcdef.exe".to_string(),
+            H.to_string(),
+        )]);
+        let found: Vec<String> = [
+            MARK,
+            "target/tmp/a/b.txt",
+            "target/debug/deps/title-0123456789abcdef.exe",
+            "target/debug/deps/version.dll",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(extras(&found, &sums), ["target/debug/deps/version.dll"]);
+        assert!(extras(&found[..3], &sums).is_empty());
     }
 
     #[test]
