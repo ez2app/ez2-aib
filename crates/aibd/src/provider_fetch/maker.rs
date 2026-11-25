@@ -127,21 +127,35 @@ fn placed_check(
     program: &Path,
     row_for: &dyn Fn(&str, &str) -> Option<FetchRow>,
 ) -> Result<Option<File>, &'static str> {
-    // the folder placed_dir puts every provider under
+    // the folder placed_dir puts every provider under, as written and as the disk names it
     let root = data.join("providers");
-    let (Ok(root), Ok(real)) = (std::fs::canonicalize(root), std::fs::canonicalize(program)) else {
-        // no providers folder yet: nothing aibd placed can be named
+    let root_real = std::fs::canonicalize(&root).ok();
+    let real = std::fs::canonicalize(program).ok();
+    let under =
+        |p: &Path| p.starts_with(&root) || root_real.as_ref().is_some_and(|r| p.starts_with(r));
+    // in the folder by its own name or by where it really is (a link out of the folder, a
+    // link into it, another letter case on Windows): either way it must be a placed program
+    if !under(program) && !real.as_deref().is_some_and(under) {
         return Ok(None);
+    }
+    let (Some(root_real), Some(real)) = (root_real, real) else {
+        return Err(provider_fetch::ERR_VERIFY);
     };
-    let Ok(rest) = real.strip_prefix(&root) else {
-        return Ok(None);
+    let Ok(rest) = real.strip_prefix(&root_real) else {
+        return Err(provider_fetch::ERR_VERIFY);
     };
     let parts: Vec<&str> = rest.iter().filter_map(|c| c.to_str()).collect();
-    let [provider, version, name] = parts.as_slice() else {
+    let [provider, version, _] = parts.as_slice() else {
         return Err(provider_fetch::ERR_VERIFY);
     };
     let row = row_for(provider, version).ok_or(ERR_UNMEASURED)?;
-    if *name != provider_fetch::program_name(&row.provider) {
+    // the whole path equals this row's placed program, and the name the policy gives is that
+    // file itself, not a link to it (3e53b 05:13 point 1)
+    let want =
+        provider_fetch::placed_dir(data, &row).join(provider_fetch::program_name(&row.provider));
+    let same = std::fs::canonicalize(&want).is_ok_and(|w| w == real);
+    let plain = std::fs::symlink_metadata(program).is_ok_and(|m| m.file_type().is_file());
+    if !same || !plain {
         return Err(provider_fetch::ERR_VERIFY);
     }
     provider_fetch::verify_placed(&row, &real).map(Some)
@@ -445,6 +459,44 @@ mod tests {
             Err(provider_fetch::ERR_VERIFY),
             "reason: odd_shape_opened"
         );
+
+        // another file in the version folder: not the row's program
+        let stray = dir.join("not-the-program");
+        std::fs::write(&stray, body).unwrap();
+        assert_eq!(
+            placed_check(data.path(), &stray, &row_for).map(|f| f.is_some()),
+            Err(provider_fetch::ERR_VERIFY),
+            "reason: other_name_opened"
+        );
+
+        // a link in the providers folder that leads out of it, and a name that climbs out
+        #[cfg(unix)]
+        {
+            std::fs::write(&exe, body).unwrap();
+            let evil = data.path().join("evil");
+            std::fs::write(&evil, body).unwrap();
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&evil, &link).unwrap();
+            assert_eq!(
+                placed_check(data.path(), &link, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: link_out_opened"
+            );
+            // a link to the placed program itself, from outside: still a link, refused
+            let alias = data.path().join("alias");
+            std::os::unix::fs::symlink(&exe, &alias).unwrap();
+            assert_eq!(
+                placed_check(data.path(), &alias, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: link_in_opened"
+            );
+            let climb = data.path().join("providers").join("..").join("evil");
+            assert_eq!(
+                placed_check(data.path(), &climb, &row_for).map(|f| f.is_some()),
+                Err(provider_fetch::ERR_VERIFY),
+                "reason: climb_opened"
+            );
+        }
 
         // the customer's own program elsewhere: the policy rules it
         let own = data.path().join("elsewhere");
