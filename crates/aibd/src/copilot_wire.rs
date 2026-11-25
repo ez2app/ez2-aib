@@ -91,17 +91,20 @@ pub fn translate_line(raw: &str, session_id_out: &mut Option<String>) -> Option<
             )
         }
         "result" => {
-            if let Some(sid) = v.get("sessionId").and_then(Value::as_str) {
-                *session_id_out = Some(sid.to_owned());
+            // the id goes into the next turn's words: a UUID only (3e53b REVIEW-copilot L1)
+            let sid = v.get("sessionId").and_then(Value::as_str);
+            let sid_bad = sid.is_some_and(|s| !uuid_shaped(s));
+            if let Some(s) = sid.filter(|s| uuid_shaped(s)) {
+                *session_id_out = Some(s.to_owned());
             }
             let exit_code = v.get("exitCode").and_then(Value::as_i64).unwrap_or(1);
-            let is_err = exit_code != 0;
+            let is_err = exit_code != 0 || sid_bad;
             let usage = v.get("usage").cloned().unwrap_or_else(|| json!({}));
             let mut out = json!({
                 "type": "result",
                 "subtype": if is_err { "error" } else { "success" },
                 "is_error": is_err,
-                "result": "",
+                "result": if sid_bad { "copilot's session id is not a UUID (copilot_sid)" } else { "" },
                 "usage": usage,
             });
             if let Some(sid) = session_id_out.as_deref() {
@@ -111,6 +114,113 @@ pub fn translate_line(raw: &str, session_id_out: &mut Option<String>) -> Option<
         }
         _ => None,
     }
+}
+
+/// `8-4-4-4-12` hex digits: the session id shape copilot 1.0.115 prints.
+pub fn uuid_shaped(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// What copilot runs by itself, outside the seat's tools (3e53b REVIEW-copilot M1, measured
+/// 08de5 11-25 on 1.0.115 with the safe seat's words): hooks under `<COPILOT_HOME>/hooks`
+/// ran (sessionStart, userPromptSubmitted, sessionEnd), and `disableAllHooks` in the user
+/// settings did not stop them; a folder in `trustedFolders` also runs its `.github/hooks` and
+/// `.github/copilot/settings.json` hooks. A seat opens only with none of it: no hook file, no
+/// `hooks` in settings or config, no installed or enabled plugin, the seat's folder (or one
+/// above it) not trusted, `COPILOT_ALLOW_ALL` not on; a file not read refuses too.
+pub fn nothing_runs(
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+    cwd: &Path,
+) -> Result<(), String> {
+    let var = |k: &str| {
+        env.iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.to_string_lossy().into_owned())
+    };
+    if var("COPILOT_ALLOW_ALL").is_some_and(|v| {
+        let v = v.trim().to_ascii_lowercase();
+        !(v.is_empty() || ["false", "0", "no", "off", "n"].contains(&v.as_str()))
+    }) {
+        return Err("COPILOT_ALLOW_ALL is on".to_owned());
+    }
+    let home = match (var("COPILOT_HOME"), var("HOME")) {
+        (Some(c), _) if !c.is_empty() => std::path::PathBuf::from(c),
+        (_, Some(h)) if !h.is_empty() => Path::new(&h).join(".copilot"),
+        _ => return Err("copilot's home folder is not known".to_owned()),
+    };
+    for dir in ["hooks", "installed-plugins"] {
+        match std::fs::read_dir(home.join(dir)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(format!("{dir}/ not read")),
+            Ok(mut rd) => {
+                if let Some(e) = rd.next() {
+                    let name: String = e
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(40)
+                        .collect();
+                    return Err(format!("{dir}/{name} is set up: it runs outside the seat"));
+                }
+            }
+        }
+    }
+    let read = |name: &str, need: bool| -> Result<Option<Value>, String> {
+        match std::fs::read_to_string(home.join(name)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !need => Ok(None),
+            Err(_) => Err(format!("{name} not read")),
+            Ok(s) => {
+                let body: Vec<&str> = s
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .collect();
+                serde_json::from_str::<Value>(&body.join("\n"))
+                    .map(Some)
+                    .map_err(|_| format!("{name} not read"))
+            }
+        }
+    };
+    let some = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => false,
+        Some(Value::Object(o)) => !o.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(_) => true,
+    };
+    for (name, need) in [("settings.json", false), ("config.json", true)] {
+        let Some(v) = read(name, need)? else { continue };
+        if some(v.get("hooks")) {
+            return Err(format!("{name} has hooks: they run outside the seat"));
+        }
+        if v.get("enabledPlugins")
+            .and_then(Value::as_object)
+            .is_some_and(|o| o.values().any(|x| x != &Value::Bool(false)))
+        {
+            return Err(format!("{name} turns a plugin on"));
+        }
+        if let Some(t) = v.get("trustedFolders") {
+            let Some(list) = t.as_array() else {
+                return Err(format!("{name} trustedFolders not read"));
+            };
+            for f in list {
+                let Some(f) = f.as_str() else {
+                    return Err(format!("{name} trustedFolders not read"));
+                };
+                if cwd.starts_with(f) {
+                    return Err(
+                        "the seat's folder is trusted by copilot: its repository hooks run"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// copilot as a [`Brand`] of [`crate::turn_wire`]: the prompt on stdin, `--resume` with
@@ -169,15 +279,146 @@ mod tests {
         assert_eq!(va["type"], "assistant");
         assert_eq!(va["message"]["content"][0]["text"], "PONG");
         let r = translate_line(
-            r#"{"type":"result","sessionId":"f8781f79","exitCode":0,"usage":{"premiumRequests":1}}"#,
+            r#"{"type":"result","sessionId":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0","exitCode":0,"usage":{"premiumRequests":1}}"#,
             &mut sid,
         )
         .unwrap();
         let vr: Value = serde_json::from_str(&r).unwrap();
         assert_eq!(vr["type"], "result");
         assert_eq!(vr["is_error"], false);
-        assert_eq!(vr["session_id"], "f8781f79");
-        assert_eq!(sid.as_deref(), Some("f8781f79"));
+        assert_eq!(vr["session_id"], "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
+        assert_eq!(sid.as_deref(), Some("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+    }
+
+    /// 3e53b REVIEW-copilot L1: the id that goes into the next turn's words is a UUID only.
+    #[test]
+    fn a_session_id_that_is_not_a_uuid_is_not_kept() {
+        let mut sid = None;
+        for bad in [
+            "--allow-all",
+            "f8781f79",
+            "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1fz",
+            "",
+        ] {
+            let line = json!({"type": "result", "sessionId": bad, "exitCode": 0}).to_string();
+            let r: Value = serde_json::from_str(&translate_line(&line, &mut sid).unwrap()).unwrap();
+            assert_eq!(sid, None, "reason: sid_kept {bad}");
+            assert_eq!(r["is_error"], true, "reason: sid_not_said {bad}");
+        }
+        assert!(uuid_shaped("0F1E2D3C-4b5a-6978-8796-a5b4c3d2e1f0"));
+        assert!(!uuid_shaped("0f1e2d3c4b5a-6978-8796-a5b4c3d2e1f0-"));
+    }
+
+    /// 3e53b REVIEW-copilot M1 (measured: user hooks run on a safe seat; a trusted folder's
+    /// repository hooks too): anything copilot runs by itself refuses the seat.
+    #[test]
+    fn a_copilot_set_up_that_runs_anything_by_itself_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("h");
+        let cp = home.join(".copilot");
+        let cwd = d.path().join("repo");
+        std::fs::create_dir_all(&cp).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let env = |extra: &[(&str, &str)]| {
+            let mut e: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+                vec![("HOME".into(), home.clone().into())];
+            e.extend(extra.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+            e
+        };
+        let cfg = |body: &str| {
+            std::fs::write(cp.join("config.json"), format!("// managed\n{body}")).unwrap();
+        };
+        cfg(r#"{"loggedInUsers":[{"login":"u"}],"trustedFolders":["/elsewhere"]}"#);
+        assert_eq!(nothing_runs(&env(&[]), &cwd), Ok(()));
+        // a hook file
+        std::fs::create_dir(cp.join("hooks")).unwrap();
+        std::fs::write(cp.join("hooks").join("m.json"), "{}").unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: hook_file_opens"
+        );
+        std::fs::remove_file(cp.join("hooks").join("m.json")).unwrap();
+        assert_eq!(nothing_runs(&env(&[]), &cwd), Ok(()));
+        // an installed plugin
+        std::fs::create_dir_all(cp.join("installed-plugins").join("p")).unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: plugin_opens"
+        );
+        std::fs::remove_dir(cp.join("installed-plugins").join("p")).unwrap();
+        // hooks / a plugin turned on in the settings
+        std::fs::write(
+            cp.join("settings.json"),
+            r#"{"hooks":{"sessionStart":[{}]}}"#,
+        )
+        .unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: settings_hooks_open"
+        );
+        std::fs::write(
+            cp.join("settings.json"),
+            r#"{"enabledPlugins":{"a@b":true}}"#,
+        )
+        .unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: enabled_plugin_opens"
+        );
+        std::fs::write(
+            cp.join("settings.json"),
+            r#"{"enabledPlugins":{"a@b":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(nothing_runs(&env(&[]), &cwd), Ok(()));
+        std::fs::write(cp.join("settings.json"), "not json").unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: unread_settings_opens"
+        );
+        std::fs::remove_file(cp.join("settings.json")).unwrap();
+        // the seat's folder or one above it trusted
+        cfg(&format!(
+            r#"{{"trustedFolders":[{:?}]}}"#,
+            d.path().to_string_lossy()
+        ));
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: trusted_folder_opens"
+        );
+        cfg(r#"{"trustedFolders":"x"}"#);
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: unread_trust_opens"
+        );
+        cfg(r#"{"hooks":{"x":1}}"#);
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: config_hooks_open"
+        );
+        // no config read; COPILOT_ALLOW_ALL on; COPILOT_HOME followed
+        std::fs::remove_file(cp.join("config.json")).unwrap();
+        assert!(
+            nothing_runs(&env(&[]), &cwd).is_err(),
+            "reason: unread_config_opens"
+        );
+        cfg("{}");
+        assert!(
+            nothing_runs(&env(&[("COPILOT_ALLOW_ALL", "yes")]), &cwd).is_err(),
+            "reason: allow_all_opens"
+        );
+        assert_eq!(
+            nothing_runs(&env(&[("COPILOT_ALLOW_ALL", "off")]), &cwd),
+            Ok(())
+        );
+        let other = d.path().join("other");
+        std::fs::create_dir_all(other.join("hooks")).unwrap();
+        std::fs::write(other.join("config.json"), "{}").unwrap();
+        std::fs::write(other.join("hooks").join("m.json"), "{}").unwrap();
+        assert!(
+            nothing_runs(&env(&[("COPILOT_HOME", other.to_str().unwrap())]), &cwd).is_err(),
+            "reason: copilot_home_not_followed"
+        );
     }
 
     #[test]
@@ -189,8 +430,15 @@ mod tests {
         ];
         let t0 = turn_args(&base, None);
         assert_eq!(t0, ["--output-format", "json"]);
-        let t1 = turn_args(&base, Some("f8781f79"));
-        assert_eq!(t1, ["--output-format", "json", "--resume=f8781f79"]);
+        let t1 = turn_args(&base, Some("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+        assert_eq!(
+            t1,
+            [
+                "--output-format",
+                "json",
+                "--resume=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+            ]
+        );
     }
 
     /// 1.0.115 `mcp list --json` here (trimmed): each server turned off by name; an unread

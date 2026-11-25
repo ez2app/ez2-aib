@@ -105,3 +105,75 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   "            && !name.starts_with('=')" \
   --expect-fail 'copilot_wire::tests::every_listed_mcp_server_is_turned_off' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::every_listed_mcp_server_is_turned_off'
+# c-hook-gate (the seat gate does not look at what copilot runs by itself; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+  '    crate::copilot_wire::nothing_runs(env, &here)' \
+  '    Ok::<(), String>(())' \
+  --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
+  -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
+# c-hook-dir (a hook file under COPILOT_HOME/hooks opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    for dir in ["hooks", "installed-plugins"] {' \
+  '    for dir in ["installed-plugins"] {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-plugin-dir (an installed plugin opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    for dir in ["hooks", "installed-plugins"] {' \
+  '    for dir in ["hooks"] {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-hook-settings (hooks written in settings / config open; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        if some(v.get("hooks")) {' \
+  '        if some(v.get("hooks_")) {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-plugin-on (a plugin turned on in the settings opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '            .is_some_and(|o| o.values().any(|x| x != &Value::Bool(false)))' \
+  '            .is_some_and(|o| o.values().any(|x| x == &Value::Null))' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-trusted (a seat folder below a trusted one opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '                if cwd.starts_with(f) {' \
+  '                if cwd == Path::new(f) {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-copilot-home (COPILOT_HOME not followed; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        (Some(c), _) if !c.is_empty() => std::path::PathBuf::from(c),' \
+  '        (Some(c), _) if c.is_empty() => std::path::PathBuf::from(c),' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-allow-all (COPILOT_ALLOW_ALL=yes opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '        !(v.is_empty() || ["false", "0", "no", "off", "n"].contains(&v.as_str()))' \
+  '        v == "true"' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-config-need (no config read opens; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '    for (name, need) in [("settings.json", false), ("config.json", true)] {' \
+  '    for (name, need) in [("settings.json", false), ("config.json", false)] {' \
+  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
+# c-sid-keep (a session id that is not a UUID goes into the next turn; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '            if let Some(s) = sid.filter(|s| uuid_shaped(s)) {' \
+  '            if let Some(s) = sid {' \
+  --expect-fail 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept'
+# c-sid-err (a session id that is not a UUID is not said; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '            let is_err = exit_code != 0 || sid_bad;' \
+  '            let is_err = exit_code != 0;' \
+  --expect-fail 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept'
+# c-uuid-hex (any characters of the UUID lengths pass; 3e53b REVIEW-copilot M1 / L1)
+python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
+  '            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))' \
+  '            .all(|(p, n)| p.len() == n)' \
+  --expect-fail 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept' \
+  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_session_id_that_is_not_a_uuid_is_not_kept'

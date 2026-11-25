@@ -640,6 +640,12 @@ fn copilot_gate(
     if let Some(why) = aib_seatopen::copilot_safe_refusal(argv) {
         return Err(format!("safety flag {why} (copilot_safety_flags)"));
     }
+    let here = cwd
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    crate::copilot_wire::nothing_runs(env, &here)
+        .map_err(|why| format!("{why} (copilot_hooks)"))?;
     let ask = ["mcp", "list", "--json"].map(String::from);
     let listed = probe_listed(real, &ask, cwd, env);
     crate::copilot_wire::mcp_off(&listed).map_err(|why| format!("{why} (copilot_mcp)"))
@@ -3524,6 +3530,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let bin = d.path().join("copilot");
+        let home = d.path().join("h");
+        std::fs::create_dir_all(home.join(".copilot")).unwrap();
+        std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
+        let home_env = vec![("HOME".to_owned(), home.to_string_lossy().into_owned())];
         let script = |version: &str| {
             format!(
                 "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; mcp) cat '{}';; esac\n",
@@ -3555,7 +3565,7 @@ mod tests {
             let r = Request {
                 argv,
                 cwd: Some(d.path().to_path_buf()),
-                env: Vec::new(),
+                env: home_env.clone(),
                 timeout: None,
                 withhold: Vec::new(),
                 input: true,
@@ -3597,6 +3607,12 @@ mod tests {
                 "reason: forbidden_admitted {e}"
             );
         }
+        // a hook copilot would run by itself (3e53b REVIEW-copilot M1)
+        std::fs::create_dir(home.join(".copilot").join("hooks")).unwrap();
+        std::fs::write(home.join(".copilot").join("hooks").join("m.json"), "{}").unwrap();
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(e.contains("(copilot_hooks)"), "reason: hook_admitted {e}");
+        std::fs::remove_file(home.join(".copilot").join("hooks").join("m.json")).unwrap();
         listing("not json");
         assert!(
             ask(argv.clone()).unwrap_err().contains("(copilot_mcp)"),
@@ -3668,6 +3684,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let bin = d.path().join("copilot");
+        let home = d.path().join("h");
+        std::fs::create_dir_all(home.join(".copilot")).unwrap();
+        std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
+        let home_env = vec![("HOME".to_owned(), home.to_string_lossy().into_owned())];
         let listing = d.path().join("mcp.json");
         std::fs::write(
             &bin,
@@ -3687,12 +3707,12 @@ mod tests {
         .unwrap();
         argv[0] = bin.to_string_lossy().into_owned();
         argv.extend(["--disable-mcp-server".into(), "computer-use".into()]);
-        argv.push("--resume=f8781f79".into());
+        argv.push("--resume=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into());
         let spec = Spec {
             id: "s_0123456789abcdef".into(),
             argv,
             cwd: d.path().into(),
-            env: Vec::new(),
+            env: home_env,
             pass: Vec::new(),
             input: true,
         };
@@ -3707,6 +3727,15 @@ mod tests {
         assert!(
             e.contains("mine was added") && e.contains("(copilot_mcp)"),
             "reason: mcp_added_after_open_admitted {e}"
+        );
+        // a hook set up after the seat opened refuses the next turn
+        std::fs::write(&listing, r#"{"mcpServers":{"computer-use":{}}}"#).unwrap();
+        std::fs::create_dir(home.join(".copilot").join("hooks")).unwrap();
+        std::fs::write(home.join(".copilot").join("hooks").join("m.json"), "{}").unwrap();
+        let e = copilot_turn_check(&spec).unwrap_err();
+        assert!(
+            e.contains("(copilot_hooks)"),
+            "reason: hook_added_after_open_admitted {e}"
         );
     }
 
