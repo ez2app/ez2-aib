@@ -3635,7 +3635,8 @@ mod tests {
                 path: bin.clone(),
                 signer: None,
             }],
-            env: Vec::new(),
+            // the stand-in HOME the request brings (aibd's own is not read in a test)
+            env: vec!["HOME".into()],
             interpreters_ok: true,
         };
         let mut argv = aib_seatopen::pipe_argv(

@@ -108,7 +108,7 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
 # c-hook-gate (the seat gate does not look at what copilot runs by itself; 3e53b REVIEW-copilot M1 / L1)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
   '    crate::copilot_wire::nothing_runs(env, &here)' \
-  '    Ok::<(), String>(())' \
+  '    crate::copilot_wire::nothing_runs(env, &here).or(Ok::<(), String>(()))' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-hook-dir (a hook file under COPILOT_HOME/hooks opens; 3e53b REVIEW-copilot M1 / L1)
@@ -145,12 +145,6 @@ python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
 python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
   '        (Some(c), _) if !c.is_empty() => std::path::PathBuf::from(c),' \
   '        (Some(c), _) if c.is_empty() => std::path::PathBuf::from(c),' \
-  --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
-  -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
-# c-allow-all (COPILOT_ALLOW_ALL=yes opens; 3e53b REVIEW-copilot M1 / L1)
-python3 -I scripts/knife.py crates/aibd/src/copilot_wire.rs \
-  '        !(v.is_empty() || ["false", "0", "no", "off", "n"].contains(&v.as_str()))' \
-  '        v == "true"' \
   --expect-fail 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused' \
   -- cargo test -p aibd --locked --lib 'copilot_wire::tests::a_copilot_set_up_that_runs_anything_by_itself_is_refused'
 # c-config-need (no config read opens; 3e53b REVIEW-copilot M1 / L1)
@@ -240,7 +234,7 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
 # c-own-home (any COPILOT_HOME passes the gate without a policy name; DESIGN-copilot-seat-home / c2f0b PRE-READ)
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
   '            .filter(|(k, v)| !own_home(k, v))' \
-  '            .filter(|(_, _)| true)' \
+  '            .filter(|(k, v)| own_home(k, v) || k.is_empty() || true)' \
   --expect-fail 'sessions::tests::a_copilot_seat_is_checked_at_the_gate' \
   -- cargo test -p aibd --locked --lib 'sessions::tests::a_copilot_seat_is_checked_at_the_gate'
 # c-own-dir (the seat home is left when the seat ends; DESIGN-copilot-seat-home / c2f0b PRE-READ)

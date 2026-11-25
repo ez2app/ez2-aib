@@ -241,7 +241,8 @@ pub fn seat_home(homes: &Path, user_config: &Path) -> Result<std::path::PathBuf,
 /// settings did not stop them; a folder in `trustedFolders` also runs its `.github/hooks` and
 /// `.github/copilot/settings.json` hooks. A seat opens only with none of it: no hook file, no
 /// `hooks` in settings or config, no installed or enabled plugin, the seat's folder (or one
-/// above it) not trusted, `COPILOT_ALLOW_ALL` not on; a file not read refuses too.
+/// above it) not trusted, no `COPILOT_*` but the home (`COPILOT_ALLOW_ALL` among them) and nothing
+/// else of [`DROPPED_ENV`]; a file not read refuses too.
 pub fn nothing_runs(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
     cwd: &Path,
@@ -256,12 +257,6 @@ pub fn nothing_runs(
             "{} would move copilot's set-up or token",
             k.to_string_lossy()
         ));
-    }
-    if var("COPILOT_ALLOW_ALL").is_some_and(|v| {
-        let v = v.trim().to_ascii_lowercase();
-        !(v.is_empty() || ["false", "0", "no", "off", "n"].contains(&v.as_str()))
-    }) {
-        return Err("COPILOT_ALLOW_ALL is on".to_owned());
     }
     let home = match (var("COPILOT_HOME"), var("HOME")) {
         (Some(c), _) if !c.is_empty() => std::path::PathBuf::from(c),
@@ -522,9 +517,10 @@ mod tests {
             nothing_runs(&env(&[("COPILOT_ALLOW_ALL", "yes")]), &cwd).is_err(),
             "reason: allow_all_opens"
         );
-        assert_eq!(
-            nothing_runs(&env(&[("COPILOT_ALLOW_ALL", "off")]), &cwd),
-            Ok(())
+        // any value: the name alone is not given to a seat
+        assert!(
+            nothing_runs(&env(&[("COPILOT_ALLOW_ALL", "off")]), &cwd).is_err(),
+            "reason: allow_all_name_opens"
         );
         let other = d.path().join("other");
         std::fs::create_dir_all(other.join("hooks")).unwrap();
