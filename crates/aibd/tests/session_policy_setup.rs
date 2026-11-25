@@ -63,6 +63,7 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     let windows = Arc::new(AtomicUsize::new(0));
     aibd::owner_ok::set_presence(Arc::new(Yes(windows.clone())), Arc::new(Gate));
     std::env::remove_var("AIBD_SESSION_POLICY");
+    std::env::remove_var("CLOUD_ML_REGION");
 
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     // not the harness's own `bin` (its fake claude / codex are on the start-up policy)
@@ -134,6 +135,20 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     answered(&windows, 1).await;
     assert_eq!(windows.load(Ordering::SeqCst), 1);
     assert!(!file.exists(), "reason: written_before_the_owner");
+
+    // 3e53b L2 (andymini c2f0b-fg-w10-69546d867: WP9 missed, the paths in the window's words
+    // held it alone): the same programs but one more environment name set since the window
+    // is other text, so the ticket does not write it
+    std::env::set_var("CLOUD_ML_REGION", "us-east5");
+    let r = act(
+        &d,
+        &page,
+        json!({"type": "session_policy_init", "ticket": ticket}),
+    )
+    .await;
+    std::env::remove_var("CLOUD_ML_REGION");
+    assert_eq!(r.code, 403, "reason: approved_other_env {}", r.body);
+    assert!(!file.exists(), "reason: written_with_another_env");
 
     // 3e53b L2: what the owner approved is the text found then; a look that now finds more (a
     // native codex put down after the window) is another ask, so the ticket does not write it
