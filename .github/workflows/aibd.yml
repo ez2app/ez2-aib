@@ -279,7 +279,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          pkgs=(-p aibd); bins=(aibd)
+          pkgs=(-p aibd -p aib-wincheck); bins=(aibd aib-wincheck)
           for p in aib-idea aib-slice aib-drive; do
             if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
             else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
@@ -290,7 +290,19 @@ jobs:
             [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
             cp "target-winexe/release/$b.exe" winexe/
           done
-          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
+          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so the test executables the
+          #   test step above already built are packed for aib-wincheck.exe to run there (no
+          #   rebuild: --no-run in the default target only lists them). Every file is in SHA256SUMS; wincheck runs
+          #   nothing unless all of them match.
+          mkdir -p winexe/tests
+          env -u CARGO_TARGET_DIR cargo test --workspace --locked --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | .executable' \
+            | sort -u > winexe-tests.txt
+          [ -s winexe-tests.txt ] || { echo "::error::no test executables were listed"; exit 1; }
+          while IFS= read -r e; do cp "$(cygpath -u "$e")" winexe/tests/; done < winexe-tests.txt
+          printf '%s\n' "$HEAD_SHA" > winexe/HEAD
+          (cd winexe && sha256sum -- *.exe HEAD tests/*.exe > SHA256SUMS && wc -l < SHA256SUMS)
+          echo "::notice title=wincheck pack::$(ls winexe/tests | wc -l) test executables, $(du -sh winexe | cut -f1)"
           echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && steps.winexe.outcome == 'success'

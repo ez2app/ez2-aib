@@ -182,7 +182,9 @@ fn main() -> ExitCode {
             .map(|f| {
                 f.iter()
                     .map(|(n, _)| n.clone())
-                    .filter(|n| n.starts_with("tests/") && n.ends_with(".exe"))
+                    .filter(|n| {
+                        n.starts_with("tests/") && n.ends_with(std::env::consts::EXE_SUFFIX)
+                    })
                     .collect()
             })
             .unwrap_or_default();

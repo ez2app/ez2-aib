@@ -446,6 +446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-wincheck"
+version = "0.2.0-preview.8"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "aib-xtask"
 version = "0.2.0-preview.8"
 dependencies = [
