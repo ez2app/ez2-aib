@@ -584,7 +584,9 @@ fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// `crates/aib-knife/run-knives.sh <job>` (S66-loop) owns every crate knife script whose
 /// header job ([`knives_job`]) is `<job>`; `loop_jobs` = script ⇒ that job. Returns
 /// script ⇒ (job, step), and one line for each script a second step also names (the first
-/// step keeps it).
+/// step keeps it). Only the tests call it now (every real caller passes `loop_os`); E3 2b292d3f44
+/// left it dead in the binary, and `-D warnings` made aib-xtask fail to build (e3p receipt).
+#[cfg(test)]
 pub fn script_owners(
     workflows: &[(String, String)],
     scripts: &[String],
@@ -593,7 +595,7 @@ pub fn script_owners(
     script_owners_os(workflows, scripts, loop_jobs, &BTreeMap::new())
 }
 
-/// [`script_owners`], and a `run-knives.sh <job>` step whose env (or the same line) sets
+/// `script_owners`, and a `run-knives.sh <job>` step whose env (or the same line) sets
 /// `AIB_KNIVES_ONLY_OS=<os>[,<os>…]` (E3: the Linux cells `unix,any`, the macOS cells `macos`)
 /// owns only the scripts whose header os ([`knives_os`]; `loop_os`, not there = `macos`) is
 /// listed — the same rule run-knives.sh applies, so a script is owned by the cell that runs it.
