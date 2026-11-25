@@ -4564,7 +4564,7 @@
   }
   // 重新登入 AI(a9136 DESIGN-relogin-card r2,Andy 11-21 09:1x「為什麼不直接彈窗」):按 ⇒ 指紋 ⇒ aibd 起登入程式、回登入頁網址
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
-  const RELOG_NAME = { claude: 'Claude', codex: 'Codex' };
+  const RELOG_NAME = { claude: 'Claude', codex: 'Codex', grok: 'Grok', copilot: 'Copilot' };
   const RELOG_WHY = {
     provider: '這個品牌還不能從頁面重新登入', login_in_parent: '預覽裡的席用母版的登入:請到母版頁按重新登入', login_not_tried_here: '這台(Windows)還沒驗過從頁面登入,請在這台的終端機先登入它',
     login_running: '已經有一輪登入在跑', login_cooling: '剛登入過,30 秒後再按', provider_not_listed: '這台的開席清單沒有這個品牌',
@@ -4604,7 +4604,11 @@
       const R = S.relog; if (!R || R.id !== id) return;
       const r = await act('provider_relogin_state', { login_id: id }).catch(() => null);
       const st = r && String(r.state || '');
-      if (st === 'ok') { S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + ';按「重開」讓這一席接著做' }; return render(); }
+      if (st === 'ok') {
+        S.relog = { provider: pv, done: true, msg: '已重新登入 ' + RELOG_NAME[pv] + ';按「重開」讓這一席接著做' };
+        get('/api/v1/version').then((v) => { if (v && v.capabilities) { S.version = v; render(); } }).catch(() => {});
+        return render();
+      }
       if (st === 'failed' || Date.now() > until) { S.relog = { provider: pv, done: true, bad: true, msg: relogWhy(r ? String(r.reason || 'exit_not_0') : 'timeout') }; return render(); }
     }
   }
@@ -5715,7 +5719,8 @@
     const NO = nodeOpts(); const node = A.node || ''; // S0-3:不默默帶左樹選中的那項,要用戶自己選
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     // S1b 3(Andy 11-23 03:00「不同品牌的AI 設計的不好」):跟其他選項同一套橫向按鈕;沒有原因的寫這家能做什麼
-    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}`;
+    const unlogged = PV.filter((p) => !p.open && p.why === '這台還沒登入' && RELOG_NAME[p.key]).map((p) => relogHtml(p.key)).join(' ');
+    const brand = `<select class="asel apsel" data-addpsel="1" aria-label="用哪一個 AI">${PV.map((p) => apPvOpts(p, pv, A)).join('')}</select>${pv ? `<div class="apn">${esc(BRAND_WHAT[pv.key] || '')}${pv.why ? ' · ' + esc(pv.why) : ''}</div>${apPvUse(pv)}` : ''}${unlogged ? `<div class="apn">${unlogged}</div>` : ''}`;
     const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' && A.mode !== 'host' ? 'on' : ''}" data-addm="safe"><span class="amh">${ICO_SAFE}<b>討論研究</b></span><i>不碰檔案、不跑指令${apNetWords(pv, 'safe') ? ';' + esc(apNetWords(pv, 'safe')) : ''}</i><em class="adang d1">危險程度:低</em></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}><span class="amh">${ICO_WORK}<b>沙盒開發</b></span><i>${canW ? '只動自己的資料夾,不推送' + (apNetWords(pv, 'work') ? ';' + esc(apNetWords(pv, 'work')) : '') : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 AIB 還不能開'}</i><em class="adang d2">危險程度:中</em></button>${hsModeBtn(A, pv) || apHostCard(A, pv)}<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD && !inPreview() ? '' : 'off'}" data-addm="dgrs" ${canD && !inPreview() ? '' : 'disabled aria-disabled="true"'}><span class="amh">${ICO_DGRS}<b>完全權限</b></span><i>${inPreview() ? '預覽區不能開完全權限,到正式版才行' : canD ? '跟你本人一樣,每次開都要驗證' + (apNetWords(pv, 'dgrs') ? ';' + esc(apNetWords(pv, 'dgrs')) : '') : '這個品牌在這台只能開討論研究'}</i><em class="adang d4">危險程度:最高</em></button>`; // S1b 5(Andy 11-23 03:01「只有二個」):開不了也畫出來、變灰寫原因,不要整顆消失
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
@@ -5728,7 +5733,7 @@
     const LOGIN = { claude: '終端機打 claude,再打 /login', codex: '終端機打 codex login' }; // 519d0 10:07 第 2 點:Codex 那行誤寫 claude /login
     const FIX = { 這台還沒登入: '在這台的終端機先登入它,登入後重開這個視窗', 這台沒裝: '在這台裝好它的命令列程式,再重開這個視窗', 這台沒設定: '這台的開席設定還沒列它,要先在設定裡加上它', 這版還不能開: '這版 AIB 還不會開它,等新版' };
     if (!pv) {
-      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
+      const why = PV.map((p) => `<li><b>${esc(p.name)}</b>:${esc(p.why || '這台還不能開')}${p.why === '這台還沒登入' && RELOG_NAME[p.key] ? ' ' + relogHtml(p.key) : FIX[p.why] ? '。怎麼辦:' + esc(p.why === '這台還沒登入' && LOGIN[p.key] ? '在這台' + LOGIN[p.key] + ',登入後重開這個視窗' : FIX[p.why]) : ''}</li>`).join('');
       // 母體頁(管預覽的那一頁)用的是母體自己的登入,本來就開不了席 ⇒ 不叫人去登入,導去預覽開席
       const pvGo = !inPreview() && Array.isArray(S.pvs) && S.pvs.some((x) => !x.sample);
       if (pvGo) return `<div class="dlgbg"><div class="adlg" role="dialog" aria-label="新增 AI 夥伴">

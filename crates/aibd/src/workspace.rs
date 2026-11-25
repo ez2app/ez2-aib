@@ -119,6 +119,8 @@ pub fn logged_in(
             .unwrap_or_else(|| home.join(".codex"))
             .join("auth.json")
             .is_file(),
+        "grok" => home.join(".grok").join("auth.json").is_file(),
+        "copilot" => home.join(".copilot").join("config.json").is_file(),
         _ => true,
     }
 }
