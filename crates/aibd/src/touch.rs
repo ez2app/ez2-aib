@@ -472,12 +472,35 @@ impl KeyDevice for MacSe {
 }
 
 /// This Windows machine's Hello key (Microsoft Passport key storage provider, aib-sys
-/// `hello_ncrypt`). S10-3b-1: **unverified on a real Hello machine** until the W sheet
-/// (PLAN-ap26-windows-first-c2f0b-1125 §3); only [`KeyDevice::verify`] runs in CI. The window
-/// time limit (`sign_until`) comes in S10-3b-2; until then a window waits as long as Windows
-/// keeps it.
+/// `hello_ncrypt`). S10-3b-1/2: **unverified on a real Hello machine** until the W sheet
+/// (PLAN-ap26-windows-first-c2f0b-1125 §3); only [`KeyDevice::verify`] runs in CI. Every window
+/// has a limit (a call without one gets [`WIN_HELLO_LONGEST`]); a window still up refuses the
+/// next one.
 #[cfg(windows)]
 pub struct WinHello;
+
+/// The longest a Hello window from [`KeyDevice::sign`] waits (same as the Mac's finger-only
+/// window).
+#[cfg(windows)]
+const WIN_HELLO_LONGEST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// A Hello error as the 1.x word; aibd's own limit is [`TIMEOUT`].
+#[cfg(windows)]
+fn hello_code(e: aib_sys::hello::HelloError) -> &'static str {
+    match e {
+        aib_sys::hello::HelloError::TimedOut => TIMEOUT,
+        other => other.code(),
+    }
+}
+
+#[cfg(windows)]
+impl WinHello {
+    /// S10-3b-2 (3e53b READ-ap26-r2 L): the key is in a TPM. A software Hello key (a PIN on a
+    /// machine without a TPM) is not; W-2 reads this as the device's `hardware_bound`.
+    pub fn hardware_bound(blob: &[u8]) -> bool {
+        aib_sys::hello_ncrypt::hardware_backed(blob)
+    }
+}
 
 #[cfg(windows)]
 impl KeyDevice for WinHello {
@@ -488,11 +511,66 @@ impl KeyDevice for WinHello {
         aib_sys::hello_ncrypt::public_key(blob).map_err(|e| e.code())
     }
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
-        aib_sys::hello_ncrypt::sign(blob, reason, msg).map_err(|e| e.code())
+        aib_sys::hello_ncrypt::sign_until(blob, reason, msg, WIN_HELLO_LONGEST).map_err(hello_code)
+    }
+    fn sign_until(
+        &self,
+        blob: &[u8],
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<Vec<u8>, &'static str> {
+        aib_sys::hello_ncrypt::sign_until(blob, reason, msg, limit).map_err(hello_code)
     }
     fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
         aib_sys::hello_ncrypt::verify(public, msg, sig)
     }
+}
+
+/// `pair-key init` on Windows (S10-3b-2; 3e53b READ-winhello-wiring W7), written for every
+/// platform so its "nothing kept on failure" is tested everywhere: no key files there yet, make
+/// the key (`create` gives its blob and public key; it may show Hello), write both files new
+/// (never over existing ones), then the start-up [`check`]. Any failure after the key was made
+/// removes both files and the key itself (`delete`), so a failed run leaves nothing behind.
+pub fn make_pair_key(
+    dir: &Path,
+    create: impl FnOnce() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>,
+    dev: &dyn KeyDevice,
+    delete: impl FnOnce(&[u8]),
+) -> Result<(), String> {
+    use std::io::Write;
+    if dir.join("key.blob").exists() || dir.join("key.pub").exists() {
+        return Err(format!(
+            "a pairing key is already in {}; remove that folder yourself to make a new one",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (blob, public) = create()?;
+    let written = (|| -> Result<(), String> {
+        for (name, bytes) in [("key.blob", &blob[..]), ("key.pub", &public[..])] {
+            let p = dir.join(name);
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                o.mode(0o600);
+            }
+            let mut f = o.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            f.write_all(bytes)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        let k = load(dir).map_err(String::from)?;
+        check(dev, &k).map_err(|why| format!("the new key failed the start-up check ({why})"))
+    })();
+    if let Err(why) = written {
+        let _ = std::fs::remove_file(dir.join("key.blob"));
+        let _ = std::fs::remove_file(dir.join("key.pub"));
+        delete(&blob);
+        return Err(format!("{why}; nothing kept"));
+    }
+    Ok(())
 }
 
 /// Windows (3e53b READ-winhello-wiring W5): the desktop-session gate comes before anything is
@@ -762,6 +840,49 @@ pub mod tests {
     fn an_empty_data_folder_gives_no_presence_here() {
         let d = tempfile::tempdir().unwrap();
         assert!(presence_here(d.path()).is_err());
+    }
+
+    /// S10-3b-2 (3e53b READ-winhello-wiring W7): a key that fails the start-up check leaves
+    /// no files and is deleted; a key that passes is kept; existing files are never replaced;
+    /// a key that could not be made leaves no files.
+    #[test]
+    fn a_pair_key_that_fails_leaves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = key_dir(d.path());
+        let made = || Ok((vec![1, 2, 3], [4; PUBLIC_KEY_LEN]));
+        let deleted = Mutex::new(Vec::<Vec<u8>>::new());
+        let weak = make_pair_key(&dir, made, &dev(false, true, true), |b| {
+            deleted.lock().unwrap().push(b.to_vec())
+        });
+        assert!(
+            weak.unwrap_err().contains("nothing kept"),
+            "reason: weak_key"
+        );
+        assert!(!dir.join("key.blob").exists() && !dir.join("key.pub").exists());
+        assert_eq!(
+            deleted.lock().unwrap().as_slice(),
+            &[vec![1, 2, 3]],
+            "reason: key_deleted"
+        );
+
+        let none = make_pair_key(
+            &dir,
+            || Err("no_biometry".into()),
+            &dev(true, true, true),
+            |_| panic!("nothing was made, nothing to delete"),
+        );
+        assert_eq!(none.unwrap_err(), "no_biometry");
+        assert!(!dir.join("key.blob").exists(), "reason: not_made");
+
+        assert!(make_pair_key(&dir, made, &dev(true, true, true), |_| {}).is_ok());
+        assert!(load(&dir).is_ok(), "reason: kept");
+        let again = make_pair_key(&dir, made, &dev(true, true, true), |_| {
+            panic!("an existing key is never touched")
+        });
+        assert!(
+            again.unwrap_err().contains("already"),
+            "reason: no_overwrite"
+        );
     }
 
     /// N-webonly-c45: the limit reaches the device, a window nobody answered reads as

@@ -43,6 +43,13 @@ pub enum HelloError {
     BadKey,
     #[error("os error 0x{0:08x}")]
     Os(u32),
+    /// aibd's own limit passed before the owner answered (S10-3b-2; the Hello window may stay
+    /// up until Windows closes it, see [`run_limited`]).
+    #[error("the owner did not answer in time")]
+    TimedOut,
+    /// An earlier Hello window is still up: no second one (S10-3b-2).
+    #[error("an earlier Windows Hello window is still open")]
+    StillOpen,
 }
 
 impl HelloError {
@@ -58,6 +65,8 @@ impl HelloError {
             HelloError::KeyProbeFailed => "key_probe_failed",
             HelloError::BadKey => "corrupt",
             HelloError::Os(_) => "se_error",
+            HelloError::TimedOut => "timeout",
+            HelloError::StillOpen => "owner_window_still_open",
         }
     }
 }
@@ -113,6 +122,56 @@ pub fn probe_outcome(code: u32) -> Result<(), HelloError> {
         0 => Err(HelloError::WeakKey),
         _ => Err(HelloError::KeyProbeFailed),
     }
+}
+
+/// S10-3b-2: `NCRYPT_IMPL_HARDWARE_FLAG` in `NCRYPT_IMPL_TYPE_PROPERTY`.
+pub const IMPL_HARDWARE_FLAG: u32 = 1;
+
+/// Whether a key's implementation type says the key is held in hardware (a TPM). Without a
+/// TPM, Windows Hello still works with a PIN but the Passport key is a software one (3e53b
+/// READ-ap26-r2 L): that key is not hardware-bound. A type that could not be read is not
+/// hardware either.
+pub fn impl_is_hardware(impl_type: Result<u32, HelloError>) -> bool {
+    match impl_type {
+        Ok(t) => t & IMPL_HARDWARE_FLAG != 0,
+        Err(_) => false,
+    }
+}
+
+/// S10-3b-2 (3e53b READ-winhello-wiring W2): run `sign` (a blocking NCrypt call that shows the
+/// Hello window) in its own thread and give up after `limit` with [`HelloError::TimedOut`].
+/// Windows offers no way to close its Hello window from here, so the signing thread goes on
+/// until the owner answers or Windows ends it; while it runs, `open` stays set and every new
+/// call is [`HelloError::StillOpen`] at once, so the owner never sees two windows.
+pub fn run_limited<T: Send + 'static>(
+    open: &'static std::sync::atomic::AtomicBool,
+    limit: std::time::Duration,
+    sign: impl FnOnce() -> Result<T, HelloError> + Send + 'static,
+) -> Result<T, HelloError> {
+    use std::sync::atomic::Ordering;
+    if limit.is_zero() {
+        return Err(HelloError::TimedOut);
+    }
+    if open.swap(true, Ordering::SeqCst) {
+        return Err(HelloError::StillOpen);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("aib-hello-sign".into())
+        .spawn(move || {
+            let out = sign();
+            open.store(false, Ordering::SeqCst);
+            let _ = tx.send(out);
+        });
+    if spawned.is_err() {
+        open.store(false, Ordering::SeqCst);
+        return Err(HelloError::KeyProbeFailed);
+    }
+    // one wake-up: the answer or the limit; not a periodic timer (ADR 0005 named exception,
+    // as presence_macos::sign_until)
+    #[allow(clippy::disallowed_methods)]
+    let answered = rx.recv_timeout(limit);
+    answered.unwrap_or(Err(HelloError::TimedOut))
 }
 
 /// `WTSGetActiveConsoleSessionId` when no session is attached to the console.
@@ -290,6 +349,67 @@ pub(crate) mod vector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// S10-3b-2 (3e53b READ-ap26-r2 L): only the hardware flag makes a key hardware-bound; a
+    /// software key or a type that could not be read is not.
+    #[test]
+    fn only_the_hardware_flag_is_hardware() {
+        assert!(impl_is_hardware(Ok(IMPL_HARDWARE_FLAG)));
+        assert!(impl_is_hardware(Ok(IMPL_HARDWARE_FLAG | 2)));
+        assert!(!impl_is_hardware(Ok(2)), "reason: software_key");
+        assert!(!impl_is_hardware(Ok(0)), "reason: no_flags");
+        assert!(
+            !impl_is_hardware(Err(HelloError::Os(0x8009_0029))),
+            "reason: unreadable"
+        );
+    }
+
+    /// S10-3b-2: an answer in time comes back; a window nobody answers is TimedOut; while it is
+    /// still up a new call is StillOpen (never a second window); once it ends, calls work again.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // the test waits on its own channels, bounded
+    fn a_window_still_up_refuses_a_second_and_ends_cleanly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        static OPEN: AtomicBool = AtomicBool::new(false);
+        let quick = run_limited(&OPEN, Duration::from_secs(10), || Ok(7));
+        assert_eq!(quick, Ok(7), "reason: answered_in_time");
+        assert!(!OPEN.load(Ordering::SeqCst));
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let slow = run_limited(&OPEN, Duration::from_millis(50), move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            Ok(1)
+        });
+        assert_eq!(slow, Err(HelloError::TimedOut), "reason: nobody_answered");
+        let second = run_limited(&OPEN, Duration::from_secs(10), || Ok(2));
+        assert_eq!(
+            second,
+            Err(HelloError::StillOpen),
+            "reason: no_second_window"
+        );
+
+        release_tx.send(()).unwrap();
+        let mut cleared = false;
+        for _ in 0..300 {
+            if !OPEN.load(Ordering::SeqCst) {
+                cleared = true;
+                break;
+            }
+            let (_tx, rx) = std::sync::mpsc::channel::<()>();
+            let _ = rx.recv_timeout(Duration::from_millis(10));
+        }
+        assert!(cleared, "reason: window_ended_clears");
+        assert_eq!(
+            run_limited(&OPEN, Duration::from_secs(10), || Ok(3)),
+            Ok(3),
+            "reason: works_again"
+        );
+        assert_eq!(
+            run_limited(&OPEN, Duration::ZERO, || Ok(4)),
+            Err(HelloError::TimedOut),
+            "reason: zero_limit"
+        );
+    }
 
     /// WH1: cancel and time-out are `cancel`, never a success; unknown codes stay errors.
     #[test]

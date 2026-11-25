@@ -113,21 +113,37 @@ pub fn win_probe(d: &dyn WinDevice) -> Value {
     })
 }
 
-/// This Windows machine. Hello enrolment and the key's implementation type come with W-1
-/// (they read the Passport provider and the pairing key); until then they read `None`,
-/// which classes as [`WinClass::Unknown`] — never as the strong path.
+/// This Windows machine (W-3; reads filled in by S10-3b-2). Windows has no way to read "Hello
+/// is set up" without a window, so (c2f0b REVIEW-wincls L1): a pairing key whose public key
+/// reads back from the Passport provider says Hello is set up (a Passport key can only be made
+/// then); no pairing key, or one that does not read back, is `None` — [`WinClass::Unknown`],
+/// never the strong path. The key's hardware flag is read only for such a key; unread is
+/// software.
 #[cfg(windows)]
 pub struct Win {
     at_desk: bool,
     provider: bool,
+    enrolled: Option<bool>,
+    hardware: Option<bool>,
 }
 
 #[cfg(windows)]
 impl Win {
-    pub fn read() -> Win {
+    pub fn read(data: &std::path::Path) -> Win {
         let at_desk = aib_sys::hello::interactive_session().is_ok();
         let provider = at_desk && aib_sys::hello_ncrypt::provider_ready().is_ok();
-        Win { at_desk, provider }
+        let key = provider
+            .then(|| crate::touch::load(&crate::touch::key_dir(data)).ok())
+            .flatten()
+            .filter(|k| aib_sys::hello_ncrypt::public_key(&k.blob).ok() == Some(k.public));
+        let enrolled = key.as_ref().map(|_| true);
+        let hardware = key.map(|k| crate::touch::WinHello::hardware_bound(&k.blob));
+        Win {
+            at_desk,
+            provider,
+            enrolled,
+            hardware,
+        }
     }
 }
 
@@ -140,10 +156,10 @@ impl WinDevice for Win {
         self.provider
     }
     fn hello_enrolled(&self) -> Option<bool> {
-        None
+        self.enrolled
     }
     fn key_in_hardware(&self) -> Option<bool> {
-        None
+        self.hardware
     }
 }
 

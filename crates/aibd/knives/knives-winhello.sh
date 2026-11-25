@@ -16,3 +16,22 @@ python3 -I scripts/knife.py crates/aibd/src/touch.rs \
   '    Ok(Arc::new(KeyPresence { dev, key })) // knife: no check' \
   --expect-fail outside_the_desktop_session_the_key_is_never_read \
   -- cargo test -p aibd --locked --lib outside_the_desktop_session_the_key_is_never_read
+# ---- S10-3b-2 (W-1b; 3e53b READ-winhello-wiring W7): pair-key init leaves nothing on failure
+# WHP1 a key that failed the start-up check is not deleted
+python3 -I scripts/knife.py crates/aibd/src/touch.rs \
+  '        delete(&blob);' \
+  '        let _ = blob.len(); // knife: key kept' \
+  --expect-fail a_pair_key_that_fails_leaves_nothing \
+  -- cargo test -p aibd --locked --lib a_pair_key_that_fails_leaves_nothing
+# WHP2 a failed run keeps the key file it wrote
+python3 -I scripts/knife.py crates/aibd/src/touch.rs \
+  '        let _ = std::fs::remove_file(dir.join("key.blob"));' \
+  '        let _ = dir.join("key.blob"); // knife: file kept' \
+  --expect-fail a_pair_key_that_fails_leaves_nothing \
+  -- cargo test -p aibd --locked --lib a_pair_key_that_fails_leaves_nothing
+# WHP3 existing key files are not checked first (the run goes on and cleans up the owner's key)
+python3 -I scripts/knife.py crates/aibd/src/touch.rs \
+  '    if dir.join("key.blob").exists() || dir.join("key.pub").exists() {' \
+  '    if dir.join("key.blob").exists() && dir.join("key.pub").exists() && false { // knife' \
+  --expect-fail a_pair_key_that_fails_leaves_nothing \
+  -- cargo test -p aibd --locked --lib a_pair_key_that_fails_leaves_nothing

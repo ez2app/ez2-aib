@@ -15,16 +15,17 @@
 //! Enclave gives.
 
 use crate::hello::{
-    classify, der_to_raw, ecc_blob_to_x963, probe_outcome, raw_to_der, reason_wide,
-    x963_to_ecc_blob, HelloError,
+    classify, der_to_raw, ecc_blob_to_x963, impl_is_hardware, probe_outcome, raw_to_der,
+    reason_wide, run_limited, x963_to_ecc_blob, HelloError,
 };
 use windows_sys::Win32::Security::Cryptography::{
     BCryptDestroyKey, BCryptHash, BCryptImportKeyPair, BCryptVerifySignature,
     NCryptCreatePersistedKey, NCryptDeleteKey, NCryptExportKey, NCryptFinalizeKey,
-    NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty, NCryptSignHash,
-    BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALG_HANDLE, BCRYPT_KEY_HANDLE,
-    BCRYPT_SHA256_ALG_HANDLE, MS_NGC_KEY_STORAGE_PROVIDER, NCRYPT_ECDSA_P256_ALGORITHM,
-    NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG, NCRYPT_USE_CONTEXT_PROPERTY,
+    NCryptFreeObject, NCryptGetProperty, NCryptOpenKey, NCryptOpenStorageProvider,
+    NCryptSetProperty, NCryptSignHash, BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALG_HANDLE,
+    BCRYPT_KEY_HANDLE, BCRYPT_SHA256_ALG_HANDLE, MS_NGC_KEY_STORAGE_PROVIDER,
+    NCRYPT_ECDSA_P256_ALGORITHM, NCRYPT_IMPL_TYPE_PROPERTY, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
+    NCRYPT_SILENT_FLAG, NCRYPT_USE_CONTEXT_PROPERTY,
 };
 
 /// The longest message signed (same bound as the macOS key).
@@ -283,6 +284,48 @@ pub fn verify(public: &[u8; 65], msg: &[u8], sig: &[u8]) -> bool {
     st == 0
 }
 
+/// Whether a Hello window from [`sign_until`] is still up (S10-3b-2): one at a time.
+static WINDOW_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`sign`] that gives up after `limit` with [`HelloError::TimedOut`]; a window still up from an
+/// earlier call is [`HelloError::StillOpen`] (see [`crate::hello::run_limited`]).
+pub fn sign_until(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, HelloError> {
+    let (b, r, m) = (blob.to_vec(), reason.to_string(), msg.to_vec());
+    run_limited(&WINDOW_OPEN, limit, move || sign(&b, &r, &m))
+}
+
+/// S10-3b-2 (3e53b READ-ap26-r2 L): whether the key named `blob` is held in hardware (TPM).
+/// Reads `NCRYPT_IMPL_TYPE_PROPERTY`; no Hello window. Anything unread is `false`.
+pub fn hardware_backed(blob: &[u8]) -> bool {
+    let read = || -> Result<u32, HelloError> {
+        let p = provider()?;
+        let k = open(&p, blob)?;
+        let mut v = 0u32;
+        let mut len = 0u32;
+        // SAFETY: the key is open; a static property name and a 4-byte output, its size given
+        ok(unsafe {
+            NCryptGetProperty(
+                k.0,
+                NCRYPT_IMPL_TYPE_PROPERTY,
+                (&raw mut v).cast(),
+                4,
+                &mut len,
+                0,
+            )
+        })?;
+        if len != 4 {
+            return Err(HelloError::BadKey);
+        }
+        Ok(v)
+    };
+    impl_is_hardware(read())
+}
+
 /// Delete the key named `blob`.
 pub fn delete(blob: &[u8]) -> Result<(), HelloError> {
     let p = provider()?;
@@ -342,6 +385,10 @@ mod w0 {
         let pk = r.unwrap();
         assert_eq!(public_key(NAME).unwrap(), pk);
         println!("W0-1 probe (want Ok = asks every time): {:?}", probe(NAME));
+        println!(
+            "W0-1 hardware (impl type has the hardware flag; false = software Hello key, A only): {}",
+            hardware_backed(NAME)
+        );
     }
 
     /// W0-2: the Hello window shows the use-context text. Answer it with your finger / PIN.

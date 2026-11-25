@@ -2356,9 +2356,54 @@ fn pair_key_not_now_words(why: &str) -> &'static str {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// `aibd ctl pair-key init` on Windows (S10-3b-2): a Windows Hello (Passport) key named
+/// `aibd-pair-<random>`, made at the signed-in user's desktop; the same "nothing kept on
+/// failure" as macOS ([`aibd::touch::make_pair_key`]). **Unverified on a real Hello machine**
+/// until the W sheet.
+#[cfg(windows)]
 fn pair_key_init() -> Result<(), String> {
-    Err("a fingerprint pairing key is macOS only for now (Windows Hello: not yet)".into())
+    use aibd::touch::{key_dir, make_pair_key, WinHello};
+    aib_sys::hello::interactive_session().map_err(|e| {
+        format!(
+            "{}: run this at the computer, signed in at its desktop (not over ssh or remote \
+             desktop)",
+            e.code()
+        )
+    })?;
+    let dir = key_dir(&data_dir()?);
+    let mut r = [0u8; 16];
+    getrandom::fill(&mut r).map_err(|e| format!("random key name: {e}"))?;
+    let name: String = std::iter::once("aibd-pair-".to_string())
+        .chain(r.iter().map(|b| format!("{b:02x}")))
+        .collect();
+    make_pair_key(
+        &dir,
+        || {
+            aib_sys::hello_ncrypt::create(name.as_bytes())
+                .map(|public| (name.as_bytes().to_vec(), public))
+                .map_err(|e| format!("could not make the Windows Hello key: {}", e.code()))
+        },
+        &WinHello,
+        |blob| {
+            let _ = aib_sys::hello_ncrypt::delete(blob);
+        },
+    )?;
+    let where_kept = if WinHello::hardware_bound(name.as_bytes()) {
+        "in this computer's security chip (TPM)"
+    } else {
+        "in software (this computer has no usable TPM), so high-risk actions stay closed"
+    };
+    println!(
+        "Pairing key made in {} (Windows Hello asks for you; the key is kept {where_kept}). \
+         Start aibd with AIBD_PAIRING=touchid to confirm pairings with it.",
+        dir.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn pair_key_init() -> Result<(), String> {
+    Err("an owner pairing key is macOS and Windows only".into())
 }
 
 /// `aibd ctl owner-check probe`: one JSON line of what this Mac's owner check would be
@@ -2378,7 +2423,7 @@ fn owner_check_probe() -> Result<(), String> {
 fn owner_check_probe() -> Result<(), String> {
     println!(
         "{}",
-        aibd::owner_probe_win::win_probe(&aibd::owner_probe_win::Win::read())
+        aibd::owner_probe_win::win_probe(&aibd::owner_probe_win::Win::read(&data_dir()?))
     );
     Ok(())
 }
