@@ -337,8 +337,9 @@ fn random_name() -> Result<String, &'static str> {
 }
 
 /// Download `row`, check P and S, place it; the placed path. Whatever happens, the job's
-/// download folder is gone afterwards.
-pub fn run(
+/// download folder is gone afterwards. Crate-only: outside tests the one caller is
+/// `provider_maker::fetch_measured`, whose signer is fixed (3e53b REVIEW-l2-maker N1).
+pub(crate) fn run(
     data: &Path,
     row: &FetchRow,
     fetch: &dyn Fetch,

@@ -46,11 +46,14 @@ fn maker(provider: &str) -> Option<(&'static str, &'static str)> {
         .map(|(_, org, team)| (*org, *team))
 }
 
-/// The code requirement a macOS program of `team` must meet: signed through Apple's root with
-/// a Developer ID leaf of that Team ID.
+/// The code requirement a macOS program of `team` must meet: Apple's root, the Developer ID
+/// intermediate, a Developer ID Application leaf of that Team ID (Apple's own Developer ID
+/// requirement plus the Team ID; 3e53b REVIEW-l2-maker N2). No revocation check on macOS here
+/// (N3; IFACE §3.2).
 pub fn mac_requirement(team: &str) -> String {
     format!(
-        "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists \
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists \
+         and certificate leaf[field.1.2.840.113635.100.6.1.13] exists \
          and certificate leaf[subject.OU] = \"{team}\""
     )
 }
@@ -171,9 +174,29 @@ mod tests {
         let r = mac_requirement("Q6L2SF6YDW");
         assert!(r.starts_with("anchor apple generic and "), "{r}");
         assert!(
+            r.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"),
+            "{r}"
+        );
+        assert!(
+            r.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"),
+            "{r}"
+        );
+        assert!(
             r.ends_with("certificate leaf[subject.OU] = \"Q6L2SF6YDW\""),
             "{r}"
         );
+    }
+
+    /// Outside tests nothing but `fetch_measured` can call `provider_fetch::run` (3e53b
+    /// REVIEW-l2-maker N1): it is crate-only, and in aibd's sources this file is its one caller.
+    #[test]
+    fn only_fetch_measured_calls_the_download_with_a_signer() {
+        let fetch = include_str!("provider_fetch.rs");
+        assert!(fetch.contains("\npub(crate) fn run("), "reason: run_public");
+        assert!(!fetch.contains("\npub fn run("), "reason: run_public");
+        let me = include_str!("provider_maker.rs");
+        let calls = me.matches(concat!("provider_fetch::", "run(")).count();
+        assert_eq!(calls, 1, "reason: more_callers");
     }
 
     /// The production path refuses a file whose hash is measured but which the maker did not
