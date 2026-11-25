@@ -42,4 +42,4 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            let held = 
 # PS7 a link on the path from the providers folder down passes (3e53b r6 L2)
 pm '    if !no_link {' '    if false {' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
 # PS8 the data folder is not one of the steps checked for links (3e53b r10)
-pm '        data.to_path_buf(),' '' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
+pm '        data.to_path_buf(),' '        // PS8: the data folder left out' a_seat_open_checks_a_placed_program_again_and_leaves_others_to_the_policy
