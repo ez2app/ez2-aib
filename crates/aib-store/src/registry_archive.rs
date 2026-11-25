@@ -84,6 +84,17 @@ pub const BATCH_STATES: [&str; 5] = ["run", "done", "failed", "undone", "partial
 
 /// The states a batch may move to `state` from (f163c regarch L2): a running batch ends done
 /// or failed; an ended one is taken back whole or in part; a part taken back is finished.
+pub fn batch_from(state: &str) -> &'static [&'static str] {
+    match state {
+        "done" | "failed" => &["run"],
+        // f163c N4: a failed batch was already rolled back (IFACE r2 §3); undoing it again
+        // would undo the rolled-back steps once more
+        "undone" => &["done", "partial_undo"],
+        "partial_undo" => &["done"],
+        _ => &[],
+    }
+}
+
 /// R3 (stack10 84bdef21b1: merge_undo ended `partial_undo` with every step "還原時寫入失敗",
 /// because a `done` batch's steps could not become `undone`): in which batch states a step
 /// may move to `step_state`. `done` only while the batch runs; `undone` while it runs, once
@@ -95,16 +106,7 @@ pub fn step_moves_in(step_state: &str, batch_state: &str) -> bool {
         _ => false,
     }
 }
-pub fn batch_from(state: &str) -> &'static [&'static str] {
-    match state {
-        "done" | "failed" => &["run"],
-        // f163c N4: a failed batch was already rolled back (IFACE r2 §3); undoing it again
-        // would undo the rolled-back steps once more
-        "undone" => &["done", "partial_undo"],
-        "partial_undo" => &["done"],
-        _ => &[],
-    }
-}
+
 /// A step's states.
 pub const STEP_STATES: [&str; 3] = ["pending", "done", "undone"];
 /// How many alias hops a lookup follows before it gives up (a loop or a long chain).
