@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # N-ws-ask-codex knives AC1-AC3 (7ebca 11-19, 519d0 ORDER-allhands-webdev): a codex seat gets
 # aibd's talk server (ask_person among its tools) as app-server settings, the seat token passed
 # through by name, the tools never waiting for an approval nobody can give.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-slot-rest knives OE1-OE2 (7ebca 11-18, 5d33a REVIEW-ws-slots 7075ce31 N1): the slots list
 # reads every seat's open mail in one query, the limit per receiver.
 # Run from the repo root.

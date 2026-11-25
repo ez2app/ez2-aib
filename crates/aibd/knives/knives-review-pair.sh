@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 0eed7 VERIFY-t4-4cfc63d5: a reviewer of an author on no node gets a node of the pair
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

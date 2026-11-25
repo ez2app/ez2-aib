@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-live-9 knives SN1–SN2 (b4297 11-18, 0eed7 REVIEW-s89-input L2): only a seat's provider
 # gets a stdin pipe; any other program gets none. Each rule, broken, turns its own test red.
 # Run from the repo root.

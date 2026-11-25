@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # clean-stop knives (0eed7 VERIFY-humanpath-0eed7-d95f4ab3f L1 r1): each rule loosened must turn its own test red.
 # Run by crates/aib-knife/run-knives.sh (macOS); from the repo root; -eo pipefail like GitHub's `shell: bash`.
 #

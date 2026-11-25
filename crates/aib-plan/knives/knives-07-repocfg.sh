@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # A15-repocfg knife RC3 (a9136 11-18): aib-plan's repo setting skips an empty value. Run from the repo root.
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

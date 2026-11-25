@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan change badges knives BD1–BD8 (S104; b433b d50c0606, redone on main by 7b81e 11-19 per f1fae
 # TRIAGE-pr815): each rule broken on purpose must turn its own test red. Run by the "aib-plan knives (macOS)"
 # step in aibd.yml (one line runs crates/aib-plan/knives/*.sh). Run from the repo root.

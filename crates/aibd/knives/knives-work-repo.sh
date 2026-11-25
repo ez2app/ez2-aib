@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # WR1–WR3 (7b81e 11-20; 519d0 06:35「做事席也能帶登記的倉,一律開自己的一份」, 5d33a N6;
 # DESIGN-work-repo-7b81e-1120): a registered repo's seat works in its own clone, never a
 # worktree of the registered repo; a work seat may take a repo and is not asked again.

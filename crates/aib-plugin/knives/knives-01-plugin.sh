@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The plugin area (aib-plugin; Andy 11-23: one fixed place for plugins, on by default, can be turned off).
 # Each rule of "when is a plugin's command run", broken, turns its own test in tests/plugin.rs red. Run on
 # macOS (the header default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust). Run from

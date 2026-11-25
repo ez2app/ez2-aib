@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace usage knives UG1-UG14, CX1-CX5, NU1-NU5, SU1-SU9 (7ebca 11-18, ORDER-workspace-519d0-1118 第二波): a seat's
 # context read from its own output by the 1.x seat_fork.context_usage rule, the 85 / 95 lines as
 # slot-3 cards, a seat waiting or silent past the cutoff as a slot-4 card; CX: a codex seat's thread/tokenUsage/updated read by

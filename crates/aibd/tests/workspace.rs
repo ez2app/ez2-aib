@@ -150,7 +150,8 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
         .unwrap()
         .contains(&serde_json::json!("/api/v1/tree")));
 
-    // the persona cards a seat can be opened with: uid and name, no path, no hash (043dd)
+    // the persona cards a seat can be opened with: uid and name, no path, no hash (043dd);
+    // §7-4 adds the uid of its usual second brain (null here: no seat opened with one)
     let r = d.call("GET", "/api/v1/personas", Some(&user), None).await;
     assert_eq!(r.code, 200, "{}", r.body);
     let ps = r.json["personas"].as_array().unwrap();
@@ -159,9 +160,10 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
         let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["display_name", "uid"],
+            ["display_name", "uid", "usual_brain"],
             "reason: persona_says_more {p}"
         );
+        assert!(p["usual_brain"].is_null(), "{p}");
     }
     d.shutdown().await;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly-c32 (7ebca 11-20, DESIGN-seat-open-mail-gate r1): a seat is reminded of another seat's
 # messages it has not closed. Each rule of crates/aibd/src/mail_nudge.rs, broken on purpose, must
 # turn its own test red. RULES §21: knives live in crates/<crate>/knives/. Run from the repo root.

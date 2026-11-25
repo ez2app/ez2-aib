@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # migration 0006 (a9136 11-19, 0eed7 a2cd0ccc4 H): seat_meta takes a work seat and keeps its rows.
 # Each rule, broken, turns its own test red. Run from the repo root; -eo pipefail like GitHub's `shell: bash`.
 set -eo pipefail

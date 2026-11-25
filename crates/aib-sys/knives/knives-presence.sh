@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25: its knives mutate or test code that only builds on macOS
 # aib-knives: env=AIB_KNIVES_NO_SE=1
 # aib-sys presence_macos knives (ebb36 11-13, PLAN-t135b): each knife takes one check
 # away and must turn its own test red. macOS with a Secure Enclave only: the tests named
@@ -49,4 +50,24 @@ fi
 ks '        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,' \
    '        ("NSOSStatusErrorDomain", -25292) => SeError::AuthFailed, // knife' \
    errors_map_like_the_1x_helper
+# KS9 (S10-2b-1 §7a) the finger-only window keeps the "Use Password…" button
+ks 'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "";' \
+   'pub const FINGER_ONLY_FALLBACK_TITLE: &str = "Use Password"; // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS10 (S10-2b-1 §8-3) the signing step after the fingerprint may show another window
+ks 'pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = true;' \
+   'pub const SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED: bool = false; // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS11 (S10-2b-1 §8-3) a key that wants another window after the fingerprint is not called a mismatch
+ks '    if wanted_a_window {' \
+   '    if false && wanted_a_window { // knife' \
+   the_finger_only_window_offers_no_password_and_refuses_the_same
+# KS12 (3e53b REVIEW-s102b L2) the finger-only window's fallback title is never set
+ks '        unsafe { ctx.setLocalizedFallbackTitle(Some(&t)) };' \
+   '        let _ = &t; // knife' \
+   the_finger_only_path_sets_its_window_and_no_second_one
+# KS13 (3e53b REVIEW-s102b L2) the signing step after the fingerprint is not set to show nothing
+ks '    unsafe { ctx.setInteractionNotAllowed(SIGN_AFTER_FINGER_INTERACTION_NOT_ALLOWED) };' \
+   '    // knife: interaction left allowed' \
+   the_finger_only_path_sets_its_window_and_no_second_one
 echo "aib-sys presence knives: all bit"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # N-workspace session_stop knives ST1–ST4 (043dd 11-18, 519d0 09:2x「對話框優先」step 4): the seat
 # window's stop button is an act a confirmed built-in page may send and a user folder page may not.
 # Each rule, broken, turns its own test red. Run from the repo root.

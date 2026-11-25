@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 2 knives AS1–AS10 (7b81e 11-18, ORDER-workspace §第二波; 5d33a CHECKLIST-workspace-wave2 A1 / A2):
 # a user folder page and a seat token never assign; six roles only; the seat and (with a tree) the node must
 # exist; every new row leaves its event; a node inherits from every node above it and a loop ends; a seat is

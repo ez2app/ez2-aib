@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The S79 nominate-x1b knives (043dd 268edfec, 5d33a bd1a762b N1): u13-exclude.txt marks a seat system
 # whatever its role; the reviewers file still changes only dev seats. They sat in the "aib-drive unblock
 # knives (macOS)" step; moved here word for word (519d0 11-16 23:5x: aibd.yml is red past 450,000 bytes).

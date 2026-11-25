@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-drive budget BG1–BG8 (a9136 11-17, S107-product slice 3b; DECISION-council-andyopen-519d0-1117 a1):
 # the 「AI 推進」 button's budget is counted from drive_send events — 20 a day, 1 an hour for one card, the
 # day in the set offset, tokens only added up. Each rule, broken, turns its own test red. Run on macOS (the

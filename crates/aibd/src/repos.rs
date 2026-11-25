@@ -304,11 +304,17 @@ pub fn open_ask_plain(
 ) -> crate::owner_ok::Ask {
     let params = json!({
         "kind": "open", "provider": provider, "persona_uid": persona_uid, "repo": null,
+        "persona_name": persona_name,
     });
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP_OPEN,
-        resource: format!("{persona_name}({persona_uid})· {provider} · 完全權限,不帶倉"),
+        // c2f0b REVIEW-pa2ls L-a (ebab8 11-25 13:37): the brand, the uid and what is opened
+        // first; the persona's name (a card's word an AI can write) after them, cut short
+        resource: crate::owner_ok::fixed_then_name(
+            &[provider, persona_uid, "完全權限,不帶倉"],
+            persona_name,
+        ),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
     }
@@ -367,18 +373,45 @@ pub async fn dgrs_restart_gate(
     seat_id: &str,
     ticket: Option<&str>,
     by: String,
+    act: GateAct,
 ) -> Option<Response> {
     let (store, id) = (st.store.clone(), seat_id.to_owned());
-    let read = tokio::task::spawn_blocking(move || store.seat_meta(&id)).await;
+    let read = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
+        let Some(m) = store.seat_meta(&id)? else {
+            return Ok(None);
+        };
+        let archived = store
+            .seat(&id)?
+            .is_some_and(|s| aib_store::ARCHIVED == s.state);
+        Ok(Some((m, archived)))
+    })
+    .await;
     // f163c REVIEW-a11 L1: only "no such seat" is left to the act; a read that failed stops
     // here (a second read in revive could succeed and start a dgrs seat unasked)
-    let meta = match known_or_stop(read) {
+    let (meta, archived) = match known_or_stop(read) {
         Ok(Some(m)) => m,
         Ok(None) => return None,
         Err(()) => return Some(seat_unreadable()),
     };
-    if meta.mode.as_deref() != Some("dgrs") {
-        return None;
+    let runs =
+        st.sessions.list().iter().any(|s| {
+            s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
+        });
+    match gate_step(act, meta.mode.as_deref(), archived, runs) {
+        Step::Act => return None,
+        Step::Refuse(reason, message) => {
+            return Some(
+                (
+                    StatusCode::CONFLICT,
+                    // f163c pre-0954a14a N1: the act's own shape (seat_input::refuse), so a
+                    // page reading `code` sees one thing whichever answered
+                    Json(json!({"code": reason, "message": message,
+                        "request_id": crate::guard::request_id()})),
+                )
+                    .into_response(),
+            );
+        }
+        Step::Ask => {}
     }
     let a = restart_ask(
         seat_id,
@@ -393,6 +426,44 @@ pub async fn dgrs_restart_gate(
         return Some(not_approved());
     }
     None
+}
+
+/// What the dgrs gate does with a page's restart (f163c REVIEW-a11 N1 + pre-8947d325 M1).
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// not a dgrs seat: the act answers it, nobody asked
+    Act,
+    /// a dgrs seat the act would refuse anyway: refused here, with the act's own words, before
+    /// the owner is asked (no fingerprint spent) — never let through to be checked again
+    /// later, as the seat could stop in between and start with no sandbox unasked
+    Refuse(&'static str, &'static str),
+    /// the owner is asked
+    Ask,
+}
+
+/// Which page act asks the dgrs gate (08de5 1125, the A11 8cf426cd82 receipt red): only 重開
+/// is refused on a running seat — 換模型 and 清對話 stop a running seat and start it again, so
+/// running is what they are for, and are asked like a stopped one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAct {
+    /// 重開 (seat_restart): the act refuses a seat that runs now
+    Restart,
+    /// 換模型 (seat_model_set): stops a running seat, starts it on the new model
+    Model,
+    /// 清對話 (seat_clear): stops a running seat, starts it on a new conversation
+    Clear,
+}
+
+fn gate_step(act: GateAct, mode: Option<&str>, archived: bool, runs: bool) -> Step {
+    if mode != Some("dgrs") {
+        Step::Act
+    } else if archived {
+        Step::Refuse("seat_archived", "the seat is archived")
+    } else if runs && act == GateAct::Restart {
+        Step::Refuse("seat_running", "the seat runs now")
+    } else {
+        Step::Ask
+    }
 }
 
 /// `202 {ticket}` while the owner has not answered, `403 owner_check_unavailable` when no
@@ -592,6 +663,59 @@ mod tests {
     }
     use std::process::Command;
 
+    /// A11 (f163c REVIEW-a11 N1, pre-8947d325 M1; 08de5 1125): every act × every seat state.
+    /// An archived dgrs seat is refused by the gate itself for all three acts (no fingerprint
+    /// spent, nothing let through); a running one only for 重開 — 換模型 and 清對話 stop and
+    /// start a running seat, so they ask; a dgrs seat neither archived nor running asks; any
+    /// other seat is the act's.
+    #[test]
+    fn a_restart_refused_anyway_asks_no_fingerprint() {
+        use GateAct::{Clear, Model, Restart};
+        let archived = Step::Refuse("seat_archived", "the seat is archived");
+        let running = Step::Refuse("seat_running", "the seat runs now");
+        for act in [Restart, Model, Clear] {
+            assert_eq!(
+                gate_step(act, Some("dgrs"), false, false),
+                Step::Ask,
+                "{act:?}"
+            );
+            assert_eq!(
+                gate_step(act, Some("dgrs"), true, false),
+                archived,
+                "reason: archived_let_through {act:?}"
+            );
+            assert_eq!(
+                gate_step(act, Some("dgrs"), true, true),
+                archived,
+                "reason: archived_running_let_through {act:?}"
+            );
+            for (mode, archived, runs) in [
+                (Some("work"), false, false),
+                (Some("work"), false, true),
+                (Some("safe"), true, false),
+                (None, true, true),
+            ] {
+                assert_eq!(
+                    gate_step(act, mode, archived, runs),
+                    Step::Act,
+                    "reason: not_dgrs_gated {act:?} {mode:?}"
+                );
+            }
+        }
+        assert_eq!(
+            gate_step(Restart, Some("dgrs"), false, true),
+            running,
+            "reason: running_let_through"
+        );
+        for act in [Model, Clear] {
+            assert_eq!(
+                gate_step(act, Some("dgrs"), false, true),
+                Step::Ask,
+                "reason: running_refused_for_a_stop_and_start {act:?}"
+            );
+        }
+    }
+
     /// A11-2 (f163c REVIEW-a11 r1 L1): an open and a restart of a dgrs seat name what they are
     /// on the window's first line, and their tickets are bound apart (kind, seat).
     #[test]
@@ -600,13 +724,22 @@ mod tests {
         assert_eq!(o.operation, OP_OPEN);
         assert_eq!(
             crate::owner_ok::plain_words(o.operation, &o.params).as_deref(),
-            Some("開一個完全權限的席(claude),人格 un0eba")
+            Some("開一個完全權限的席(claude),人格 架構師(un0eba)")
         );
         assert!(
             o.resource.contains("架構師"),
             "reason: no_persona_name {}",
             o.resource
         );
+        // c2f0b REVIEW-pa2ls L-a: the fixed words first, whatever the persona's name
+        for name in ["架構師", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let o = open_ask_plain("claude", "un0eba", name, "page:p".into());
+            assert!(
+                o.resource.starts_with("claude · un0eba · 完全權限"),
+                "reason: name_before_the_fixed {}",
+                o.resource
+            );
+        }
         let r = restart_ask("seat_ab12cdef", "claude", "un0eba", "page:p".into());
         assert_eq!(
             crate::owner_ok::plain_words(r.operation, &r.params).as_deref(),

@@ -60,7 +60,9 @@ case_run sys-new-crate fail 'not on the allow-list: rand' aib-sys "[target.'cfg(
 rand = \"0.9\""
 case_run sys-feature-table fail 'has a [features] table' aib-sys "[features]
 net = [\"windows-sys/Win32_Networking_WinSock\"]"
-case_run sys-dev-dep fail 'has a dev dependency' aib-sys "[dev-dependencies]
+# W-4: dev dependencies have their own allow-list (SYS_DEV_DEPS: windows-sys on cfg(windows)
+# only); any other dev dependency is refused like a normal one
+case_run sys-dev-dep fail 'not on the allow-list: libc ^0.2.191 target=None kind=Some("dev")' aib-sys "[dev-dependencies]
 libc = \"0.2.191\""
 echo "aib-sys deps self-test: $pass passed, $fail failed"
 [ $fail -eq 0 ]

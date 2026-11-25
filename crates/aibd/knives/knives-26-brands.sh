@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-ws-brands knives BR1–BR6 (b4297 11-18; 519d0 22:2x, SPEC-workspace-multiseat §22): GET
 # version lists AIB 2.0's brands only, each with whether it opens on this machine and why not.
 # Each rule, broken, turns its own test red. Run from the repo root.

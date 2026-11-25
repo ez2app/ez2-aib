@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace-c2 knives HS1–HS2 (7b81e 11-18; a9136 hosts core 3: run id and start time): the lease's start and run id
 # are read, and the page's answer carries them. Each, broken, turns its own test red.
 set -eo pipefail

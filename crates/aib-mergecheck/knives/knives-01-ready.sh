@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-mergecheck ready (S73-ready 片 1, IFACE-mergecheck-ready-7b81e-1117 r2 §9): each knife takes one rule away
 # and must turn its own test red. Run by the one "crate knives" step (crates/aib-knife/run-knives.sh rust: macOS,
 # job rust, 30 minutes by default); aib-xtask knife-anchors reads the same folder. Run from the repo root.

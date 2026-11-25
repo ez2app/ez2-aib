@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-drive unblock owner UO1–UO6 (a9136 11-17, DECISION-council-nextstep-519d0-1117 §4-1; 5d33a found
 # every unblock.json row with an empty owner, so act sent nothing): a row with no owner falls to the
 # nearest live ancestor owner, then the live coordinator. Each rule, broken, turns its own test red. Run

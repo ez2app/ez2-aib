@@ -7,8 +7,10 @@
 mod alive;
 pub mod brain_notes;
 mod idem;
+pub mod managed_test;
 mod messages;
 mod migrate;
+pub mod net_allow;
 pub mod perm_templates;
 pub mod ranks;
 pub mod registry_archive;
@@ -34,7 +36,7 @@ pub use messages::{
 };
 pub use migrate::{Migration, MIGRATIONS};
 pub use perm_templates::{PermTemplate, PermTemplateLog, TplWrite};
-pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep};
+pub use registry_archive::{ArchivedItem, MergeBatch, MergeStep, SeatNext};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seat_perm::{PermState, PermWrite, SeatPerm, SeatPermLog, SEAT_PERM_LOG_MAX};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};

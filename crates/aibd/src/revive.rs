@@ -615,6 +615,27 @@ async fn rejoin_with(
     fresh: Option<String>,
 ) -> Result<String, Skip> {
     let meta = meta.ok_or(Skip::NoConversationId)?;
+    // §8 8b-2 (6770f): a merge's switch for this seat is applied now, then the record read again
+    let (db, store, id) = (st.messages.clone(), st.store.clone(), seat.seat_id.clone());
+    let meta = tokio::task::spawn_blocking(move || {
+        let ev = crate::sessions::new_id("ev_").map_err(|_| "store")?;
+        let applied = crate::seat_next_apply::apply_next(
+            &db,
+            &store,
+            &id,
+            &ev,
+            &crate::sessions::now_rfc3339(),
+        )?;
+        match applied {
+            crate::seat_next_apply::Applied::Nothing => Ok(None),
+            _ => store.seat_meta(&id).map_err(|_| "store"),
+        }
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .flatten()
+    .unwrap_or(meta);
     let mode = plan(&meta, crate::seat_input::dgrs_input_on())?;
     let personas = st.personas.clone();
     let cards = tokio::task::spawn_blocking(move || personas.cards())
@@ -623,6 +644,13 @@ async fn rejoin_with(
         .and_then(Result::ok)
         .ok_or(Skip::PersonaGone)?;
     let uid = meta.persona_uid.clone().ok_or(Skip::PersonaGone)?;
+    // an old uid opens as the one it was merged into; an archived persona is not revived
+    let (db, asked) = (st.messages.clone(), uid);
+    let uid = tokio::task::spawn_blocking(move || crate::seat_next_apply::open_uid(&db, &asked))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(Skip::PersonaGone)?;
     let card = cards
         .into_iter()
         .find(|c| c.uid == uid)

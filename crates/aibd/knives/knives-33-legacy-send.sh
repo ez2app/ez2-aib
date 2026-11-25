@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-web-dmbridge knives LS1-LS6 (7ebca 11-19; 519d0 02:08, 5d33a CHECK-webdm-legacy, 0eed7
 # VERIFY-dmbridge): a letter into the 1.x ledger only from a page paired this run and with the
 # switch in bridge.json; a header-shaped line is refused; the cabin and the seat folder are

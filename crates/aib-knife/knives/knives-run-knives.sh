@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The one knife step's own knives (S66-loop, DESIGN-knives-loop-ebb36-1117 r0 "刀(本張自己的)"; 7b81e 11-17):
 # each knife takes one rule of crates/aib-knife/run-knives.sh away and must turn its own test in
 # xtask/src/run_knives.rs red. Run by the "crate knives" step like every crates/*/knives/*.sh.
@@ -80,3 +81,10 @@ rk '  if [ -n "$list_only" ]; then' '  if false; then # knife: list mode runs' \
 # RK23 the plan and the list reach the scripts (a knife that runs this file under test would use them)
 rk 'unset AIB_KNIVES_LIST AIB_KNIVES_PLAN' ': # knife: kept' \
   the_scripts_do_not_see_the_plan_or_the_list
+# E3: AIB_KNIVES_ONLY_OS keeps only the listed header oses (the Linux / macOS cells split the scripts)
+# RK24 the list is read and not used: every cell runs every script of its OS (a script would run twice)
+rk '    *) ok=0 ;;' '    *) ;; # knife: the list is not used' \
+  only_os_keeps_the_listed_oses_and_does_not_reach_the_scripts
+# RK25 the list reaches the scripts
+rk 'AIB_SKIP_FILES AIB_KNIVES_ONLY_OS' 'AIB_SKIP_FILES # knife: kept' \
+  only_os_keeps_the_listed_oses_and_does_not_reach_the_scripts

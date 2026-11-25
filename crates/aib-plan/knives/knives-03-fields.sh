@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-plan fields PF1–PF10 (a9136 11-17, S107-assist 片 1, SPEC-plan-fields-519d0-1117 r4 §2–§6): touches are
 # repo paths with `/`, the author cannot verify, only the verifier writes 實查通過, a cycle in `after` is
 # refused, a station change asks for its field. Each rule, broken, turns its own test red. Run on macOS (the

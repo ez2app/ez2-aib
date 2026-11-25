@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-now slices 1–3 knives NW1–NW22 (7b81e 11-18, 519d0 05:24 ruling): a seat writes only its own
 # short one-line status, never names another seat, never reads the board, and the journal keeps
 # lengths and hashes, never the words. Each rule, broken, turns its own test red.

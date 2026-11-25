@@ -75,16 +75,36 @@ pub fn plain(who: &Who, user_page: bool) -> String {
     }
 }
 
-/// The whole pairing window: [`plain`], until when to press and the code the countdown beside
-/// it shows, then [`reason`] as it always said (Andy 11-21 01:42 every window counts down;
-/// 519d0 05:49). The words are only shown; the key signs [`binding`], not these.
+/// Who the pairing is for, the window's second line (ebab8 11-23 05:47: the pairing window is the
+/// same four lines as an approval's, [`crate::owner_ok::window_text`]). Only aibd's own values.
+pub fn object(who: &Who, user_page: bool) -> String {
+    let to = if user_page {
+        "你資料夾的頁(只能打給 safe 席)"
+    } else {
+        "內建頁"
+    };
+    match who {
+        Who::Terminal => format!("這個瀏覽器分頁 → {to}"),
+        Who::Reconfirm { .. } => format!("這一頁 → {to}"),
+    }
+}
+
+/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2):
+/// what a yes does ([`plain`], the same words the countdown and the page card show), for whom
+/// ([`object`]), the code the countdown beside it shows and until when, then [`reason`] as it
+/// always said (Andy 11-21 01:42 every window counts down; 519d0 05:49). The words are only
+/// shown; the key signs [`binding`], not these.
 pub fn window(who: &Who, short_code: &str, user_page: bool, until: &str, code: &str) -> String {
     format!(
-        "{}({until},過了這張就作廢)對照碼 {code}\n{}",
+        "{}\n對象:{}\n對照碼 {code} · {until},過了這張就作廢\n{}",
         plain(who, user_page),
+        object(who, user_page),
         reason(who, short_code, user_page)
     )
 }
+
+/// How many lines [`window`] has, as [`crate::owner_ok::WINDOW_LINES`].
+pub const WINDOW_LINES: usize = 4;
 
 /// When a pairing that has `left` to live ends, for the window: local `HH:MM` from `date(1)`
 /// (the workspace forbids `unsafe`, so no localtime_r; as aib-seatops nowline), or
@@ -197,6 +217,12 @@ pub trait Presence: Send + Sync {
     fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
         let _ = (msg, sig);
         false
+    }
+    /// Whether a yes comes with the key's signature, which an "always" stores and checks
+    /// again: a presence that only checks the person (no key, a password) does not, and then
+    /// "always" is never offered (c2f0b REVIEW-netallow-incr L-a).
+    fn signs(&self) -> bool {
+        false // a presence with no key signs nothing
     }
 }
 
@@ -336,11 +362,81 @@ impl Presence for KeyPresence {
         let by_the_checked_key = self.dev.verify(&self.key.public, msg, sig);
         !sig.is_empty() && by_the_checked_key
     }
+    fn signs(&self) -> bool {
+        true // ask_until_keep keeps the signature of every yes
+    }
+}
+
+/// Sign the way the owner check reads now ([`crate::owner_probe::route`], S10-2b-1): the
+/// finger-only window, the key's own window, or nothing. Read again at every signature, so a
+/// lid closed after the start is a refusal and never the password.
+pub fn routed<T>(
+    now: crate::owner_probe::Class,
+    finger_only: impl FnOnce() -> Result<T, &'static str>,
+    as_the_key_allows: impl FnOnce() -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    use crate::owner_probe::Route;
+    match crate::owner_probe::route(now)? {
+        Route::FingerOnly => finger_only(),
+        Route::AsTheKeyAllows => as_the_key_allows(),
+    }
 }
 
 /// This Mac's Secure Enclave.
 #[cfg(target_os = "macos")]
 pub struct MacSe;
+
+#[cfg(target_os = "macos")]
+fn se_code(e: aib_sys::presence_macos::SeError) -> &'static str {
+    match e {
+        aib_sys::presence_macos::SeError::Timeout => TIMEOUT,
+        aib_sys::presence_macos::SeError::KeyMismatch => KEY_MISMATCH,
+        other => other.code(),
+    }
+}
+
+/// The fingerprint was given but the pairing key wanted another window: it is not the
+/// fingerprint key this Mac should have (S10-2b-1 §8-3). Refused, no second window.
+pub const KEY_MISMATCH: &str = "owner_check_key_mismatch";
+
+/// Whether this aibd has read "fingerprint" since it started (3e53b REVIEW-s102b L1). Kept in
+/// aibd's memory only: a file would be one more thing an AI of the same account writes.
+/// macOS only: Touch ID is read there alone, so elsewhere nothing would set it.
+#[cfg(target_os = "macos")]
+static SEEN_FINGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the owner check reads now, remembering a fingerprint seen since aibd started: once
+/// Touch ID was there, a later "no biometry" (a Touch ID keyboard taken away may read so) is
+/// "not usable now", so a pairing key swapped for a password one never gets the password
+/// window while this aibd runs (3e53b REVIEW-s102b L1).
+pub fn remembered(
+    now: crate::owner_probe::Class,
+    seen_finger: &std::sync::atomic::AtomicBool,
+) -> crate::owner_probe::Class {
+    use crate::owner_probe::Class;
+    use std::sync::atomic::Ordering;
+    if now == Class::Fingerprint {
+        seen_finger.store(true, Ordering::SeqCst);
+    }
+    let once_had_touch_id = seen_finger.load(Ordering::SeqCst);
+    if now == Class::PasswordOnly && once_had_touch_id {
+        return Class::NotNow;
+    }
+    now
+}
+
+#[cfg(target_os = "macos")]
+fn class_now() -> crate::owner_probe::Class {
+    remembered(
+        crate::owner_probe::class_of(&crate::owner_probe::Mac::read()),
+        &SEEN_FINGER,
+    )
+}
+
+/// A window with no limit of its own ([`KeyDevice::sign`]) still closes after this on the
+/// finger-only path, which only has the limited call.
+#[cfg(target_os = "macos")]
+const FINGER_ONLY_LONGEST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 #[cfg(target_os = "macos")]
 impl KeyDevice for MacSe {
@@ -351,7 +447,19 @@ impl KeyDevice for MacSe {
         aib_sys::presence_macos::public_key(blob).map_err(|e| e.code())
     }
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
-        aib_sys::presence_macos::sign(blob, reason, msg).map_err(|e| e.code())
+        routed(
+            class_now(),
+            || {
+                aib_sys::presence_macos::sign_until_finger_only(
+                    blob,
+                    reason,
+                    msg,
+                    FINGER_ONLY_LONGEST,
+                )
+                .map_err(se_code)
+            },
+            || aib_sys::presence_macos::sign(blob, reason, msg).map_err(|e| e.code()),
+        )
     }
     fn sign_until(
         &self,
@@ -360,14 +468,135 @@ impl KeyDevice for MacSe {
         msg: &[u8],
         limit: std::time::Duration,
     ) -> Result<Vec<u8>, &'static str> {
-        aib_sys::presence_macos::sign_until(blob, reason, msg, limit).map_err(|e| match e {
-            aib_sys::presence_macos::SeError::Timeout => TIMEOUT,
-            other => other.code(),
-        })
+        routed(
+            class_now(),
+            || {
+                aib_sys::presence_macos::sign_until_finger_only(blob, reason, msg, limit)
+                    .map_err(se_code)
+            },
+            || aib_sys::presence_macos::sign_until(blob, reason, msg, limit).map_err(se_code),
+        )
     }
     fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
         aib_sys::presence_macos::verify(public, msg, sig) == Ok(true)
     }
+}
+
+/// This Windows machine's Hello key (Microsoft Passport key storage provider, aib-sys
+/// `hello_ncrypt`). S10-3b-1/2: **unverified on a real Hello machine** until the W sheet
+/// (PLAN-ap26-windows-first-c2f0b-1125 §3); only [`KeyDevice::verify`] runs in CI. Every window
+/// has a limit (a call without one gets [`WIN_HELLO_LONGEST`]); a window still up refuses the
+/// next one.
+#[cfg(windows)]
+pub struct WinHello;
+
+/// The longest a Hello window from [`KeyDevice::sign`] waits (same as the Mac's finger-only
+/// window).
+#[cfg(windows)]
+const WIN_HELLO_LONGEST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// A Hello error as the 1.x word; aibd's own limit is [`TIMEOUT`].
+#[cfg(windows)]
+fn hello_code(e: aib_sys::hello::HelloError) -> &'static str {
+    match e {
+        aib_sys::hello::HelloError::TimedOut => TIMEOUT,
+        other => other.code(),
+    }
+}
+
+#[cfg(windows)]
+impl WinHello {
+    /// S10-3b-2 (3e53b READ-ap26-r2 L): the key is in a TPM. A software Hello key (a PIN on a
+    /// machine without a TPM) is not; W-2 reads this as the device's `hardware_bound`.
+    pub fn hardware_bound(blob: &[u8]) -> bool {
+        aib_sys::hello_ncrypt::hardware_backed(blob)
+    }
+}
+
+#[cfg(windows)]
+impl KeyDevice for WinHello {
+    fn probe(&self, blob: &[u8]) -> Result<(), &'static str> {
+        aib_sys::hello_ncrypt::probe(blob).map_err(|e| e.code())
+    }
+    fn public_key(&self, blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+        aib_sys::hello_ncrypt::public_key(blob).map_err(|e| e.code())
+    }
+    fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
+        aib_sys::hello_ncrypt::sign_until(blob, reason, msg, WIN_HELLO_LONGEST).map_err(hello_code)
+    }
+    fn sign_until(
+        &self,
+        blob: &[u8],
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<Vec<u8>, &'static str> {
+        aib_sys::hello_ncrypt::sign_until(blob, reason, msg, limit).map_err(hello_code)
+    }
+    fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
+        aib_sys::hello_ncrypt::verify(public, msg, sig)
+    }
+}
+
+/// `pair-key init` on Windows (S10-3b-2; 3e53b READ-winhello-wiring W7), written for every
+/// platform so its "nothing kept on failure" is tested everywhere: no key files there yet, make
+/// the key (`create` gives its blob and public key; it may show Hello), write both files new
+/// (never over existing ones), then the start-up [`check`]. Any failure after the key was made
+/// removes both files and the key itself (`delete`), so a failed run leaves nothing behind.
+pub fn make_pair_key(
+    dir: &Path,
+    create: impl FnOnce() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>,
+    dev: &dyn KeyDevice,
+    delete: impl FnOnce(&[u8]),
+) -> Result<(), String> {
+    use std::io::Write;
+    if dir.join("key.blob").exists() || dir.join("key.pub").exists() {
+        return Err(format!(
+            "a pairing key is already in {}; remove that folder yourself to make a new one",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (blob, public) = create()?;
+    let written = (|| -> Result<(), String> {
+        for (name, bytes) in [("key.blob", &blob[..]), ("key.pub", &public[..])] {
+            let p = dir.join(name);
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                o.mode(0o600);
+            }
+            let mut f = o.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            f.write_all(bytes)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        let k = load(dir).map_err(String::from)?;
+        check(dev, &k).map_err(|why| format!("the new key failed the start-up check ({why})"))
+    })();
+    if let Err(why) = written {
+        let _ = std::fs::remove_file(dir.join("key.blob"));
+        let _ = std::fs::remove_file(dir.join("key.pub"));
+        delete(&blob);
+        return Err(format!("{why}; nothing kept"));
+    }
+    Ok(())
+}
+
+/// Windows (3e53b READ-winhello-wiring W5): the desktop-session gate comes before anything is
+/// read, so aibd outside the signed-in user's console session (session 0, ssh, another
+/// session) refuses at once — no key read, no Hello window it could never show. Then the
+/// stored key and the start-up [`check`], as on macOS. Written for every platform so its order
+/// is tested everywhere; only Windows calls it with [`WinHello`].
+pub fn presence_after_session(
+    session: Result<(), &'static str>,
+    data: &Path,
+    dev: Box<dyn KeyDevice>,
+) -> Result<SharedPresence, &'static str> {
+    session?;
+    let key = load(&key_dir(data))?;
+    Ok(Arc::new(KeyPresence::new(dev, key)?))
 }
 
 /// The presence aibd uses at this start: the stored key on macOS when every check passes;
@@ -376,9 +605,19 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
     #[cfg(target_os = "macos")]
     {
         let key = load(&key_dir(data))?;
+        // read once at start, so a fingerprint seen now is remembered (3e53b REVIEW-s102b L1)
+        let _ = class_now();
         Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        presence_after_session(
+            aib_sys::hello::interactive_session().map_err(|e| e.code()),
+            data,
+            Box::new(WinHello),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = data;
         Err("pair_touch_not_on_this_system")
@@ -488,6 +727,13 @@ pub mod tests {
             "pair_touch_bad_signature",
             "reason: unchecked_signature"
         );
+        // the key signs; a presence with no key does not (c2f0b L-a)
+        assert!(yes.signs(), "reason: key_presence_said_unsigned");
+        let no_key = Recorder {
+            yes: true,
+            asked: Mutex::new(Vec::new()),
+        };
+        assert!(!no_key.signs(), "reason: keyless_presence_said_signed");
     }
 
     #[test]
@@ -522,19 +768,29 @@ pub mod tests {
         );
         assert_eq!(
             w,
-            "讓這個瀏覽器分頁配對成 AIB 的內建頁(請在 01:23:44 前按,過了這張就作廢)對照碼 123456\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            "讓這個瀏覽器分頁配對成 AIB 的內建頁\n對象:這個瀏覽器分頁 → 內建頁\n對照碼 123456 · 請在 01:23:44 前按,過了這張就作廢\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+        );
+        assert_eq!(w.lines().count(), WINDOW_LINES, "reason: four_lines");
+        assert_eq!(
+            WINDOW_LINES,
+            crate::owner_ok::WINDOW_LINES,
+            "reason: same_as_approval"
         );
         let who = Who::Reconfirm {
             act: "開席",
             until: "23:59".into(),
         };
         let w = window(&who, "", true, "請在 120 秒內按", "AB12");
-        let (top, rest) = w.split_once('\n').expect("reason: two_lines");
+        let l: Vec<&str> = w.lines().collect();
+        assert_eq!(l.len(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
-            top,
-            "讓這一頁繼續用完整權限到 23:59(起因:開席)(請在 120 秒內按,過了這張就作廢)對照碼 AB12"
+            l[0], "讓這一頁繼續用完整權限到 23:59(起因:開席)",
+            "reason: plain_first"
         );
-        assert_eq!(rest, reason(&who, "", true), "reason: original_kept");
+        assert_eq!(l[0], plain(&who, true), "reason: same_words_as_countdown");
+        assert_eq!(l[1], "對象:這一頁 → 你資料夾的頁(只能打給 safe 席)");
+        assert_eq!(l[2], "對照碼 AB12 · 請在 120 秒內按,過了這張就作廢");
+        assert_eq!(l[3], reason(&who, "", true), "reason: original_kept");
     }
 
     #[cfg(unix)]
@@ -567,6 +823,84 @@ pub mod tests {
         .unwrap();
         std::fs::write(d.path().join("key.pub"), [4; 64]).unwrap();
         assert_eq!(load(d.path()).unwrap_err(), "pair_key_mismatch");
+    }
+
+    /// S10-3b-1 (3e53b READ-winhello-wiring W5): outside the desktop session nothing is read
+    /// and nothing is asked, even with good key files; inside it the key is checked as usual.
+    #[cfg(unix)]
+    #[test]
+    fn outside_the_desktop_session_the_key_is_never_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = key_dir(d.path());
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("key.blob"), [1, 2, 3]).unwrap();
+        std::fs::write(dir.join("key.pub"), [4; PUBLIC_KEY_LEN]).unwrap();
+        for f in ["key.blob", "key.pub"] {
+            std::fs::set_permissions(dir.join(f), std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let refused = presence_after_session(
+            Err("unavailable"),
+            d.path(),
+            Box::new(dev(true, true, true)),
+        );
+        assert_eq!(refused.err(), Some("unavailable"), "reason: session_first");
+        let ok = presence_after_session(Ok(()), d.path(), Box::new(dev(true, true, true)));
+        assert!(ok.is_ok(), "reason: good_key_in_session");
+        let weak = presence_after_session(Ok(()), d.path(), Box::new(dev(false, true, true)));
+        assert_eq!(weak.err(), Some("pair_key_weak"), "reason: still_checked");
+    }
+
+    /// S10-3b-1: on any machine whose aibd runs outside a desktop session (CI's Windows cell,
+    /// an ssh start) the Windows path refuses before reading; elsewhere, with no key files,
+    /// it refuses too. Never a presence from an empty data folder.
+    #[test]
+    fn an_empty_data_folder_gives_no_presence_here() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(presence_here(d.path()).is_err());
+    }
+
+    /// S10-3b-2 (3e53b READ-winhello-wiring W7): a key that fails the start-up check leaves
+    /// no files and is deleted; a key that passes is kept; existing files are never replaced;
+    /// a key that could not be made leaves no files.
+    #[test]
+    fn a_pair_key_that_fails_leaves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = key_dir(d.path());
+        let made = || Ok((vec![1, 2, 3], [4; PUBLIC_KEY_LEN]));
+        let deleted = Mutex::new(Vec::<Vec<u8>>::new());
+        let weak = make_pair_key(&dir, made, &dev(false, true, true), |b| {
+            deleted.lock().unwrap().push(b.to_vec())
+        });
+        assert!(
+            weak.unwrap_err().contains("nothing kept"),
+            "reason: weak_key"
+        );
+        assert!(!dir.join("key.blob").exists() && !dir.join("key.pub").exists());
+        assert_eq!(
+            deleted.lock().unwrap().as_slice(),
+            &[vec![1, 2, 3]],
+            "reason: key_deleted"
+        );
+
+        let none = make_pair_key(
+            &dir,
+            || Err("no_biometry".into()),
+            &dev(true, true, true),
+            |_| panic!("nothing was made, nothing to delete"),
+        );
+        assert_eq!(none.unwrap_err(), "no_biometry");
+        assert!(!dir.join("key.blob").exists(), "reason: not_made");
+
+        assert!(make_pair_key(&dir, made, &dev(true, true, true), |_| {}).is_ok());
+        assert!(load(&dir).is_ok(), "reason: kept");
+        let again = make_pair_key(&dir, made, &dev(true, true, true), |_| {
+            panic!("an existing key is never touched")
+        });
+        assert!(
+            again.unwrap_err().contains("already"),
+            "reason: no_overwrite"
+        );
     }
 
     /// N-webonly-c45: the limit reaches the device, a window nobody answered reads as
@@ -646,5 +980,63 @@ pub mod tests {
         ] {
             assert!(!ends_quietly(&Err(no)), "reason: {no}_does_not_cool");
         }
+    }
+
+    /// S10-2b-1 (DESIGN-s10-2b-nofinger r1 §7a): a Touch ID Mac signs only through the
+    /// finger-only window; Touch ID there but not usable now opens no window at all (never
+    /// the password); a Mac with no biometry gets the key's own window.
+    #[test]
+    fn a_signature_goes_the_way_the_owner_check_reads_now() {
+        use crate::owner_probe::Class;
+        use std::cell::Cell;
+        let went = Cell::new("");
+        let go = |c: Class| {
+            went.set("");
+            routed(
+                c,
+                || {
+                    went.set("finger_only");
+                    Ok(1)
+                },
+                || {
+                    went.set("as_the_key_allows");
+                    Ok(2)
+                },
+            )
+        };
+        assert_eq!(go(Class::Fingerprint), Ok(1));
+        assert_eq!(went.get(), "finger_only");
+        assert_eq!(go(Class::PasswordOnly), Ok(2));
+        assert_eq!(went.get(), "as_the_key_allows");
+        for (c, why) in [
+            (Class::NotNow, "owner_check_finger_not_now"),
+            (Class::NotEnrolled, "owner_check_finger_not_enrolled"),
+            (Class::None, "owner_check_none"),
+        ] {
+            assert_eq!(go(c), Err(why));
+            assert_eq!(went.get(), "", "reason: {why}_opened_a_window");
+        }
+    }
+
+    /// 3e53b REVIEW-s102b L1: once aibd read "fingerprint", a later "no biometry" (a Touch ID
+    /// keyboard taken away) is "not usable now", never the password window.
+    #[test]
+    fn a_fingerprint_once_seen_keeps_the_password_window_shut() {
+        use crate::owner_probe::Class;
+        use std::sync::atomic::AtomicBool;
+        let never = AtomicBool::new(false);
+        assert_eq!(remembered(Class::PasswordOnly, &never), Class::PasswordOnly);
+        let seen = AtomicBool::new(false);
+        assert_eq!(remembered(Class::Fingerprint, &seen), Class::Fingerprint);
+        assert_eq!(
+            remembered(Class::PasswordOnly, &seen),
+            Class::NotNow,
+            "reason: password_after_touch_id"
+        );
+        assert_eq!(
+            routed(remembered(Class::PasswordOnly, &seen), || Ok(1), || Ok(2)),
+            Err("owner_check_finger_not_now")
+        );
+        assert_eq!(remembered(Class::NotEnrolled, &seen), Class::NotEnrolled);
     }
 }

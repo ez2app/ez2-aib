@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # BN-S (DESIGN-brainnote-08de5-1123 r1 §1d): the brain_notes ledger keeps a note's path checked and takes a note back once. Each rule broken turns its test red.
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

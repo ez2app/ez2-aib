@@ -264,41 +264,8 @@ jobs:
       - name: aibd static files without the web feature
         if: env.RUN == 'true'
         run: cargo test -p aibd --locked --no-default-features --test static_files
-      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
-      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
-      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
-      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
-      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
-      - name: release exes for Windows hands-on checks (main push / ready-merge)
-        id: winexe
-        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
-        shell: bash
-        env:
-          CARGO_TARGET_DIR: target-winexe
-          # a PR run checks out the merge commit; name the artifact after the head that was labelled
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          pkgs=(-p aibd); bins=(aibd)
-          for p in aib-idea aib-slice aib-drive; do
-            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
-            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
-          done
-          cargo build --release --locked "${pkgs[@]}"
-          mkdir -p winexe
-          for b in "${bins[@]}"; do
-            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
-            cp "target-winexe/release/$b.exe" winexe/
-          done
-          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
-          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
-        with:
-          name: ${{ steps.winexe.outputs.name }}
-          path: winexe/
-          if-no-files-found: error
-          retention-days: 7
+      # The Windows hands-on pack (release exes + test pack) is its own job, winpack, below
+      #   (f163c REVIEW-wincheck L3): a packing error never turns this required cell red.
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
@@ -469,8 +436,8 @@ jobs:
              $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
              replay_goes_by_file_order_not_time
           # K10 a held lock is taken anyway (aib-ledger, S78 r-0)
-          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '            Err(TryLockError::WouldBlock) => {}' \
-            '            Err(TryLockError::WouldBlock) => if until > Instant::now() { return Ok(f) }, // knife' \
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '        Err(TryLockError::WouldBlock) => {}' \
+            '        Err(TryLockError::WouldBlock) => if path.exists() { return Ok(f) }, // knife' \
             --expect-fail a_held_lock_is_not_taken_twice_and_is_free_once_dropped \
             -- cargo test -p aib-ledger --locked a_held_lock_is_not_taken_twice_and_is_free_once_dropped
           # K5 an incomplete ledger still takes writes (checked in aib-ledger's one write path, S78 r-1)
@@ -3847,6 +3814,165 @@ jobs:
           git status --porcelain | head -5
           git checkout -q -- . || true
 
+  # 90856 (f163c REVIEW-wincheck L3, ebab8 11-25 16:44): the Windows hands-on pack is its own job, not a
+  #   step of the required rust (windows-latest) cell, so a packing error or a slow pack never blocks a
+  #   merge. Not a required check (not in the ruleset's list). Only on a main push or a PR labelled
+  #   ready-merge, and only when a Rust path changed; waits for the rust cells so it never races them.
+  winpack:
+    name: Windows hands-on pack (not required)
+    needs: [changes, rust]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge')) }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          cargo --version
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd -p aib-wincheck); bins=(aibd aib-wincheck)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
+          #   executables built here. A test executable holds absolute paths of where it was built
+          #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
+          #   C:\aibw\ez2-aib and the laptop puts the tree back at the same place. The pack keeps
+          #   the tree's layout: the source (git archive), target/debug/*.exe, the test
+          #   executables, and wincheck-tests.tsv (<exe>\t<package folder>) at the pack root (not in the
+          #   tree: Windows ignores case and the tree has tests/). Every file is in SHA256SUMS.
+          W=/c/aibw/ez2-aib
+          rm -rf /c/aibw && mkdir -p "$W"
+          git archive HEAD | tar -x -C "$W"
+          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo test --workspace --locked --no-run --message-format=json 2>/dev/null) \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test == true) | "\(.executable)\t\(.manifest_path)"' \
+            | sort -u > winexe-tests.raw
+          [ -s winexe-tests.raw ] || { echo "::error::no test executables were listed"; exit 1; }
+          # ebab8 11-25 19:04: the aibd session tests build aib-fixture-tree with cargo on first use;
+          #   the laptop has no cargo. Build it here into the same target/debug (copied below with the
+          #   other exes); aib-wincheck sets AIB_FIXTURE_PREBUILT=1 so the tests use it as it is.
+          (cd "$W" && CARGO_TARGET_DIR="$W/target" cargo build --locked -q -p aib-fixture-tree)
+          [ -f "$W/target/debug/aib-fixture-tree.exe" ] || { echo "::error::aib-fixture-tree.exe was not built"; exit 1; }
+          : > winexe-tests.tsv
+          while IFS=$'\t' read -r e m; do
+            e=$(cygpath -u "$e"); m=$(cygpath -u "$m")
+            case "$e$m" in "$W"/*"$W"/*) ;; *) echo "::error::$e or $m is not under $W"; exit 1 ;; esac
+            pkg=$(dirname "${m#"$W"/}"); [ "$pkg" = . ] && pkg=
+            printf '%s\t%s\n' "${e#"$W"/}" "$pkg" >> winexe-tests.tsv
+          done < winexe-tests.raw
+          P=winexe/aibw/ez2-aib
+          mkdir -p "$P"
+          git archive HEAD | tar -x -C "$P"
+          cp winexe-tests.tsv winexe/wincheck-tests.tsv
+          mkdir -p "$P/target/debug/deps"
+          cp "$W"/target/debug/*.exe "$P/target/debug/"
+          cut -f1 winexe-tests.tsv | while IFS= read -r e; do cp "$W/$e" "$P/$e"; done
+          printf '%s\n' "$HEAD_SHA" > winexe/HEAD
+          (cd winexe && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > SHA256SUMS && wc -l < SHA256SUMS)
+          echo "::notice title=wincheck pack::$(wc -l < winexe-tests.tsv) test executables, $(du -sh winexe | cut -f1)"
+          # c2f0b REVIEW-wincheck L2: the result file's SUMS-FILE-SHA256 must be this value
+          echo "::notice title=wincheck SUMS-FILE-SHA256::$(sha256sum winexe/SHA256SUMS | cut -c1-64)"
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      # ebab8 11-25 18:37 (first run on the laptop: WINCHECK-RED, 23 SUMS-MISSING): upload-artifact@v4
+      #   leaves out files whose name starts with a dot (.gitignore, .github/, .claude-plugin/) unless
+      #   include-hidden-files is true, while SHA256SUMS was written from the folder with them.
+      - uses: actions/upload-artifact@v4
+        id: winup
+        if: steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      # (ebab8 19:1x, f163c c3d0f306ee N1: sha256sum on the Windows runner writes "<sum> *<name>", binary
+      #   mode, not two spaces; the diagnostics below read both, `sha256sum -c` already does.)
+      # The laptop found the last one; this cell finds the next: download what was uploaded and check
+      #   it the way aib-wincheck will (every SHA256SUMS line present and equal, no file that is not in it).
+      # (ebab8 19:37, run 45603042778: by name, 0.3 s after the upload, the download said "Artifact
+      #   not found" while the pack was fine. Download by the id the upload step gave; one more try
+      #   after 30 s; both failing is said as "not checked", not as a broken pack.)
+      # (#890 run 45606782157: by id too, the first try 0 s after the upload said "None of the provided
+      #   artifact IDs were found" and the second, 30 s later, worked; wait first so the usual run
+      #   shows no failure note.)
+      - name: wait for the uploaded pack to be listed
+        if: steps.winup.outcome == 'success'
+        shell: bash
+        run: sleep 20
+      - uses: actions/download-artifact@v4
+        id: winget
+        if: steps.winup.outcome == 'success'
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ steps.winup.outputs.artifact-id }}
+          path: winexe-check/
+      - name: wait before the second download try
+        if: steps.winup.outcome == 'success' && steps.winget.outcome == 'failure'
+        shell: bash
+        run: sleep 30
+      - uses: actions/download-artifact@v4
+        id: winget2
+        if: steps.winup.outcome == 'success' && steps.winget.outcome == 'failure'
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ steps.winup.outputs.artifact-id }}
+          path: winexe-check/
+      - name: the uploaded pack matches its SHA256SUMS
+        if: steps.winup.outcome == 'success'
+        shell: bash
+        env:
+          GOT1: ${{ steps.winget.outcome }}
+          GOT2: ${{ steps.winget2.outcome }}
+          PACK: ${{ steps.winexe.outputs.name }}
+        run: |
+          set -euo pipefail
+          if [ "$GOT1" != success ] && [ "$GOT2" != success ]; then
+            echo "::error title=wincheck pack not checked::the pack was uploaded, but downloading it back to check it failed twice; this is not a fault in the pack"
+            exit 1
+          fi
+          # by id the files may land in winexe-check/<name>/ rather than winexe-check/
+          d=winexe-check; [ -f "$d/SHA256SUMS" ] || d="winexe-check/$PACK"
+          [ -d "$d" ] || { echo "::error title=wincheck pack not checked::the download gave neither winexe-check/SHA256SUMS nor winexe-check/$PACK/"; ls -la winexe-check || true; exit 1; }
+          cd "$d"
+          [ -s SHA256SUMS ] || { echo "::error::the uploaded pack has no SHA256SUMS"; exit 1; }
+          sha256sum --quiet -c SHA256SUMS || { echo "::error::files of the uploaded pack are missing or differ from SHA256SUMS (above)"; exit 1; }
+          want=$(wc -l < SHA256SUMS); got=$(find . -type f ! -name SHA256SUMS | wc -l)
+          if [ "$got" != "$want" ]; then
+            echo "::error::the uploaded pack has $got files, SHA256SUMS lists $want"
+            find . -type f ! -name SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort > "$RUNNER_TEMP/got.txt"
+            sed -E 's/^[0-9a-f]{64} [ *]//' SHA256SUMS | LC_ALL=C sort > "$RUNNER_TEMP/want.txt"
+            LC_ALL=C comm -3 "$RUNNER_TEMP/want.txt" "$RUNNER_TEMP/got.txt" | head -40
+            exit 1
+          fi
+          hidden=$(grep -cE '^[0-9a-f]{64} [ *](.*/)?\.' SHA256SUMS || true)
+          echo "::notice title=wincheck pack uploaded::$got files match SHA256SUMS ($hidden with a dot-folder or dot-file name)"
+
   cloud-knives:
     name: cloud decision knives (macOS)
     needs: changes
@@ -3969,11 +4095,10 @@ jobs:
           retention-days: 30
 
   # S88-split (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做"): the crates/*/knives/*.sh scripts of job rust,
-  # four macOS cells side by side. run-knives.sh with AIB_KNIVES_SHARD=k/4 runs the scripts its plan gives cell k (by their
-  # seconds, see the step; without a plan every fourth in name order), so the four cells together run each exactly once; a cell that gets none is red. The cells are
-  # not required checks one by one: crate-knives-gate below is, and it is green only when all four are.
+  # E3: platform-independent crate knives run on ubuntu-latest (4 shards); the os=macos scripts (2 cells)
+  # run in crate-knives-macos below. crate-knives-gate keeps the required check name `crate knives (macOS)`.
   crate-knives:
-    name: crate knives (macOS, ${{ matrix.shard }})
+    name: crate knives (Linux, ${{ matrix.shard }})
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red
     if: ${{ !cancelled() }}
@@ -3981,20 +4106,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: ["1/4", "2/4", "3/4", "4/4"]
-    # the whole loop was 86+ minutes in one cell on #865 (job 135621588974); a third of it plus cache restore
-    # and the first compile, with room. #872 (run 44928976366) outgrew three: cell 1/3's scripts summed
-    # 8368 s and the step hit its 140 minutes, so four cells (about 105 minutes each on that run). Each script still has its own watchdog (header timeout=, default 30m).
     timeout-minutes: 150
-    # Same runner choice as the rust job and the two knife cells above (n08; keep the four copies in step).
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
-      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
-          && ((github.event_name == 'pull_request'
-               && github.event.pull_request.head.repo.full_name == github.repository
-               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
-                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
-              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
-         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
-      || 'macos-latest' }}
+    runs-on: ubuntu-latest
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -4028,8 +4141,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      # Read-only, the rust job's key (as in cloud-knives above): only the rust job saves it
+      # E3 N2 / CI 15-minute plan step 1 (ebab8 11-26): no job saved an ubuntu cache (the rust job runs
+      # macOS / Windows only), so every Linux cell built from nothing (55-78 minutes, #895). A main push now
+      # saves one (cell 1, below); pull requests only restore it
       - uses: actions/cache/restore@v4
+        id: kcache
         if: env.RUN == 'true'
         with:
           path: |
@@ -4037,10 +4153,53 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-${{ runner.environment }}-
+          key: aibd-ubuntu-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-ubuntu-latest-${{ runner.environment }}-
+      # (f163c a5f760d2af N3: these cells moved to ubuntu in E3, and the timer / shadow / ledger steps
+      #   still said runner.os == 'macOS', so they never ran; they go by the job now, not the os)
+      # main push only, cell 1 only, on a cache miss: build every test target once with the knife step's
+      # profile (incremental, no debug, -D warnings from the job) so the dependencies are what a knife build
+      # reuses, drop the incremental folder (rebuilt per checkout anyway) and save; a pull request never saves
+      # (S66-0: each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB)
+      - name: build the Linux knife cache (main push, cell 1)
+        id: kwarm
+        if: >-
+          env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && strategy.job-index == 0 && steps.kcache.outputs.cache-hit != 'true'
+        # f163c 7659cc6296 L1: a cold build past 40 minutes or out of disk must not turn main's cell 1 red
+        # (the knives below still run; the save only follows a success)
+        continue-on-error: true
+        timeout-minutes: 40
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          s=$SECONDS
+          cargo test --workspace --locked --no-run
+          rm -rf target/debug/incremental
+          echo "Linux knife cache built in $((SECONDS - s)) s; target $(du -sh target | cut -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/save@v4
+        if: steps.kwarm.outcome == 'success'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.kcache.outputs.cache-primary-key }}
+      - name: Linux knife cache read
+        if: env.RUN == 'true'
+        shell: bash
+        env:
+          HIT: ${{ steps.kcache.outputs.cache-hit }}
+          MATCHED: ${{ steps.kcache.outputs.cache-matched-key }}
+          WARM: ${{ steps.kwarm.outcome }}
+        run: |
+          echo "Linux knife cache: hit=${HIT:-false} matched=${MATCHED:-none} build=${WARM:-skipped}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: knife timer
-        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
         run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
@@ -4050,6 +4209,9 @@ jobs:
         shell: bash
         env:
           AIB_KNIVES_SHARD: ${{ matrix.shard }}
+          # E3: these cells take the os=unix / os=any scripts; os=macos ones are crate-knives-macos's
+          # (run-knives.sh and knife-anchors read the same list, so no script is run by two cells)
+          AIB_KNIVES_ONLY_OS: "unix,any"
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
@@ -4092,7 +4254,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: knife-affected (shadow)
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 3
         shell: bash
@@ -4110,9 +4272,9 @@ jobs:
             done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
           fi
           [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
-          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (Linux, ${{ matrix.shard }})" "${args[@]}"
       - uses: actions/upload-artifact@v4
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 2
         with:
@@ -4128,44 +4290,202 @@ jobs:
   # skipped (7b81e NOTE-s88split-shard-pitfalls 1). 519d0 11-20: a missing cell is red too, so the step also
   # counts this run's cells by name: exactly SHARDS of them, every one success (a cell taken out of the matrix
   # would leave its third of the scripts run nowhere while the matrix result still reads success).
+  crate-knives-macos:
+    name: crate knives (macOS, ${{ matrix.shard }})
+    needs: changes
+    if: ${{ !cancelled() }}
+    # Three cells again (stack10, ebab8 11-26): the stack's other pull requests add 39 knife scripts with
+    # no os= header, which default to macos. `knife-shards plan` on 84bdef21b1 (lin, 90856): 80 macOS
+    # scripts (56 with seconds, 24 estimated), two cells 4670 / 4671 s (78 minutes each + the build:
+    # the 80-minute step limit), three cells 3113 / 3114 / 3114 s (52). Marking them unix needs a real
+    # knife run on Linux first (a later slice). Two cells was 234c0458c3 (#895: three cells queued 4 hours).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
+    timeout-minutes: 100
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
+          && ((github.event_name == 'pull_request'
+               && github.event.pull_request.head.repo.full_name == github.repository
+               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
+    env:
+      RUN: ${{ needs.changes.outputs.run != 'false' }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - name: upstream job (changes) must have passed
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} — this cell is red because the change detection did not pass"
+          exit 1
+      - name: no Rust path changed, nothing else to run
+        if: env.RUN != 'true'
+        run: echo "::notice::no Rust path changed (see the changes job; RUST_CI_PATHS in aib/tools/release/docs_only.py); this cell is not run"
+      - uses: actions/checkout@v4
+        if: env.RUN == 'true'
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        if: env.RUN == 'true'
+        shell: bash
+        run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          cargo --version
+      - uses: actions/cache/restore@v4
+        if: env.RUN == 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      - name: knife timer
+        if: env.RUN == 'true' && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
+      - name: crate knives (macOS-only)
+        if: env.RUN == 'true'
+        timeout-minutes: 80
+        shell: bash
+        env:
+          AIB_KNIVES_SHARD: ${{ matrix.shard }}
+          AIB_KNIVES_ONLY_OS: "macos"
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          umask 022
+          echo "crate knives (macOS-only) $AIB_KNIVES_SHARD on ${ImageOS:-?} ${ImageVersion:-?} ($RUNNER_NAME)" >> "$GITHUB_STEP_SUMMARY"
+          # the same plan as the Linux cells, over the scripts that run here (os=macos only)
+          AIB_KNIVES_SHARD=1/1 AIB_KNIVES_LIST=1 bash crates/aib-knife/run-knives.sh rust > "$RUNNER_TEMP/knives-list.out" \
+            || { cat "$RUNNER_TEMP/knives-list.out"; exit 1; }
+          sed -n 's/^KNIVES-ELIGIBLE //p' "$RUNNER_TEMP/knives-list.out" > "$RUNNER_TEMP/knives-list.txt"
+          cargo run -q --locked -p aib-xtask -- knife-shards plan --shards "${AIB_KNIVES_SHARD#*/}" \
+            --secs crates/aib-knife/knife-secs.tsv --list "$RUNNER_TEMP/knives-list.txt" > "$RUNNER_TEMP/knives-plan.tsv"
+          cargo run -q --locked -p aib-xtask -- knife-shards limits \
+            --secs crates/aib-knife/knife-secs.tsv > "$RUNNER_TEMP/knives-limits.tsv"
+          export AIB_KNIVES_PLAN="$RUNNER_TEMP/knives-plan.tsv"
+          export AIB_KNIVES_LIMITS="$RUNNER_TEMP/knives-limits.tsv"
+          bash crates/aib-knife/run-knives.sh rust 2>&1 | tee "$RUNNER_TEMP/knives-run.out"
+      - name: keep each script's seconds
+        if: env.RUN == 'true' && always()
+        shell: bash
+        run: |
+          mkdir -p knife-secs
+          grep -E '^KNIVES-(SCRIPT|PLAN|OK|RED|NONE) ' "$RUNNER_TEMP/knives-run.out" > "knife-secs/cell-macos-${{ strategy.job-index }}.txt" 2>/dev/null || true
+          wc -l knife-secs/*.txt || true
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && always()
+        timeout-minutes: 3
+        with:
+          name: knife-secs-macos-${{ strategy.job-index }}
+          path: knife-secs/*.txt
+          if-no-files-found: warn
+          retention-days: 30
+      # f163c a5f760d2af N3: the macOS cells keep the shadow / ledger too (aib-cireuse pull lists these names)
+      - name: knife-affected (shadow)
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: bash
+        env:
+          AIB_SHADOW_SKIP_AFTER_S: "7500"
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          f="knife-secs/cell-macos-${{ strategy.job-index }}.txt"
+          args=()
+          if [ -r "$f" ]; then
+            while IFS= read -r s; do
+              [ -n "$s" ] && args+=("--source=$s")
+            done < <(sed -nE 's/^KNIVES-SCRIPT ([^:]+): (rc=|not_run ).*/\1/p' "$f")
+          fi
+          [ "${#args[@]}" -gt 0 ] || { echo "knife-affected (shadow): no scripts recorded; skipped"; exit 0; }
+          ./xtask/ci/knife-affected-shadow.sh "crate knives (macOS, ${{ matrix.shard }})" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && !cancelled() && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          name: cireuse-ledger-crate-knives-macos-${{ strategy.job-index }}
+          path: reuse-ledger/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+
   crate-knives-gate:
     name: crate knives (macOS)
-    needs: [changes, crate-knives]
+    needs: [changes, crate-knives, crate-knives-macos]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: all four crate knives cells passed
+      - name: all crate knives cells passed
         env:
           CELLS: ${{ needs.crate-knives.result }}
+          MACOS_CELL: ${{ needs.crate-knives-macos.result }}
           SHARDS: "4"
+          MAC_SHARDS: "3"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ "$CELLS" != success ]; then
-            echo "::error::crate knives cells: $CELLS (each of the $SHARDS must be success; skipped or cancelled is red too)"
+          # cancelled (a newer push, a manual cancel, a lost runner) is not a knife that failed: say which
+          # (ebab8 11-26, #895 run 45610010326: two macOS cells cancelled by the next push read as red knives)
+          if [ "$CELLS" != success ] || [ "$MACOS_CELL" != success ]; then
+            for r in "linux=$CELLS" "macos=$MACOS_CELL"; do
+              case "${r#*=}" in
+                success) ;;
+                cancelled) echo "::error::crate knives ${r%%=*} cells were CANCELLED, not failed (a newer push or a cancel stopped them; no knife verdict, run them again)" ;;
+                skipped) echo "::error::crate knives ${r%%=*} cells were SKIPPED (an upstream job did not pass)" ;;
+                *) echo "::error::crate knives ${r%%=*} cells FAILED (${r#*=}): a knife missed or a script broke; see the cell log" ;;
+              esac
+            done
+            echo "crate knives: linux=$CELLS macos=$MACOS_CELL (all must be success)" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           TAB=$(printf '\t')
           rows=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name | startswith("crate knives (macOS, ")) | "\(.name)\t\(.conclusion)"') || {
+            --jq '.jobs[] | select(.name | startswith("crate knives (Linux, ")) | "\(.name)\t\(.conclusion)"') || {
             echo "::error::could not list this run's jobs"; exit 1; }
           printf '%s\n' "$rows"
           total=$(printf '%s\n' "$rows" | grep -c . || true)
           ok=$(printf '%s\n' "$rows" | grep -c "${TAB}success$" || true)
           for k in $(seq 1 "$SHARDS"); do
-            printf '%s\n' "$rows" | grep -q "^crate knives (macOS, $k/$SHARDS)${TAB}success$" || {
+            printf '%s\n' "$rows" | grep -q "^crate knives (Linux, $k/$SHARDS)${TAB}success$" || {
               echo "::error::cell $k/$SHARDS is missing or not success"; exit 1; }
           done
           if [ "$total" != "$SHARDS" ] || [ "$ok" != "$SHARDS" ]; then
             echo "::error::crate knives cells: $total found, $ok success; want exactly $SHARDS, all success"
             exit 1
           fi
-          echo "crate knives: $ok/$SHARDS cells success" | tee -a "$GITHUB_STEP_SUMMARY"
+          mrows=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("crate knives (macOS, ")) | "\(.name)\t\(.conclusion)"') || {
+            echo "::error::could not list this run's jobs"; exit 1; }
+          printf '%s\n' "$mrows"
+          mtotal=$(printf '%s\n' "$mrows" | grep -c . || true)
+          mok=$(printf '%s\n' "$mrows" | grep -c "${TAB}success$" || true)
+          for k in $(seq 1 "$MAC_SHARDS"); do
+            printf '%s\n' "$mrows" | grep -q "^crate knives (macOS, $k/$MAC_SHARDS)${TAB}success$" || {
+              echo "::error::macOS cell $k/$MAC_SHARDS is missing or not success"; exit 1; }
+          done
+          if [ "$mtotal" != "$MAC_SHARDS" ] || [ "$mok" != "$MAC_SHARDS" ]; then
+            echo "::error::macOS crate knives cells: $mtotal found, $mok success; want exactly $MAC_SHARDS, all success"
+            exit 1
+          fi
+          echo "crate knives: linux=$ok/$SHARDS + macos=$mok/$MAC_SHARDS success" | tee -a "$GITHUB_STEP_SUMMARY"
 
   knife-summary:
     name: knife summary

@@ -26,7 +26,7 @@
     "id": "knife-size",
     "kind": "reject",
     "cmd": ["cargo", "run", "-q", "-p", "aib-xtask", "--locked", "--", "knife-shards", "check", "--base", "origin/main", "--head", "HEAD"],
-    "avoids": "a changed knife script exceeding 25m or 140 knives, or a shard exceeding 140m",
+    "avoids": "a changed knife script exceeding 15m or 140 knives, or a shard exceeding 140m",
     "saves_ms": 3600000,
     "timeout_s": 300
   }

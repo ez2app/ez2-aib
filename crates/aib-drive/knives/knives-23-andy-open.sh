@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # andy-open knives (S107-andyopen, DECISION-council-gaps-519d0-1117 R4): each rule loosened must turn its own test red.
 # Run by crates/aib-knife/run-knives.sh (macOS); from the repo root; -eo pipefail like GitHub's `shell: bash`.
 #

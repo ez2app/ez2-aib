@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-2a knives MS1–MS9 (a9136 11-18; DECISION-council-dmq-519d0-1118, MAP-tests-dmq-7b81e-1118 r1): a page
 # reads and closes only its own messages, a close names the revision it read, nothing the person wrote reaches
 # the journal, a resend types nothing, a row without its event gets one at the next start. Each rule, broken, turns its own test red. Run from the repo root.

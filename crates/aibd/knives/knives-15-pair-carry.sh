@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-pair-carry knives PC-K1–PC-K14 (043dd 11-18; DECISION-council-pair-persist-519d0-1118 §4,
 # 5d33a CHECKLIST-workspace-wave3 F): a confirmed page pairing survives an update once. Each rule,
 # broken, turns its own test red. Run from the repo root.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # OT1–OT3 (7b81e 11-20; GAP-repo-register G2, 043dd eeaf7378e4; 519d0 06:35「G2 不等 a63」):
 # GET /api/v1/owner/tickets/{id} is the page's own read, shows no approval digest, and takes
 # only a ticket-shaped word.

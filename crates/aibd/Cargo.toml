@@ -43,8 +43,13 @@ getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
+# S11-2 passphrase KDF (DESIGN-persona-propose-osverify-c2f0b-1123 §11 r7): exact version, no default
+# features; `alloc` for hash_password_into, `zeroize` clears the 256 MiB working memory (f163c N2). New external crate: f163c review + lock from 90856.
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "zeroize"] }
 subtle = "2.6.1"
-sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk"] }
+# network: this computer's interface addresses for host_addr::own_addresses (hostmode r4 §2,
+# sandboxnet r6 §15.1; 3e53b 11-23). No new crate: Windows' `windows` gains IpHelper / WinSock.
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk", "network"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = "0.5.3"
@@ -64,6 +69,10 @@ sha2 = "0.10.9"
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+# net_allow tests: a second connection puts a revoked row straight back into the table, the
+# way a same-account AI could, to show holds refuses it (c2f0b REVIEW-netallow-wire L2a).
+# Tests only; aibd itself reaches the database only through aib-store.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
 

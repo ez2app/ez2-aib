@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-web-worktree r3 knives TR1–TR8 (b4297 11-20; DESIGN-web-worktree-b4297-1119 r3 補): the
 # reviewer reads the author seat's tree and only reads it — inside the tree, never .git, no
 # program the repo names, only the commits since the tree was opened, a seat token on the three

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-prs knife PC1 (a9136 11-18, 0eed7 VERIFY-S73-ready M1): the PR list must not ask GitHub for commits
 # (--limit 100 × commits is over GitHub's 500,000-node cap, so the whole list is refused). Run from the repo root.
 set -eo pipefail

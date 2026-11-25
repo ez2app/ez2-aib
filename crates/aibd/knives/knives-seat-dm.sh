@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # G3a-G3g a moved web seat reads and closes its 1.x letters through aibd (PREREAD-seat-g1write-g3-a9136-1121 r2, 5d33a 0/0/0/3)
 set -euo pipefail
 dm() { python3 -I scripts/knife.py crates/aibd/src/seat_dm.rs "$1" "$2" --expect-fail "seat_dm::tests::$3" \

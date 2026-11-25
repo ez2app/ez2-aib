@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # Web seat mailbox G2 knives TH1-TH8 (7ebca 11-20, 5d33a ANSWER-webseat-roundlimit-5d33a-1120,
 # 519d0 06:14): 40 per pair, a seat's hour, a cabin's hour that stops it until 繼續.
 set -eo pipefail

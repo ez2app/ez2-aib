@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 待審 1.5 期 急件一級 (DESIGN-web-inbox-aibd-7ebca-1121 r3 §F; DECISION-council-webinbox r2 誰能標急; 5d33a PREREAD r3 0/0/0/2)
 set -euo pipefail
 umask 022

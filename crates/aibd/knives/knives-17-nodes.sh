@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 2 knives NI1–NI7 (7b81e 11-18, MODEL-workspace-tree-7b81e-1118 r1, a9136 10:54): the tree file
 # comes into aibd's node table once, only with AIBD_TREE_IN_DB=1; a repeated id keeps the first and the dropped
 # ids are named in the event; a parent that is the node itself or not in the file makes a root; the other fields

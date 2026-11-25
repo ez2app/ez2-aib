@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # a20 weak pairing (7b81e; DECISION-council-gaps-519d0-1117, Andy 11-17 23:5x RULES §31; r3b 11-18): the
 # terminal y/N pairing is read on every platform, says terminal_y and never claims the person. Each knife breaks
 # one rule and must turn its own test red. aib-xtask knife-anchors reads this folder. Run from the repo root.

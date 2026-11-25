@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # S89-live-4 / S89-live-5 knives LQ1–LQ3, LP1–LP2 (7b81e 11-18, 519d0 04:0x dispatch; 0eed7 VERIFY-s89live-0eed7-a7d973ed
 # C and J2). A fifth seat while four run says it is queued and the limit; a provider aibd cannot start over pipes is
 # refused before a seat is written. Each rule, broken, turns its own test red. Run from the repo root.

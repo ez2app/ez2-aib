@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 送回倉 second slice knives SBT1-SBT10, SB11-SB12 (a9136 11-20, N-webonly-c6-merge; 519d0 22:19:
 # sent → pushed → pr_opened, a failed step is asked again, main is reached through a pull
 # request only; 5d33a N4: one send asks the fingerprint at one place).

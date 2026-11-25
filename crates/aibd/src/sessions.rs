@@ -1696,6 +1696,10 @@ impl Sessions {
         timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
         let id = spec.id.clone();
+        // a seat that starts again starts with none of its grants (grants.rs, f163c L1)
+        if let Some(seat) = seat_id.as_deref() {
+            crate::grants::seat_ended(seat);
+        }
         // grok and copilot speak one program per turn (crate::turn_wire): every turn's program
         // goes through aibd's own spawn and lineage (ebab8 q_cd554b24 condition 2); a prompt
         // file in `<data dir>/turn-prompts`, owner only, beside the seats' default folder rather
@@ -2219,6 +2223,9 @@ impl Sessions {
         e.rec.holds_slot = !stop.releases_slot();
         e.stopping = false;
         let rec = e.rec.clone();
+        if let Some(ended_seat) = rec.seat_id.as_deref() {
+            crate::grants::seat_ended(ended_seat);
+        }
         let (kind, payload) = match rec.state {
             "exited" => (
                 "session.exited",

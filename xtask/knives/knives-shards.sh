@@ -47,3 +47,40 @@ ks '            Some(&t) if n > t.saturating_mul(GREW_TIMES) && n >= t.saturatin
 ks '            None if n >= GREW_MORE_S => Some(Grew::NewHeavy {' \
    '            None if n > GREW_MORE_S => Some(Grew::NewHeavy {' \
    a_script_far_over_its_seconds_is_said_and_one_a_little_over_is_not
+# --- est_script_secs (90856 11-25, DECISION-knife-size-objective-08b0e-1125 §1) ---
+# KES1 the same-test-target level is never used: a new page script is judged by aibd's 27s a knife
+ks '    let (source, key, samples) = if by_target.len() >= EST_MIN_TARGET {' \
+   '    let (source, key, samples) = if by_target.len() >= EST_MIN_TARGET + 99 {' \
+   a_new_page_script_is_estimated_by_the_page_scripts_not_by_the_crate
+# KES2 one crate sample is enough: two scripts decide a crate's speed
+ks '    } else if by_crate.len() >= EST_MIN_CRATE {' \
+   '    } else if by_crate.len() >= EST_MIN_CRATE - 2 {' \
+   too_few_samples_fall_back_from_target_to_crate_to_repo_and_rounding_is_up
+# KES3 the estimate is rounded down
+ks '        secs: total_ms.div_ceil(1000),' \
+   '        secs: total_ms / 1000,' \
+   too_few_samples_fall_back_from_target_to_crate_to_repo_and_rounding_is_up
+# KES4 plan / loads drop the estimate and weigh a new script as the median
+ks '        .or_else(|| est.get(&norm_path(p)))' \
+   '        .or_else(|| est.get(&norm_path(p)).filter(|_| false))' \
+   plan_and_loads_weigh_a_new_script_by_its_estimate
+# KES5 Windows separators are not folded: crates\aibd\… has no crate and no table match
+ks "    path.replace('\\\\', \"/\")" \
+   '    path.to_string()' \
+   windows_separators_give_the_same_script_crate_and_estimate
+# KES6 check_size does not refuse a script estimated over the limit
+ks '            if e.secs > max_secs {' \
+   '            if e.secs > max_secs.saturating_mul(10) {' \
+   a_heavy_new_script_is_refused_with_its_source_samples_and_a_split
+# KES7 the test name stays in the target: no two scripts share one
+ks '            Some(t) => format!("cargo -p {pkg} --test {t}"),' \
+   '            Some(t) => format!("cargo -p {pkg} --test {t} {:?}", cmd.last()),' \
+   a_new_page_script_is_estimated_by_the_page_scripts_not_by_the_crate
+# KES8 est lines are taken as samples: two guessed page lines decide a new page script
+ks '        if est_rows.contains(path) {' \
+   '        if est_rows.contains(path) && path.is_empty() {' \
+   an_est_line_weighs_its_script_but_is_no_sample_and_a_bad_third_column_is_refused
+# KES9 any third column is read as a measured line
+ks '            Some(_) => return Err(bad()),' \
+   '            Some((p, _)) => (p, false),' \
+   an_est_line_weighs_its_script_but_is_no_sample_and_a_bad_third_column_is_refused

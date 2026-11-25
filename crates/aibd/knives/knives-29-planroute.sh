@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace-c4 A knives PR1–PR4 (7b81e 11-18; DESIGN-tree-plan-via-aibd-7b81e-1118.md, 5d33a CHECK 0 H/M):
 # aib-plan writes through aibd while aibd holds the tree; the route takes aib-plan's fields only,
 # a write aibd did not make is seen (L2), and aib-plan calls loopback only, naming the seat only

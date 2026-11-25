@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S107-userhtml knives UH1–UH9 (a9136 11-18): pages in <data dir>/web are served only from inside that
 # folder, only up to the size limit, always with the page policy. Each rule, broken, turns its own test red.
 # Run from the repo root.

@@ -46,6 +46,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::registry::PERSONA_ADD,
     crate::registry::BRAIN_ADD,
     crate::registry::RENAME,
+    crate::owner_batch::KIND,
     crate::persona_edit::PERSONA_READ,
     crate::persona_edit::PERSONA_SET,
     crate::persona_edit::BRAIN_SET,
@@ -74,6 +75,10 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::plugins_page::TIER_SET,
     crate::test_host_web::ADD,
     crate::test_host_web::REMOVE,
+    crate::net_card_web::LIST,
+    crate::net_card_web::ANSWER,
+    crate::net_card_web::ALLOW_LIST,
+    crate::net_card_web::ALLOW_REVOKE,
     crate::seat_rank::SET,
     crate::seat_rank::SHOW,
     crate::brain_note::LIST,
@@ -90,6 +95,11 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::send_back::SEND_BACK,
     crate::repo_push::PUSH,
     crate::pr_open::OPEN,
+    crate::merge_acts::MERGE_FIND,
+    crate::merge_acts::MERGE_PREVIEW,
+    crate::merge_acts::MERGE_RUN,
+    crate::merge_acts::MERGE_LOG,
+    crate::merge_acts::MERGE_UNDO,
     crate::gh_token::SET,
     crate::seats::PAGE_OPEN,
     RESTART,
@@ -107,6 +117,10 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::preview::RETIRE,
     crate::preview::FIX,
     crate::preview::ACTIVE,
+    crate::persona_propose::LIST,
+    crate::persona_propose::DENY,
+    crate::passphrase_keep::STATE,
+    crate::persona_propose::APPROVE,
     crate::receipt_run::REQUEST,
     crate::receipt_run::READ,
     crate::receipt_run::WITHDRAW,
@@ -391,6 +405,18 @@ pub async fn act(
                 };
                 return crate::receipt_run::seat_act(st, &seat, body).await;
             }
+            // §7-2 寫回人格 (DESIGN-persona-propose-osverify-c2f0b-1123 r2): a seat proposes a new
+            // text for its own persona card, never another's; the seat is the token's
+            if crate::persona_propose::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::persona_propose::seat_act(st, &seat, body).await;
+            }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -516,6 +542,18 @@ pub async fn act(
         // N-ws-open-bind: the page's 「+ 新增」 on the role / persona / brain lists (5d33a
         // CHECK-ws-open-bind: the built-in page in this pairing only; persona and brain need the
         // owner's fingerprint)
+        // 指紋批次簽 (DESIGN-ownerbatch-impl-08de5-1123, r4 §2b): a list signed in one window,
+        // then sent again by aibd itself; the built-in page in this pairing only (r4 §1e)
+        Some(crate::owner_batch::KIND) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a batch is signed from the built-in page in this pairing only",
+                );
+            }
+            return crate::owner_batch::open(st, page, body).await;
+        }
         // A1 (DESIGN-a1-edit-archive-08de5-1123 r0): read / change a persona's three sections
         // (the owner's fingerprint), rename a brain or a role the person added, archive and
         // restore; the built-in page in this pairing only, as the adds above
@@ -548,6 +586,30 @@ pub async fn act(
                     crate::persona_edit::rename(st, act, body).await
                 }
                 _ => crate::persona_edit::archive(st, act, body).await,
+            };
+        }
+        Some(
+            crate::merge_acts::MERGE_FIND
+            | crate::merge_acts::MERGE_PREVIEW
+            | crate::merge_acts::MERGE_RUN
+            | crate::merge_acts::MERGE_LOG
+            | crate::merge_acts::MERGE_UNDO,
+        ) => {
+            let merge_from_user_page = held_as_user_page(&page).await;
+            if merge_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "registry_built_in_page_only",
+                    "merge is available from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match kind.as_deref().unwrap_or_default() {
+                crate::merge_acts::MERGE_FIND => crate::merge_acts::find(st, body).await,
+                crate::merge_acts::MERGE_PREVIEW => crate::merge_acts::preview(st, body).await,
+                crate::merge_acts::MERGE_RUN => crate::merge_acts::run(st, body, by).await,
+                crate::merge_acts::MERGE_LOG => crate::merge_acts::log(st, body).await,
+                _ => crate::merge_acts::undo(st, body, by).await,
             };
         }
         Some(
@@ -709,6 +771,30 @@ pub async fn act(
                 crate::test_host_web::LIST => crate::test_host_web::list(st).await,
                 crate::test_host_web::ADD => crate::test_host_web::add(st, body, by).await,
                 _ => crate::test_host_web::remove(st, body, by).await,
+            };
+        }
+        // the network exception card (IFACE-netcard r1): the built-in page in this pairing only;
+        // a yes that needs the owner then needs the owner's fingerprint
+        Some(
+            k @ (crate::net_card_web::LIST
+            | crate::net_card_web::ANSWER
+            | crate::net_card_web::ALLOW_LIST
+            | crate::net_card_web::ALLOW_REVOKE),
+        ) => {
+            let net_outside = held_as_user_page(&page).await || page.carried;
+            if net_outside {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "network cards are answered from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match k {
+                crate::net_card_web::LIST => crate::net_card_web::list().await,
+                crate::net_card_web::ANSWER => crate::net_card_web::answer(st, body, by).await,
+                crate::net_card_web::ALLOW_LIST => crate::net_card_web::allow_list(st, body).await,
+                _ => crate::net_card_web::allow_revoke(st, body, by).await,
             };
         }
         // 重新登入 (DESIGN-relogin-card r2): the built-in page in this pairing only; starting a
@@ -907,6 +993,18 @@ pub async fn act(
             | crate::preview::ACTIVE,
         ) => {
             return crate::preview::edit(st, page, body).await
+        }
+        // §7-2 寫回人格: the built-in page lists the waiting proposals and says no
+        Some(
+            crate::persona_propose::LIST
+            | crate::persona_propose::DENY
+            | crate::persona_propose::APPROVE,
+        ) => {
+            return crate::persona_propose::page_act(&st, &page, body).await
+        }
+        // S11-3 密語備援: the built-in page reads the passphrase state (never the phrase)
+        Some(crate::passphrase_keep::STATE) => {
+            return crate::passphrase_keep::page_act(&page).await;
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(
@@ -1272,12 +1370,16 @@ async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Valu
     // asked first, as at its open
     let ticket = body.get("ticket").and_then(Value::as_str);
     let asker = format!("page:{}", hex(&page.digest[..8]));
-    if let Some(r) = crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker).await {
-        return r;
-    }
-    // 5d33a PREREAD-nx d523a5af L1: a restart counts the folder's writers as an open does
+    // 5d33a PREREAD-nx d523a5af L1: a restart counts the folder's writers as an open does;
+    // before the owner is asked (f163c REVIEW-a11 N1: no fingerprint spent on a full folder)
     if crate::seats::restart_overfills(&st, seat_id).await {
         return crate::seats::folder_writers_full();
+    }
+    if let Some(r) =
+        crate::repos::dgrs_restart_gate(&st, seat_id, ticket, asker, crate::repos::GateAct::Restart)
+            .await
+    {
+        return r;
     }
     let by = json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});
     use crate::revive::NotRestarted as N;

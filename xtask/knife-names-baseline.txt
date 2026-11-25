@@ -2,6 +2,7 @@
 # A duplicate not listed here fails; a line here that is no longer a duplicate fails until it is taken out.
 # Only take lines out (rename a knife's name comment, not its anchor). A line is added only when main itself already has the duplicate (ebab8 decides), with the reason below.
 # 11-23 ebab8 12:32: cross PG1–PG4 added — main 82ceae28c1 (877) brought crates/aib-plugin/knives/knives-01-plugin.sh PG1–PG4, which collide with crates/aibd/knives/knives-14-slots.sh PG1–PG4; to be renamed (listed for Andy).
+# 11-25 90856 (ebab8 to confirm): main 7dccae868b (#884) split knives-cloud-host.sh / knives-cloud-decision.sh into -1..-5; the 18 same lines moved with their knives to the new files (20 lines now: E1 and E11 each repeat inside one more of the split files). cross TA1-TA7, TS1-TS2, N5-N8, S1-S3 are no longer duplicates and came out.
 cross AO1
 cross AO2
 cross B5
@@ -131,10 +132,6 @@ cross N1
 cross N2
 cross N3
 cross N4
-cross N5
-cross N6
-cross N7
-cross N8
 cross NC1
 cross NC2
 cross NC3
@@ -268,12 +265,9 @@ cross RS2
 cross RS3
 cross RV1
 cross RW1
-cross S1
 cross S14
 cross S17
 cross S18
-cross S2
-cross S3
 cross SB1
 cross SB10
 cross SB11
@@ -338,13 +332,6 @@ cross SV2
 cross SV3
 cross SW1
 cross SW2
-cross TA1
-cross TA2
-cross TA3
-cross TA4
-cross TA5
-cross TA6
-cross TA7
 cross TC1
 cross TC2
 cross TC3
@@ -377,8 +364,6 @@ cross TR6
 cross TR7
 cross TR8
 cross TR9
-cross TS1
-cross TS2
 cross TW1
 cross TW2
 cross TW3
@@ -426,30 +411,32 @@ cross WT6
 cross WT7
 cross WT8
 cross WT9
-same B3 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same B4 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same B5 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same B5 crates/aib-cloud/knives/knives-cloud-decision.sh
+same B3 crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+same B4 crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+same B5 crates/aib-cloud-host/knives/knives-cloud-host-4.sh
+same B5 crates/aib-cloud/knives/knives-cloud-decision-4.sh
 same D11 crates/aib-drive/knives/knives-01-decide.sh
 same D12 crates/aib-drive/knives/knives-01-decide.sh
 same D14 crates/aib-drive/knives/knives-01-decide.sh
 same D19 crates/aib-drive/knives/knives-01-decide.sh
 same D20 crates/aib-drive/knives/knives-01-decide.sh
-same E1 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same E1 crates/aib-cloud/knives/knives-cloud-decision.sh
-same E11 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same E11 crates/aib-cloud/knives/knives-cloud-decision.sh
-same E6 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same E6 crates/aib-cloud/knives/knives-cloud-decision.sh
-same E7 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same E7 crates/aib-cloud/knives/knives-cloud-decision.sh
-same F2 crates/aib-cloud/knives/knives-cloud-decision.sh
-same H14 crates/aib-cloud/knives/knives-cloud-decision.sh
+same E1 crates/aib-cloud-host/knives/knives-cloud-host-4.sh
+same E1 crates/aib-cloud/knives/knives-cloud-decision-2.sh
+same E1 crates/aib-cloud/knives/knives-cloud-decision-4.sh
+same E11 crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+same E11 crates/aib-cloud/knives/knives-cloud-decision-3.sh
+same E11 crates/aib-cloud/knives/knives-cloud-decision-4.sh
+same E6 crates/aib-cloud-host/knives/knives-cloud-host-4.sh
+same E6 crates/aib-cloud/knives/knives-cloud-decision-4.sh
+same E7 crates/aib-cloud-host/knives/knives-cloud-host-1.sh
+same E7 crates/aib-cloud/knives/knives-cloud-decision-3.sh
+same F2 crates/aib-cloud/knives/knives-cloud-decision-1.sh
+same H14 crates/aib-cloud/knives/knives-cloud-decision-2.sh
 same PV12 crates/aibd/knives/knives-27-preview.sh
-same S14 crates/aib-cloud-host/knives/knives-cloud-host.sh
-same S14 crates/aib-cloud/knives/knives-cloud-decision.sh
-same S17 crates/aib-cloud/knives/knives-cloud-decision.sh
-same S18 crates/aib-cloud/knives/knives-cloud-decision.sh
+same S14 crates/aib-cloud-host/knives/knives-cloud-host-3.sh
+same S14 crates/aib-cloud/knives/knives-cloud-decision-4.sh
+same S17 crates/aib-cloud/knives/knives-cloud-decision-4.sh
+same S18 crates/aib-cloud/knives/knives-cloud-decision-5.sh
 same S36 crates/aib-drive/knives/knives-03-snapshot.sh
 same S37 crates/aib-drive/knives/knives-03-snapshot.sh
 same S38 crates/aib-drive/knives/knives-03-snapshot.sh

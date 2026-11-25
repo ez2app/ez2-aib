@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # B1dm-lint knives DL1–DL5 (b4297 11-18, 519d0 07:34): the R-30 and calling-position checks
 # translated from r30_lint.py / vocative_lint.py keep the old answers. Each rule, broken, turns
 # its own test red. Run from the repo root.

@@ -22,6 +22,8 @@
 # name-order turn; a script that runs here and is not in the plan is red in every cell, a line not understood
 # is rc 2. AIB_KNIVES_LIST=1 runs nothing and prints "KNIVES-ELIGIBLE <file>" for each script that would run
 # here (the list the plan is made from, so this file stays the only reader of the headers). Not set = as before.
+# AIB_KNIVES_ONLY_OS=<os>[,<os>...] (E3) keeps only the scripts whose header os is listed (macos / unix / any /
+# windows), so the Linux cells (unix,any) and the macOS cells (macos) never run the same script.
 #
 # Lines (read by the ledger and by people):
 #   KNIVES-SCRIPT <file>: rc=<n> secs=<n>
@@ -66,7 +68,8 @@ list_only=${AIB_KNIVES_LIST:-}
 plan_file=${AIB_KNIVES_PLAN:-}
 limits_file=${AIB_KNIVES_LIMITS:-}
 skip_files=${AIB_SKIP_FILES:-}
-unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS AIB_SKIP_FILES
+only_os=${AIB_KNIVES_ONLY_OS:-}
+unset AIB_KNIVES_LIST AIB_KNIVES_PLAN AIB_KNIVES_LIMITS AIB_SKIP_FILES AIB_KNIVES_ONLY_OS
 plan_f=()
 plan_k=()
 if [ -n "$plan_file" ]; then
@@ -153,6 +156,13 @@ for f in "${scripts[@]}"; do
     any) ok=1 ;;
     unix) [ "$here" != windows ] && ok=1 || ok=0 ;;
     *) [ "$want_os" = "$here" ] && ok=1 || ok=0 ;;
+  esac
+  # AIB_KNIVES_ONLY_OS=<os>[,<os>…] (E3): this cell runs only the scripts whose header os is
+  # listed, so a script is run by exactly one cell (knife-anchors reads the same list)
+  case ",$only_os," in
+    ,,) ;;
+    *",$want_os,"*) ;;
+    *) ok=0 ;;
   esac
   if [ "$ok" != 1 ]; then
     echo "KNIVES-SCRIPT $f: SKIPPED why=not_this_os os=$want_os"

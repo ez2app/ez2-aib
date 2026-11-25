@@ -171,6 +171,31 @@ pub fn window_line(e: &Expanded, raised: &[&str]) -> String {
     s
 }
 
+/// pa2 L2 (c2f0b REVIEW-pa2-postmerge L2; REVIEW-pa2ls-993c0f9b L-a): an open's window line —
+/// the brand and the uid first, aibd's own words (the ticket is bound to both), then the
+/// persona's name cut short ([`crate::owner_ok::fixed_then_name`]), then [`window_line`]'s.
+pub fn open_line(persona_name: &str, persona_uid: &str, provider: &str, line: &str) -> String {
+    let who = crate::owner_ok::fixed_then_name(&[provider, persona_uid], persona_name);
+    format!("{who} · {line}")
+}
+
+/// pa2 L3 L4 (c2f0b REVIEW-pa2-postmerge L3, L4): the template's name a take-back's window
+/// shows. The state taken back to is the one kept in the seat's log (`tpl_uid` at rev `then`);
+/// `now` is that template as it is now (`None`: removed). Never the bare tpl_uid; a template
+/// changed or removed since is said so; a seat's own mode (`mode.<mode>`, what a seat opened
+/// with no template holds) is no template and is said so.
+pub fn revoke_name(tpl_uid: &str, now: Option<(&str, i64)>, then: i64) -> String {
+    if let Some(mode) = tpl_uid.strip_prefix("mode.") {
+        return format!("{mode} 模式本身,沒有用模板");
+    }
+    match now {
+        Some((name, rev)) if rev == then => name.to_owned(),
+        // c2f0b REVIEW-pa2ls L-b: the warning first, before a long name the window cuts
+        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),
+        None => format!("已刪的模板 · 當時 rev {then}"),
+    }
+}
+
 /// What applying `new` to a seat holding `old` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
@@ -773,12 +798,12 @@ pub async fn revoke(st: AppState, body: Value, by: String) -> Response {
         Some(Expanded {
             tpl_uid: f.get("tpl_uid")?.as_str()?.to_owned(),
             rev: f.get("rev")?.as_i64()?,
-            name: f.get("tpl_uid")?.as_str()?.to_owned(),
+            name: String::new(),
             base: f.get("base")?.as_str()?.to_owned(),
             items: Items::parse(f.get("items")?)?,
         })
     });
-    let Some(e) = parsed else {
+    let Some(mut e) = parsed else {
         return refuse(
             StatusCode::CONFLICT,
             "nothing_to_revoke",
@@ -792,6 +817,23 @@ pub async fn revoke(st: AppState, body: Value, by: String) -> Response {
             "收回後會比當時寫的多,所以不收回",
         );
     }
+    // pa2 L3 L4: the window names the template as it is now, and says when it was changed or
+    // removed since (the items are the log's, as they were)
+    let (db, uid) = (st.messages.clone(), e.tpl_uid.clone());
+    e.name = match tokio::task::spawn_blocking(move || db.perm_template(&uid)).await {
+        Ok(Ok(t)) => revoke_name(
+            &e.tpl_uid,
+            t.as_ref().map(|t| (t.name.as_str(), t.rev)),
+            e.rev,
+        ),
+        _ => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "templates unreadable",
+            )
+        }
+    };
     apply_to(&st, &seat, &e, ticket, &by, Some(log_id)).await
 }
 
@@ -1013,6 +1055,97 @@ mod tests {
         ));
         assert!(held_in(Ok(None), "work", "brain"), "reason: mode_own_lost");
         assert!(!held_in(Err(()), "work", "brain"), "reason: unread_held");
+    }
+
+    /// pa2 L3 L4 (c2f0b REVIEW-pa2-postmerge L3, L4): a take-back's window names the template
+    /// as it is now — never its bare tpl_uid — and says when it was changed or removed since; a
+    /// seat's own mode is said to be no template.
+    #[test]
+    fn a_take_back_window_names_the_template_as_it_is_now() {
+        assert_eq!(revoke_name("tpl_a", Some(("寫稿", 3)), 3), "寫稿");
+        let changed = revoke_name("tpl_a", Some(("寫稿", 5)), 3);
+        assert!(
+            changed.starts_with("(已改到 rev 5,收回到 rev 3)") && changed.ends_with("寫稿"),
+            "reason: change_unsaid {changed}"
+        );
+        // L-b: a long name does not push the warning out of the window
+        let long = revoke_name(
+            "tpl_a",
+            Some(("一個非常非常非常非常非常長的模板名字", 5)),
+            3,
+        );
+        let e_long = Expanded {
+            tpl_uid: "tpl_a".into(),
+            rev: 3,
+            name: long,
+            base: "work".into(),
+            items: items(&["chat", "code", "own", "cmd", "brain"]),
+        };
+        let shown = crate::owner_ok::object_shown(&window_line(&e_long, &["push"]));
+        let head: String = shown.chars().take(24).collect();
+        assert!(
+            head.contains("已改到 rev 5"),
+            "reason: change_cut_off {shown}"
+        );
+        let gone = revoke_name("tpl_a", None, 3);
+        assert!(
+            gone.contains("已刪的模板") && gone.contains("rev 3"),
+            "reason: removal_unsaid {gone}"
+        );
+        let own = revoke_name("mode.safe", None, 1);
+        assert!(
+            own.contains("safe 模式本身") && !own.contains("已刪"),
+            "reason: mode_called_removed {own}"
+        );
+        for l in [&changed, &gone, &own] {
+            assert!(
+                !l.contains("tpl_a") && !l.contains("mode.safe"),
+                "reason: bare_uid {l}"
+            );
+        }
+        let e = Expanded {
+            tpl_uid: "tpl_a".into(),
+            rev: 3,
+            name: gone.clone(),
+            base: "work".into(),
+            items: items(&["chat", "code"]),
+        };
+        assert!(window_line(&e, &[]).contains("已刪的模板"));
+    }
+
+    /// pa2 L2 (c2f0b REVIEW-pa2-postmerge L2): an open's window says who and which brand
+    /// first, so a long line cut for the window still keeps them.
+    #[test]
+    fn an_open_window_says_who_and_which_brand_first() {
+        let e = Expanded {
+            tpl_uid: "tpl_a".into(),
+            rev: 3,
+            name: "很長很長很長很長很長很長很長很長的模板名字".into(),
+            base: "dgrs".into(),
+            items: items(&["chat", "code", "own", "cmd", "brain", "net", "push"]),
+        };
+        let line = window_line(&e, &["push"]);
+        // the window keeps the start of a long line: the brand and the uid are in it whatever
+        // the name (c2f0b REVIEW-pa2ls L-a: a 13-character name, and a name copying a uid)
+        for name in ["小安", "AIB 本人核准安全工程師", "小安(zz9zz9)· codex"] {
+            let l = open_line(name, "un0eba", "claude", &line);
+            assert!(
+                l.starts_with("claude · un0eba · "),
+                "reason: who_not_first {l}"
+            );
+            let shown = crate::owner_ok::object_shown(&l);
+            let head: String = shown.chars().take(24).collect();
+            assert!(
+                head.starts_with("claude · un0eba · "),
+                "reason: who_cut_off {shown}"
+            );
+            assert!(
+                !head.contains("zz9zz9") && !head.contains("codex"),
+                "reason: name_stood_for_the_real_ones {shown}"
+            );
+        }
+        let l = open_line("AIB 本人核准安全工程師", "un0eba", "claude", &line);
+        assert!(l.contains("· AIB 本人核准… · "), "reason: name_not_cut {l}");
     }
 
     /// 7B-5: the window names every item held, what is not given, and what this turns on last.

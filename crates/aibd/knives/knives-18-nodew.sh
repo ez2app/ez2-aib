@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 3 knives NW1–NW8 (7b81e 11-18, ORDER-workspace §第三波 7b81e 1; 5d33a PREREAD-assign L1):
 # the page writes tree items only once the tree is in aibd; a user folder page never writes; a station moves only
 # through aib-plan's entry conditions; a write from an old rev is refused; the evidence keeps every earlier
