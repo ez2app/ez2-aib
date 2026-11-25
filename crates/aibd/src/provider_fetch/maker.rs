@@ -118,8 +118,8 @@ pub const ERR_LINKED: &str = "provider_path_linked";
 /// empty when there is nothing the customer can do (f163c REVIEW-…-1c836c88 N1).
 pub fn what_to_do(word: &str) -> &'static str {
     match word {
-        ERR_LINKED => "(aibd 的資料夾或其下的 providers / 品牌 / 版本夾是連結(symlink / junction);請把 aibd 的資料夾設成實際位置，不要指向連結)",
-        ERR_UNMEASURED => "(這個版本不在量過的表上;請用 aibd 裝的版本)",
+        ERR_LINKED => "(AIB 的資料夾或其下的 providers / 品牌 / 版本夾是連結(symlink / junction);請把 AIB 的資料夾設成實際位置，不要指向連結)",
+        ERR_UNMEASURED => "(這個版本不在量過的表上;請用 AIB 裝的版本)",
         provider_fetch::ERR_VERIFY => "(放好的程式和量過的不一樣，或開席設定指到的不是那支程式;請讓 AIB 重新安裝;若重裝後仍是這個錯，開席設定指錯了，請聯絡我們協助重設)",
         _ => "",
     }
