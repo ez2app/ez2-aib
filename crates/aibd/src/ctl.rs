@@ -2553,8 +2553,11 @@ impl aibd::winsetup::Ops for SetupOps {
         }
         c.spawn().map(|_| ()).map_err(|e| e.to_string())
     }
+    // a short-lived one-shot command, not a recurring daemon timer (ADR 0005), the same as
+    // `wake_if_down` here; the CLI pace in install.rs is for main.rs / install.rs only
+    #[allow(clippy::disallowed_methods)]
     fn pace(&self, d: Duration) {
-        aibd::install::pace(d);
+        std::thread::sleep(d);
     }
     fn open_page(&self) -> Result<(), String> {
         run(&["web"])
