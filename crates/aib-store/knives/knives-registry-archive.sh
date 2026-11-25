@@ -70,3 +70,27 @@ python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
   '"DELETE FROM seat_next WHERE batch_id = ?1 OR 1"' \
   --expect-fail 'registry_archive::tests::mg16_a_seat_switch_needs_something_checked_and_undo_clears_one_batch' \
   -- cargo test -p aib-store --locked --lib 'registry_archive::tests::mg16_a_seat_switch_needs_something_checked_and_undo_clears_one_batch'
+# ra-undo-done (stack10 84bdef21b1: merge_undo on a done batch ended partial_undo, every step refused)
+python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
+  '        "undone" => matches!(batch_state, "run" | "done" | "partial_undo"),' \
+  '        "undone" => matches!(batch_state, "run" | "done" | "partial_undo") && batch_state != "done",' \
+  --expect-fail registry_archive::tests::a_done_batch_s_steps_can_be_undone_but_not_done_again \
+  -- cargo test -p aib-store --locked --lib registry_archive::tests::a_done_batch_s_steps_can_be_undone_but_not_done_again
+# ra-undo-failed (N4: a failed batch was already put back)
+python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
+  '        "undone" => matches!(batch_state, "run" | "done" | "partial_undo"),' \
+  '        "undone" => matches!(batch_state, "run" | "done" | "partial_undo" | "failed"),' \
+  --expect-fail registry_archive::tests::mg9_steps_are_pending_first_in_order_and_only_while_running \
+  -- cargo test -p aib-store --locked --lib registry_archive::tests::mg9_steps_are_pending_first_in_order_and_only_while_running
+# ra-done-run (R3: a done step only while the batch runs)
+python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
+  '        "done" => batch_state == "run",' \
+  '        "done" => batch_state == "run" || batch_state == "done",' \
+  --expect-fail registry_archive::tests::a_done_batch_s_steps_can_be_undone_but_not_done_again \
+  -- cargo test -p aib-store --locked --lib registry_archive::tests::a_done_batch_s_steps_can_be_undone_but_not_done_again
+# ra-step-gate (R3: the store asks step_moves_in before moving a step)
+python3 -I scripts/knife.py crates/aib-store/src/registry_archive.rs \
+  '                    .is_some_and(|bs| step_moves_in(&s, bs)),' \
+  '                    .is_some_and(|bs| step_moves_in(&s, bs) || true),' \
+  --expect-fail registry_archive::tests::mg9_steps_are_pending_first_in_order_and_only_while_running \
+  -- cargo test -p aib-store --locked --lib registry_archive::tests::mg9_steps_are_pending_first_in_order_and_only_while_running
