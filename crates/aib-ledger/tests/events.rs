@@ -97,9 +97,46 @@ fn writer_child() {
         return;
     };
     let ctx = Ctx::default();
-    for n in 0..100 {
+    // EVENTS_CHILD_N: how many (the timing test below); 100 otherwise
+    let count: u64 = std::env::var("EVENTS_CHILD_N")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(100);
+    for n in 0..count {
         events::append(Path::new(&root), "aib-drive", &ev(&ctx, n), AT).expect("append");
     }
+}
+
+/// 08de5 11-25 (ebab8 q_b389c0c3 point 2): what a lock queued with the system costs, timed by
+/// hand (`--ignored --nocapture`): 1000 appends by one process with nobody else asking (the
+/// try_lock fast path, no thread), then two processes writing 500 each at once (the queued
+/// path). Prints `TIMING …` lines; judges nothing but that every line is there.
+#[test]
+#[ignore = "timing, run by hand"]
+fn appends_timed() {
+    let d = tempfile::tempdir().expect("tmp");
+    let t = std::time::Instant::now();
+    for n in 0..1000 {
+        events::append(d.path(), "aib-drive", &ev(&Ctx::default(), n), AT).expect("append");
+    }
+    println!("TIMING alone 1000: {} ms", t.elapsed().as_millis());
+    let d = tempfile::tempdir().expect("tmp");
+    let exe = std::env::current_exe().expect("exe");
+    let spawn = || {
+        Command::new(&exe)
+            .args(["--exact", "writer_child", "--test-threads", "1"])
+            .env("EVENTS_CHILD_ROOT", d.path())
+            .env("EVENTS_CHILD_N", "500")
+            .spawn()
+            .expect("spawn")
+    };
+    let t = std::time::Instant::now();
+    let (mut a, mut b) = (spawn(), spawn());
+    let (ra, rb) = (a.wait().expect("wait a"), b.wait().expect("wait b"));
+    println!("TIMING two at once 2x500: {} ms", t.elapsed().as_millis());
+    assert!(ra.success() && rb.success(), "a {ra}, b {rb}");
+    let f = events::dir(d.path(), "aib-drive").join("2026-11.jsonl");
+    assert_eq!(lines(&f).len(), 1000);
 }
 
 /// E7: two processes writing 100 events each ⇒ 200 lines, every one whole JSON.

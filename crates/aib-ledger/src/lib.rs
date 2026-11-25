@@ -83,7 +83,10 @@ pub fn read(path: &Path) -> std::io::Result<Read> {
 /// left a gap of microseconds, and a waiter looking every 10 ms almost never landed in it —
 /// it starved until the other writer was done, over 2 s when the disk was slow. Queued, the
 /// waiter is handed the lock when the holder lets go. A wait given up leaves nothing held: the
-/// thread's lock goes to a receiver that is gone, and is dropped there.
+/// thread's lock goes to a receiver that is gone, the file (its handle, which on Windows is
+/// what holds the lock) is closed there and the thread ends. Every caller (events::append,
+/// write_if_complete: aib-drive intents, aib-idea, aib-review; aib-plugin set_switch) already
+/// waited up to its bound; none counted on failing at once.
 pub fn take_lock(path: &Path, wait: Duration) -> Result<File, String> {
     let f = OpenOptions::new()
         .create(true)
