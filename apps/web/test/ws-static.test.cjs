@@ -439,6 +439,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 標註六樣 + ⌘Z / ⇧⌘Z + 從圖取色;CSP:不用 blob: 圖、不用 style 屬性上色
   ok(/\['rect', '▭ 框'\], \['ellipse', '◯ 圈'\], \['arrow', '➚ 箭頭'\], \['zoom', '🔍 放大鏡'\], \['mosaic', '▦ 馬賽克'\], \['text', 'T 文字'\]/.test(ws), 'reason: annotate_six_tools');
   ok(/annUndo\(e\.shiftKey\)/.test(ws) && /data-annpick/.test(ws), 'reason: annotate_undo_or_pick');
+  { const src = (ws.match(/  const annKeyName = [^\n]*\n/) || [''])[0]; const nk = (plat) => { const c = vm.createContext({ navigator: { platform: plat } }); vm.runInContext(src + 'this.f = annKeyName;', c); return c.f; };
+    ok(nk('MacIntel')('⇧⌘Z') === '⇧⌘Z' && nk('Win32')('⌘Z') === 'Ctrl+Z' && nk('Win32')('⇧⌘Z') === 'Ctrl+Shift+Z' && ws.includes('data-annundo="1" disabled>${annKeyName(\x27⌘Z\x27)}</button>') && ws.includes('data-annredo="1" disabled>${annKeyName(\x27⇧⌘Z\x27)}</button>') && ws.includes('· 選工具在圖上拖 · ${annKeyName(\x27⌘Z\x27)} 復原`') && !/>⇧?⌘Z<\/button>/.test(ws), 'reason: annotate_undo_key_names_per_platform'); }
   ok(!/createObjectURL/.test(seg) && /fr\.readAsDataURL\(blob\)/.test(seg), 'reason: image_via_blob_url_blocked_by_csp');
   ok(!/style="background:\$\{/.test(ws) && /n\.style\.background = n\.dataset\.bg/.test(ws), 'reason: inline_style_blocked_by_csp');
   // 取色:EyeDropper 有就用;HEX / RGB / HSL

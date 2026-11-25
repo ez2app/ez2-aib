@@ -2971,6 +2971,8 @@
     const f = document.createElement('input'); f.type = 'file'; f.accept = 'image/png,image/jpeg,image/webp,image/gif';
     f.addEventListener('change', () => { if (f.files && f.files[0]) annOpen(f.files[0], false); }); f.click();
   }
+  // 鍵名照平台寫:Mac 寫 ⌘ / ⇧⌘,其他(Windows)寫 Ctrl+ / Ctrl+Shift+(鍵盤本來就兩種都收)
+  const annKeyName = (k) => (/Mac|iPhone|iPad/.test((typeof navigator !== 'undefined' && navigator.platform) || '') ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   // 標註窗:常駐在 body(整頁重畫不動它)。第一步拖框裁切(或整張),之後六樣工具;所有筆畫記成清單,⌘Z / ⇧⌘Z 照清單重畫
   const ANN = { el: null };
   const ANN_TOOLS = [['rect', '▭ 框'], ['ellipse', '◯ 圈'], ['arrow', '➚ 箭頭'], ['zoom', '🔍 放大鏡'], ['mosaic', '▦ 馬賽克'], ['text', 'T 文字']];
@@ -2989,7 +2991,7 @@
   function annBuild(img, fromShot) {
     annClose();
     const d = document.createElement('div'); d.className = 'anndlg'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', '截圖標註');
-    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>⌘Z</button><button type="button" class="k" data-annredo="1" disabled>⇧⌘Z</button><span class="annouts"><button type="button" class="k annout" data-annclip="1" disabled>複製到剪貼簿</button><button type="button" class="k annout" data-annwebp="1" disabled>存成 webp</button><button type="button" class="go annok" data-annok="1" disabled>送進對話</button></span></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
+    d.innerHTML = `<div class="annh"><b>📸 ${fromShot ? '截圖' : '圖片'}</b><span class="annst" data-annst>拖框選範圍 · 或按「整張」· Esc 取消</span><span class="annw">${fromShot ? 'Mac 第一次要在系統設定允許「螢幕錄製」(你自己按)' : ''}</span><button type="button" class="ghx" data-annx="1" aria-label="關">×</button></div><div class="annc"><canvas class="annv" data-annv></canvas><input class="anntx" data-anntx hidden maxlength="200" placeholder="打字,Enter 放上"></div><div class="annt"><button type="button" class="k" data-annall="1">整張</button>${ANN_TOOLS.map(([k, w]) => `<button type="button" class="k" data-anntool="${k}" disabled>${w}</button>`).join('')}${ANN_COLORS.map((c, i) => `<button type="button" class="annsw ${i ? '' : 'on'}" data-anncol="${c}" data-bg="${c}" aria-label="顏色 ${c}"></button>`).join('')}<button type="button" class="k" data-annpick="1" disabled>🎨 從圖上取色</button><button type="button" class="k" data-annundo="1" disabled>${annKeyName('⌘Z')}</button><button type="button" class="k" data-annredo="1" disabled>${annKeyName('⇧⌘Z')}</button><span class="annouts"><button type="button" class="k annout" data-annclip="1" disabled>複製到剪貼簿</button><button type="button" class="k annout" data-annwebp="1" disabled>存成 webp</button><button type="button" class="go annok" data-annok="1" disabled>送進對話</button></span></div><div class="cthf">送出前請自己看一下:密碼、權杖、Email 的地方用「▦ 馬賽克」蓋掉</div>`;
     document.body.appendChild(d); ANN.el = d; ctPaint(d);
     Object.assign(ANN, { img, crop: null, drag: null, ops: [], redo: [], tool: 'rect', col: ANN_COLORS[0], picking: false, work: null });
     const cv = d.querySelector('[data-annv]');
@@ -3028,7 +3030,7 @@
     c.width = Math.max(1, Math.round(r.w)); c.height = Math.max(1, Math.round(r.h));
     c.getContext('2d').drawImage(s, Math.round(r.x), Math.round(r.y), c.width, c.height, 0, 0, c.width, c.height);
     ANN.crop = r; ANN.work = c; annFit(); annDraw(); annBtns();
-    const st = ANN.el.querySelector('[data-annst]'); if (st) st.textContent = `${c.width} × ${c.height} · 選工具在圖上拖 · ⌘Z 復原`;
+    const st = ANN.el.querySelector('[data-annst]'); if (st) st.textContent = `${c.width} × ${c.height} · 選工具在圖上拖 · ${annKeyName('⌘Z')} 復原`;
   }
   function annBtns() {
     const d = ANN.el; if (!d) return;

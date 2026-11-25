@@ -87,3 +87,11 @@ k 'netPName(x.persona_uid) || String(x.persona_uid)' 'String(x.persona_uid)'
 k 'NET_ST[x.state] || '\''不算數:'\'' + String(x.state)' 'NET_ST[x.state] || '\'''\'''
 # PGNA8 (ae921 post-b4 一直允許清單:until / state / 人格 / addr)
 k 'x.state !== undefined && x.state !== '\''ok'\'' ?' 'x.state !== undefined ?'
+# PGWK1 (標註窗復原鍵名照平台:Windows 寫 Ctrl)
+k 'k.replace('\''⇧⌘'\'', '\''Ctrl+Shift+'\'').replace('\''⌘'\'', '\''Ctrl+'\''));' 'k);'
+# PGWK2 (標註窗復原鍵名照平台:Windows 寫 Ctrl)
+k 'data-annundo="1" disabled>${annKeyName('\''⌘Z'\'')}</button>' 'data-annundo="1" disabled>⌘Z</button>'
+# PGWK3 (標註窗復原鍵名照平台:Windows 寫 Ctrl)
+k 'data-annredo="1" disabled>${annKeyName('\''⇧⌘Z'\'')}</button>' 'data-annredo="1" disabled>⇧⌘Z</button>'
+# PGWK4 (標註窗復原鍵名照平台:Windows 寫 Ctrl)
+k '· ${annKeyName('\''⌘Z'\'')} 復原`' '· ⌘Z 復原`'
