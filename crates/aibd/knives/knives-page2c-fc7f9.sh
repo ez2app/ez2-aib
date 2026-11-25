@@ -98,9 +98,9 @@ k 'if (M.kind === f && Object.keys(ch).length) b[k] = Object.assign({}, pg[k] ||
 # PGMK3 (6770f IFACE-merge r3 §2 每組可改 name / seat_to / rebind)
 k 'for (const [k, f] of [['\''seat_to'\'', '\''persona'\''], ['\''rebind'\'', '\''brain'\'']]) { const ch = q[k] || {}; if (M.kind === f &&' 'for (const [k, f] of [['\''seat_to'\'', '\''persona'\''], ['\''rebind'\'', '\''brain'\'']]) { const ch = q[k] || {}; if ('
 # PGMK4 (6770f IFACE-merge r3 §2 每組可改 name / seat_to / rebind)
-k '.replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20).join('\'''\'');' '.trim()).slice(0, 20).join('\'''\'');'
+k 'const mgClean = (t) => Array.from(String(t || '\'''\'').replace(new RegExp(AIB_UNSEEN, '\''gu'\''), '\'''\'').trim())' 'const mgClean = (t) => Array.from(String(t || '\'''\'').trim())'
 # PGMK5 (6770f IFACE-merge r3 §2 每組可改 name / seat_to / rebind)
-k 'String(t || '\'''\'').replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20)' 'String(t || '\'''\'').replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 40)'
+k 'String(t || '\'''\'').replace(new RegExp(AIB_UNSEEN, '\''gu'\''), '\'''\'').trim()).slice(0, 20)' 'String(t || '\'''\'').replace(/[\u0000-\u001f\u007f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20)'
 # PGMK6 (6770f IFACE-merge r3 §2 每組可改 name / seat_to / rebind)
 k 'opts = own.filter((x) => !gone.has(x.uid));' 'opts = own;'
 # PGMK7 (6770f IFACE-merge r3 §2 每組可改 name / seat_to / rebind)

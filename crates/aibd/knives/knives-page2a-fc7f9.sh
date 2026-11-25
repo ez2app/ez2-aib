@@ -96,13 +96,13 @@ k '    if (card && !R.review) { R.review = true; R.msg = null; return render(); 
 # PGAN4 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '<div class="apn"><b>送出前看一次</b>:指紋窗只列段名與字數,內容以這裡為準</div>' ''
 # PGAN5 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
-k '.replace(/[\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g,' '.replace(/[\u00ad\u034f\u061c\u180e\u200c]/g,'
+k '.replace(new RegExp(AIB_UNSEEN, '\''gu'\''), (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\''' '.replace(/[\u00ad]/g, (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\'''
 # PGAN6 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k 'if (S.rg.review) { S.rg.review = false; const d = document.querySelector('\''.rgdiff'\''); if (d) d.remove(); } ' ''
 # PGAN7 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '<input class="apq" ${kind === '\''persona'\'' && rgCardOn() && R.sha ? '\''hidden '\'' : '\'''\''}data-rgf="name"' '<input class="apq" data-rgf="name"'
 # PGAN9 (08de5 IFACE-a1 補:section_hidden_char 頁面先擋)
-k '    if (/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/.test(t)) return '\''有看不見的零寬或方向字元,請刪掉再存'\'';' ' '
+k '    if (new RegExp(AIB_UNSEEN, '\''u'\'').test(t.replace(/[\p{Cc}\u3000]/gu, '\'''\''))) return' '    if (false) return'
 # PGAN10 (08de5 IFACE-a1 補:section_hidden_char 頁面先擋)
 k 'section_hidden_char: '\''段落裡有看不見的零寬或方向字元(差異區標成 ⟦U+…⟧),刪掉再存'\'', ' ''
 # PGAN11 (f163c page2r10 L4 / N1 / N2:逐行 LCS、補看不見字、交管卡指紋行)
@@ -110,7 +110,7 @@ k '    while (i < n || j < m) { if (i < n && j < m && A[i] === B[j]) { out.push(
 # PGAN12 (f163c page2r10 L4 / N1 / N2:逐行 LCS、補看不見字、交管卡指紋行)
 k '.replace(/\r/g, '\''␍'\'')' ''
 # PGAN13 (f163c page2r10 L4 / N1 / N2:逐行 LCS、補看不見字、交管卡指紋行)
-k '[\u00ad\u034f\u061c\u180e\u200b-' '[\u034f\u061c\u180e\u200b-'
+k '(c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\'' + c.codePointAt(0)' '(c) => c === '\''\u3000'\'' || c === '\''\u00ad'\'' ? c : '\''⟦U+'\'' + c.codePointAt(0)'
 # PGAN14 (f163c page2r10 L4 / N1 / N2:逐行 LCS、補看不見字、交管卡指紋行)
 k ', ['\''指紋'\'', '\''機器與金鑰指紋以系統視窗為準'\'']]]' ']]'
 # PGCN1 (ebab8 1123:客戶名不寫死,從使用者自己的人格 / 大腦 / 專案名推)

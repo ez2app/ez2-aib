@@ -4034,6 +4034,8 @@
     render();
   }
   // ---------- S4 人格 / 第二大腦 / 角色:改、封存、還原(fc7f9 11-23,ebab8 ORDER-page2 第 2 項;SPEC-ai-partner-open §5 + 示意 app.js data-medit / data-mdel)----------
+  // 看不見的字:跟 aibd aib_approve::text::is_bad_char 同一張(Unicode 類別 Cc Cf Zl Zp Co Cn Cs、半形空白以外的 Zs,加 invisible_extra 那幾個);瀏覽器的 Unicode 版本跟 aibd 釘的不一定一樣,未分配字元可能差幾個
+  const AIB_UNSEEN = String.raw`[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\p{Cs}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]|(?! )\p{Zs}`;
   // aibd §1(08de5,未寫碼)才有改 / 封存 / 還原 6+3 支;名字 08de5 11-23 02:56 回覆照這張表定(對照 pending/IFACE-page2-fc7f9-1123.md),只經過 RG_ACTS。
   // <kind>_set {uid, name?, what?} / <kind>_archive {uid} / <kind>_restore {uid};要驗證的先回 202 ticket(fingerAct 處理),最後 2xx 就算成;version.acts 有才送,沒有就寫「這一版還沒有」、不送、不假裝改了。
   // 人格刪 = 封存(編號保留、可還原);第二大腦刪 = 從清單拿掉、筆記檔案不動;內建角色 🔒。要不要驗證由 aibd 決定(全走 fingerAct)
@@ -4052,7 +4054,7 @@
     if (t.length > 4000) return '每一欄最多 4000 字';
     if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(t)) return '有看不見的控制字元,請重打';
     // 08de5 IFACE-a1 補:零寬 / 方向字元 aibd 回 400 section_hidden_char ⇒ 頁面先擋
-    if (/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/.test(t)) return '有看不見的零寬或方向字元,請刪掉再存';
+    if (new RegExp(AIB_UNSEEN, 'u').test(t.replace(/[\p{Cc}\u3000]/gu, ''))) return '有看不見的零寬或方向字元,請刪掉再存'; // aibd 先去控制字元、全形空白放行,其餘看不見的拒收
     if (t.split('\n').some((l) => /^\s*(#|---)/.test(l))) return '不能有 # 或 --- 開頭的行(會切壞人格卡的段落);改用 - 條列';
     return '';
   }
@@ -4119,7 +4121,7 @@
   }
   function rgChanged(R) { const o = R.orig || {}; return RG_CARD.map(([k]) => k).filter((k) => String(R[k] || '') !== String(o[k] || '')); }
   // c2f0b persona_diff 同一種畫法:純文字、逐行,看不見的字標出來(⇥ tab、· 行尾空白、⍽ 不換行空白、⟦U+…⟧ 零寬 / 方向字元)
-  const rgShow = (t) => String(t).replace(/\t/g, '⇥').replace(/\r/g, '␍').replace(/\u00a0/g, '⍽').replace(/[\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, (c) => '⟦U+' + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟧').replace(/ +$/, (m) => '·'.repeat(m.length));
+  const rgShow = (t) => String(t).replace(/\t/g, '⇥').replace(/\r/g, '␍').replace(/\u00a0/g, '⍽').replace(new RegExp(AIB_UNSEEN, 'gu'), (c) => c === '\u3000' ? c : '⟦U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟧').replace(/ +$/, (m) => '·'.repeat(m.length));
   function rgDiffLines(a, b) {
     // f163c page2r10 L4:逐行 LCS(行換順序也看得出:移走的標 −、移到的標 +);每段 ≤ 4000 字,n·m 夠
     const A = String(a || '').split('\n'), B = String(b || '').split('\n'), n = A.length, m = B.length, out = [];
@@ -5240,7 +5242,7 @@
   // 改了那組才送那一欄,送整張表(plan 那份 + 改的);沒改 = aibd 預設(名稱照舊、夥伴改用留下的、人格改綁留下的大腦)
   const mgPlanG = (M, keep) => { const P = M.pv && M.pv.plan; return (P && Array.isArray(P.groups) ? P.groups : []).find((x) => x && x.keep === keep) || null; };
   // f163c r6 N1:控制字之外,零寬 / 方向字元(看不見、會讓名字看起來跟別的一樣)也拿掉;aibd 端仍會再驗
-  const mgClean = (t) => Array.from(String(t || '').replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '').trim()).slice(0, 20).join('');
+  const mgClean = (t) => Array.from(String(t || '').replace(new RegExp(AIB_UNSEEN, 'gu'), '').trim()).slice(0, 20).join('');
   const mgOrig = (g) => String((g.items.find((x) => x.uid === g.keep) || {}).name || '');
   function mgGrpBody(M, g) {
     const q = (M.gopt || {})[g.keep] || {}, b = {}, pg = mgPlanG(M, g.keep) || {}, nm = mgClean(q.name);

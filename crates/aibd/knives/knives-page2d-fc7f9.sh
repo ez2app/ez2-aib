@@ -36,7 +36,7 @@ k '${S.rgArchBusy ? '\''disabled'\'' : '\'''\''}>↺ 還原</button>' '>↺ 還�
 # PGAR14 (08de5 A1 已封存區 + ↺ 還原)
 k ',[data-rgao],[data-rgrs]'\'') && await rgClick(x)) return;' ''\'') && await rgClick(x)) return;'
 # PGMK17 (f163c r6 N1 合併名稱去零寬 / 方向字元)
-k 'replace(/[\u0000-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\'''\'').trim()).slice(0, 20)' 'replace(/[\u0000-\u001f\u007f]/g, '\'''\'').trim()).slice(0, 20)'
+k 'replace(new RegExp(AIB_UNSEEN, '\''gu'\''), '\'''\'').trim()).slice(0, 20).join' 'replace(/[\u0000-\u001f\u007f]/g, '\'''\'').trim()).slice(0, 20).join'
 # PGNL1 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
 k 'o.id === '\''always'\'' && !/\d+\s*天/.test(String(o.words || '\'''\''))' 'false && !/\d+\s*天/.test(String(o.words || '\'''\''))'
 # PGNL2 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
@@ -59,3 +59,7 @@ k '${x.expires_at ? ` <span class="apn">到' '${false ? ` <span class="apn">到'
 k '到 ${esc(fpWhen(x.expires_at))} 要再確認' '到 ${fpWhen(x.expires_at)} 要再確認'
 # PGNL11 (ebab8 DECISION-netallow-store:一直允許綁人格、每 30 天再確認、清單到期日)
 k ''\''綁人格「'\'' + String(c.persona_name || c.persona_uid || '\''這個人格'\'')' ''\''綁人格「'\'' + String(c.persona_uid || '\''這個人格'\'')'
+# PGUS1 (aibd is_bad_char 同一張表:少了 invisible_extra 那幾個就紅)
+k '\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]' '\u034f]'
+# PGUS2 (aibd 人格卡段落放行全形空白 U+3000:頁面預檢也要放行)
+k 'test(t.replace(/[\p{Cc}\u3000]/gu, '\'''\'')))' 'test(t.replace(/[\p{Cc}]/gu, '\'''\'')))'
