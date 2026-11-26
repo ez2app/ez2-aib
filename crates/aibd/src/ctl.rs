@@ -2536,6 +2536,23 @@ impl aibd::winsetup::Ops for SetupOps {
     fn run_delete_if(&self, name: &str, expected: &str) -> Result<bool, String> {
         aib_sys::winrun::run_delete_if(name, expected).map_err(|e| e.to_string())
     }
+    fn ask_end_running(&self, line: &str) -> bool {
+        // only against closing an AIB in use by mistake; not an owner check, nothing written
+        println!("{line}");
+        let mut answer = String::new();
+        matches!(std::io::stdin().read_line(&mut answer), Ok(n) if n > 0)
+    }
+    fn end_running(&self, exe: &Path) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            aib_sys::winstop::stop_one(exe, std::time::Duration::from_secs(10)).map(|_| ())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = exe;
+            Err("not_windows".into())
+        }
+    }
     fn healthy(&self) -> bool {
         Client::from_runtime()
             .and_then(|c| c.request("GET", "/api/v1/health", None))

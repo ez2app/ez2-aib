@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS18, WS22–WS28, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WS22–WS31, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -135,3 +135,15 @@ ws '    if why.contains(DESKTOP_ONLY) {' \
 ws '        "to update it: 1. open Task Manager (Ctrl+Shift+Esc) > Details, select aibd.exe, End task \' \
    '        "quit it (signing out and back in also works) \' \
    a_running_installed_aibd_is_not_overwritten
+# WS29 (U2, 3e53b 11:2x) a running AIB is ended without asking first
+ws '    if !ops.ask_end_running(END_RUNNING_ASK) {' \
+   '    if !ops.ask_end_running(END_RUNNING_ASK) && false {' \
+   a_running_installed_aibd_is_not_overwritten
+# WS30 (U2) the program is swapped while an AIB still answers after it was ended
+ws '    if still_answers {' \
+   '    if still_answers && false {' \
+   an_aib_that_still_answers_after_ending_is_not_overwritten
+# WS31 (U2) the question no longer says it is not an owner check
+ws '     (This only keeps an AIB you are using from being closed by mistake; it is not an owner check.)";' \
+   '     (This confirms it is you.)";' \
+   a_running_aib_is_ended_after_enter_then_updated

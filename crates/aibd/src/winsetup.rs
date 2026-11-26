@@ -171,6 +171,11 @@ pub trait Ops {
     fn run_delete_if(&self, name: &str, expected: &str) -> Result<bool, String>;
     /// Does an aibd answer `/api/v1/health`?
     fn healthy(&self) -> bool;
+    /// Show `line` at the console and wait: Enter ⇒ true, the window closed / no input ⇒ false.
+    /// Only against closing an AIB in use by mistake ([`END_RUNNING_ASK`]); never an owner check.
+    fn ask_end_running(&self, line: &str) -> bool;
+    /// End the one running copy of `exe` of this user and session (aib_sys::winstop::stop_one).
+    fn end_running(&self, exe: &Path) -> Result<(), String>;
     /// Start `exe` in the background, no window.
     fn start(&self, exe: &Path) -> Result<(), String>;
     /// Wait.
@@ -320,14 +325,45 @@ fn check(p: &Places, ops: &dyn Ops) -> Result<(), String> {
     Ok(())
 }
 
-/// Step 1: put `current` at `p.exe` through `.new`, hashes compared; the hash.
-fn place(p: &Places, current: &Path, ops: &dyn Ops) -> Result<String, String> {
-    if ops.exists(&p.exe) && ops.healthy() {
-        return Err(format!(
+/// The question before the setup ends a running AIB (U2). Pressing Enter only keeps an AIB in
+/// use from being closed by mistake: it is **not** an owner check (a same-account program can
+/// end aibd.exe itself), nothing is written, and no other check is relaxed for it (3e53b 11:2x).
+pub const END_RUNNING_ASK: &str = "AIB is running. Press Enter to end it and update (AI seats \
+     that are open stop too; your data stays), or close this window to leave it running. \
+     (This only keeps an AIB you are using from being closed by mistake; it is not an owner check.)";
+
+/// U2 (PLAN-win-upgrade-path-90856-1126): AIB answers from the installed copy ⇒ ask once, end
+/// the one running copy (aib_sys::winstop: identity read on the handle that ends it, exactly
+/// one), and go on only when it no longer answers. Not asked / not ended ⇒ stop as before.
+fn end_running(p: &Places, ops: &dyn Ops) -> Result<(), String> {
+    let running = || {
+        format!(
             "installer_running: AIB is running from {}; {}",
             p.exe.display(),
             quit_how("double-click AIB-Setup again")
-        ));
+        )
+    };
+    if !ops.ask_end_running(END_RUNNING_ASK) {
+        return Err(running());
+    }
+    ops.end_running(&p.exe).map_err(|e| {
+        format!(
+            "installer_end_failed: {e}; {}",
+            quit_how("double-click AIB-Setup again")
+        )
+    })?;
+    // something still answers: never swap under a running AIB
+    let still_answers = ops.healthy();
+    if still_answers {
+        return Err(running());
+    }
+    Ok(())
+}
+
+/// Step 1: put `current` at `p.exe` through `.new`, hashes compared; the hash.
+fn place(p: &Places, current: &Path, ops: &dyn Ops) -> Result<String, String> {
+    if ops.exists(&p.exe) && ops.healthy() {
+        end_running(p, ops)?;
     }
     ops.make_dir(&p.dir)?;
     ops.remove(&p.new);
@@ -683,6 +719,11 @@ mod tests {
         health_asks: RefCell<usize>,
         lnk: RefCell<BTreeMap<PathBuf, (PathBuf, String)>>,
         lnk_dirs_err: bool,
+        ask_yes: bool,
+        end_err: Option<String>,
+        end_keeps_running: bool,
+        ended: RefCell<bool>,
+        started: RefCell<bool>,
     }
 
     impl Fake {
@@ -766,10 +807,26 @@ mod tests {
         fn healthy(&self) -> bool {
             let mut n = self.health_asks.borrow_mut();
             *n += 1;
+            if *self.ended.borrow() && !self.end_keeps_running && !*self.started.borrow() {
+                return false;
+            }
             self.healthy_after.is_some_and(|k| *n > k)
+        }
+        fn ask_end_running(&self, line: &str) -> bool {
+            self.log(format!("ask {}", line.contains("not an owner check")));
+            self.ask_yes
+        }
+        fn end_running(&self, exe: &Path) -> Result<(), String> {
+            self.log(format!("end {}", exe.display()));
+            if let Some(e) = &self.end_err {
+                return Err(e.clone());
+            }
+            *self.ended.borrow_mut() = true;
+            Ok(())
         }
         fn start(&self, exe: &Path) -> Result<(), String> {
             self.log(format!("start {}", exe.display()));
+            *self.started.borrow_mut() = true;
             Ok(())
         }
         fn pace(&self, _: Duration) {}
@@ -923,6 +980,71 @@ mod tests {
         assert!(!f.exists(&here().new), "reason: new_left");
     }
 
+    /// U2: AIB running from the installed copy, Enter pressed ⇒ the one copy is ended, then
+    /// the program is swapped, the new one started; the question says it is not an owner check.
+    #[test]
+    fn a_running_aib_is_ended_after_enter_then_updated() {
+        let p = here();
+        let f = Fake {
+            healthy_after: Some(0),
+            files: RefCell::new(vec![p.exe.clone()]),
+            ask_yes: true,
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        let calls = f.calls.borrow();
+        let at = |pre: &str| calls.iter().position(|c| c.starts_with(pre));
+        assert_eq!(at("ask "), Some(0), "reason: not_asked_first {calls:?}");
+        assert_eq!(calls[0], "ask true", "reason: ask_words {calls:?}");
+        assert!(
+            at("end ").is_some() && at("end ") < at("copy ") && at("copy ").is_some(),
+            "reason: order {calls:?}"
+        );
+    }
+
+    /// U2: the AIB still answers after it was ended ⇒ nothing is swapped.
+    #[test]
+    fn an_aib_that_still_answers_after_ending_is_not_overwritten() {
+        let p = here();
+        let f = Fake {
+            healthy_after: Some(0),
+            files: RefCell::new(vec![p.exe.clone()]),
+            ask_yes: true,
+            end_keeps_running: true,
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.starts_with("installer_running")),
+            "reason: {r:?}"
+        );
+        assert!(!f.has("copy"), "reason: swapped {:?}", f.calls.borrow());
+    }
+
+    /// U2: ending failed (none / many / not ended) ⇒ nothing is swapped, the way out is said.
+    #[test]
+    fn an_aib_that_could_not_be_ended_is_not_overwritten() {
+        let p = here();
+        let f = Fake {
+            healthy_after: Some(0),
+            files: RefCell::new(vec![p.exe.clone()]),
+            ask_yes: true,
+            end_err: Some("stop_many: 2 copies".into()),
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.starts_with("installer_end_failed")
+                    && e.contains("stop_many")
+                    && e.contains("Task Manager")),
+            "reason: {r:?}"
+        );
+        assert!(!f.has("copy"), "reason: swapped {:?}", f.calls.borrow());
+    }
+
     #[test]
     fn a_running_installed_aibd_is_not_overwritten() {
         let p = here();
@@ -949,7 +1071,7 @@ mod tests {
         );
         assert!(!e.contains("sign"), "reason: sign_out_said {e}");
         assert!(
-            !f.has("copy") && !f.has("rename"),
+            !f.has("copy") && !f.has("rename") && !f.has("end "),
             "reason: touched {:?}",
             f.calls.borrow()
         );
@@ -1414,6 +1536,12 @@ mod tests {
         }
         fn healthy(&self) -> bool {
             self.0.healthy()
+        }
+        fn ask_end_running(&self, l: &str) -> bool {
+            self.0.ask_end_running(l)
+        }
+        fn end_running(&self, e: &Path) -> Result<(), String> {
+            self.0.end_running(e)
         }
         fn start(&self, e: &Path) -> Result<(), String> {
             self.0.start(e)
