@@ -4302,6 +4302,9 @@ jobs:
     name: crate knives (macOS, ${{ matrix.shard }})
     needs: changes
     if: ${{ !cancelled() }}
+    # Six cells (90856, f163c 20:35): #900 run 45807336910 had macOS 3/4 hit the 80-minute step limit; it was
+    # planned 3536 s from 19 estimated lines. With that run's seconds in knife-secs.tsv the 100 macOS scripts plan
+    # 4667 s over four cells (78 min + the build), 3734 over five (62, over the 60 asked for), 3069 over six (51).
     # Four cells (90856, ebab8 11-26 08:47): #898 run 45701153697 had macOS 1/3 hit the 80-minute step limit twice;
     # with that run's seconds in knife-secs.tsv, three cells project 3658 s (61 min, over the 60 asked for) and
     # four 2743 s (46). Before:
@@ -4313,7 +4316,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/4", "2/4", "3/4", "4/4"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
     timeout-minutes: 100
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
@@ -4447,7 +4450,7 @@ jobs:
           CELLS: ${{ needs.crate-knives.result }}
           MACOS_CELL: ${{ needs.crate-knives-macos.result }}
           SHARDS: "4"
-          MAC_SHARDS: "4"
+          MAC_SHARDS: "6"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
