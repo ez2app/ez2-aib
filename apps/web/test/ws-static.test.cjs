@@ -1034,6 +1034,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const box = { win: true }; vm.createContext(box); vm.runInContext('const fpWin = () => this.win;\n' + ws.slice(i0, i1) + '\nthis.PAIR_WIN_SAY = PAIR_WIN_SAY; this.pairSay = pairSay;', box);
       const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
       const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
+      { const w = box.pairSay('<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'); ok(/Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消/.test(w) && !/AIB 的視窗/.test(w), 'reason: b6_wait_says_hello_compare_code ' + w); }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
       ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairSay(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)

@@ -6943,10 +6943,11 @@
     if (S.pair) { S.pair = Object.assign({}, S.pair, { view: S.pair.view === 'wait' ? 'code' : S.pair.view, msg: '網址帶了新的配對碼,按配對就好', code: nc }); render(); }
   });
   // ebab8 14:00 B6(真 AIB 實看):Windows 客戶不開終端機、不看到 aibd ⇒ 配對頁的字在 Windows 換成「從開始選單或桌面點 AIB」;Mac 原字不動
+  // 3e53b 1a7f49dea0 L1:Windows 配對確認在 Windows Hello 視窗(c11e3d607c 起 Hello 第 2 行寫同一組碼),不是「AIB 的視窗」;對碼要說在 Hello 那一步
   const PAIR_WIN_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '從開始選單或桌面點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
-    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>到 AIB 的視窗確認</h2><p>AIB 的視窗會顯示同一組短碼,一樣就在那裡按確定。</p>']];
+    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>']];
   const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {

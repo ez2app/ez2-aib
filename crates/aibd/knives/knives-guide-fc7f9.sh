@@ -131,3 +131,5 @@ k 'if (typeof t !== '\''string'\'' || !(typeof fpWin === '\''function'\'' && fpW
 k 'return pairSay(`<form class="pairbox" id="pairf"' 'return (`<form class="pairbox" id="pairf"'
 # GC7 測試機那行的鈕又被切邊(B5)
 kc '.thh{flex-wrap:wrap}' '.thh{}'
+# GD55 Windows 等確認頁又說「AIB 的視窗按確定」,沒說在 Hello 對碼(3e53b 1a7f49dea0 L1)
+k 'Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。' 'AIB 的視窗會顯示同一組短碼,一樣就在那裡按確定。'
