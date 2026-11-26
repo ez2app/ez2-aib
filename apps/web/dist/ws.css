@@ -1633,3 +1633,6 @@ label.rvr{cursor:pointer}
 /* 真 AIB 實看 B2 B3:現在這一步的鈕換到第二行整列,步驟名不被擠成「跟…」;「可能要 …」放鈕下面,路線不穿過字 */
 .gstep.gcur .gact{grid-column:1/-1;justify-content:flex-start;padding-left:22px}
 .gstep.gcur .ghello{flex-basis:100%}
+/* B5:窄卡時鈕換到下一行,不切邊 */
+.thh{flex-wrap:wrap}
+.thh .k{white-space:nowrap}

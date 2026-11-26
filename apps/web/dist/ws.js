@@ -322,22 +322,22 @@
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
       tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
       step: { health: 'AIB 已安裝並在執行', pair: '讓這個瀏覽器連上 AIB', claude: '找到 Claude 並已登入', allow: '允許 AIB 在這台開 Claude', first: '跟第一位 AI 夥伴說一句話', tour: '看看完整的選單', host_add: '加一台主機', host_reach: 'AIB 連得上那台', host_handoff: '交給一位夥伴管', site_first: '第一個網站' },
-      go: { provider_install: '安裝 Claude', provider_relogin: '重新登入 Claude', session_policy_init: '打開開席設定', start_claude: '開始用 Claude', focus_chat: '去說一句', open_partner_panel: '打開「+ AI 夥伴」', add_host: '打開測試機' },
+      go: { provider_install: '安裝 Claude', provider_relogin: '重新登入 Claude', session_policy_init: '打開開席設定', start_claude: '開始用 Claude', focus_chat: '去說一句', open_partner_panel: '打開「+ AI 夥伴」', add_host: '加一台主機' },
       why: { not_paired: '還沒配對', not_found: '這台找不到 Claude', npm_only: '這台的 Claude 是 npm 版,AIB 不能用', not_logged_in: 'Claude 還沒登入或已過期', login_unknown: '還不知道 Claude 登入了沒', no_policy: '還沒有開席設定', no_claude: '開席設定裡沒有 Claude', none_yet: '還沒跟夥伴說過話', seat_open: '夥伴開好了,到下面打一句話', not_yet: '還沒打開過完整選單', after_first: '先跟夥伴說一句話', none: '還沒有主機', source_error: 'AIB 這一項讀不到', unknown: '判不出來', write_failed: '沒記上,下次打開再試一次' } },
     en: { start: 'Get started with AIB', hosts: 'Manage sites / hosts', hostsOff: ' (opens after the steps above)', builtin: 'Built-in', later: 'Next version', unsure: 'Can’t tell', skip: 'Skip the guide', again: 'Show again', dim: 'Opens after “Get started with AIB”', here: 'this page', pin: 'No Windows Hello? Set up a PIN first',
       tourLine: 'Everything is open now: you can pick other plans, personas, second brains and roles, or open several partners at once.', hello: ['May ask for Windows Hello', 'May ask for Touch ID or password'],
       step: { health: 'AIB is installed and running', pair: 'Connect this browser to AIB', claude: 'Claude is found and signed in', allow: 'Let AIB open Claude on this computer', first: 'Say one thing to your first AI partner', tour: 'See the full menu', host_add: 'Add a host', host_reach: 'AIB can reach it', host_handoff: 'Hand it to a partner', site_first: 'Your first site' },
-      go: { provider_install: 'Install Claude', provider_relogin: 'Sign in to Claude again', session_policy_init: 'Open seat settings', start_claude: 'Start with Claude', focus_chat: 'Say something', open_partner_panel: 'Open “+ AI partner”', add_host: 'Open test machines' },
+      go: { provider_install: 'Install Claude', provider_relogin: 'Sign in to Claude again', session_policy_init: 'Open seat settings', start_claude: 'Start with Claude', focus_chat: 'Say something', open_partner_panel: 'Open “+ AI partner”', add_host: 'Add a host' },
       why: { not_paired: 'Not paired yet', not_found: 'Claude isn’t on this computer', npm_only: 'This Claude is the npm version, which AIB can’t use', not_logged_in: 'Claude isn’t signed in, or the sign-in expired', login_unknown: 'Not known yet whether Claude is signed in', no_policy: 'No seat settings yet', no_claude: 'Seat settings don’t include Claude', none_yet: 'You haven’t talked to a partner yet', seat_open: 'Your partner is ready, type a line below', not_yet: 'You haven’t opened the full menu yet', after_first: 'Say one thing to a partner first', none: 'No hosts yet', source_error: 'AIB couldn’t read this', unknown: 'Can’t tell', write_failed: 'Not recorded; it will try again next time' } },
     ja: { start: 'AIB をはじめる', hosts: 'サイト / ホストの管理', hostsOff: '（上の手順が終わると使えます）', builtin: '内蔵', later: '次のバージョン', unsure: '判定できません', skip: 'ガイドをスキップ', again: 'もう一度見る', dim: '「AIB をはじめる」が終わると使えます', here: 'このページ', pin: 'Windows Hello 未設定?先に PIN を設定',
       tourLine: 'すべて使えるようになりました:ほかのプラン、人格、第二の脳、役割を選んだり、複数のパートナーを一度に開いたりできます。', hello: ['Windows Hello を求められることがあります', 'Touch ID またはパスワードを求められることがあります'],
       step: { health: 'AIB がインストールされ動いている', pair: 'このブラウザを AIB につなぐ', claude: 'Claude が見つかりサインイン済み', allow: 'このパソコンで AIB が Claude を開くのを許可', first: '最初の AI パートナーにひとこと話す', tour: 'メニュー全体を見る', host_add: 'ホストを 1 台追加', host_reach: 'AIB がそのホストにつながる', host_handoff: 'パートナーに管理を任せる', site_first: '最初のサイト' },
-      go: { provider_install: 'Claude をインストール', provider_relogin: 'Claude に再サインイン', session_policy_init: '席の設定を開く', start_claude: 'Claude ではじめる', focus_chat: 'ひとこと話す', open_partner_panel: '「+ AI パートナー」を開く', add_host: 'テスト機を開く' },
+      go: { provider_install: 'Claude をインストール', provider_relogin: 'Claude に再サインイン', session_policy_init: '席の設定を開く', start_claude: 'Claude ではじめる', focus_chat: 'ひとこと話す', open_partner_panel: '「+ AI パートナー」を開く', add_host: 'ホストを追加' },
       why: { not_paired: 'まだペアリングしていません', not_found: 'このパソコンに Claude がありません', npm_only: 'この Claude は npm 版で、AIB では使えません', not_logged_in: 'Claude が未サインインか期限切れです', login_unknown: 'Claude のサインイン状態がまだ分かりません', no_policy: '席の設定がまだありません', no_claude: '席の設定に Claude がありません', none_yet: 'まだパートナーと話していません', seat_open: 'パートナーの準備ができました。下にひとこと入力してください', not_yet: 'まだメニュー全体を開いていません', after_first: '先にパートナーにひとこと話してください', none: 'ホストがまだありません', source_error: 'AIB がこの項目を読めません', unknown: '判定できません', write_failed: '記録できませんでした。次に開いたとき再試行します' } },
     ko: { start: 'AIB 시작하기', hosts: '사이트 / 호스트 관리', hostsOff: ' (위 단계를 마치면 열립니다)', builtin: '기본 제공', later: '다음 버전', unsure: '판단할 수 없음', skip: '안내 건너뛰기', again: '다시 보기', dim: '「AIB 시작하기」를 마치면 열립니다', here: '바로 이 페이지', pin: 'Windows Hello가 없나요? 먼저 PIN을 설정하세요',
       tourLine: '이제 모두 열렸습니다: 다른 플랜, 인격, 제2의 뇌, 역할을 고르거나 여러 파트너를 한 번에 열 수 있습니다.', hello: ['Windows Hello를 요청할 수 있음', 'Touch ID 또는 암호를 요청할 수 있음'],
       step: { health: 'AIB가 설치되어 실행 중', pair: '이 브라우저를 AIB에 연결', claude: 'Claude를 찾았고 로그인됨', allow: '이 컴퓨터에서 AIB가 Claude를 열도록 허용', first: '첫 AI 파트너에게 한마디 하기', tour: '전체 메뉴 보기', host_add: '호스트 한 대 추가', host_reach: 'AIB가 그 호스트에 연결됨', host_handoff: '파트너에게 관리 맡기기', site_first: '첫 사이트' },
-      go: { provider_install: 'Claude 설치', provider_relogin: 'Claude 다시 로그인', session_policy_init: '좌석 설정 열기', start_claude: 'Claude로 시작', focus_chat: '한마디 하기', open_partner_panel: '「+ AI 파트너」 열기', add_host: '테스트 머신 열기' },
+      go: { provider_install: 'Claude 설치', provider_relogin: 'Claude 다시 로그인', session_policy_init: '좌석 설정 열기', start_claude: 'Claude로 시작', focus_chat: '한마디 하기', open_partner_panel: '「+ AI 파트너」 열기', add_host: '호스트 추가' },
       why: { not_paired: '아직 페어링하지 않음', not_found: '이 컴퓨터에 Claude가 없음', npm_only: '이 Claude는 npm 버전이라 AIB에서 쓸 수 없음', not_logged_in: 'Claude가 로그인되지 않았거나 만료됨', login_unknown: 'Claude 로그인 여부를 아직 모름', no_policy: '좌석 설정이 아직 없음', no_claude: '좌석 설정에 Claude가 없음', none_yet: '아직 파트너와 대화하지 않음', seat_open: '파트너가 준비됐어요. 아래에 한마디 입력하세요', not_yet: '아직 전체 메뉴를 열지 않음', after_first: '먼저 파트너에게 한마디 하세요', none: '아직 호스트가 없음', source_error: 'AIB가 이 항목을 읽지 못함', unknown: '판단할 수 없음', write_failed: '기록하지 못했습니다. 다음에 열 때 다시 시도합니다' } },
   };
   const gW = (k) => { const T = GUIDE_W[typeof askLang === 'function' ? askLang() : 'zh-TW'] || GUIDE_W['zh-TW']; return Object.prototype.hasOwnProperty.call(T, k) ? T[k] : GUIDE_W.en[k]; };
@@ -1473,17 +1473,23 @@
   const thL = () => (typeof askLang === 'function' ? askLang() : 'zh-TW');
   const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c]) || TH_WHY[c] || '';
   const thErr = (c) => (typeof fpSay === 'function' ? fpSay : (t) => t)(((TH_ERR_L[thL()] || {})[c]) || TH_ERR[c] || '');
+  // ebab8 14:00 B5(真 AIB 實看):客戶走指引「加一台主機」時,這一行用客戶字;開發用說明留在鈕的提示
+  const TH_G = { 'zh-TW': { title: '主機', open: '加一台主機' }, en: { title: 'Hosts', open: 'Add a host' }, ja: { title: 'ホスト', open: 'ホストを追加' }, ko: { title: '호스트', open: '호스트 추가' } };
+  const thGuide = () => { try { const G = S.guide, c = G && !gSkipped() && guideCur(G); return !!(c && c.proj === 'hosts' && c.step && c.step.id === 'host_add'); } catch (e) { return false; } };
+  const thClosed = (none, open) => { const g = thGuide() && (TH_G[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_G['zh-TW']);
+    return g ? `<div class="thh"><b>${esc(g.title)}</b><button type="button" class="k" data-thopen="1" title="${esc(none)}">${esc(g.open)}</button></div>`
+      : `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(none)}</span><button type="button" class="k" data-thopen="1">${esc(open)}</button></div>`; };
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th;
-    if (!T && !thWant()) return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thW().none)}</span><button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
+    if (!T && !thWant()) return thClosed(thW().none, thW().open);
     if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thX().loading)}</span></div>`; }
     let h = `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${T.list ? esc(thX().recv + T.pinned + (T.max ? thX().max + T.max : '')) : ''}</span><button type="button" class="k" data-threload="1" title="${esc(thX().reloadT)}">${esc(thX().reload)}</button></div>`;
     if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
     const W = thW(), isHalf = (m) => thHalf(T, m), open = !!T.open || thWant();
     const kept = T.list.filter((m) => m.pinned || isHalf(m)), canAdd = T.list.filter((m) => m.usable && !m.pinned && !isHalf(m)), nBad = T.list.length - kept.length - canAdd.length;
-    if (!kept.length && !open) return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
+    if (!kept.length && !open) return thClosed(W.none, W.open);
     const shown = open ? kept.concat(canAdd) : kept;
     if (open) h += `<div class="thr hv">${esc(shown.length ? '' : W.empty)}${nBad > 0 ? esc((shown.length ? '' : ' · ') + W.bad(nBad)) : ''}<button type="button" class="k" data-thclose="1">${esc(W.close)}</button></div>`;
     for (const m of shown) {
@@ -6936,11 +6942,17 @@
     const inp = document.getElementById('pcode'); if (inp) inp.value = nc;
     if (S.pair) { S.pair = Object.assign({}, S.pair, { view: S.pair.view === 'wait' ? 'code' : S.pair.view, msg: '網址帶了新的配對碼,按配對就好', code: nc }); render(); }
   });
+  // ebab8 14:00 B6(真 AIB 實看):Windows 客戶不開終端機、不看到 aibd ⇒ 配對頁的字在 Windows 換成「從開始選單或桌面點 AIB」;Mac 原字不動
+  const PAIR_WIN_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '從開始選單或桌面點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
+    ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
+    ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
+    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>到 AIB 的視窗確認</h2><p>AIB 的視窗會顯示同一組短碼,一樣就在那裡按確定。</p>']];
+  const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
-    if (CODE.gone || (CODE.off && n != null && n <= 0)) return '這組碼過期了,請在終端機再打一次 aibd ctl web';
-    return n > 0 ? '這組碼還剩 ' + n + ' 秒' : '這組碼過期了,等終端機換一組新的…';
+    if (CODE.gone || (CODE.off && n != null && n <= 0)) return pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web');
+    return n > 0 ? '這組碼還剩 ' + n + ' 秒' : pairSay('這組碼過期了,等終端機換一組新的…');
   }
   // 每秒只改倒數那一行(不重畫整頁,免得打到一半的字被蓋掉);到期就去問 aibd 換好的新碼
   setInterval(() => {
@@ -6983,9 +6995,9 @@
     if (P.view === 'code') loadPairPrefs();
     if (P.view === 'busy' || (P.view === 'wait' && P.opening)) return `<div class="pairbox">${bootBar() || `<div class="boot"><div class="bt"><i data-sty="width:40%"></i></div><span>配對好了,正在打開工作台…</span></div>`}</div>`;
     if (P.view === 'wait') {
-      return `<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`;
+      return pairSay(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
-    return `<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`;
+    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
   function render() {
     guidePaintSoon(); // 新用戶指引路線層:畫完下一格重算(不產生就拆掉)
@@ -7256,11 +7268,11 @@
       if (r.ok && j && j.already === true && token()) { S.paired = false; S.pair = { view: 'wait', opening: true }; PAIRING.on = false; render(); return tick(true); }
       const c = j && (j.code || (j.error && j.error.code));
       // §19f 三種分開講:過期 / 用過 / 打錯(7b81e 的碼;舊 aibd 兩種都回 not_found ⇒ 退回合併那句)
-      msg = c === 'pairing_rate_limited' ? '試太多次了,等一下再試'
+      msg = pairSay(c === 'pairing_rate_limited' ? '試太多次了,等一下再試'
         : c === 'pairing_code_expired' ? '這組碼過期了' + (CODE.gone ? ',請在終端機再打一次 aibd ctl web' : ',終端機會換一組新的,框裡會跟著換')
           : c === 'pairing_code_reused' ? '這組碼已經用過了,請在終端機再打一次 aibd ctl web 拿新碼'
             : c === 'pairing_code_wrong' || (c === 'pairing_failed' && r.status === 401) ? '碼打錯了,對一下終端機上的碼再送'
-              : r.status === 403 ? '被 AIB 擋下(' + (c || r.status) + ')' : '配對碼不對或已過期';
+              : r.status === 403 ? '被 AIB 擋下(' + (c || r.status) + ')' : '配對碼不對或已過期');
       if (c === 'pairing_code_expired') { CODE.exp = Date.now() - 1; CODE.off = false; codePoll(); }
     } catch (er) { msg = '連不上 AIB'; }
     PAIRING.on = false; bootEnd(false);

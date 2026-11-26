@@ -121,3 +121,13 @@ kc '.gstep.gcur .gact{grid-column:1/-1;' '.gstep.gcur .gact{'
 kc '.gskip{position:absolute;bottom:16px;right:16px;' '.gskip{position:absolute;top:12px;right:12px;'
 # GD50 後端回 why=seat_open 時中文那行空白(6770f 14:00)
 k ', seat_open: '\''夥伴開好了,到下面打一句話'\''' ''
+# GD51 客戶走「加一台主機」時測試機那行又是開發字(B5)
+k 'return !!(c && c.proj === '\''hosts'\'' && c.step && c.step.id === '\''host_add'\'');' 'return false;'
+# GD52 指引鈕又寫「打開測試機」(B5)
+k 'add_host: '\''加一台主機'\''' 'add_host: '\''打開測試機'\'''
+# GD53 Windows 配對頁又叫人開終端機(B6)
+k 'if (typeof t !== '\''string'\'' || !(typeof fpWin === '\''function'\'' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)' 'if (true) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)'
+# GD54 配對表單沒經 pairSay(B6)
+k 'return pairSay(`<form class="pairbox" id="pairf"' 'return (`<form class="pairbox" id="pairf"'
+# GC7 測試機那行的鈕又被切邊(B5)
+kc '.thh{flex-wrap:wrap}' '.thh{}'

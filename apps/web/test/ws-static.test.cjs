@@ -1004,7 +1004,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機;下一版三步沒有鈕
     c.S.guide = G(cOk, aOk, fOk, tOk, true);
     h = X.guideHtml();
-    ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">打開測試機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
+    ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">加一台主機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
     // 配對前:aibd 只回 health 與 pair,其他鎖著;Windows 才有設 PIN 說明
     c.S.guide = { panel_lit: false, projects: [{ id: 'start', lit: true, steps: [st('health', true, 'ok'), st('pair', false, 'not_paired', 'pair'), st('claude', undefined, 'locked'), st('allow', undefined, 'locked'), st('first', undefined, 'locked'), st('tour', undefined, 'locked')] }] };
     const pre = X.guidePreHtml();
@@ -1021,6 +1021,21 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(!/data-ggo/.test(X.guideHtml()), 'reason: guide_unknown_act_no_button');
     c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
     ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
+    // ebab8 14:00 B5:客戶走「加一台主機」時,測試機那一行用客戶字、開發說明進鈕的提示;沒走指引時照舊
+    { const i0 = ws.indexOf('  const TH_G = '), i1 = ws.indexOf('  const thW = () => TH_L['); ok(i0 > 0 && i1 > i0, 'reason: b5_block_found');
+      const box = { S: {}, esc: c.esc, askLang: () => 'zh-TW', thX: () => ({ title: '測試機' }), gSkipped: () => false, guideCur: (G) => G.cur };
+      vm.createContext(box); vm.runInContext(ws.slice(i0, i1) + '\nthis.thClosed = thClosed;', box);
+      box.S.guide = { cur: { proj: 'hosts', step: { id: 'host_add' } } }; const g = box.thClosed('開發用的功能', '從這台的 ssh 設定加');
+      box.S.guide = null; const d = box.thClosed('開發用的功能', '從這台的 ssh 設定加');
+      ok(/<b>主機<\/b><button type="button" class="k" data-thopen="1" title="開發用的功能">加一台主機<\/button>/.test(g) && !/class="hv"/.test(g) && /<b>測試機<\/b><span class="hv">開發用的功能<\/span>/.test(d), 'reason: guide_b5_host_words ' + g);
+      const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.thh\{flex-wrap:wrap\}/.test(css) && /\.thh \.k\{white-space:nowrap\}/.test(css), 'reason: guide_b5_button_not_clipped'); }
+    // ebab8 14:00 B6:Windows 配對頁不叫人開終端機、不出 aibd;Mac 原字
+    { const i0 = ws.indexOf('  const PAIR_WIN_SAY = '), i1 = ws.indexOf('  function cdLeft() {'); ok(i0 > 0 && i1 > i0, 'reason: b6_block_found');
+      const box = { win: true }; vm.createContext(box); vm.runInContext('const fpWin = () => this.win;\n' + ws.slice(i0, i1) + '\nthis.PAIR_WIN_SAY = PAIR_WIN_SAY; this.pairSay = pairSay;', box);
+      const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
+      const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
+      box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
+      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairSay(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
     c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
