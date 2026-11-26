@@ -1313,9 +1313,11 @@ mod tests {
     fn web_from_elsewhere_starts_nothing() {
         let p = here();
         for (same, resident) in [(false, true), (true, false)] {
+            // the installed copy is there and plain: only "from elsewhere" stops it
             let f = Fake {
                 same,
                 healthy_after: Some(1),
+                files: RefCell::new(vec![p.exe.clone()]),
                 ..Fake::default()
             };
             let r = wake(&p, Path::new("dl/aibd.exe"), resident, &f);
