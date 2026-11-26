@@ -68,6 +68,7 @@ pub mod net_allow;
 pub mod nodes;
 pub mod now_gate;
 pub mod owner_batch;
+pub mod owner_method;
 pub mod owner_ok;
 pub mod owner_probe;
 pub mod owner_probe_win;
