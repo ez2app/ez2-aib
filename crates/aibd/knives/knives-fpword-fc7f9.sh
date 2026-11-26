@@ -55,3 +55,7 @@ k '<div class="apn apfn">${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t
 k 'const regNotYet = (kind) => '\''這一版還不能從頁面新增'\'' + REG_KIND[kind][0];' 'const regNotYet = (kind) => '\''這一版還不能從頁面新增(要按指紋)'\'' + REG_KIND[kind][0];'
 # FW23 新地方直出 REPO_WHY 的指紋字(fp_win_sink_every_use,3e53b r2 / f163c N1)
 k 'F.msg = bad + '\'';'\'' + REPO_WHY.name; return render(); }' 'F.msg = bad + '\'';'\'' + REPO_WHY.owner_check_unavailable; return render(); }'
+# FW24 驗證窗上限字又靠呼叫端包(f163c 36317e8b N1)
+k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)('\''10 分鐘內最多 3 張指紋窗(一小時最多 6 張)'\'' + (' 'return ('\''10 分鐘內最多 3 張指紋窗(一小時最多 6 張)'\'' + ('
+# FW25 同行前面有關掉的 fpSay( 也放過(3e53b r3 / f163c N1)
+k '? (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(GHTOK_WHY[rs]) : pushWhy(PUSH_WHY, e) };' '? (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(GHTOK_WHY[rs]) : PUSH_WHY[rs] };'

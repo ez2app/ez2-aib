@@ -398,7 +398,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(W('主機金鑰指紋不對,這台可能被換過') === '主機金鑰指紋不對,這台可能被換過' && W('按指紋;主機金鑰指紋 ab') === '用 Windows Hello 確認;主機金鑰指紋 ab', 'reason: fp_say_keeps_hostkey_hash ' + W('按指紋;主機金鑰指紋 ab'));
   { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)("; const miss = ["S.hint = " + G + "msg)", "return " + G + "TICK_WHY[k]", "const tickOkWhy = (t) => " + G, "return " + G + "RCP_WHY[rs]", "return " + G + "T[rs] || errText(e))", "return " + G + "TRUST_WHY[rs]", "return " + G + "MOVE_WHY[rs]", "'沒有交回:' + " + G + "SB_WHY[k] || errText(e))", "G.msg = " + G + "GHTOK_WHY[rs]", "S.pushOff = " + G + "PUSH_WHY[rs])", "? " + G + "GHTOK_WHY[rs])", "S.prOff = " + G + "PR_WHY[rs])", "const ppWhy = (e) => " + G + "PP_WHY[", "const netWhy = (e) => " + G + "NET_WHY[", "return " + G + "HS_WHY[c] || REPO_WHY[c]", "return " + G + "PT_WHY[c] || REPO_WHY[c]", ": gateWhy(e) ? " + G + "gateWhy(e))", '<div class="apn apfn">${' + G + '`¹ '].filter((x) => !ws.includes(x)); ok(!miss.length, 'reason: fp_win_why_wrapped ' + miss.join(' | ')); }
   // ebab8 13:4x 總刀:畫面上任何字面「指紋」都要經 fpSay;例外只有下面三種(新加的字不在表上 ⇒ 紅,要先分類)
-  { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'gateWhy', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
+  { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
     const SELF = ['FP_WIN_SAY', 'fpSay']; // 換字表本身
     const KEEP = [['FP_WHAT', '機器與金鑰指紋'], ['pvDialog', '預覽的指紋不對'], ['pvDialog', '這一份的指紋(sha256'], ['hsRow', '驗證窗列出指紋、真的 IP'], ['upConsent', '清單指紋'], ['hsLine', '指紋 '], // 雜湊 / 主機金鑰,不是本人確認
       ['OWNER_WHY', 'Touch ID 現在讀不到'], ['pwText', '這台用系統本人驗證(指紋或登入密碼)'], ['fpcHtml', '跳出的<b>系統視窗</b>按指紋'], // Mac 分支
@@ -417,6 +417,8 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
         bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
     ok(!bad.length, 'reason: fp_win_every_shown_word ' + bad.join(' | '));
     // 3e53b r2 / f163c 7e874c13 N1:SINK 表整表放行 ⇒ 再核每個表的每個用處:同句已在 fpSay( 裡、點名的固定欄位值不含指紋、只拿來判斷有沒有這個鍵、或在 errText0 / gateWhy 裡(呼叫端已包)
+    // 3e53b r3 / f163c 36317e8b N1:要真的還在 fpSay( 的括號裡(fpSay(a) + T.x 不算)
+    const inG = (pre) => { const K = 'fpSay : (t) => t)('; for (let i = pre.indexOf(K); i >= 0; i = pre.indexOf(K, i + 1)) { let d = 0, open = true; for (const ch of pre.slice(i + K.length)) { if (ch === '(') d++; else if (ch === ')' && --d < 0) { open = false; break; } } if (open) return true; } return false; };
     const use = []; let own = '';
     const lines = ws.split('\n');
     SINK.filter((n) => /^[A-Z]/.test(n)).forEach((n) => { const d = ws.indexOf('  const ' + n + ' = '), e = ws.indexOf('\n  const ', d + 5), def = ws.slice(d, e); own = '';
@@ -424,7 +426,8 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
         if (/^\s*\/\//.test(l) || l.startsWith('  const ' + n + ' = ')) return;
         const re = new RegExp('\\b' + n + '\\b(?:\\.(\\w+)|\\[[^\\]]*\\](\\s*\\?)?)?', 'g'); let m;
         while ((m = re.exec(l))) { const pre = l.slice(0, m.index);
-          if (/fpSay : \(t\) => t\)\(/.test(pre) || own === 'errText0' || own === 'gateWhy') continue;
+          if (inG(pre) || own === 'errText0') continue;
+          if (/pushWhy\($/.test(pre)) continue; // 表當參數交給 pushWhy,它回傳處自己包(fp_win_why_wrapped 核)
           if (m[1]) { const v = new RegExp('\\b' + m[1] + ":\\s*(['`])((?:(?!\\1).)*)\\1").exec(def); if (v && !v[2].includes('指紋')) continue; }
           if (m[2] || /filter\(\(k\) => REC\[k\]\)$/.test(l.slice(0, m.index + m[0].length) + ')') || /Object\.keys\($/.test(pre)) continue;
           use.push((i + 1) + ' ' + m[0]); } }); });

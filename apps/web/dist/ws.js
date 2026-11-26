@@ -7045,8 +7045,8 @@
   // 0eed7 pv7 L(519d0 07:46):指紋閘擋下的三種講真正原因;滿了講幾點幾分幾秒後可以再試(鐘點是 aibd 給的 retry_hms,同指紋窗的字)
   function gateWhy(e) {
     const b = (e && e.body) || {}, rs = e && (e.reason || b.reason || e.code);
-    if (rs === 'pair_touch_limited') { const t = String(b.retry_hms || ''); return '10 分鐘內最多 3 張指紋窗(一小時最多 6 張)' + (/^\d\d:\d\d:\d\d$/.test(t) ? ',' + t + ' 後可以再試' : ',晚點再試'); }
-    return rs === 'pair_touch_busy' || rs === 'pair_touch_cooling' ? REPO_WHY[rs] : '';
+    if (rs === 'pair_touch_limited') { const t = String(b.retry_hms || ''); return (typeof fpSay === 'function' ? fpSay : (t) => t)('10 分鐘內最多 3 張指紋窗(一小時最多 6 張)' + (/^\d\d:\d\d:\d\d$/.test(t) ? ',' + t + ' 後可以再試' : ',晚點再試')); } // f163c 36317e8b N1:自己包,不靠呼叫端
+    return (typeof fpSay === 'function' ? fpSay : (t) => t)(rs === 'pair_touch_busy' || rs === 'pair_touch_cooling' ? REPO_WHY[rs] : '');
   }
   function errText(e) { return (typeof fpSay === 'function' ? fpSay : (t) => t)(errText0(e)); }
   function errText0(e) {
