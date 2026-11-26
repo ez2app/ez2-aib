@@ -415,7 +415,22 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
         if (KEEP.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 30), j + 30).includes(t))) continue;
         if (COND.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 80), j + 60).includes(t.slice(t.indexOf("'") + 1)))) continue;
         bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
-    ok(!bad.length, 'reason: fp_win_every_shown_word ' + bad.join(' | ')); }
+    ok(!bad.length, 'reason: fp_win_every_shown_word ' + bad.join(' | '));
+    // 3e53b r2 / f163c 7e874c13 N1:SINK 表整表放行 ⇒ 再核每個表的每個用處:同句已在 fpSay( 裡、點名的固定欄位值不含指紋、只拿來判斷有沒有這個鍵、或在 errText0 / gateWhy 裡(呼叫端已包)
+    const use = []; let own = '';
+    const lines = ws.split('\n');
+    SINK.filter((n) => /^[A-Z]/.test(n)).forEach((n) => { const d = ws.indexOf('  const ' + n + ' = '), e = ws.indexOf('\n  const ', d + 5), def = ws.slice(d, e); own = '';
+      lines.forEach((l, i) => { const m0 = /^  (?:const|let|function|async function) ([A-Za-z_$][\w$]*)/.exec(l); if (m0) own = m0[1];
+        if (/^\s*\/\//.test(l) || l.startsWith('  const ' + n + ' = ')) return;
+        const re = new RegExp('\\b' + n + '\\b(?:\\.(\\w+)|\\[[^\\]]*\\](\\s*\\?)?)?', 'g'); let m;
+        while ((m = re.exec(l))) { const pre = l.slice(0, m.index);
+          if (/fpSay : \(t\) => t\)\(/.test(pre) || own === 'errText0' || own === 'gateWhy') continue;
+          if (m[1]) { const v = new RegExp('\\b' + m[1] + ":\\s*(['`])((?:(?!\\1).)*)\\1").exec(def); if (v && !v[2].includes('指紋')) continue; }
+          if (m[2] || /filter\(\(k\) => REC\[k\]\)$/.test(l.slice(0, m.index + m[0].length) + ')') || /Object\.keys\($/.test(pre)) continue;
+          use.push((i + 1) + ' ' + m[0]); } }); });
+    ok(!use.length, 'reason: fp_win_sink_every_use ' + use.join(' | '));
+  }
+
   ok(/function errText\(e\) \{ return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(errText0\(e\)\); \}/.test(ws), 'reason: err_text_not_platform_words');
   ok(/const rgWhy = \(e\) => \{ const c = rgCode\(e\); return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(RG_WHY\[c\]/.test(ws) && /const repoWhy = \(e\) => \{ const rs = [^\n]*return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(gateWhy\(e\)/.test(ws) && /return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(\(typeof rs === 'string' && Object\.prototype\.hasOwnProperty\.call\(RELOG_WHY, rs\)/.test(ws), 'reason: why_helpers_not_platform_words');
   const c = ws.indexOf('  const REG_ADD_OPEN = '), d = ws.indexOf('  async function regAdd() {');

@@ -53,3 +53,5 @@ k ': gateWhy(e) ? (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(gateWhy
 k '<div class="apn apfn">${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(`¹ ' '<div class="apn apfn">${(`¹ '
 # FW22 新加一句沒經 fpSay 的指紋字(總刀 fp_win_every_shown_word,ebab8 13:4x)
 k 'const regNotYet = (kind) => '\''這一版還不能從頁面新增'\'' + REG_KIND[kind][0];' 'const regNotYet = (kind) => '\''這一版還不能從頁面新增(要按指紋)'\'' + REG_KIND[kind][0];'
+# FW23 新地方直出 REPO_WHY 的指紋字(fp_win_sink_every_use,3e53b r2 / f163c N1)
+k 'F.msg = bad + '\'';'\'' + REPO_WHY.name; return render(); }' 'F.msg = bad + '\'';'\'' + REPO_WHY.owner_check_unavailable; return render(); }'
