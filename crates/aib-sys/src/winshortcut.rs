@@ -20,9 +20,11 @@ pub fn folders() -> Result<Vec<PathBuf>, String> {
     ])
 }
 
-/// Write the shortcut `link` to `exe` with `args`, the icon taken from `exe`.
+/// Write the shortcut `link` to `exe` with `args`, working folder = `exe`'s folder. Nothing else
+/// is set (no hotkey, no run-as, no icon or text of ours: the shell shows `exe`'s own icon;
+/// 3e53b PREREAD-win-shortcut-wake r1).
 #[cfg(windows)]
-pub fn make(link: &Path, exe: &Path, args: &str, description: &str) -> Result<(), String> {
+pub fn make(link: &Path, exe: &Path, args: &str) -> Result<(), String> {
     use windows::core::{Interface, HSTRING};
     use windows::Win32::System::Com::IPersistFile;
     let _com = Com::init();
@@ -36,10 +38,6 @@ pub fn make(link: &Path, exe: &Path, args: &str, description: &str) -> Result<()
             .map_err(|e| format!("arguments: {e}"))?;
         l.SetWorkingDirectory(&HSTRING::from(dir))
             .map_err(|e| format!("folder: {e}"))?;
-        l.SetIconLocation(&HSTRING::from(exe), 0)
-            .map_err(|e| format!("icon: {e}"))?;
-        l.SetDescription(&HSTRING::from(description))
-            .map_err(|e| format!("description: {e}"))?;
     }
     let f: IPersistFile = l.cast().map_err(|e| format!("save: {e}"))?;
     // SAFETY: `f` is the same object's IPersistFile; the file name is an owned HSTRING.
@@ -77,7 +75,7 @@ pub fn folders() -> Result<Vec<PathBuf>, String> {
 
 /// No shortcuts off Windows.
 #[cfg(not(windows))]
-pub fn make(_: &Path, _: &Path, _: &str, _: &str) -> Result<(), String> {
+pub fn make(_: &Path, _: &Path, _: &str) -> Result<(), String> {
     Err("not_windows".into())
 }
 

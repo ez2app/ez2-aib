@@ -221,6 +221,14 @@ fn shortcuts(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
             return;
         }
     };
+    // the target is the installed aibd.exe only: a plain file, never a link (3e53b r1 #2)
+    if ops.is_link(&p.exe) || !ops.exists(&p.exe) {
+        say(&format!(
+            "3/5 no AIB shortcut: {} is not a plain file",
+            p.exe.display()
+        ));
+        return;
+    }
     for d in dirs {
         let link = d.join(SHORTCUT);
         if ops.exists(&link) && !shortcut_ours(&link, &p.exe, ops) {
@@ -230,7 +238,18 @@ fn shortcuts(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
             ));
             continue;
         }
-        match ops.shortcut_make(&link, &p.exe, SHORTCUT_ARGS) {
+        // written ⇒ read back: only target + arguments as meant count (3e53b r1 #4)
+        let made = ops
+            .shortcut_make(&link, &p.exe, SHORTCUT_ARGS)
+            .and_then(|()| {
+                let read_back_ours = shortcut_ours(&link, &p.exe, ops);
+                if read_back_ours {
+                    Ok(())
+                } else {
+                    Err("it does not read back as written".to_string())
+                }
+            });
+        match made {
             Ok(()) => say(&format!("3/5 AIB shortcut: {}", link.display())),
             Err(e) => say(&format!("3/5 no AIB shortcut in {}: {e}", d.display())),
         }
@@ -406,7 +425,7 @@ fn run_with(
         done.already_running = true;
         say("4/5 aibd is already running");
     } else {
-        start_and_wait(p, ops)?;
+        start_and_wait(&p.exe, ops)?;
         say("4/5 aibd started");
     }
     // 5. the page
@@ -416,9 +435,9 @@ fn run_with(
 }
 
 /// Start the installed aibd.exe (no window) and wait until it answers.
-fn start_and_wait(p: &Places, ops: &dyn Ops) -> Result<(), String> {
-    ops.start(&p.exe)
-        .map_err(|e| format!("could not start {}: {e}", p.exe.display()))?;
+fn start_and_wait(exe: &Path, ops: &dyn Ops) -> Result<(), String> {
+    ops.start(exe)
+        .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
     let mut waited = Duration::ZERO;
     while !ops.healthy() {
         if waited >= HEALTH_WAIT {
@@ -436,7 +455,10 @@ fn start_and_wait(p: &Places, ops: &dyn Ops) -> Result<(), String> {
 /// `aibd ctl web` on Windows when aibd does not answer (ebab8 11-26 12:20: the AIB shortcut
 /// must work after AIB was ended): start the installed aibd.exe and wait for it, as step 4
 /// does. Only when this program is the installed copy and the line names the resident aibd
-/// (`resident`, [`crate::wake::names_resident`]); otherwise one line says what to do.
+/// (`resident`, [`crate::wake::names_resident`]); otherwise one line says what to do. What is
+/// started is always the installed path from [`places`] (a plain file, not a link), never
+/// `current`, a shortcut's target or anything from the command line or the page; the real
+/// [`Ops::start`] runs it directly, no shell (3e53b PREREAD-win-shortcut-wake r1).
 /// `Ok(true)` = started here, `Ok(false)` = it already answered.
 pub fn wake(p: &Places, current: &Path, resident: bool, ops: &dyn Ops) -> Result<bool, String> {
     if ops.healthy() {
@@ -448,8 +470,14 @@ pub fn wake(p: &Places, current: &Path, resident: bool, ops: &dyn Ops) -> Result
             p.exe.display()
         ));
     }
-    start_and_wait(p, ops)?;
-    Ok(true)
+    let plain = !ops.is_link(&p.exe) && ops.exists(&p.exe);
+    if !plain {
+        return Err(format!(
+            "aibd is not running, and {} is not a plain file; run AIB-Setup again",
+            p.exe.display()
+        ));
+    }
+    start_and_wait(&p.exe, ops).map(|()| true)
 }
 
 /// `aibd setup --uninstall` (also what Settings > Apps runs): remove the Run value and the
@@ -1225,15 +1253,19 @@ mod tests {
     }
 
     /// The shortcut after AIB was ended: `ctl web` from the installed copy starts it again.
+    /// What is started is the installed path, not the path this program was run from.
     #[test]
     fn web_from_the_installed_copy_starts_a_stopped_aib() {
         let p = here();
         let f = Fake {
             same: true,
             healthy_after: Some(1),
+            files: RefCell::new(vec![p.exe.clone()]),
             ..Fake::default()
         };
-        assert_eq!(wake(&p, &p.exe, true, &f), Ok(true), "reason: not_started");
+        let ran_as = Path::new("other/aibd.exe");
+        assert_eq!(wake(&p, ran_as, true, &f), Ok(true), "reason: not_started");
+        assert!(!f.has("start other"), "reason: started_current");
         assert!(
             f.has(&format!("start {}", p.exe.display())),
             "reason: {:?}",
@@ -1257,6 +1289,145 @@ mod tests {
                 "reason: {r:?}"
             );
             assert!(!f.has("start"), "reason: started {same} {resident}");
+        }
+    }
+
+    /// The installed aibd.exe is a link (or missing) ⇒ `ctl web` starts nothing.
+    #[test]
+    fn web_does_not_start_an_installed_path_that_is_a_link() {
+        let p = here();
+        let f = Fake {
+            same: true,
+            healthy_after: Some(1),
+            links: vec![p.exe.clone()],
+            files: RefCell::new(vec![p.exe.clone()]),
+            ..Fake::default()
+        };
+        let r = wake(&p, &p.exe, true, &f);
+        assert!(
+            r.as_ref().is_err_and(|e| e.contains("plain file")),
+            "reason: {r:?}"
+        );
+        assert!(!f.has("start"), "reason: started_link");
+    }
+
+    /// A shortcut that does not read back as written is not reported as made.
+    #[test]
+    fn a_shortcut_is_checked_by_reading_it_back() {
+        let f = BadLnk(Fake {
+            healthy_after: Some(1),
+            ..Fake::default()
+        });
+        let mut lines = Vec::new();
+        let r = run_with(&here(), Path::new("dl/AIB-Setup.exe"), &f, CMD, &mut |l| {
+            lines.push(l.to_string());
+        });
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("does not read back")),
+            "reason: not_checked {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("3/5 AIB shortcut:")),
+            "reason: said_made {lines:?}"
+        );
+    }
+
+    /// [`Fake`] whose shortcuts come back pointing elsewhere.
+    struct BadLnk(Fake);
+    impl Ops for BadLnk {
+        fn elevated(&self) -> Result<bool, String> {
+            self.0.elevated()
+        }
+        fn exists(&self, p: &Path) -> bool {
+            self.0.exists(p)
+        }
+        fn is_link(&self, p: &Path) -> bool {
+            self.0.is_link(p)
+        }
+        fn same_file(&self, a: &Path, b: &Path) -> bool {
+            self.0.same_file(a, b)
+        }
+        fn make_dir(&self, d: &Path) -> Result<(), String> {
+            self.0.make_dir(d)
+        }
+        fn copy_new(&self, a: &Path, b: &Path) -> Result<String, String> {
+            self.0.copy_new(a, b)
+        }
+        fn hash(&self, p: &Path) -> Result<String, String> {
+            self.0.hash(p)
+        }
+        fn remove(&self, p: &Path) {
+            self.0.remove(p)
+        }
+        fn rename(&self, a: &Path, b: &Path) -> Result<(), String> {
+            self.0.rename(a, b)
+        }
+        fn hello_ready(&self) -> Result<(), String> {
+            self.0.hello_ready()
+        }
+        fn run_get(&self, n: &str) -> Result<Option<String>, String> {
+            self.0.run_get(n)
+        }
+        fn run_set(&self, n: &str, c: &str) -> Result<(), String> {
+            self.0.run_set(n, c)
+        }
+        fn run_delete_if(&self, n: &str, e: &str) -> Result<bool, String> {
+            self.0.run_delete_if(n, e)
+        }
+        fn healthy(&self) -> bool {
+            self.0.healthy()
+        }
+        fn start(&self, e: &Path) -> Result<(), String> {
+            self.0.start(e)
+        }
+        fn pace(&self, d: Duration) {
+            self.0.pace(d)
+        }
+        fn open_page(&self) -> Result<(), String> {
+            self.0.open_page()
+        }
+        fn settings_get(&self, n: &str) -> Result<Option<String>, String> {
+            self.0.settings_get(n)
+        }
+        fn settings_set(&self, n: &str, v: &str) -> Result<(), String> {
+            self.0.settings_set(n, v)
+        }
+        fn settings_delete_if(&self, n: &str, e: &str) -> Result<bool, String> {
+            self.0.settings_delete_if(n, e)
+        }
+        fn remove_dir_if_empty(&self, d: &Path) {
+            self.0.remove_dir_if_empty(d)
+        }
+        fn shortcut_dirs(&self) -> Result<Vec<PathBuf>, String> {
+            self.0.shortcut_dirs()
+        }
+        fn shortcut_read(&self, _: &Path) -> Result<(PathBuf, String), String> {
+            Ok((
+                PathBuf::from(r"C:\elsewhere\x.exe"),
+                SHORTCUT_ARGS.to_string(),
+            ))
+        }
+        fn shortcut_make(&self, l: &Path, e: &Path, a: &str) -> Result<(), String> {
+            self.0.shortcut_make(l, e, a)
+        }
+    }
+
+    /// 3e53b r1 wake #2 (static): the real start runs the given program directly, no shell.
+    #[test]
+    fn the_real_start_runs_the_program_directly_no_shell() {
+        let src = include_str!("ctl.rs");
+        let at = src
+            .find("    fn start(&self, exe: &Path) -> Result<(), String> {")
+            .expect("SetupOps::start");
+        let body = &src[at..];
+        let body = &body[..body.find("    fn pace(").unwrap_or(body.len())];
+        assert!(
+            body.contains("std::process::Command::new(exe)"),
+            "reason: not_direct {body}"
+        );
+        for bad in ["\"cmd", "ShellExecute", "powershell", "explorer", "/c"] {
+            assert!(!body.contains(bad), "reason: shell {bad}");
         }
     }
 

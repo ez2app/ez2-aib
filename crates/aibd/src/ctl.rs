@@ -2575,7 +2575,7 @@ impl aibd::winsetup::Ops for SetupOps {
         aib_sys::winshortcut::read(link)
     }
     fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String> {
-        aib_sys::winshortcut::make(link, exe, args, "Open the AIB workbench")
+        aib_sys::winshortcut::make(link, exe, args)
     }
 }
 

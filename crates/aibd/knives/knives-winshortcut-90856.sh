@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# SC1–SC7: the Windows setup's "AIB" shortcut and `ctl web` starting a stopped AIB (ebab8 11-26 12:20,
+# SC1–SC11: the Windows setup's "AIB" shortcut and `ctl web` starting a stopped AIB (ebab8 11-26 12:20,
 # Andy「要最快讓用戶一鍵可用」). The rules are plain Rust in winsetup.rs, tested on every platform with
 # the stand-in Ops; os=macos like knives-winsetup-90856.sh (same tests, same cell). Each knife must turn
 # its own test red. Run from the repo root.
@@ -36,3 +36,21 @@ sc '    if !resident || !ops.same_file(current, &p.exe) {' \
 sc 'pub const SHORTCUT_ARGS: &str = "ctl web";' \
    'pub const SHORTCUT_ARGS: &str = "web";' \
    the_setup_puts_aib_on_the_desktop_and_in_the_start_menu
+# SC8 (3e53b r1 #4) a shortcut is reported made without reading it back
+sc '                if read_back_ours {' \
+   '                if read_back_ours || !read_back_ours {' \
+   a_shortcut_is_checked_by_reading_it_back
+# SC9 (3e53b r1 wake #1) `ctl web` starts the path it was run from instead of the installed one
+sc '    start_and_wait(&p.exe, ops).map(|()| true)' \
+   '    start_and_wait(current, ops).map(|()| true)' \
+   web_from_the_installed_copy_starts_a_stopped_aib
+# SC10 (3e53b r1 wake #1) an installed aibd.exe that is a link is started
+sc '    let plain = !ops.is_link(&p.exe) && ops.exists(&p.exe);' \
+   '    let plain = ops.exists(&p.exe);' \
+   web_does_not_start_an_installed_path_that_is_a_link
+# SC11 (3e53b r1 wake #2, static) the real start goes through cmd
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+  '        let mut c = std::process::Command::new(exe);' \
+  '        let mut c = std::process::Command::new("cmd");' \
+  --expect-fail winsetup::tests::the_real_start_runs_the_program_directly_no_shell \
+  -- cargo test -p aibd --locked --lib winsetup::tests::the_real_start_runs_the_program_directly_no_shell

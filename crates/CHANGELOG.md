@@ -5,6 +5,18 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Windows setup: an **AIB** shortcut on the desktop and in the Start menu (ebab8 11-26 12:20, Andy
+  「要最快讓用戶一鍵可用」: after installing, the only way back to the workbench was typing
+  `aibd.exe ctl web` into cmd). It runs the installed `aibd.exe ctl web`, working folder = the AIB
+  folder, nothing else set; written only when none is there or it is ours, read back after writing;
+  somebody else's `AIB.lnk`, or one that is a link, is left as it is; uninstall removes only ours.
+  `aibd ctl web` on Windows now starts the installed aibd.exe (a plain file, run directly, no shell)
+  when AIB does not answer, as setup step 4 does. Why `aib-sys` gains the `windows` features
+  `Win32_UI_Shell` (IShellLinkW, SHGetKnownFolderPath: the desktop may be moved to OneDrive),
+  `Win32_System_Com` (CoCreateInstance, IPersistFile) and `Win32_Storage_FileSystem` (only because
+  IShellLinkW::GetPath names WIN32_FIND_DATAW): no new crate, `Cargo.lock` unchanged
+  (3e53b PREREAD-win-shortcut-wake r1). Knives SC1–SC11.
+
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
   restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and
