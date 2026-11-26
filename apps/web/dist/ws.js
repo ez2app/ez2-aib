@@ -319,6 +319,7 @@
   // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
   // ebab8 21:51(客戶 Windows 實用回報):測試機 = 收據用、只收 Mac 的開發功能;Windows 客戶當成「加主機」按了回 internal ⇒ Windows 整塊不出,指引的「加一台主機」標下一版
+  // 指引「加一台主機」照 aibd 回的顯示(6770f 11-26 22:0x:兩平台都回 done:false / why:next_version、不給 next_act;ebab8:頁面別另判)
   // c2f0b 48f0342806:GET version 多 dev(AIBD_DEV=1 才 true,預設 false)⇒ 照它;Andy 22:0x「mac 與 win 能一致就一致」⇒ 沒 dev 欄(舊 aibd)兩平台一起藏,不再只藏 Windows
   const thDev = () => { const v = typeof S !== 'undefined' && S && S.version; return !!(v && v.dev === true); };
   const GUIDE_W = {
@@ -367,8 +368,7 @@
   // ok 打勾 / bad 未完成 / unsure 判不出(不勾、不擋後面) / lock 配對前鎖 / later 下一版
   function gState(s) {
     if (!s) return 'bad';
-    if (s.why === 'next_version') return 'later';
-    if (s.id === 'host_add' && s.done !== true && typeof thDev === 'function' && !thDev()) return 'later'; // f163c b036cb0a N1:aibd 說做完就照打勾 // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
+    if (s.why === 'next_version') return 'later'; // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
     if (s.why === 'locked' || !Object.prototype.hasOwnProperty.call(s, 'done')) return 'lock';
     return s.done === true ? 'ok' : s.done === null ? 'unsure' : 'bad';
   }

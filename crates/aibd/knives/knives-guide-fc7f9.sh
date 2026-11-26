@@ -159,11 +159,9 @@ k 'return !!(v && v.dev === true); };' 'return true; };'
 k 'if (hasAct('\''test_host_list'\'') !== true || (typeof thDev === '\''function'\'' && !thDev())) return '\'''\'';' 'if (hasAct('\''test_host_list'\'') !== true) return '\'''\'';'
 # GD70 開席視窗的測試機候選不看 thDev
 k '    if (typeof thDev === '\''function'\'' && !thDev()) return '\'''\''; // 測試機候選' '    if (false) return '\'''\''; // 測試機候選'
-# GD71 Windows 指引「加一台主機」仍是現在那一步、出鈕
-k 'if (s.id === '\''host_add'\'' && s.done !== true && typeof thDev === '\''function'\'' && !thDev()) return '\''later'\'';' 'if (false) return '\''later'\'';'
 # GD72 不照 version 的 dev 欄(Mac 一般用戶看得到測試機;c2f0b 48f0342806 / ebab8 21:55)
 k 'return !!(v && v.dev === true); };' 'return !!(v && v.dev); };'
-# GD73 aibd 說加主機做完仍寫下一版(f163c b036cb0a N1)
-k 'if (s.id === '\''host_add'\'' && s.done !== true && typeof thDev' 'if (s.id === '\''host_add'\'' && typeof thDev'
 # GD74 Mac 沒 dev 欄仍出測試機(Andy 22:0x 兩平台一致)
 k 'return !!(v && v.dev === true); };' 'return !!(v ? v.dev === true : !(typeof fpWin === '\''function'\'' && fpWin())); };'
+# GD75 頁面又自己判「加一台主機」(6770f / ebab8 22:10:照 aibd)
+k '    if (s.why === '\''next_version'\'') return '\''later'\'';' '    if (s.why === '\''next_version'\'' || (s.id === '\''host_add'\'' && !thDev())) return '\''later'\'';'

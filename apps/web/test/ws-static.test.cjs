@@ -984,13 +984,12 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // ebab8 21:51:Windows 的「加一台主機」接的是開發用測試機 ⇒ 標下一版、不出鈕、不是現在那一步;Mac 照舊
     { const all = G(cOk, aOk, fOk, tOk, true), w = mk('zh-TW', true), m = mk('zh-TW', false); w.S.guide = all; m.S.guide = all;
       const ha = all.projects[1].steps[0];
-      // Andy 22:0x 兩平台一致:沒 dev 欄 ⇒ Windows / Mac 都標下一版、不出鈕、不是現在那一步;dev=true(我們的開發機)兩平台都照舊出鈕
-      ok(w.X.gState(ha) === 'later' && m.X.gState(ha) === 'later' && w.X.guideCur(all) === null && m.X.guideCur(all) === null, 'reason: guide_host_add_later_on_windows');
-      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && !/data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300));
-      m.S.version = { dev: false }; w.S.version = { dev: true }; const md = mk('zh-TW', false); md.S.guide = all; md.S.version = { dev: true };
-      ok(m.X.gState(ha) === 'later' && w.X.gState(ha) === 'bad' && md.X.gState(ha) === 'bad' && md.X.guideCur(all).step.id === 'host_add' && /data-ggo="add_host"/.test(md.X.guideHtml()), 'reason: guide_host_add_follows_dev_flag');
-      m.S.version = { os: 'macos' }; ok(m.X.gState(ha) === 'later', 'reason: guide_host_add_old_aibd_falls_back');
-      w.S.version = { dev: false }; ok(w.X.gState(st('host_add', true, 'ok', 'add_host')) === 'ok', 'reason: guide_host_add_done_shows_done'); }
+      // 6770f 22:0x / ebab8 22:10:加一台主機照 aibd 回的(兩平台都 next_version、不給 next_act)⇒ 頁面不另判;dev 欄不影響指引
+      const nx = G(cOk, aOk, fOk, tOk, true); nx.projects[1].steps[0] = st('host_add', false, 'next_version');
+      for (const x of [w, m]) { x.S.guide = nx; x.S.version = { dev: false }; }
+      ok(w.X.gState(nx.projects[1].steps[0]) === 'later' && m.X.gState(nx.projects[1].steps[0]) === 'later' && w.X.guideCur(nx) === null && !/data-ggo="add_host"/.test(w.X.guideHtml()) && !/data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_follows_aibd_next_version');
+      m.S.guide = all; m.S.version = { dev: false }; ok(m.X.gState(ha) === 'bad', 'reason: guide_host_add_page_does_not_override_aibd');
+      ok(m.X.gState(st('host_add', true, 'ok', 'add_host')) === 'ok', 'reason: guide_host_add_done_shows_done'); }
     const X = c.X;
     // 四語:每個步驟、鈕、原因短碼都有字
     const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
