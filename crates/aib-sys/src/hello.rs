@@ -360,8 +360,10 @@ pub fn interactive_session() -> Result<(), HelloError> {
 /// A fixed P-256 test vector (made once with openssl, 11-25): `PUBLIC` (X9.63) signed
 /// `MESSAGE` (SHA-256, ECDSA) as `SIGNATURE` (DER). The Windows BCrypt check and the macOS
 /// Security check must both take it and both refuse it changed, so a verifier that says yes to
-/// everything, or no to everything, is caught on each platform's test run.
-#[cfg(test)]
+/// everything, or no to everything, is caught on each platform's test run. Only those two
+/// platforms' tests read it: on Linux it would be dead code, an error under the knife cells'
+/// `-D warnings` (#898 crate knives Linux 4/4, knives-01-hello WH1 rc 101 with no test run).
+#[cfg(all(test, any(windows, target_os = "macos")))]
 pub(crate) mod vector {
     pub const MESSAGE: &[u8] = b"aibd/hello-verify/test-vector/v1";
     pub const PUBLIC: [u8; 65] = [
