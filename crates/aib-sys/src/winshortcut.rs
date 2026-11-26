@@ -30,8 +30,8 @@ pub fn make(link: &Path, exe: &Path, args: &str) -> Result<(), String> {
     let _com = Com::init();
     let l = shell_link()?;
     let dir = exe.parent().unwrap_or(exe);
-    // SAFETY (each call below): `l` is a live IShellLinkW; the string is an owned HSTRING that
-    // outlives the call.
+    // SAFETY: `l` is a live IShellLinkW; the string is an owned HSTRING that outlives the call
+    // (same for the two calls below).
     unsafe { l.SetPath(&HSTRING::from(exe)) }.map_err(|e| format!("path: {e}"))?;
     // SAFETY: as above.
     unsafe { l.SetArguments(&HSTRING::from(args)) }.map_err(|e| format!("arguments: {e}"))?;
