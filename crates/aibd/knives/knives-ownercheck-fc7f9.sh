@@ -30,3 +30,5 @@ k 'get('\''/api/v1/owner-check'\'')' 'get('\''/api/v1/owner'\'')'
 k '? T[k] : OC_W.en[k];' '? T[k] : OC_W['\''zh-TW'\''][k];'
 # OC13 (今天沒 W-2 卻說高風險不開放;c2f0b REVIEW 264d6a91 N2)
 k '金鑰存在一般檔案裡。'\'',' '金鑰存在一般檔案裡,所以高風險的動作不開放。'\'','
+# OC14 (B2 下還說要建配對金鑰;Andy 10:1x、c2f0b 10:17)
+k 'hello_key_unknown: '\''這台用 Windows Hello 確認是你本人:每次要你本人時,當下跳一次 Hello。'\''' 'hello_key_unknown: '\''這台有 Windows Hello,還沒建配對金鑰;建好後才知道金鑰在不在安全晶片裡。'\'''
