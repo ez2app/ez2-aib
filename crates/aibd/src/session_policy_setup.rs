@@ -206,7 +206,7 @@ pub fn search_dirs(data: &Path) -> Vec<PathBuf> {
     if let Some(d) = TEST_DIRS.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return d;
     }
-    with_placed(user_dirs(), data, aib_seatopen::this_platform())
+    with_placed(user_dirs(), data, aib_seatopen::measured::this_platform())
 }
 
 /// `dirs`, then aibd's own placed copies (L1 provider_fetch / L2, IFACE-provider-lifecycle
@@ -540,7 +540,7 @@ pub async fn state(State(st): State<AppState>) -> Response {
     let looked = tokio::task::spawn_blocking(move || {
         let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
-        let found = placed_verified(found, &data, aib_seatopen::this_platform(), false);
+        let found = placed_verified(found, &data, aib_seatopen::measured::this_platform(), false);
         (file_state(&path), found, path)
     })
     .await;
@@ -616,7 +616,7 @@ pub async fn init(st: &AppState, body: Value, by: String) -> Response {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound);
         let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
-        let found = placed_verified(found, &data, aib_seatopen::this_platform(), true);
+        let found = placed_verified(found, &data, aib_seatopen::measured::this_platform(), true);
         (
             exists,
             policy_text(&found, |k| std::env::var_os(k).is_some()),
