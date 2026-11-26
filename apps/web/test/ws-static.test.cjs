@@ -256,6 +256,39 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   for (const c of ['no_receipt_gate', 'not_a_mac', 'owner_login_failed', 'write_failed', 'remove_failed', 'page_only']) ok(new RegExp('\\b' + c + ': ').test(ws), 'reason: error_without_words ' + c);
   ok(/r\.reason === 'gate_did_not_answer'/.test(ws), 'reason: gate_silence_not_shown');
   ok(/const half = 'half' in m \? m\.half === true :/.test(ws), 'reason: half_field_not_read');
+  // ebab8 11:56(客戶 Windows 截圖):沒登記過測試機 ⇒ 收成一行、不列主機名 / 位址 / 紅叉;按了才只列能用的,不能用的只寫幾台
+  {
+    const a = ws.indexOf('  const TH_L = {'), b = ws.indexOf('  async function thAct(');
+    ok(a > 0 && b > a, 'reason: th_collapse_slice');
+    const box = { S: {}, hasAct: () => true, esc: (x) => String(x), thLoad: () => {}, TH_WHY: {}, TH_ERR: {}, setTimeout: () => {}, navigator: { languages: ['zh-TW'] } };
+    vm.createContext(box);
+    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.testHostHtml = testHostHtml;', box);
+    const bad = (w) => ({ name: 'srv-' + w, address: 'ai@host-' + w + '.example:2202', usable: false, pinned: false, why: 'reached_through_something_else' });
+    const list = [bad(1), bad(2), bad(3), { name: 'okbox', address: 'ai@okbox.example:22', usable: true, pinned: false }];
+    box.S.th = { list, pinned: 0, max: 16, row: {} };
+    let h = box.testHostHtml();
+    ok(/data-thopen="1"/.test(h) && !/srv-|okbox|example|❌/.test(h), 'reason: th_not_collapsed ' + h.slice(0, 200));
+    box.S.th.open = true; h = box.testHostHtml();
+    ok(/okbox/.test(h) && !/srv-|host-|❌/.test(h) && /另有 3 台不能用/.test(h) && /data-thclose="1"/.test(h), 'reason: th_open_lists_bad_or_misses_good ' + h.slice(0, 300));
+    box.S.th = { list: [Object.assign({}, list[3], { pinned: true }), bad(1)], pinned: 1, max: 16, row: {} }; h = box.testHostHtml();
+    ok(/okbox/.test(h) && /可跑收據/.test(h) && !/srv-|data-thopen/.test(h), 'reason: th_kept_host_hidden ' + h.slice(0, 300));
+    box.navigator.languages = ['en-US']; box.S.th = { list: [bad(1)], pinned: 0, max: 16, row: {} }; h = box.testHostHtml();
+    ok(/None added \(a developer feature\)/.test(h) && /Add from this computer/.test(h), 'reason: th_collapse_not_english ' + h.slice(0, 200));
+    box.S.th.open = true; h = box.testHostHtml();
+    ok(/AIB can use/.test(h) && /1 more can't be used/.test(h) && !/srv-/.test(h), 'reason: th_open_empty_words ' + h.slice(0, 300));
+    for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ": \\{ none: ", 'm').test(ws.slice(a, b)), 'reason: th_words_missing_lang ' + l);
+    ok(/'\[data-thopen\]'/.test(ws) && /'\[data-thclose\]'/.test(ws), 'reason: th_open_close_not_wired');
+  }
+  // ebab8 11:56:輸入框上方黃字印了 send_history_list / fav_add / screen_capture ⇒ 白話四語、灰字、只缺截圖時不出
+  {
+    ok(!/AIB 還沒有 \$\{esc\(miss\.join/.test(ws), 'reason: ct_miss_prints_act_names');
+    ok(/\$\{miss\.some\(\(t\) => t !== 'screen_capture'\) \? `<div class="ctn ctmiss">\$\{esc\(ctMissWord\(\)\)\}<\/div>` : ''\}/.test(ws), 'reason: ct_miss_not_plain');
+    const a = ws.indexOf('  const CT_MISS = {'), b = ws.indexOf('  function chatTools() {');
+    const box = { navigator: { languages: ['ja-JP'] } }; vm.createContext(box);
+    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.w = ctMissWord;', box);
+    ok(/お気に入り/.test(box.w()), 'reason: ct_miss_not_japanese');
+    for (const l of ['en-US', 'ko-KR', 'zh-TW']) { box.navigator.languages = [l]; ok(!/send_history|fav_add|screen_capture|aibd/.test(box.w()) && box.w().length > 10, 'reason: ct_miss_word_bad ' + l); }
+  }
 }
 
 // 16. 519d0 10:07(Andy 09:4x–10:05 在預覽撞到的四處)

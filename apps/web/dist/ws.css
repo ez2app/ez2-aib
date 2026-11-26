@@ -1167,7 +1167,7 @@ label.rvr{cursor:pointer}
 .ctb{font:inherit;font-size:12px;background:#1d1e24;color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:2px 9px;cursor:pointer}
 .ctb:hover,.ctb.on{border-color:var(--gold);color:var(--gold)}
 .cth{margin-left:auto;font-size:11px;color:var(--dim)}
-.ctn{font-size:12px;color:#f6c48b;margin-top:4px}
+.ctn{font-size:12px;color:#f6c48b;margin-top:4px}.ctn.ctmiss{color:var(--dim)}
 .cthist{position:absolute;left:0;right:0;bottom:calc(100% + 6px);z-index:25;border:1px solid #7a5c1c;border-radius:12px;background:#17181d;box-shadow:0 10px 30px #0008;max-height:340px;overflow:auto}
 .cthh{display:flex;gap:8px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--dim)}
 .cthh b{color:var(--gold)}.cthh .k{margin-left:auto}
