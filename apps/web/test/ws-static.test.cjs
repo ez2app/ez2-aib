@@ -678,7 +678,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
 // 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對(甲2 開席登入 11-26 拿掉:改接重新登入卡)
 {
-  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
   const bad = [];
   for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
     read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
@@ -1035,13 +1035,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
       const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
       { const w = box.pairSay('<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'); ok(/Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消/.test(w) && !/AIB 的視窗/.test(w), 'reason: b6_wait_says_hello_compare_code ' + w); }
-      { const m = ws.match(/return (\(P\.chan === 'terminal-unverified' \? \(t\) => t : pairSay\))\(`<div class="pairbox"><h2>到終端機確認/); ok(!!m, 'reason: pair_wait_selector_found');
-        const W0 = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', pick = (chan) => vm.runInContext('(P) => ' + m[1], box)({ chan })(W0);
-        ok(pick('terminal-unverified') === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('')) && /Windows Hello/.test(pick('touchid')), 'reason: pair_wait_terminal_channel_keeps_y'); }
+      { const j0 = ws.indexOf('  const PAIR_WAIT_TERM = '), j1 = ws.indexOf('  function cdLeft() {'); ok(j0 > 0 && j1 > j0 && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_selector_found');
+        vm.runInContext('this.pairWaitSay = pairWaitSay; this.W0 = PAIR_WAIT_TERM;', box); // 這段已在上面 PAIR_WIN_SAY 那段一起載入
+        const W0 = '<div class="pairbox">' + box.W0 + '<div class="short">123456</div></div>', pick = (chan, win) => { box.win = win; return box.pairWaitSay(chan)(W0); };
+        ok(pick('terminal-unverified', true) === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('', true)) && /Windows Hello/.test(pick(undefined, true)), 'reason: pair_wait_terminal_channel_keeps_y');
+        const mac = pick('', false); ok(/<h2>在 Touch ID 視窗確認<\/h2><p>Touch ID 視窗會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
       // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀
-      ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '' }") && ws.includes("return (P.chan === 'terminal-unverified' ? (t) => t : pairSay)(`<div class=\"pairbox\"><h2>到終端機確認</h2>"), 'reason: pair_wait_words_follow_channel');
-      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return (P.chan === \'terminal-unverified\' ? (t) => t : pairSay)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
+      ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '' }") && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');
+      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
     c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;

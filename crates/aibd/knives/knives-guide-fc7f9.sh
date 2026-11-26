@@ -142,6 +142,10 @@ k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.
 # GD63 組字中按 Esc 也關指引(連組字一起丟)
 k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
 # GD56 終端機確認通道也換成 Windows Hello 字(f163c 1a7f49de N1)
-k 'return (P.chan === '\''terminal-unverified'\'' ? (t) => t : pairSay)(`' 'return (pairSay)(`'
+k 'const pairWaitSay = (chan) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan) => (false ? (t) => t : '
 # GD57 等確認狀態沒記 channel
 k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: '\'''\'' }'
+# GD64 Mac Touch ID 通道等確認框仍叫人到終端機按 y(3e53b ea75d93f24 N1)
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan === '\'''\'' ? (t) => t : (t) => t);'
+# GD65 channel 還沒讀到也換成 Touch ID 字
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
