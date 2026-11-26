@@ -1093,6 +1093,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const k2 = mk(); k2.S.mode = 'a1b2c'; k2.S.drafts = { a1b2c: '舊' }; k2.document = { getElementById: () => ({ value: '新的字', disabled: true }) }; k2.X.guideSkip(true);
       const k3 = mk(); k3.S.mode = 'shared'; k3.S.drafts = { shared: '留著' }; k3.document = { getElementById: () => null }; k3.X.guideSkip(true);
       ok(k2.S.drafts.a1b2c === '舊' && k3.S.drafts.shared === '留著', 'reason: guide_skip_disabled_or_no_box_keeps_draft'); }
+    // f163c aa7164f7ed N1:組字中 Esc 不關指引要有行為測試(不只字串比對):真的 ws.js 監聽行 + 真的 IME / imeBusy 四行
+    { const wl = ws.split('\n'), esc = wl.find((l) => l.includes("if (e.key === 'Escape' && document.getElementById('gtour')")), i0 = wl.findIndex((l) => l.startsWith('  const IME = { on: false'));
+      ok(!!esc && i0 > 0 && wl[i0 + 3].startsWith('  const imeBusy = '), 'reason: guide_esc_ime_lines_found');
+      const kb = vm.createContext({ Date, skipped: 0, ls: [], guideSkip: () => { kb.skipped++; }, document: { getElementById: (id) => (id === 'gtour' ? {} : null), addEventListener: (t, f) => kb.ls.push([t, f]) } });
+      vm.runInContext(wl.slice(i0, i0 + 4).join('\n') + '\n' + esc.trim() + '\nthis.IME = IME;', kb);
+      const kd = kb.ls.find((x) => x[0] === 'keydown')[1], hit = (e) => { const n = kb.skipped; kd(Object.assign({ key: 'Escape', timeStamp: 10000 }, e)); return kb.skipped - n; };
+      ok(hit({ isComposing: true }) === 0 && hit({ keyCode: 229 }) === 0, 'reason: guide_esc_while_composing_closes');
+      kb.IME.on = true; kb.IME.since = Date.now(); ok(hit({}) === 0, 'reason: guide_esc_while_ime_on_closes'); kb.IME.on = false;
+      kb.IME.end = 9950; ok(hit({}) === 0, 'reason: guide_esc_right_after_compose_closes'); kb.IME.end = -1e9;
+      ok(hit({}) === 1 && hit({ key: 'Enter' }) === 0, 'reason: guide_esc_plain_does_not_close'); }
     // 接線(靜態):暗格點了不動作、指引鈕走原本那顆、打開面板記第 6 步、畫完重算路線、讀 guide、面板套暗格、配對頁加清單
     ok(/async function onMainClick\(e\) \{\n    const x = e\.target;\n    if \(x\.closest\('\.gdim'\)\) return;/.test(ws), 'reason: guide_dim_click_does_nothing');
     ok(/S\.rg = null; S\.rgMsg = null;\n      guideOnPanel\(\);\n      render\(\);/.test(ws) && /function render\(\) \{\n    guidePaintSoon\(\);/.test(ws) && /if \(!S\.gAt \|\| Date\.now\(\) - S\.gAt > 8000\) await guideLoad\(\);/.test(ws), 'reason: guide_wired');
