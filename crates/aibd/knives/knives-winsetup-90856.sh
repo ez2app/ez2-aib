@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS18, WS22–WS27, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WS22–WS28, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -131,3 +131,7 @@ ws '    format!("{} ({e})", e.code())' \
 ws '    if why.contains(DESKTOP_ONLY) {' \
    '    if why.contains(DESKTOP_ONLY) && false {' \
    only_a_machine_without_hello_is_told_to_set_a_pin
+# WS28 (U1, PLAN-win-upgrade-path-90856-1126) the running-AIB line goes back to "sign out and back in", which the Run value undoes
+ws '        "to update it: 1. open Task Manager (Ctrl+Shift+Esc) > Details, select aibd.exe, End task \' \
+   '        "quit it (signing out and back in also works) \' \
+   a_running_installed_aibd_is_not_overwritten
