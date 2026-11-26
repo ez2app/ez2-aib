@@ -7,11 +7,10 @@
 # Run from the repo root.
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-IT=the_guide_reads_the_steps_and_its_record_changes_nothing_else
 gl() { python3 -I scripts/knife.py crates/aibd/src/guide.rs "$1" "$2" --expect-fail "guide::tests::$3" \
   -- cargo test -p aibd --locked --lib "guide::tests::$3"; }
-gi() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$IT" \
-  -- cargo test -p aibd --locked --test guide "$IT"; }
+gi() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail the_guide_reads_the_steps_and_its_record_changes_nothing_else \
+  -- cargo test -p aibd --locked --test guide the_guide_reads_the_steps_and_its_record_changes_nothing_else; }
 ga() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "guide::tests::no_gate_reads_the_guide" \
   -- cargo test -p aibd --locked --lib guide::tests::no_gate_reads_the_guide; }
 gs() { python3 -I scripts/knife.py crates/aib-store/src/sessions.rs "$1" "$2" \
@@ -38,7 +37,7 @@ gi crates/aibd/src/guide.rs '        Some(o) if o.keys().all(|k| k == "type") =>
 # GD10 (i) a second write replaces the first
 gl '            r @ Record::Done { .. } => Ok((r, false)),' '            Record::Done { .. } => { let _ = std::fs::write(record_path(data), &text); Ok((read_record(data), false)) } // knife' the_record_is_written_once_and_read_back
 # GD11 (k) the start-up check writes when no seat has spoken
-gl '    if read_record(data) != Record::None || spoken != Some(true) {' '    if read_record(data) != Record::None { // knife' the_start_check_writes_only_for_someone_who_used_aib_before
+gl '    if read_record(data) != Record::None || spoken != Some(true) {' '    if read_record(data) != Record::None || spoken.is_some_and(|_| false) { // knife' the_start_check_writes_only_for_someone_who_used_aib_before
 # GD12 (l) a record that cannot be read turns the panel dark
 gl '            first_done,' '            false, // knife' an_unreadable_record_keeps_an_old_users_panel_lit
 # GD13 (m) host_add reads another list than aibd's pinned one
@@ -56,7 +55,7 @@ gl '        Ok(m) if m.file_type().is_dir() => {}' '        Ok(_) => {} // knife
 # GD19 a record that is a link is read
 gl '    if !m.file_type().is_file() || m.len() > MAX_RECORD {' '    if m.len() > MAX_RECORD { // knife' a_linked_folder_or_record_is_not_a_record_and_not_written_through
 # GD20 a record of another shape is taken
-gl '    (is_time(at) && matches!(source, "opened" | "existing")).then(|| Record::Done {' '    (!at.is_empty()).then(|| Record::Done { // knife' a_record_of_another_shape_is_unreadable
+gl '    (is_time(at) && matches!(source, "opened" | "existing")).then(|| Record::Done {' '    ((is_time(at) || !at.is_empty()) && matches!(source, "opened" | "existing")).then(|| Record::Done { // knife' a_record_of_another_shape_is_unreadable
 # GD21 (first) a session the preview.2 route started counts as a seat's
 gs '            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE s.seat_id IS NOT NULL AND EXISTS (' '            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE (s.seat_id IS NOT NULL OR 1) AND EXISTS ( -- knife'
 # GD22 (first) any output event counts as a line
