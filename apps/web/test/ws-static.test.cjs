@@ -2259,6 +2259,39 @@ lateChecks.push((async () => {
   c.S.sp.fix = 'claude'; c.fail = false; const n = sent.length; await c.spFix('claude'); ok(sent.length === n, 'reason: sp_fix_one_at_a_time');
   ok(ws.includes("{ const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }"), 'reason: sp_fix_click_wired');
 })());
+// 「能改程式」開關(c2f0b ef615567db;3e53b PRE-READ-dgrs-switch D6 / D7;ebab8 21:51 客戶 Windows):紅字後接按這裡打開(本人確認);開著照實寫 + 關鈕(env 開的不出);沒本人確認照實寫
+lateChecks.push((async () => {
+  const a = ws.indexOf('  // 「能改程式」開關(c2f0b'), b = ws.indexOf('  // 新增視窗裡的重新登入', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: { add: null }, esc: E, render: () => {}, acts: ['dgrs_switch_status', 'dgrs_switch_set'], win: true, st: null, fail: null, errText: (e) => 'ET:' + (e && e.reason),
+    hasAct: (t) => c.acts.includes(t), fpWin: () => c.win, rgCode: (e) => String((e && e.reason) || ''),
+    act: async (t, b) => { sent.push(['act', t, JSON.stringify(b)]); if (t === 'dgrs_switch_status') return c.st; if (c.fail) throw c.fail; return { done: true }; },
+    fingerAct: async (t, b) => { sent.push(['finger', t, JSON.stringify(b)]); if (c.fail) throw c.fail; return { done: true, on: true }; } });
+  vm.runInContext(src + '\nthis.F = { dgLoad, dgHtml, dgSet };', c);
+  const F = c.F; ok(src.length > 1500, 'reason: dg_block_found');
+  const off = { on: false, source: '', can_on: true, can_off: false, owner_check: true };
+  c.st = off; await F.dgLoad(); ok(sent.length === 1 && sent[0][1] === 'dgrs_switch_status' && c.S.dg.d === off, 'reason: dg_status_read');
+  const need = { mode: 'dgrs', dgNeed: true };
+  let h = F.dgHtml(need); ok(h.includes('打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。') && h.includes('data-dgon="1"') && h.includes('>按這裡打開(要 Windows Hello)</button>'), 'reason: dg_off_button_after_red ' + h);
+  c.win = false; ok(F.dgHtml(need).includes('>按這裡打開(要 本人確認)</button>') && !/指紋|Touch ID/.test(F.dgHtml(need)), 'reason: dg_off_button_mac_words'); c.win = true;
+  ok(F.dgHtml({ mode: 'dgrs' }) === '' && F.dgHtml({ mode: 'safe', dgNeed: false }) === '', 'reason: dg_nothing_without_refusal');
+  c.acts = ['dgrs_switch_status']; ok(!F.dgHtml(need).includes('data-dgon'), 'reason: dg_no_button_without_set_act'); c.acts = ['dgrs_switch_status', 'dgrs_switch_set'];
+  c.S.dg.d = { on: false, can_on: false, owner_check: false }; h = F.dgHtml(need); ok(h.includes('這台沒有本人確認,不能從網頁打開。') && !h.includes('data-dgon'), 'reason: dg_no_owner_check_says_so ' + h);
+  c.S.dg.d = { on: true, source: 'page', can_off: true }; h = F.dgHtml({ mode: 'dgrs' }); ok(h.includes('這台已開「能改程式」。') && h.includes('data-dgoff="1"') && F.dgHtml({ mode: 'safe' }) === '', 'reason: dg_on_says_so_with_off ' + h);
+  c.S.dg.d = { on: true, source: 'env', can_off: true }; ok(F.dgHtml({ mode: 'dgrs' }).includes('這台已開「能改程式」。') && !F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_env_on_no_off_button');
+  c.S.dg.d = { on: true, source: 'page', can_off: false }; ok(!F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_off_only_when_can_off');
+  // 開走本人確認、只送 on;成功清掉開席紅字;關不走本人確認
+  sent.length = 0; c.S.dg = { d: off }; c.S.add = { dgNeed: true, msg: '這台還沒開「能改程式」的開關', err: true };
+  await F.dgSet(true); ok(sent[0] && sent[0].join(' ') === 'finger dgrs_switch_set {"on":true}' && c.S.add.dgNeed === false && c.S.add.msg === '' && c.S.dg.msg.text === '已打開「能改程式」,再按一次「開」。', 'reason: dg_on_uses_owner_check_only_on ' + JSON.stringify(sent));
+  sent.length = 0; await F.dgSet(false); ok(sent[0] && sent[0].join(' ') === 'act dgrs_switch_set {"on":false}' && !sent.some((x) => x[0] === 'finger'), 'reason: dg_off_no_owner_check ' + JSON.stringify(sent));
+  c.fail = { reason: 'owner_check_unavailable' }; await F.dgSet(true); ok(c.S.dg.msg.bad && c.S.dg.msg.text === '這台沒有本人確認,不能從網頁打開。', 'reason: dg_owner_check_unavailable_words');
+  c.fail = { reason: 'cancel' }; c.S.add = { dgNeed: true, msg: 'x', err: true }; await F.dgSet(true); ok(c.S.dg.msg.text === '沒有打開:ET:cancel' && c.S.add.dgNeed === true, 'reason: dg_on_fail_keeps_refusal'); c.fail = null;
+  c.S.dg.busy = true; sent.length = 0; await F.dgSet(true); ok(sent.length === 0, 'reason: dg_one_at_a_time'); c.S.dg.busy = false;
+  c.acts = []; c.S.dg = { d: off }; await F.dgLoad(); ok(c.S.dg === null, 'reason: dg_old_aibd_nothing');
+  ok(ws.includes("A.dgNeed = rgCode(e) === 'dgrs_needs_switch';") && ws.includes("${typeof dgHtml === 'function' ? dgHtml(A) : ''}${rfHtml(A)}") && ws.includes("if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }") && ws.includes("if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }"), 'reason: dg_wired');
+})());
+// 測試機「沒送出:internal」改顯示 aibd 回的 message(c2f0b 21:57)
+ok(ws.includes("msg: thErr(c) || (c === 'internal' && m && m !== c ? m : errText(e)), bad: true };"), 'reason: th_internal_shows_message');
 // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
 {
   const a = ws.indexOf('  const SP_INIT = '), b = ws.indexOf('  async function spLoad() {', a);
@@ -2320,7 +2353,7 @@ lateChecks.push((async () => {
   ok(ws.includes("session_policy_init: () => ['允許 AIB 在這台開', [['程式', typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name) + '(' + f.path + ')').join('、') : '', true]"), 'reason: w10_fp_card_same_order_as_window');
   ok(ws.includes("${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `<div class=\"aerr\" role=\"alert\">這台現在開不了任何 AI,所以不能加席。</div>"), 'reason: w10_card_replaces_cannot_open_line');
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
-  ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
+  ok(ws.includes('      S.sp = null; spLoad(); if (typeof dgLoad === \'function\') { S.dg = null; dgLoad(); } // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
   ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }

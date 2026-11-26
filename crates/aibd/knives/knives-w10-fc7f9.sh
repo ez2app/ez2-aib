@@ -21,7 +21,7 @@ k 'const r = await fingerAct(SP_INIT, {});' 'const r = await fingerAct(SP_INIT, 
 # W10K7
 k '${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `' '${false ? spCard(S.sp) : `'
 # W10K8
-k '      S.sp = null; spLoad(); // W-10' '      S.sp = null; // W-10'
+k '      S.sp = null; spLoad(); if (typeof dgLoad' '      S.sp = null; if (typeof dgLoad'
 # W10K9
 k 'policy_exists: '\''這台的開席安全設定已經設好了,AIB 不會改掉它。'\'',' 'policy_exists: '\''已有設定。'\'','
 # W10K10

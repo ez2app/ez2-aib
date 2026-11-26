@@ -1516,7 +1516,7 @@
       const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = FP_SEE; render(); });
       if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: thX().gateless, bad: true }; }
       else T.row[name] = { msg: kind === 'add' ? thX().added : thX().removed };
-    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: thErr(c) || errText(e), bad: true }; }
+    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)), m = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); T.row[name] = { msg: thErr(c) || (c === 'internal' && m && m !== c ? m : errText(e)), bad: true }; } // c2f0b 21:57:internal 改顯示 aibd 回的 message
     S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }
 
@@ -6353,6 +6353,42 @@
     } catch (e) { SP.msg = { bad: true, text: errText(e) }; }
     SP.busy = false; await spLoad();
   }
+  // 「能改程式」開關(c2f0b ef615567db;3e53b PRE-READ-dgrs-switch D1–D8;ebab8 21:51 客戶 Windows 回報:紅字後沒地方開)
+  // 開:dgrs_switch_set {on:true} 走本人確認(fingerAct);關:{on:false} 不用確認、立刻關;狀態:dgrs_switch_status {on, source, can_on, can_off, owner_check}
+  const DG_SET = 'dgrs_switch_set', DG_ST = 'dgrs_switch_status';
+  const DG_WHAT = '打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。';
+  const DG_NOOC = '這台沒有本人確認,不能從網頁打開。';
+  async function dgLoad() {
+    if (hasAct(DG_ST) !== true) { S.dg = null; return; }
+    const D = S.dg = S.dg || {};
+    try { const r = await act(DG_ST, {}); D.d = r && typeof r === 'object' && !Array.isArray(r) && typeof r.on === 'boolean' ? r : null; } catch (e) { D.d = null; }
+    render();
+  }
+  function dgHtml(A) {
+    const D = S.dg, d = D && D.d; if (!A || !d) return '';
+    const msg = D.msg ? `<div class="${D.msg.bad ? 'aerr' : 'aok'}" role="${D.msg.bad ? 'alert' : 'status'}">${esc(D.msg.text)}</div>` : '';
+    if (d.on === true) { // D6:開著照實寫;source=env(環境變數開的)頁面關不掉,不出關鈕
+      if (A.mode !== 'dgrs' && !A.dgNeed) return msg;
+      const off = d.can_off === true && d.source !== 'env' && hasAct(DG_SET) === true;
+      return `<div class="occ" role="status">這台已開「能改程式」。${off ? `<button type="button" class="k" data-dgoff="1" ${D.busy ? 'disabled' : ''}>關掉</button>` : ''}</div>${msg}`;
+    }
+    if (!A.dgNeed) return msg;
+    if (d.can_on === true && hasAct(DG_SET) === true) { // D7:紅字後接按這裡打開
+      const w = typeof fpWin === 'function' && fpWin() ? 'Windows Hello' : '本人確認';
+      return `<div class="occ warn">${esc(DG_WHAT)}<button type="button" class="go" data-dgon="1" ${D.busy ? 'disabled' : ''}>${D.busy ? '等你確認…' : '按這裡打開(要 ' + w + ')'}</button></div>${msg}`;
+    }
+    return (d.owner_check === false ? `<div class="occ warn">${esc(DG_NOOC)}</div>` : '') + msg;
+  }
+  async function dgSet(on) {
+    const D = S.dg; if (!D || D.busy || hasAct(DG_SET) !== true) return;
+    D.busy = true; D.msg = null; render();
+    try {
+      if (on === true) await fingerAct(DG_SET, { on: true }); else await act(DG_SET, { on: false });
+      D.msg = { bad: false, text: on === true ? '已打開「能改程式」,再按一次「開」。' : '已關掉「能改程式」。' };
+      if (on === true && S.add) { S.add.dgNeed = false; S.add.msg = ''; S.add.err = false; }
+    } catch (e) { const c = rgCode(e); D.msg = { bad: true, text: c === 'owner_check_unavailable' ? DG_NOOC : (on === true ? '沒有打開:' : '沒有關掉:') + errText(e) }; }
+    D.busy = false; await dgLoad();
+  }
   // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
   const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
   const addSnap = (b) => JSON.stringify(Object.assign({}, b, { idem_key: '' })); // 開席 body 快照(idem_key 每次新的,不算)
@@ -6435,7 +6471,7 @@
       <div class="apsrc">${esc(apSrc())}</div>${guideTourLine()}
       ${apTop(A)}${set}
       ${apMine(A)}
-      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
+      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${typeof dgHtml === 'function' ? dgHtml(A) : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       ${apGrp(A)}
       <div class="afoot">${!addNoRepo(A) ? `<span class="apsum">${esc(A.plan && pv ? apSum(A, pv) : '先選一個方案')}</span>` : ''}${addNoRepo(A) ? `<span class="anorepo" role="alert">${esc(NO_REPO)}${A.noRepoAsk ? ';確定要開就再按一次' : ''}</span>` : ''}<button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv || !A.plan ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(addNoRepo(A) && A.noRepoAsk && !A.busy ? '確定不用倉,開' : !A.busy && (A.mates || []).length ? `開這一組(${(A.mates || []).length + 1} 位)` : step)}</button></div></div></div>`;
@@ -6954,6 +6990,7 @@
     } catch (e) {
       // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
       const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
+      A.dgNeed = rgCode(e) === 'dgrs_needs_switch'; // 紅字後接開關鈕(dgHtml)
       if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
       else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }
       else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
@@ -7586,7 +7623,7 @@
       if (!S.pt.off) ptLoad(); // S3:每次開都重讀(別的分頁可能改過)
       hsLoad(); // S2:沒有 act 就不送
       lcLoad(); // L3:安裝 / 換版卡(舊 aibd 沒有這支 GET ⇒ 不出卡)
-      S.sp = null; spLoad(); // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
+      S.sp = null; spLoad(); if (typeof dgLoad === 'function') { S.dg = null; dgLoad(); } // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
       { const A = S.add; setTimeout(() => { if (S.add === A) A.still = true; }, 400); } // 進場只播一次,之後點選重畫不再播
       // 0eed7 L:人格清單有介面就用(GET /api/v1/personas,形狀未定:{personas:[{uid, display_name}]} 或陣列);沒有就從現有席收
       const r = await soft(get('/api/v1/personas')).catch(() => null);
@@ -7603,6 +7640,8 @@
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     { const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }
+    if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }
+    if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列
       const bk = x.closest('[data-apback]'); if (bk) { const A = S.add, code = bk.dataset.apback, sx = S.seats.find((y) => apCode(y) === code); A.plan = 'back:' + code; A.from = code; A.cat = 'handoff'; A.noRepoAsk = false; if (sx && sx.persona_uid) { A.persona = sx.persona_uid; A.personaTried = true; A.brainTouched = false; brainPreselect(A); } if (sx && AP_MODE[sx.mode]) A.mode = sx.mode; if (!A.ho || /HANDOFF-[0-9a-f]{5}-$/.test(A.ho)) A.ho = '~/.ez2-aib/pending/HANDOFF-' + code + '-'; A.rowOpen = 'ho'; A.key = idem(); render(); hlLoad(A, code); const i = document.querySelector('[data-addho]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } return; }
