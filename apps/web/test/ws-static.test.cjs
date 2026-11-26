@@ -1024,6 +1024,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
     c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
+    // 6770f 14:00:後端有開著的 2.0 席、還沒說話 ⇒ why=seat_open、next_act=focus_chat;四語都要有字(沒有字那行會空白)
+    ok(['zh-TW', 'en', 'ja', 'ko'].every((L) => { const T = X.GUIDE_W[L] && X.GUIDE_W[L].why; return T && typeof T.seat_open === 'string' && T.seat_open.length > 4; }), 'reason: guide_why_seat_open_words');
     { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.gstep\.gcur \.gact\{grid-column:1\/-1;/.test(css) && /\.gstep\.gcur \.ghello\{flex-basis:100%\}/.test(css) && /\.gskip\{position:absolute;bottom:16px;right:16px;/.test(css), 'reason: guide_layout_real_aib_b2_b4'); }
     // 終點挑法:面板關著有「開始用 Claude」⇒ 它;沒有 ⇒ + AI 夥伴;面板開著只挑面板裡的;「開」沒 disabled 才挑
     const L = X.GUIDE_GO.start_claude.to, hv = (m) => (s) => (s in m ? m[s] : null);

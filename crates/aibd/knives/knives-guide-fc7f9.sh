@@ -119,3 +119,5 @@ k 'const gNa = (na) => (na === '\''start_claude'\'' && typeof present === '\''fu
 kc '.gstep.gcur .gact{grid-column:1/-1;' '.gstep.gcur .gact{'
 # GC6 略過鈕回到右上、蓋住待審區(B4)
 kc '.gskip{position:absolute;bottom:16px;right:16px;' '.gskip{position:absolute;top:12px;right:12px;'
+# GD50 後端回 why=seat_open 時中文那行空白(6770f 14:00)
+k ', seat_open: '\''夥伴開好了,到下面打一句話'\''' ''
