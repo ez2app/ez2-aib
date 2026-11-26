@@ -37,7 +37,7 @@ k 'const why = (held && held.block) || npm || (!p ?' 'const why = (held && held.
 # W10K15
 k 'map((f) => spName(f.name) + '\''('\'' + f.path + '\'')'\'').join('\''、'\'')' 'map((f) => f.path + '\'' '\'' + spName(f.name)).join('\''、'\'')'
 # W10K16
-k 'policy_bad_request: '\''頁面送出的請求格式不對,這次沒做;請重新整理頁面再試。'\'',' 'policy_bad_request: '\''格式不對。'\'','
+k 'policy_bad_request: '\''頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'\'',' 'policy_bad_request: '\''格式不對。'\'','
 # W10K17
 k 'spFound(S.sp && S.sp.d).some((f) => f.name === k && f.kind === '\''npm'\'') ? SP_NPM_WHY(spName(k)) : '\'''\''' ''\'''\'''
 # W10K18
@@ -47,7 +47,7 @@ k '。AIB 不會自己蓋掉它;請刪掉這個檔後按「重新找」。</div>
 # W10K20
 k 'typeof d.policy_path === '\''string'\'' && d.policy_path ? `' 'typeof d.policy_path === '\''string'\'' && false ? `'
 # W10K21
-k 'policy_write_failed: '\''AIB 寫不進開席設定檔,這次沒做;設定沒有改。可以再按一次。'\'',' 'policy_write_failed: '\''AIB 寫不進開席設定檔,這次沒做。'\'','
+k 'policy_write_failed: '\''AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'\'',' 'policy_write_failed: '\''AIB 寫不進開席設定檔,這次沒做。'\'','
 # W10K22
 k ',但裡面沒有任何程式。要重設,請先刪掉開席設定檔再按「重新找」。</div>` : '\'''\'';' ',但裡面沒有任何程式。</div>` : '\'''\'';'
 # W10K23

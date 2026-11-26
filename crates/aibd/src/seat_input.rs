@@ -100,6 +100,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::merge_acts::MERGE_RUN,
     crate::merge_acts::MERGE_LOG,
     crate::merge_acts::MERGE_UNDO,
+    crate::session_policy_setup::KIND,
+    crate::guide::DONE_ACT,
     crate::gh_token::SET,
     crate::seats::PAGE_OPEN,
     RESTART,
@@ -588,6 +590,22 @@ pub async fn act(
                 _ => crate::persona_edit::archive(st, act, body).await,
             };
         }
+        // W-10 (IFACE-w10-session-policy r5): write the session policy, the built-in page in
+        // this pairing only, then a fresh owner check (the act checks its own body)
+        Some(crate::session_policy_setup::KIND) => {
+            if held_as_user_page(&page).await || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "registry_built_in_page_only",
+                    "the session policy is set up from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::session_policy_setup::init(&st, body, by).await;
+        }
+        // 6770f IFACE-guide r3: the new-user guide's one record; no owner check (it opens
+        // nothing and nothing reads it)
+        Some(crate::guide::DONE_ACT) => return crate::guide::done_act(&st, body).await,
         Some(
             crate::merge_acts::MERGE_FIND
             | crate::merge_acts::MERGE_PREVIEW

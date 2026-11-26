@@ -945,6 +945,35 @@ else:
         v["cards"][uid]["persona_sha"].as_str().unwrap().to_owned()
     }
 
+    /// The built-in persona (a machine with no cards file, ebab8 11-26) is never written: with
+    /// no cards file there is nothing to write into, and no cards file is made.
+    #[test]
+    fn the_built_in_persona_is_never_written() {
+        let d = tempfile::tempdir().unwrap();
+        let (cards, dir) = (d.path().join("cards.json"), d.path().join("w"));
+        let card = crate::personas::builtin_card();
+        // a text that passes the text check (its own uid in the front block)
+        let new = format!("---\nuid: {}\n---\n多一條規則。\n", card.uid);
+        assert_eq!(new_text_ok(new.as_bytes(), &card.uid), Ok(()));
+        assert_eq!(
+            write_at(
+                &cards,
+                &dir,
+                &card.uid,
+                &card.persona_sha,
+                new.as_bytes(),
+                "page:t"
+            )
+            .map(|w| w.new_sha),
+            Err(WriteError::Unreadable),
+            "reason: builtin_written"
+        );
+        assert!(
+            !cards.exists() && !dir.exists(),
+            "reason: builtin_made_files"
+        );
+    }
+
     /// PW-R1: the card, its `persona_sha` and the provenance are written, and 1.x says current;
     /// one copy kept, no pending record left.
     #[cfg(unix)]

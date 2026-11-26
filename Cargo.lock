@@ -414,6 +414,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-local-authentication",
  "thiserror",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

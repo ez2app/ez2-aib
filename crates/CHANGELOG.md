@@ -5,6 +5,46 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Windows setup: an **AIB** shortcut on the desktop and in the Start menu (ebab8 11-26 12:20, Andy
+  「要最快讓用戶一鍵可用」: after installing, the only way back to the workbench was typing
+  `aibd.exe ctl web` into cmd). It runs the installed `aibd.exe ctl web`, working folder = the AIB
+  folder, nothing else set; written only when none is there or it is ours, read back after writing;
+  somebody else's `AIB.lnk`, or one that is a link, is left as it is; uninstall removes only ours.
+  `aibd ctl web` on Windows now starts the installed aibd.exe (a plain file, run directly, no shell)
+  when AIB does not answer, as setup step 4 does. Why `aib-sys` gains the `windows` features
+  `Win32_UI_Shell` (IShellLinkW, SHGetKnownFolderPath: the desktop may be moved to OneDrive),
+  `Win32_System_Com` (CoCreateInstance, IPersistFile) and `Win32_Storage_FileSystem` (only because
+  IShellLinkW::GetPath names WIN32_FIND_DATAW): no new crate, `Cargo.lock` unchanged
+  (3e53b PREREAD-win-shortcut-wake r1). The shortcut's own window (ebab8 12:39) says two plain
+  lines in the user's language (en / ja / ko / zh-TW from `GetUserDefaultUILanguage`, hence
+  `windows-sys` `Win32_Globalization`) with the pairing code kept, and after a failure waits for
+  Enter so the reason can be read; a terminal is unchanged. Knives SC1–SC12, WL1.
+
+- Windows Hello window belongs to a window of aibd's own (ebab8 11-26 11:56; Microsoft: desktop programs use
+  `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`): aibd never has the foreground window, so every ask
+  went without one. Each ask now raises a small always-on-top window (「AIB 正在請你確認本人 · 請看 Windows 安全性視窗」) on
+  a thread of its own, asks for that window, and closes it when Windows answers; when it cannot be made the ask goes
+  as before; a window made after the 5 s wait gave up is closed by its own thread, never waited on (3e53b REVIEW-pack2
+  L2). Knives FW1–FW3 (`crates/aib-sys/knives/knives-hello-forwindow-c2f0b.sh`, Windows). Front-of-screen on the
+  laptop: W0, owner present.
+- Owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126; the laptop's session policy was approved and written with
+  nothing in the event journal): every answer to an owner window is journaled as `owner.answer` {ticket, operation,
+  resource (first 80 chars, never the params), outcome approved / refused:<code> / expired, secs, by}, and an approved
+  ticket used up by the very act it was approved for as `owner.used` {ticket, operation, by}, once, where it is used up
+  (3e53b REVIEW-pack2 L1: not after any act that names a ticket). Knives OA1–OA8 (`crates/aibd/knives/knives-owner-audit-c2f0b.sh`); a list ticket taken is journaled the same way.
+- Pairing window words (3e53b TRIAGE-nohello-confirmed-3e53b-1126 r5; on the laptop the customer typed the PIN
+  into two Hello windows a remote script had raised): the first line asks 「你剛在 AIB 頁面按了配對嗎?沒有就按取消」,
+  the second asks to compare the code with your page (「不一樣就按取消」), then what a yes does and for whom, then the
+  true source (「由終端機 / 程式要求」 / 「由瀏覽器頁要求」); Windows no longer says 「本機鑰」 (B2 has no key).
+  Knives W1–W4 (`crates/aibd/knives/knives-pairwords-c2f0b.sh`); TK12 re-aimed.
+- Knives (90856 TRIAGE-890 on #890 run 45757604748): OTE3's mutant keeps `os` used (it no longer fails to build under
+  `-D warnings`, a false miss); PM1 moves to `knives-provider-maker-sign-c2f0b.sh` (macOS), since on Linux AIB offers
+  no download and its test returns before the signature check, so it could never bite there.
+
+- Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
+  `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
+  restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and
+  signs nothing, so a keyless owner check takes no batch (`owner_batch_one_at_a_time`). Knives G1–G9.
 - `skipstop.stop.json`: this repo's checks for `aib-skipstop stop` (the plugin's stop system),
   to run before a push or a long knife run: the branch merges into main (`git merge-tree`),
   every knife's text is in its file once (`knife-anchors`), the knives this change touches

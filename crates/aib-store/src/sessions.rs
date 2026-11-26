@@ -187,6 +187,35 @@ impl Store {
         let rows = st.query_map(params![seat_id], row_of)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+
+    /// Has a seat's session (not one the preview.2 route started: `seat_id` NULL) ever written a
+    /// line of output? The output of session `s` is the aggregate `s` + `suffix`, its lines are
+    /// events of type `line` (aibd's `session_output`). Only yes or no: nothing that was said
+    /// (6770f IFACE-guide r3 `first`).
+    pub fn a_seat_has_spoken(&self, suffix: &str, line: &str) -> Result<bool> {
+        let c = self.read()?;
+        let yes: i64 = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE s.seat_id IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM events e WHERE e.aggregate_id = s.session_id || ?1 AND e.type = ?2))",
+            params![suffix, line],
+            |r| r.get(0),
+        )?;
+        Ok(yes != 0)
+    }
+
+    /// Is a seat's session running or waiting to start now (the preview.2 route's, `seat_id`
+    /// NULL, never)? Only yes or no (6770f guide r7, fc7f9 B1: a seat is open but has not
+    /// spoken ⇒ the first step points at the chat, not at opening another).
+    pub fn a_seat_is_open(&self) -> Result<bool> {
+        let c = self.read()?;
+        let yes: i64 = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions
+                 WHERE seat_id IS NOT NULL AND (state = 'running' OR state = 'pending'))",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(yes != 0)
+    }
 }
 
 /// How many seats' sessions are running (or waiting to start) in the aibd store at `db`, read

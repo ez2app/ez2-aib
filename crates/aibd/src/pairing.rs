@@ -143,6 +143,17 @@ impl ConfirmChannel {
         }
     }
 
+    /// What this aibd pairs with (Andy 11-26 03:1x, PLAN-win-customer-today-c2f0b-1126): with
+    /// `AIBD_PAIRING` unset, a Windows aibd pairs through Windows Hello, so a customer starts it
+    /// with no `set`; a value given still decides (`off`, `0`, anything unknown: off). Elsewhere
+    /// unset stays off.
+    pub fn from_env_here(v: Option<&str>, windows: bool) -> ConfirmChannel {
+        match v {
+            None if windows => ConfirmChannel::TouchId,
+            _ => ConfirmChannel::from_env_value(v),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ConfirmChannel::Off => "off",
@@ -1495,7 +1506,13 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_words"
         );
-        let (top, rest) = (lines[0], lines[3]);
+        // the first line is exactly aibd's question, nothing from the request before it
+        assert_eq!(
+            lines[0],
+            crate::touch::ask_first(&Who::Terminal),
+            "reason: window_first_line"
+        );
+        let (top, rest) = (lines[2], lines[3]);
         assert!(
             top.starts_with(&crate::touch::plain(&Who::Terminal, false)),
             "reason: window_words {top}"
@@ -1562,6 +1579,36 @@ mod tests {
             Some("terminal_y")
         );
         assert_eq!(ConfirmChannel::Off.method(), None);
+    }
+
+    #[test]
+    fn a_windows_aibd_pairs_through_hello_unless_told_otherwise() {
+        // Andy 11-26 03:1x: a customer starts aibd.exe with no `set`
+        assert_eq!(
+            ConfirmChannel::from_env_here(None, true),
+            ConfirmChannel::TouchId,
+            "reason: windows_unset_not_hello"
+        );
+        assert_eq!(
+            ConfirmChannel::from_env_here(None, false),
+            ConfirmChannel::Off,
+            "reason: other_platform_unset_turned_on"
+        );
+        for (v, want) in [
+            ("off", ConfirmChannel::Off),
+            ("0", ConfirmChannel::Off),
+            ("", ConfirmChannel::Off),
+            ("terminal-unverified", ConfirmChannel::TerminalUnverified),
+            ("touchid", ConfirmChannel::TouchId),
+        ] {
+            for windows in [true, false] {
+                assert_eq!(
+                    ConfirmChannel::from_env_here(Some(v), windows),
+                    want,
+                    "reason: given_value_not_decisive {v:?} {windows}"
+                );
+            }
+        }
     }
 
     /// Timing cannot be measured reliably in a unit test, so the rule is checked on the
@@ -1824,7 +1871,7 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_four_lines"
         );
-        let (top, w) = (lines[0], lines[3]);
+        let (top, w) = (lines[2], lines[3]);
         assert!(
             top.starts_with("讓這一頁繼續用完整權限到 ") && top.contains("(起因:開席)"),
             "reason: window_top {top}"
@@ -1834,7 +1881,10 @@ mod tests {
             "reason: window_hides_full_upgrade {w}"
         );
         assert!(
-            w.ends_with(";起因:開席;換版前延續的配對,給 內建頁。本機鑰(未登記)"),
+            w.ends_with(&format!(
+                ";起因:開席;換版前延續的配對,給 內建頁;由瀏覽器頁要求。{}",
+                crate::touch::OWNER_CHECK_WORD
+            )),
             "{w}"
         );
         let b = p.access(&cred).unwrap();
@@ -1951,10 +2001,10 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_four_lines"
         );
-        let (top, rest) = (lines[0], lines[3]);
+        let (top, rest) = (lines[2], lines[3]);
         assert!(
             top.starts_with("讓這個瀏覽器分頁配對成 AIB 的")
-                && lines[2].ends_with(",過了這張就作廢"),
+                && lines[1].ends_with(",過了這張就作廢"),
             "reason: window_top {top}"
         );
         let code: String = rest
@@ -1962,7 +2012,7 @@ mod tests {
             .map(|(_, r)| r.chars().take_while(char::is_ascii_digit).collect())
             .unwrap_or_default();
         assert!(
-            !code.is_empty() && lines[2].starts_with(&format!("對照碼 {code} · ")),
+            !code.is_empty() && lines[1].starts_with(&format!("你的頁面也要顯示 {code},")),
             "reason: window_code {said}"
         );
         advance(&o, TOUCH_COOL);

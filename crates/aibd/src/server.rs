@@ -45,6 +45,26 @@ pub const LOCK_WAIT: std::time::Duration = std::time::Duration::ZERO;
 
 /// Take the single-instance lock, retrying for up to [`LOCK_WAIT`] on the registered
 /// `startup.lock_wait` timer (ADR 0005: no ad-hoc sleeps), off the async runtime.
+/// An event journal writing to `store`, each event its own aggregate of `aggregate` (one
+/// sequence, an `ev_` id).
+fn journal_to(store: Arc<Store>, aggregate: &'static str) -> crate::pairing::Journal {
+    Arc::new(move |kind, payload| {
+        let Ok(id) = crate::sessions::new_id("ev_") else {
+            return;
+        };
+        let _ = store.append(vec![aib_store::NewEvent {
+            event_id: id.clone(),
+            aggregate_type: aggregate.into(),
+            aggregate_id: id,
+            sequence: 1,
+            event_type: kind.into(),
+            correlation_id: None,
+            occurred_at: crate::sessions::now_rfc3339(),
+            payload,
+        }]);
+    })
+}
+
 async fn instance_lock_waiting(p: &std::path::Path) -> Result<std::fs::File, StartError> {
     if let Some(l) = platform::instance_lock(p)? {
         return Ok(l);
@@ -99,6 +119,12 @@ pub async fn run(
     platform::create_private_dir(&run_dir)?;
 
     let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
+    // L1c (IFACE-provider-lifecycle §3.8, N2): a provider download the last run left behind
+    // goes; a link there goes as the link. Only now: no other aibd is running.
+    match crate::provider_fetch::clean_downloads(&dirs.data_dir()) {
+        0 => {}
+        n => tracing::info!(left = n, "provider downloads of the last run removed"),
+    }
     let revive_policy =
         crate::alive::RevivePolicy::load(&dirs.data_dir()).map_err(StartError::RevivePolicy)?;
     tracing::info!(
@@ -215,8 +241,9 @@ pub async fn run(
 
     // pairing (ADR 0006 §7) is opt-in: the terminal confirmation is not an independent
     // channel against a same-account AI (see crate::pairing)
-    let channel = crate::pairing::ConfirmChannel::from_env_value(
+    let channel = crate::pairing::ConfirmChannel::from_env_here(
         std::env::var("AIBD_PAIRING").ok().as_deref(),
+        cfg!(windows),
     );
     if channel == crate::pairing::ConfirmChannel::TouchId {
         tracing::info!("pairing is on; the owner's fingerprint confirms it (crate::touch)");
@@ -252,7 +279,10 @@ pub async fn run(
         match tokio::task::spawn_blocking(move || crate::touch::presence_here(&d)).await {
             Ok(Ok(p)) => {
                 // a63 (Andy 11-20): the page's owner asks use the same key, only when switched on
-                if crate::owner_ok::switch_on(std::env::var(crate::owner_ok::SWITCH).ok()) {
+                if crate::owner_ok::switch_on_here(
+                    std::env::var(crate::owner_ok::SWITCH).ok(),
+                    cfg!(windows),
+                ) {
                     crate::owner_ok::set_presence(p.clone(), pairing.clone());
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
@@ -264,25 +294,11 @@ pub async fn run(
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
         }
     }
-    // SPEC §19d: each pairing step's outcome in the event journal (the tab may close)
-    {
-        let st = store.clone();
-        pairing.set_journal(Arc::new(move |kind, payload| {
-            let Ok(id) = crate::sessions::new_id("ev_") else {
-                return;
-            };
-            let _ = st.append(vec![aib_store::NewEvent {
-                event_id: id.clone(),
-                aggregate_type: "pairing".into(),
-                aggregate_id: id,
-                sequence: 1,
-                event_type: kind.into(),
-                correlation_id: None,
-                occurred_at: crate::sessions::now_rfc3339(),
-                payload,
-            }]);
-        }));
-    }
+    // SPEC §19d: each pairing step's outcome in the event journal (the tab may close); the
+    // owner check's answers and the acts done with its tickets too (3e53b
+    // READ-spinit-owner-audit-3e53b-1126: who approved what, when, what Windows answered)
+    pairing.set_journal(journal_to(store.clone(), "pairing"));
+    crate::owner_ok::set_journal(journal_to(store.clone(), "owner"));
     // S89-pair-carry: this build's own digest, for telling an update from a restart at stop
     let exe = tokio::task::spawn_blocking(crate::pair_carry::exe)
         .await
@@ -344,6 +360,11 @@ pub async fn run(
     crate::workspace::set_data_dir(dirs.data_dir());
     let sessions_dir = dirs.data_dir().join("sessions");
     platform::create_private_dir(&sessions_dir)?;
+    // 3e53b REVIEW-copilot e3d07aff N3: copilot seat homes an earlier aibd left, before any seat
+    let left = crate::copilot_wire::clear_homes(&dirs.data_dir().join(crate::copilot_wire::HOMES));
+    if left > 0 {
+        tracing::info!(left, "copilot seat homes left by an earlier aibd removed");
+    }
     let sessions = crate::sessions::Sessions::new(
         store.clone(),
         Some(lineage.clone()),
@@ -477,6 +498,8 @@ pub async fn run(
             tracing::info!(seats = n, "rejoin after start");
         });
     }
+    // 6770f IFACE-guide r3: someone who used AIB before the guide is not walked through it
+    crate::guide::at_start(state.clone());
     let app = api::router(state, guard_cfg);
     tracing::info!(%addr, "aibd listening");
     on_started(Started {

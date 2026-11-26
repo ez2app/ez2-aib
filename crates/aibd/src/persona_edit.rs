@@ -226,6 +226,12 @@ pub async fn set(st: AppState, body: Value, by: String) -> Response {
         Ok(u) => u,
         Err(r) => return *r,
     };
+    if uid == crate::personas::BUILTIN_UID {
+        return bad(
+            crate::personas::BUILTIN_READ_ONLY,
+            "the built-in persona is part of aibd and is not changed",
+        );
+    }
     let Some(base) = body
         .get("base_sha")
         .and_then(Value::as_str)
@@ -346,6 +352,12 @@ pub async fn archive(st: AppState, act: &str, body: Value) -> Response {
         Err(r) => return *r,
     };
     let kind = kind_of(act);
+    if kind == "persona" && uid == crate::personas::BUILTIN_UID {
+        return bad(
+            crate::personas::BUILTIN_READ_ONLY,
+            "the built-in persona is part of aibd and is not archived",
+        );
+    }
     if kind == "role"
         && crate::registry::BUILTIN_ROLES
             .iter()

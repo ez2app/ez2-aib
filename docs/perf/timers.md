@@ -29,6 +29,7 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | `provider.login_url_wait` | operation | 200 ms | 20 s | only while a page's provider_relogin starts the login program: look for the address it prints, kill its group at 20 s (DESIGN-relogin-card r2, a9136 11-21) |
 | `provider.login_wait` | operation | 500 ms | 600 s | only while a login round runs: look whether the login program ended, kill its group at 10 min (DESIGN-relogin-card r2, a9136 11-21) |
 | `provider.login_status_wait` | operation | 200 ms | 20 s | only after a login round's program ended: run its status once, kill it at 20 s (DESIGN-relogin-card r2, a9136 11-21) |
+| `provider.fetch_wait` | operation | 500 ms | 1800 s | only while a provider program downloads: look whether curl ended and how many bytes it wrote, kill it on cancel or at 30 min (IFACE-provider-lifecycle §3.1, L1c 6770f 11-26) |
 | `dm.mirror` | resident | 60 s | — | only with dm_mirror true in <data>/bridge.json: read the 1.x mail ledger files changed since the last pass into the message library (new live letters, status moves), read only (N-web-dmbridge, 7ebca 11-19) |
 | `seat.tick` | resident | 60 s | — | only while <data>/seat_ticks.json lists a seat: type each listed seat its sentence when its period (5 min to 1 day) has passed, between turns only (ORDER-webonly-today 7, a9136 11-20) |
 | `receipt.poll` | resident | 30 s | — | only while a receipt run waits for its owner or runs (<data>/receipt_runs.json): ask the runner for each one's .out and read it, stop when none is under way (N-webonly 4, 7ebca 11-20) |

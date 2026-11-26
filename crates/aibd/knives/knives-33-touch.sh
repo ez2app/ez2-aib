@@ -75,8 +75,8 @@ python3 -I scripts/knife.py crates/aibd/src/pairing.rs \
   -- cargo test -p aibd --locked --lib pairing::tests::a_carried_pairing_reconfirmed_by_the_finger_works_as_this_runs
 # TK12 the re-confirm window hides that the whole page goes up (5d33a REVIEW-touchid L1)
 python3 -I scripts/knife.py crates/aibd/src/touch.rs \
-  '            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to}。本機鑰(未登記)"' \
-  '            "aibd 網頁重新確認:{act}{until:.0};換版前延續的配對,給 {to}。本機鑰(未登記)" // knife' \
+  '            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}"' \
+  '            "aibd 網頁重新確認:{act}{until:.0};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}" // knife' \
   --expect-fail touch::tests::the_window_says_the_code_where_it_goes_and_who_asked \
   -- cargo test -p aibd --locked --lib touch::tests::the_window_says_the_code_where_it_goes_and_who_asked
 # TK13 an action not on aibd's list gets a window

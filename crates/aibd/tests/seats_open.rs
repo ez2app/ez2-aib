@@ -464,6 +464,7 @@ async fn cards_that_cannot_be_read_are_503_and_the_list_still_answers() {
             "the seat's own name stands in"
         );
     }
+    // no cards file at all (a new machine): only the built-in persona, which opens a seat
     std::fs::remove_file(&cards).unwrap();
     let r = d
         .call(
@@ -473,7 +474,42 @@ async fn cards_that_cannot_be_read_are_503_and_the_list_still_answers() {
             &key("y"),
         )
         .await;
-    assert_eq!(r.code, 503, "{}", r.json);
+    assert_eq!(r.code, 400, "{}", r.json);
+    assert_eq!(r.json["reason"], "persona_missing", "{}", r.json);
+    let list = d.call("GET", "/api/v1/personas", None, "").await;
+    assert_eq!(list.code, 200, "{}", list.json);
+    assert_eq!(
+        list.json["personas"].as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        list.json
+    );
+    assert_eq!(list.json["personas"][0]["uid"], "aib000");
+    assert_eq!(list.json["personas"][0]["builtin"], true, "{}", list.json);
+    // only the whole uid opens it, never one that only looks like it
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("aib001", "")),
+            &key("c"),
+        )
+        .await;
+    assert_eq!(
+        (r.code, r.json["reason"].as_str()),
+        (400, Some("persona_missing")),
+        "reason: similar_uid_opens {}",
+        r.json
+    );
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("aib000", "")),
+            &key("b"),
+        )
+        .await;
+    assert_eq!(r.code, 201, "reason: builtin_persona_not_opened {}", r.json);
     d.shutdown().await;
     // no cards file configured at all
     let mut d = start(dir.path(), None).await;
@@ -824,7 +860,7 @@ async fn a_queued_seat_session_starts_when_a_slot_frees() {
 }
 
 /// B4-1b-2b K3, changed by S89-live-5 (0eed7 J2, 519d0 04:02): a provider aib knows but cannot
-/// yet start over pipes (codex, grok) is refused before anything is written — no empty seat
+/// yet start over pipes (agy; grok opens a safe seat since 08de5 11-25) is refused before anything is written — no empty seat
 /// left behind — and a dry run says the same instead of printing a plan.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_cannot_start_is_refused_and_leaves_no_seat() {
@@ -834,8 +870,8 @@ async fn a_provider_that_cannot_start_is_refused_and_leaves_no_seat() {
     let cwd = serde_json::Value::String(cwd()).to_string();
     // S89-live-2: codex opens safe only; its dgrs is refused the same way, with its own code
     for (provider, mode, extra, why) in [
-        ("grok", "safe", "", "provider_unsupported"),
-        ("grok", "safe", r#","dry_run":true"#, "provider_unsupported"),
+        ("agy", "safe", "", "provider_unsupported"),
+        ("agy", "safe", r#","dry_run":true"#, "provider_unsupported"),
         ("codex", "dgrs", "", "provider_mode_unsupported"),
         (
             "codex",

@@ -50,21 +50,36 @@ block2 = { version = "=0.6.2", default-features = false, features = ["alloc"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Globalization", # ui_lang: GetUserDefaultUILanguage, the words of the shortcut's window (ebab8 11-26 12:39)
     "Win32_Graphics_Gdi", # AP26 W-5: CreateDesktopW / RegisterClassW need it (BitBlt etc.: test code only, source guard)
     "Win32_Security",
     "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash
+    "Win32_Security_Cryptography_Catalog", # L1 (08de5 11-26): WinTrust signer helpers need it
+    "Win32_Security_Cryptography_Sip", # L1: same
+    "Win32_Security_WinTrust", # L1: Authenticode check of a downloaded AI CLI (wintrust.rs)
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader", # AP26 W-5: passphrase window class (PRE-READ-w4-winsys-features)
+    "Win32_System_Registry", # win-setup: HKCU Run only (COND-win-installer-3e53b r1)
     "Win32_System_RemoteDesktop",
     "Win32_System_StationsAndDesktops", # AP26 W-5: aibd's own desktop
     "Win32_System_SystemInformation", # sysdir: GetSystemDirectoryW for host_ssh (3e53b DEEP2 T1)
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse", # AP26 W-5 SetFocus (SendInput: test code only, source guard)
     "Win32_UI_WindowsAndMessaging", # AP26 W-5 passphrase window, WDA_EXCLUDEFROMCAPTURE
+] }
+# B2 (Andy 11-26 10:1x, DECISION-win-hello-fallback-3e53b-1126): Windows Hello gesture only
+# (UserConsentVerifier + its window interop), no key. Already in Cargo.lock (sysinfo).
+windows = { version = "=0.62.2", features = [
+    "Security_Credentials_UI",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem", # winshortcut: IShellLinkW::GetPath names WIN32_FIND_DATAW (ebab8 11-26 12:20)
+    "Win32_System_Com", # winshortcut: CoCreateInstance(ShellLink), IPersistFile Save / Load
+    "Win32_System_WinRT",
+    "Win32_UI_Shell", # winshortcut: IShellLinkW, SHGetKnownFolderPath(Desktop / Programs)
 ] }
 
 # AP26 W-4 (PRE-READ-w4-winsys-features 3e53b condition 1): features only the owner-present

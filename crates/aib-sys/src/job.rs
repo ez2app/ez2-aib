@@ -208,6 +208,12 @@ impl Process {
         self.pid
     }
 
+    /// The handle itself, for reads that must go through this same handle (winstop: the
+    /// identity of a process is read on the handle that will end it).
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.h.as_raw_handle() as HANDLE
+    }
+
     /// Creation time (FILETIME 100 ns). Stable for the life of the process;
     /// still readable after it exits while this handle is open.
     pub fn created_100ns(&self) -> Result<u64, SysError> {

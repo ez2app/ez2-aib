@@ -369,8 +369,10 @@ pub const PAIRING_TOUCHID: &str = "touchid";
 ///   touchid is the stricter channel, the weak `terminal-unverified` is never kept beside it);
 /// - the pairing named in this command (`pairing_named`: `--env` / `--unset-env`) as anything
 ///   else: refused, the command contradicts itself;
-/// - a platform with no fingerprint pairing in aibd yet (Windows Hello is not in aibd):
-///   refused, never a weaker channel.
+/// - a platform other than macOS: refused, never a weaker channel. This writes the macOS
+///   launchd plist only; a Windows aibd needs no switch written, since with both values
+///   unset it already pairs through Windows Hello and lets the page ask the owner
+///   (8ced9f3eb6, [`crate::owner_ok::switch_on_here`]).
 ///
 /// Against slips, not a defence: the same user can write the plist by hand
 /// (GUIDE-same-user-ai-threat-model); the defence is the fingerprint itself.
@@ -385,7 +387,7 @@ pub fn owner_touch_env(
     }
     if os != "macos" {
         return Err(format!(
-            "{switch}=1 needs the owner's fingerprint pairing, which aibd does not have on {os} yet (Windows Hello later); not writing it"
+            "{switch}=1 needs the owner's fingerprint pairing, and this writes only the macOS plist (on Windows leave it unset: aibd pairs through Windows Hello by default); not writing it"
         ));
     }
     match env.get(PAIRING_ENV).map(String::as_str) {

@@ -3820,8 +3820,11 @@ jobs:
   #   ready-merge, and only when a Rust path changed; waits for the rust cells so it never races them.
   winpack:
     name: Windows hands-on pack (not required)
-    needs: [changes, rust]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge')) }}
+    # TRIAL branch only (11-25, do not merge): the pack does not wait for the rust cells here, because
+    #   the macOS rust cell queues for hours and the Windows trial pack is wanted today.
+    needs: [changes]
+    # TRIAL branch only (11-26, do not merge): no ready-merge label needed here; this draft never carries it.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.run != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -3860,6 +3863,11 @@ jobs:
             [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
             cp "target-winexe/release/$b.exe" winexe/
           done
+          # 90856 W3 (ebab8 11-26 04:46): AIB-Setup.exe is the same aibd.exe under the name that runs the
+          #   installer on a double-click (aibd main.rs: an exe named AIB-Setup*.exe started with no
+          #   arguments runs `aibd setup`). A plain copy, listed in SHA256SUMS like every other file.
+          cp winexe/aibd.exe winexe/AIB-Setup.exe
+          cmp winexe/aibd.exe winexe/AIB-Setup.exe
           # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
           #   executables built here. A test executable holds absolute paths of where it was built
           #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed
