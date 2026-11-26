@@ -30,7 +30,7 @@ sc '    if !resident || !ops.same_file(current, &p.exe) {' \
    web_from_elsewhere_starts_nothing
 # SC6 `ctl web` naming another aibd (test / preview) starts the resident one
 sc '    if !resident || !ops.same_file(current, &p.exe) {' \
-   '    if !ops.same_file(current, &p.exe) {' \
+   '    if (false && !resident) || !ops.same_file(current, &p.exe) {' \
    web_from_elsewhere_starts_nothing
 # SC7 the shortcut runs something other than the workbench line
 sc 'pub const SHORTCUT_ARGS: &str = "ctl web";' \
