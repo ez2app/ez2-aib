@@ -1235,17 +1235,35 @@
     catch (e) { S.th = { err: TH_ERR[e && (e.code || e.reason)] || errText(e), at: Date.now(), row: {} }; }
     render();
   }
+  // ebab8 11:56(客戶 Windows 截圖):客戶 ssh 設定裡的 9 台全列、8 台紅叉,客戶以為壞了,還把他的主機名與位址印在畫面上
+  // ⇒ 沒有登記過的測試機時整塊收成一行 + 「從這台的 ssh 設定加」;按了才列 AIB 能用的那幾台;不能用的不列名字、不出紅叉,只寫幾台
+  const TH_L = {
+    'zh-TW': { none: '還沒加(開發用的功能)', open: '從這台的 ssh 設定加', close: '收起', bad: (n) => `另有 ${n} 台不能用(ssh 設定看不懂或要經跳板),沒有列出`, empty: '這台的 ssh 設定裡沒有 AIB 能用的機器' },
+    en: { none: 'None added (a developer feature)', open: "Add from this computer's ssh settings", close: 'Hide', bad: (n) => `${n} more can't be used (ssh settings not understood, or reached through a jump host); not listed`, empty: "This computer's ssh settings have no machine AIB can use" },
+    ja: { none: 'まだ追加していません(開発者向けの機能)', open: 'このパソコンの ssh 設定から追加', close: '閉じる', bad: (n) => `ほかに ${n} 台は使えません(ssh 設定が読めない、または踏み台経由)。一覧には出していません`, empty: 'このパソコンの ssh 設定には AIB が使えるマシンがありません' },
+    ko: { none: '아직 추가하지 않음(개발자용 기능)', open: '이 컴퓨터의 ssh 설정에서 추가', close: '접기', bad: (n) => `그 밖에 ${n}대는 쓸 수 없습니다(ssh 설정을 읽을 수 없거나 점프 호스트 경유). 목록에 넣지 않았습니다`, empty: '이 컴퓨터의 ssh 설정에는 AIB가 쓸 수 있는 기기가 없습니다' },
+  };
+  function thHalf(T, m) {
+    const R = T.row[String(m.name || '')] || {};
+    const half = 'half' in m ? m.half === true : R.half || (m.pinned === false && R.gateless);
+    return half;
+  }
+  const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th;
     if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="thh"><b>測試機</b><span class="hv">讀取中…</span></div>'; }
     let h = `<div class="thh"><b>測試機</b><span class="hv">${T.list ? '收據可用 ' + T.pinned + (T.max ? ' / 最多 ' + T.max : '') : ''}</span><button type="button" class="k" data-threload="1" title="重讀這台 ssh 設定裡的機器">重讀</button></div>`;
     if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
-    if (!T.list.length) return h + '<div class="thr hv">這台的 ssh 設定裡沒有別台機器</div>';
-    for (const m of T.list) {
+    const W = thW(), isHalf = (m) => thHalf(T, m);
+    const kept = T.list.filter((m) => m.pinned || isHalf(m)), canAdd = T.list.filter((m) => m.usable && !m.pinned && !isHalf(m)), nBad = T.list.length - kept.length - canAdd.length;
+    if (!kept.length && !T.open) return `<div class="thh"><b>測試機</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
+    const shown = T.open ? kept.concat(canAdd) : kept;
+    if (T.open) h += `<div class="thr hv">${esc(shown.length ? '' : W.empty)}${nBad > 0 ? esc((shown.length ? '' : ' · ') + W.bad(nBad)) : ''}<button type="button" class="k" data-thclose="1">${esc(W.close)}</button></div>`;
+    for (const m of shown) {
       const nm = String(m.name || ''), R = T.row[nm] || {};
       // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
-      const half = 'half' in m ? m.half === true : R.half || (m.pinned === false && R.gateless);
+      const half = isHalf(m);
       const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
       const st = R.busy ? (R.wait || '處理中…') : m.pinned ? '✅ 可跑收據' : half ? '⚠️ 寫了但收據閘沒回' : m.usable ? '還沒加' : '❌ ' + (TH_WHY[m.why] || '不支援');
       const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${m.pinned || half ? '收回這台' : '加'}</button>`;
@@ -2924,10 +2942,13 @@
   const CT = { att: [], hist: null, histOpen: false, histSel: 0, favs: null, favOpen: false, favQ: '', colors: [], pick: null, note: '' };
   const SECRETISH = /(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|[A-Za-z0-9+/_-]{40,})/;
   const ctHas = (t) => hasAct(t) === true;
+  // ebab8 11:56(客戶 Windows 截圖):黃字印了內部介面名 ⇒ 白話、灰字、四語;截圖那件不寫在這裡(按了會說怎麼用系統截圖貼上)
+  const CT_MISS = { 'zh-TW': '這一版 AIB 還不會保存送出紀錄和收藏,重新整理這一頁就會清空。', en: "This version of AIB doesn't save sent messages or favourites yet; reloading this page clears them.", ja: 'この版の AIB は送信履歴とお気に入りをまだ保存しません。このページを再読み込みすると消えます。', ko: '이번 버전의 AIB는 보낸 기록과 즐겨찾기를 아직 저장하지 않습니다. 이 페이지를 새로 고치면 지워집니다.' };
+  const ctMissWord = () => CT_MISS[typeof askLang === 'function' ? askLang() : 'zh-TW'] || CT_MISS['zh-TW'];
   function chatTools() {
     const miss = ['send_history_list', 'fav_add', 'screen_capture'].filter((t) => !ctHas(t));
     const hist = CT.histOpen ? ctHistHtml() : '';
-    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(AIB),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.length ? `<div class="ctn">AIB 還沒有 ${esc(miss.join(' / '))}:紀錄、收藏只在這一頁有效,重整就沒了</div>` : ''}${CT.att.length ? `<div class="atts">${CT.att.map((a, k) => `<span class="atc"><img class="atimg" src="${esc(a.thumb)}" alt="">圖 ${k + 1}<button type="button" class="ghx" data-attx="${k}" aria-label="拿掉這張">×</button></span>`).join('')}<span class="cth">送出時一起交給這一席(最多 4 張)</span></div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
+    return `<div class="ctw">${hist}<div class="ctools"><button type="button" class="ctb" data-ct="shot" title="截整個螢幕(AIB),在頁面上拖框、標註">📸 截圖</button><button type="button" class="ctb" data-ct="pick" title="取色:吸管或在截圖上點">🎨 取色</button><button type="button" class="ctb" data-ct="file" title="選一張圖(也可以直接貼上或拖進輸入框)">📎 附圖</button><button type="button" class="ctb ${CT.favOpen ? 'on' : ''}" data-ct="fav" title="右欄收藏">☆ 收藏</button><span class="cth">↑ 叫回送出紀錄 · 貼上 / 拖入圖片也可</span></div>${miss.some((t) => t !== 'screen_capture') ? `<div class="ctn ctmiss">${esc(ctMissWord())}</div>` : ''}${CT.att.length ? `<div class="atts">${CT.att.map((a, k) => `<span class="atc"><img class="atimg" src="${esc(a.thumb)}" alt="">圖 ${k + 1}<button type="button" class="ghx" data-attx="${k}" aria-label="拿掉這張">×</button></span>`).join('')}<span class="cth">送出時一起交給這一席(最多 4 張)</span></div>` : ''}${CT.note ? `<div class="ctn">${esc(CT.note)}</div>` : ''}${CT.pick ? ctPickHtml() : ''}</div>`;
   }
   // ---- 送出紀錄 100 則(↑ 叫回;同上一則不存;權杖樣字串不存)----
   async function ctHistLoad() {
@@ -7024,7 +7045,9 @@
     if (x.closest('[data-sr]')) { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; const sq = document.getElementById('sq'); if (sq) sq.value = ''; render(); } // 點一筆:跳過去,搜尋收起(框清空、中欄回原樣;0eed7 L2:之前只清了 S.q,沒重畫,框與結果都還在)
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
     const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
-    if (x.closest('[data-threload]')) { S.th = null; return thLoad(); }
+    if (x.closest('[data-threload]')) { const o = !!(S.th && S.th.open); S.th = null; await thLoad(); if (S.th) { S.th.open = o; render(); } return; }
+    if (x.closest('[data-thopen]') && S.th) { S.th.open = true; return render(); }
+    if (x.closest('[data-thclose]') && S.th) { S.th.open = false; return render(); }
     if (x.closest('[data-tsreload]')) { S.ts = null; return tsLoad(); }
     if (x.closest('[data-tschattog]')) { S.tsChatOpen = !S.tsChatOpen; return render(); }
     const tsf = x.closest('[data-tschatf]'); if (tsf) { S.tsChatFilter = tsf.dataset.tschatf; return render(); }
