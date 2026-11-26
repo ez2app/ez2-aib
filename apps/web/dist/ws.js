@@ -6923,10 +6923,12 @@
     catch (e) { if (reuseOnly || !(e && e.status === 400)) throw e; return tidOf(await act('thread_open', { title: SHARED_TITLE, members: sharedMembers() })); }
   }
   // ebab8 12:20(Andy「要最快讓用戶一鍵可用」):只有一席在跑、這句沒 @ ⇒ 就交給那一席;兩席以上照舊要 @
-  const soleSeat = () => { const L = present().filter((s) => !isLegacy(s) && !isArch(s)); return L.length === 1 ? L[0] : null; };
+  const soleSeat = () => { const L = present().filter((s) => !isArch(s)); return L.length === 1 && !isLegacy(L[0]) ? L[0] : null; }; // f163c L1:活著的 1.x 席也算一席(兩席以上要 @)
+  // 3e53b 5a8d46f5eb L1:只在這句完全沒有 @ 時才交給唯一那席;打了 @ 但對不上(打錯名、@ 封存席)照舊擋
+  const soleTarget = (text, T) => (!T.length && !(targets.amb || []).length && !String(text).includes('@') ? soleSeat() : null);
   async function sendShared(text) {
     let T = targets(text);
-    if (!T.length && !(targets.amb || []).length && soleSeat()) T = [soleSeat()];
+    { const one = soleTarget(text, T); if (one) T = [one]; }
     if ((targets.amb || []).length) { say(targets.amb.map((n) => '@' + n).join(' ') + ' 有兩席以上同名,這句沒送;點 @ 選頭像(名字後面有席碼),或打 @席碼', 'err'); return false; }
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
     // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
@@ -7301,7 +7303,8 @@
       if (L && S.add) { const P = L.filter((p) => p && p.uid); S.personaBuiltin = P.filter((p) => p.builtin === true).map((p) => String(p.uid)); S.personaList = P.map((p) => [String(p.uid), p.builtin === true ? pbW()[0] : String(p.display_name || p.name || p.uid)]); brainPreselect(S.add); }
       S.arch = Object.assign(S.arch || {}, { persona: rgArchOf(r) }); // A1:已封存的人格
       if (S.add) { S.add.personasIn = true; render(); } // 拿到或拿不到都算回來了,這時才預選上次的人格
-      { const A = S.add; if (A && apFirstDefaults(A)) render(); if (A && A.autoGo && A.plan && A.persona && !A.busy) { A.autoGo = false; doAdd(); } } // ebab8 12:20:新機預設;「開始用 Claude」= 選好就直接開
+      { const A = S.add; if (A && apFirstDefaults(A)) render(); // f163c N1:Claude 開不了就不自動開(不退到別家)
+      if (A && A.autoGo && A.plan && A.persona && !A.busy && A.provider === 'claude') { A.autoGo = false; doAdd(); } } // ebab8 12:20:新機預設;「開始用 Claude」= 選好就直接開
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
