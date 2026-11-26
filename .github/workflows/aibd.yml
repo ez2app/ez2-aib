@@ -2405,7 +2405,10 @@ jobs:
       # and health stays public and minimal.
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-web.sh,')
-        timeout-minutes: 15
+        # 25 (90856, ebab8 19:10): each knife edits ctl.rs and rebuilds aibd's lib tests, 3.5-6 min on
+        # macos-latest; this step took 9 min on main 08dcf8d6cb, 11 on #890 b2f6300f25, and ran out at 15
+        # on #900 cb6c9e7fb2 and d347c5d86a after 3 knives
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
