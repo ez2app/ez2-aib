@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix   # PL2 / PL3 break the link check, whose test makes links (cfg(unix): a Windows link needs a privilege)
-# PL1–PL8 (ebab8 11-26 12:14 C; 3e53b 12:16 conditions): the session policy's look also finds the copy aibd placed
+# PL1–PL9 (ebab8 11-26 12:14 C; 3e53b 12:16 conditions): the session policy's look also finds the copy aibd placed
 # under <data>/providers/<provider>/<version>/ (L1 / L2), only for this platform's measured rows, after the
 # user's own folders, never under a relative data folder or through a link, and named by its placed path as written. Each, broken, turns its own test red.
 # Run from the repo root.
@@ -23,5 +23,7 @@ pl '    if link(data) {' '    if link(data) && false { // knife' a_placed_folder
 # PL7 the policy names the placed program by another spelling than its placed path
 pl '            no_link_below(data, &d, m.provider).then_some(d)' '            no_link_below(data, &d, m.provider).then_some(d.join(".")) // knife' the_policy_names_the_placed_program_by_its_placed_path
 # PL8 (c2f0b 12:27) at init a placed program that is not the measured file is still offered for approval
-pl '            if crate::provider_fetch::verify_placed(&row, &path).is_err() {' '            if crate::provider_fetch::verify_placed(&row, &path).is_err() && false { // knife' at_init_a_placed_program_must_be_the_measured_file
-echo "policy look placed knives: 8/8 bite"
+pl '                crate::provider_fetch::verify_placed(&row, &path).is_ok()' '                crate::provider_fetch::verify_placed(&row, &path).is_ok() || full // knife' at_init_a_placed_program_must_be_the_measured_file
+# PL9 (3e53b N1) the page's look takes a placed program of any size
+pl '                std::fs::symlink_metadata(&path).is_ok_and(|m| m.len() == row.size)' '                std::fs::symlink_metadata(&path).is_ok_and(|m| m.len() == row.size || m.len() > 0) // knife' at_init_a_placed_program_must_be_the_measured_file
+echo "policy look placed knives: 9/9 bite"

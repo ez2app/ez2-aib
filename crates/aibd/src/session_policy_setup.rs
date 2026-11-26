@@ -260,8 +260,16 @@ fn no_link_below(data: &Path, dir: &Path, provider: &str) -> bool {
 /// c2f0b 11-26 12:27: at `session_policy_init`, before the owner is asked, a program found in
 /// aibd's placed folder is exactly the measured one (L1 `verify_placed`: the whole file's
 /// SHA-256 and size) or it counts as not found: the window asks the owner to approve that very
-/// program. L2 checks it again at each open. Not on `GET` (a full hash on every read).
-pub fn placed_verified(looks: Vec<Look>, data: &Path, platform: Option<&str>) -> Vec<Look> {
+/// program. L2 checks it again at each open. `GET` (`full` false) checks only the size the
+/// table names, so the page and the init agree on what is found without a full hash on every
+/// read (3e53b REVIEW-polook r1 N1); only a same-size file with other bytes differs, and init
+/// and L2 refuse that one.
+pub fn placed_verified(
+    looks: Vec<Look>,
+    data: &Path,
+    platform: Option<&str>,
+    full: bool,
+) -> Vec<Look> {
     looks
         .into_iter()
         .map(|l| {
@@ -278,7 +286,12 @@ pub fn placed_verified(looks: Vec<Look>, data: &Path, platform: Option<&str>) ->
             let Some(row) = row else {
                 return l;
             };
-            if crate::provider_fetch::verify_placed(&row, &path).is_err() {
+            let ok = if full {
+                crate::provider_fetch::verify_placed(&row, &path).is_ok()
+            } else {
+                std::fs::symlink_metadata(&path).is_ok_and(|m| m.len() == row.size)
+            };
+            if !ok {
                 return Look {
                     name: l.name,
                     kind: LookKind::NotFound,
@@ -527,6 +540,7 @@ pub async fn state(State(st): State<AppState>) -> Response {
     let looked = tokio::task::spawn_blocking(move || {
         let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
+        let found = placed_verified(found, &data, aib_seatopen::this_platform(), false);
         (file_state(&path), found, path)
     })
     .await;
@@ -602,7 +616,7 @@ pub async fn init(st: &AppState, body: Value, by: String) -> Response {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound);
         let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
-        let found = placed_verified(found, &data, aib_seatopen::this_platform());
+        let found = placed_verified(found, &data, aib_seatopen::this_platform(), true);
         (
             exists,
             policy_text(&found, |k| std::env::var_os(k).is_some()),
@@ -823,7 +837,9 @@ mod tests {
         let dirs = with_placed(Vec::new(), &data, Some("win32-x64"));
         let found = vec![look_in("claude", &dirs, true)];
         assert_eq!(found[0].kind, LookKind::Native);
-        let v = placed_verified(found, &data, Some("win32-x64"));
+        let v = placed_verified(found.clone(), &data, Some("win32-x64"), false);
+        assert_eq!(v[0].kind, LookKind::NotFound, "reason: placed_size {v:?}");
+        let v = placed_verified(found, &data, Some("win32-x64"), true);
         assert_eq!(
             v[0].kind,
             LookKind::NotFound,
@@ -843,7 +859,7 @@ mod tests {
         std::fs::create_dir_all(&user).unwrap();
         file(&user, "claude.exe", b"MZ\x90\x00");
         let found = vec![look_in("claude", &[user.clone()], true)];
-        let v = placed_verified(found, &data, Some("win32-x64"));
+        let v = placed_verified(found, &data, Some("win32-x64"), true);
         assert_eq!(
             v[0].path,
             Some(user.join("claude.exe")),
