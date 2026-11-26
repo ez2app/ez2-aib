@@ -22,7 +22,7 @@ sc '    if ops.is_link(link) {' \
    a_shortcut_that_is_a_link_is_not_written_through
 # SC4 no desktop folder stops the setup
 sc '            say(&format!("3/5 no AIB shortcut: {e}"));' \
-   '            panic!("3/5 no AIB shortcut: {e}");' \
+   '            if true { panic!("3/5 no AIB shortcut: {e}") }' \
    no_shortcut_does_not_stop_the_setup
 # SC5 `ctl web` from another program starts the installed aibd.exe
 sc '    if !resident || !ops.same_file(current, &p.exe) {' \

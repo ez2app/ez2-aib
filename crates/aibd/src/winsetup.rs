@@ -251,7 +251,7 @@ fn shortcuts(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
             });
         match made {
             Ok(()) => say(&format!("3/5 AIB shortcut: {}", link.display())),
-            Err(e) => say(&format!("3/5 no AIB shortcut in {}: {e}", d.display())),
+            Err(why) => say(&format!("3/5 no AIB shortcut in {}: {why}", d.display())),
         }
     }
 }

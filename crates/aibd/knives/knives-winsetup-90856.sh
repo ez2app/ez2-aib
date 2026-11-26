@@ -50,8 +50,8 @@ ws '        Some(v) if v == command => {' \
    '        Some(v) if v == command || !v.is_empty() => {' \
    uninstall_removes_only_our_run_value
 # WS10 the page opens before aibd answers
-ws '        while !ops.healthy() {' \
-   '        while !ops.healthy() && false {' \
+ws '    while !ops.healthy() {' \
+   '    while !ops.healthy() && false {' \
    an_aibd_that_never_answers_ends_the_setup_with_the_wait
 # WS11 any program with aib-setup in its name installs itself instead of running
 ws '.is_some_and(|s| s.to_ascii_lowercase().starts_with(SETUP_STEM))' \

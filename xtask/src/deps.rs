@@ -48,6 +48,9 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "=0.61.2",
         &[
             "Win32_Foundation",
+            // winrun::ui_lang: GetUserDefaultUILanguage, the language of the AIB shortcut's
+            // console lines (ebab8 11-26 12:39)
+            "Win32_Globalization",
             // AP26 W-5: windows-sys gates CreateDesktopW (DEVMODEW) and RegisterClassW
             // (HBRUSH) behind Gdi, so it is a normal feature; BitBlt / GetDIBits /
             // PrintWindow stay out of non-test code by aib-sys `test_only_os_calls`
@@ -124,7 +127,14 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         &[
             "Security_Credentials_UI",
             "Win32_Foundation",
+            // winshortcut (ebab8 11-26 12:20, PREREAD-win-shortcut-wake-3e53b-1126): the
+            // AIB.lnk on the desktop and in the Start menu, IShellLinkW + IPersistFile (Com),
+            // SHGetKnownFolderPath (Shell); FileSystem because IShellLinkW::GetPath names
+            // WIN32_FIND_DATAW
+            "Win32_Storage_FileSystem",
+            "Win32_System_Com",
             "Win32_System_WinRT",
+            "Win32_UI_Shell",
         ],
     ),
 ];
