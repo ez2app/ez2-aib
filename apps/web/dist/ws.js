@@ -384,10 +384,12 @@
     const r = await soft(get('/api/v1/guide')).catch((e) => (e && e.status === 401 && S.pair ? GUIDE_UNPAIRED : null));
     S.guide = r && typeof r === 'object' && Array.isArray(r.projects) ? r : null;
   }
+  // 真 AIB 實看 B1(fc7f9 13:58):開出 2.0 席後後端第 5 步仍回 start_claude,頂列一鍵鈕已不在 ⇒ 當 focus_chat(指輸入框,不是「+ AI 夥伴」)
+  const gNa = (na) => (na === 'start_claude' && typeof present === 'function' && present().length > 0 ? 'focus_chat' : na);
   const gHello = (k) => (gOwn(GUIDE_GO, k) && GUIDE_GO[k].hello ? `<em class="ghello">${esc(gW('hello')[typeof fpWin === 'function' && fpWin() ? 0 : 1])}</em>` : '');
   function gRows(P, id, cur, out) {
     for (const s of gSteps(P, id)) {
-      const st = gState(s), on = !!cur && cur.proj === id && cur.step === s, na = typeof s.next_act === 'string' ? s.next_act : '';
+      const st = gState(s), on = !!cur && cur.proj === id && cur.step === s, na = gNa(typeof s.next_act === 'string' ? s.next_act : '');
       const mark = on ? '▶' : st === 'ok' ? '✓' : st === 'lock' ? '🔒' : st === 'unsure' ? '?' : '·';
       const why = st === 'unsure' ? gW('unsure') : gWord('why', s.why);
       const right = on && gOwn(GUIDE_GO, na) ? `<span class="gact"><button type="button" class="k g gbtn" data-ggo="${esc(na)}">${esc(gWord('go', na))}</button>${gHello(na)}</span>`
@@ -476,7 +478,7 @@
     const G = S.guide; if (!G || S.pair || gSkipped() || gDown()) return null;
     const cur = guideCur(G); if (!cur) return null;
     if (!(guideNew(G) || (S.gTourHere && cur.proj === 'hosts'))) return null; // 走完、且不是專案二剛亮(這一頁剛記上「走完」)⇒ 不產生
-    const na = typeof cur.step.next_act === 'string' ? cur.step.next_act : '';
+    const na = gNa(typeof cur.step.next_act === 'string' ? cur.step.next_act : '');
     if (!gOwn(GUIDE_GO, na) || guideBlocked(document)) return null;
     const dlg = !!document.querySelector('.dlgbg');
     const sel = guidePick(GUIDE_GO[na].to, gHas, dlg); if (!sel) return null;

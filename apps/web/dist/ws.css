@@ -1626,7 +1626,10 @@ label.rvr{cursor:pointer}
 .gtour .gdimp{fill:rgba(0,0,0,.55);pointer-events:visiblePainted}
 .gtour .gline{fill:none;stroke:var(--gold);stroke-width:2.5;stroke-dasharray:8 7;pointer-events:none;animation:gflow 1s linear infinite}
 .gtour .gring{fill:none;stroke:var(--gold);stroke-width:2.5;pointer-events:none;transform-box:fill-box;transform-origin:center;animation:gpulse 1.4s ease-out infinite}
-.gtour .gskip{position:absolute;top:12px;right:12px;pointer-events:auto;font-size:14px}
+.gtour .gskip{position:absolute;bottom:16px;right:16px;pointer-events:auto;font-size:14px}
 @keyframes gflow{to{stroke-dashoffset:-15}}
 @keyframes gpulse{0%{opacity:1;transform:scale(1)}100%{opacity:.15;transform:scale(1.12)}}
 @media (prefers-reduced-motion:reduce){.gtour .gline,.gtour .gring{animation:none}}
+/* 真 AIB 實看 B2 B3:現在這一步的鈕換到第二行整列,步驟名不被擠成「跟…」;「可能要 …」放鈕下面,路線不穿過字 */
+.gstep.gcur .gact{grid-column:1/-1;justify-content:flex-start;padding-left:22px}
+.gstep.gcur .ghello{flex-basis:100%}

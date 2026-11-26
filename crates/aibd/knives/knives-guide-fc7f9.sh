@@ -113,3 +113,9 @@ kc 'stroke-dasharray:8 7;pointer-events:none;' 'stroke-dasharray:8 7;'
 kc '@media (prefers-reduced-motion:reduce){.gtour .gline,.gtour .gring{animation:none}}' ''
 # GC4 蓋暗的地方點得穿(擋不住不必要的點擊)
 kc 'fill:rgba(0,0,0,.55);pointer-events:visiblePainted}' 'fill:rgba(0,0,0,.55)}'
+# GD49 開出席後第 5 步路線又指去「+ AI 夥伴」(真 AIB 實看 B1)
+k 'const gNa = (na) => (na === '\''start_claude'\'' && typeof present === '\''function'\'' && present().length > 0 ? '\''focus_chat'\'' : na);' 'const gNa = (na) => na;'
+# GC5 第 5 步的鈕又擠在同一行、步驟名變「跟…」(B2)
+kc '.gstep.gcur .gact{grid-column:1/-1;' '.gstep.gcur .gact{'
+# GC6 略過鈕回到右上、蓋住待審區(B4)
+kc '.gskip{position:absolute;bottom:16px;right:16px;' '.gskip{position:absolute;top:12px;right:12px;'

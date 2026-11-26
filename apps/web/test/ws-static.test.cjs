@@ -1021,6 +1021,10 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(!/data-ggo/.test(X.guideHtml()), 'reason: guide_unknown_act_no_button');
     c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
     ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
+    // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
+    c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
+    c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
+    { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.gstep\.gcur \.gact\{grid-column:1\/-1;/.test(css) && /\.gstep\.gcur \.ghello\{flex-basis:100%\}/.test(css) && /\.gskip\{position:absolute;bottom:16px;right:16px;/.test(css), 'reason: guide_layout_real_aib_b2_b4'); }
     // 終點挑法:面板關著有「開始用 Claude」⇒ 它;沒有 ⇒ + AI 夥伴;面板開著只挑面板裡的;「開」沒 disabled 才挑
     const L = X.GUIDE_GO.start_claude.to, hv = (m) => (s) => (s in m ? m[s] : null);
     const o = { ok: true, inDlg: false, disabled: false }, i = { ok: true, inDlg: true, disabled: false };
