@@ -44,3 +44,17 @@ k '(A.pkMiss ? '\''這台沒有這個方案配的人格,請自己選'\'' :' '(A.
 k ': personas().some(([u]) => personaBuiltin(u)) ? ` · 用' ': false ? ` · 用'
 # CW19 找不到時把人格名存下來
 k 'A.persona = '\'''\''; A.pkMiss = '\''1'\''; }' 'A.persona = '\'''\''; A.pkMiss = p.pk; }'
+# CW20 新機打開沒選好方案(ebab8 12:20 一鍵)
+k 'A.firstDone = true; apPick(A, AP_FIRST_PLAN);' 'A.firstDone = true;'
+# CW21 已有席也被蓋成預設
+k '|| (S.seats || []).some((s) => s && !isArch(s))) return false;' ') return false;'
+# CW22 有別的人格也被蓋成預設
+k 'if (!(L.length === 1 && personaBuiltin(L[0][0]))' 'if (!(L.length >= 1)'
+# CW23 預設品牌沒選 Claude
+k 'if (cl) A.provider = '\''claude'\'';' 'if (cl) A.provider = '\'''\'';'
+# CW24 開始用 Claude 只開面板不開席
+k '{ A.autoGo = false; doAdd(); }' '{ A.autoGo = false; }'
+# CW25 空狀態沒有開始用 Claude 鈕
+k '<button type="button" class="k g startc" data-startclaude="1"' '<button type="button" class="k g startc" data-startclaudeX="1"'
+# CW26 只有一席時沒 @ 仍送不出
+k 'if (!T.length && !(targets.amb || []).length && soleSeat()) T = [soleSeat()];' 'if (false) T = [soleSeat()];'

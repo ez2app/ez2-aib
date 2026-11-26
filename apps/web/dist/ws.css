@@ -215,6 +215,7 @@ progress.ctxp::-moz-progress-bar{background:var(--orange)}
 .lg.off{opacity:.45}
 .pp{margin-bottom:12px;min-height:34px}
 .pp .none{color:var(--dim);font-size:13px}
+.pp .startc{font-size:14px;padding:8px 18px;font-weight:700}
 .md{cursor:pointer}
 .tl{max-height:calc(100vh - 330px);min-height:280px;overflow-y:auto}
 .tl .empty{color:var(--dim);font-size:13px;text-align:center;padding:24px 0}
