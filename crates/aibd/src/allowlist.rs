@@ -731,16 +731,20 @@ pub fn resolve(argv0: &str, p: &SessionPolicy) -> Result<PathBuf, Refused> {
         return Err(Refused::Program);
     }
     if cfg!(target_os = "macos") {
-        // the first entry that matched above; one that no longer matches is no pass
-        let entry = p
-            .programs
-            .iter()
-            .find(|e| std::fs::canonicalize(&e.path).is_ok_and(|r| same_path(&r, &real)));
-        let Some(entry) = entry else {
+        // every entry naming this real file that names a signer must pass, not only the first
+        // (3e53b REVIEW-macfirstrun N1: a hand-edited file listing it twice, the first without
+        // a signer); none matching any more is no pass
+        let mut matched = false;
+        let same =
+            |e: &&Program| std::fs::canonicalize(&e.path).is_ok_and(|r| same_path(&r, &real));
+        for e in p.programs.iter().filter(same) {
+            matched = true;
+            if let Some(team) = &e.signer {
+                signed_by(&real, team)?;
+            }
+        }
+        if !matched {
             return Err(Refused::Program);
-        };
-        if let Some(team) = &entry.signer {
-            signed_by(&real, team)?;
         }
     }
     if !p.interpreters_ok {
@@ -1325,6 +1329,18 @@ mod tests {
                 assert_eq!(resolve(s(&copy), &p), Err(Refused::Signer), "{team}");
                 assert_eq!(resolve(s(&link), &p), Err(Refused::Signer), "{team}");
             }
+            // N1: listed twice, the first without a signer: the second is still checked
+            let mut signed = prog("claude", &link);
+            signed.signer = Some("Q6L2SF6YDW".into());
+            let p = SessionPolicy {
+                programs: vec![prog("claude", &copy), signed],
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(s(&copy), &p),
+                Err(Refused::Signer),
+                "reason: first_entry_only"
+            );
         }
     }
 
