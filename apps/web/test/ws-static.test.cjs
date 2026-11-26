@@ -396,7 +396,26 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     ok(ws.includes('const thErr = (c) => ' + G + '(') && ws.includes(G + "DRV_ERR[rs] || '') || errText(e)") && ws.includes('${esc(' + G + 'C.actMsg))}') && ws.includes(G + 'REC[k])} <i>') && ws.includes('${esc(' + G + 'REC[k]))}</b>'), 'reason: fp_win_maps_wrapped');
     ok(ws.includes("return { text: (typeof fpWin === 'function' && fpWin()) ? '這台用 Windows Hello 確認是你本人,不用密語'") && ws.includes("${(typeof fpWin === 'function' && fpWin()) ? '請在這台電腦跳出的 <b>Windows Hello</b>"), 'reason: fp_win_pw_fpc_branch'); }
   ok(W('主機金鑰指紋不對,這台可能被換過') === '主機金鑰指紋不對,這台可能被換過' && W('按指紋;主機金鑰指紋 ab') === '用 Windows Hello 確認;主機金鑰指紋 ab', 'reason: fp_say_keeps_hostkey_hash ' + W('按指紋;主機金鑰指紋 ab'));
-  { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)("; const miss = ["S.hint = " + G + "msg)", "return " + G + "TICK_WHY[k]", "const tickOkWhy = (t) => " + G, "return " + G + "RCP_WHY[rs]", "return " + G + "T[rs] || errText(e))", "return " + G + "TRUST_WHY[rs]", "return " + G + "MOVE_WHY[rs]", "'沒有交回:' + " + G + "SB_WHY[k] || errText(e))", "G.msg = " + G + "GHTOK_WHY[rs]", "S.pushOff = " + G + "PUSH_WHY[rs])", "? " + G + "GHTOK_WHY[rs])", "S.prOff = " + G + "PR_WHY[rs])"].filter((x) => !ws.includes(x)); ok(!miss.length, 'reason: fp_win_why_wrapped ' + miss.join(' | ')); }
+  { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)("; const miss = ["S.hint = " + G + "msg)", "return " + G + "TICK_WHY[k]", "const tickOkWhy = (t) => " + G, "return " + G + "RCP_WHY[rs]", "return " + G + "T[rs] || errText(e))", "return " + G + "TRUST_WHY[rs]", "return " + G + "MOVE_WHY[rs]", "'沒有交回:' + " + G + "SB_WHY[k] || errText(e))", "G.msg = " + G + "GHTOK_WHY[rs]", "S.pushOff = " + G + "PUSH_WHY[rs])", "? " + G + "GHTOK_WHY[rs])", "S.prOff = " + G + "PR_WHY[rs])", "const ppWhy = (e) => " + G + "PP_WHY[", "const netWhy = (e) => " + G + "NET_WHY[", "return " + G + "HS_WHY[c] || REPO_WHY[c]", "return " + G + "PT_WHY[c] || REPO_WHY[c]", ": gateWhy(e) ? " + G + "gateWhy(e))", '<div class="apn apfn">${' + G + '`¹ '].filter((x) => !ws.includes(x)); ok(!miss.length, 'reason: fp_win_why_wrapped ' + miss.join(' | ')); }
+  // ebab8 13:4x 總刀:畫面上任何字面「指紋」都要經 fpSay;例外只有下面三種(新加的字不在表上 ⇒ 紅,要先分類)
+  { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'gateWhy', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
+    const SELF = ['FP_WIN_SAY', 'fpSay']; // 換字表本身
+    const KEEP = [['FP_WHAT', '機器與金鑰指紋'], ['pvDialog', '預覽的指紋不對'], ['pvDialog', '這一份的指紋(sha256'], ['hsRow', '驗證窗列出指紋、真的 IP'], ['upConsent', '清單指紋'], ['hsLine', '指紋 '], // 雜湊 / 主機金鑰,不是本人確認
+      ['OWNER_WHY', 'Touch ID 現在讀不到'], ['pwText', '這台用系統本人驗證(指紋或登入密碼)'], ['fpcHtml', '跳出的<b>系統視窗</b>按指紋'], // Mac 分支
+      ['OWNER_PIN_HOW', '不用指紋或臉部辨識的硬體'], ['OC_W', '不需要指紋或臉部辨識的硬體'], ['OC_W', '指紋や顔認証']]; // Windows 說明「不需要指紋硬體」
+    const COND = [['repoSec', "A.mode === 'work' ? '開的時候不用按指紋"]]; // 包在 fpSay(條件式) 裡,最近的引號前不是 fpSay(:這裡核整句真的在 fpSay( 裡
+    COND.forEach(([o, t]) => ok(ws.includes("(typeof fpSay === 'function' ? fpSay : (t) => t)(" + t), 'reason: fp_win_cond_wrapped ' + o));
+    const bad = []; let owner = '';
+    ws.split('\n').forEach((l, i) => { const m = /^  (?:const|let|function|async function) ([A-Za-z_$][\w$]*)/.exec(l); if (m) owner = m[1];
+      if (/^\s*\/\//.test(l)) return; const ci = l.search(/\s\/\/\s/);
+      for (let j = l.indexOf('指紋'); j >= 0; j = l.indexOf('指紋', j + 1)) { if (ci >= 0 && j > ci) break;
+        let q = j - 1; while (q >= 0 && l[q] !== "'" && l[q] !== '`') q--; const pre = l.slice(0, Math.max(q, 0));
+        if (q >= 0 && /fpSay : \(t\) => t\)\($/.test(pre)) continue;
+        if (SINK.includes(owner) || SELF.includes(owner)) continue;
+        if (KEEP.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 30), j + 30).includes(t))) continue;
+        if (COND.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 80), j + 60).includes(t.slice(t.indexOf("'") + 1)))) continue;
+        bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
+    ok(!bad.length, 'reason: fp_win_every_shown_word ' + bad.join(' | ')); }
   ok(/function errText\(e\) \{ return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(errText0\(e\)\); \}/.test(ws), 'reason: err_text_not_platform_words');
   ok(/const rgWhy = \(e\) => \{ const c = rgCode\(e\); return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(RG_WHY\[c\]/.test(ws) && /const repoWhy = \(e\) => \{ const rs = [^\n]*return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(gateWhy\(e\)/.test(ws) && /return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(\(typeof rs === 'string' && Object\.prototype\.hasOwnProperty\.call\(RELOG_WHY, rs\)/.test(ws), 'reason: why_helpers_not_platform_words');
   const c = ws.indexOf('  const REG_ADD_OPEN = '), d = ws.indexOf('  async function regAdd() {');

@@ -4354,7 +4354,7 @@
       const rs = e && (e.reason || (e.body && e.body.reason));
       F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 AIB 還不能新增(示意)'
         : rs === 'owner_check_unavailable' ? (F.kind === 'persona' || F.kind === 'brain' ? regNotYet(F.kind) : (typeof fpSay === 'function' ? fpSay : (t) => t)('要本人指紋,這台還不能按'))
-        : gateWhy(e) ? gateWhy(e)
+        : gateWhy(e) ? (typeof fpSay === 'function' ? fpSay : (t) => t)(gateWhy(e))
         : e && e.status === 403 ? '只有內建頁、這一輪配對的分頁能新增' : '沒建成:' + errText(e);
     }
     render();
@@ -5740,7 +5740,7 @@
   const PP_WHY = { request_not_found: '找不到這份提案(可能已逾時或被撤回)', request_not_waiting: '這份提案已經不在等了(撤回、拒絕、逾時或正在寫)', request_changed: '提案跟你看到的不一樣了,請重新看一次', persona_changed: '這張人格卡剛被改過或登記表剛重掃,這份提案作廢;請夥伴重掃一次卡片後再提', persona_archived: '這個人格已封存,寫不回去', persona_aliased: '這個人格已併到別的人格,寫不回去', persona_none: '找不到這個人格', persona_unreadable: '讀不到人格卡,沒有寫', persona_registry_edited: '人格清單檔被手動改過,沒有寫;先看一下清單', persona_registry_changed: '人格清單剛被改過,沒有寫;再按一次', persona_built_in_page_only: '只有這台電腦內建的頁面能核准或拒絕', persona_write_mismatch: '寫入核對不一致,沒有寫成', persona_write_io: '寫入失敗,沒有寫成', persona_path_outside: '人格卡不在人格資料夾裡,沒有寫', persona_path_symlink: '人格卡是捷徑檔,沒有寫', request_not_writing: '寫入被打斷,沒有寫成', owner_check_not_approved: '指紋沒過,沒有寫回;提案還在,可以再按一次', item_off: '這一項被關掉了', not_done: 'AIB 沒有回「寫好了」' };
   const PP_GONE = new Set(['request_not_found', 'request_not_waiting', 'request_changed', 'persona_changed', 'persona_archived', 'persona_aliased', 'persona_none']);
   const ppHas = (k) => hasAct(PP_ACTS[k]) === true;
-  const ppWhy = (e) => PP_WHY[rgCode(e)] || errText(e);
+  const ppWhy = (e) => (typeof fpSay === 'function' ? fpSay : (t) => t)(PP_WHY[rgCode(e)] || errText(e)); // f163c eddb7acca1 L1:五個出口也跟平台走
   const ppCard = (rid) => ((S.pp && S.pp.items) || []).find((x) => x && x.request_id === rid) || null;
   async function ppLoad() {
     const P = (S.pp = S.pp || {}); if (P.busy || !ppHas('list')) return;
@@ -5809,7 +5809,7 @@
   const netMs = (v) => (typeof v === 'number' ? v * (v < 1e12 ? 1000 : 1) : Date.parse(String(v || '')));
   const netPName = (uid) => { const p = (typeof personas === 'function' ? personas() : []).find(([u]) => u === uid); return p ? String(p[1]) : ''; };
   const netHas = (k) => hasAct(NET_ACTS[k]) === true;
-  const netWhy = (e) => NET_WHY[rgCode(e)] || errText(e);
+  const netWhy = (e) => (typeof fpSay === 'function' ? fpSay : (t) => t)(NET_WHY[rgCode(e)] || errText(e));
   const netCard = (rid) => ((S.net && S.net.items) || []).find((x) => x && x.request_id === rid) || null;
   async function netLoad() {
     const N = (S.net = S.net || {}); if (N.busy || !netHas('list')) return;
@@ -6120,7 +6120,7 @@
     // 3e53b:aibd 給了 capabilities.net,「自己連外網」那格就照它(enforced / hint / off),不再寫 🚧
     const cell = (m, k) => { const v = AP_LEVEL[m][k], nt = AP_NOTE[m + ':' + k], nv = k === 'net' && ok && ok.net ? apNet(ok.net, m) : ''; if (nv) return `<i class="${nv === 'hint' ? 'w' : nv === 'enforced' ? 'y' : 'n'}${s(m)}" title="${esc(NET_WORDS[nv])}">${NET_CELL[nv]}</i>`; if (k === 'host' && !v) return `<i class="p${s(m)}">另開⁴</i>`; return v === 'p' ? `<i class="p${s(m)}">提案²</i>` : v === 't' ? `<i class="y${s(m)}">✓<small>🚧³</small></i>` : v === 'n' ? `<i class="y${s(m)}">✓<small>🚧⁷</small></i>` : v ? `<i class="y${s(m)}">✓${nt ? `<small>${nt}</small>` : ''}</i>` : `<i class="n${s(m)}">—</i>`; };
     // 表頭可以點來選;那一顆開不了(預覽區完全權限、這一版還沒有管理主機)就只是字,不能選
-    return `<div class="apcmp" role="table" aria-label="模式對照"><span></span>${M.map(([m, n]) => (can(m) ? `<button type="button" class="ch${s(m)}" data-addm="${m}">${esc(n)}</button>` : `<b class="ch off${s(m)}">${esc(n)}</b>`)).join('')}${AP_PERMS.map(([k, n]) => `<span>${n}</span>${M.map(([m]) => cell(m, k)).join('')}`).join('')}<span>開的時候</span><i class="${s('safe').trim()}">免</i><i class="${s('work').trim()}">免¹</i><i class="w${s('host')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('逐台按指紋')}</i><i class="w${s('dgrs')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('按指紋')}⁵</i></div><div class="apn apfn">¹ 帶倉時也免:倉登記時已按過;沙盒是系統層擋的,不是靠 AI 自己守規矩<br>² 提案 = 它寫好改動,浮出卡片請你看過、按指紋才寫進人格卡<br>³ 🚧 這一版 AIB 還不能寫第二大腦:沙盒擋資料夾外的檔,要由 AIB 代寫進它綁的那一個<br>⁴ 管理主機模式自帶這一項;其他模式要在「可管的主機」另外開,逐台選、每台按一次指紋<br>⁵ 沒有指紋的電腦改成電腦本身的解鎖:Mac 跳登入密碼、Windows 用 Hello PIN<br>⁶ 連外網:外網可以,本機(127.0.0.1)與內網一律擋;某一位要連時彈出卡片給你選<br>⁷ 🚧 這一版還沒有,沙盒連外網做好才有(現在討論研究 / 沙盒開發連不出去)</div>`;
+    return `<div class="apcmp" role="table" aria-label="模式對照"><span></span>${M.map(([m, n]) => (can(m) ? `<button type="button" class="ch${s(m)}" data-addm="${m}">${esc(n)}</button>` : `<b class="ch off${s(m)}">${esc(n)}</b>`)).join('')}${AP_PERMS.map(([k, n]) => `<span>${n}</span>${M.map(([m]) => cell(m, k)).join('')}`).join('')}<span>開的時候</span><i class="${s('safe').trim()}">免</i><i class="${s('work').trim()}">免¹</i><i class="w${s('host')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('逐台按指紋')}</i><i class="w${s('dgrs')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('按指紋')}⁵</i></div><div class="apn apfn">${(typeof fpSay === 'function' ? fpSay : (t) => t)(`¹ 帶倉時也免:倉登記時已按過;沙盒是系統層擋的,不是靠 AI 自己守規矩<br>² 提案 = 它寫好改動,浮出卡片請你看過、按指紋才寫進人格卡<br>³ 🚧 這一版 AIB 還不能寫第二大腦:沙盒擋資料夾外的檔,要由 AIB 代寫進它綁的那一個<br>⁴ 管理主機模式自帶這一項;其他模式要在「可管的主機」另外開,逐台選、每台按一次指紋<br>⁵ 沒有指紋的電腦改成電腦本身的解鎖:Mac 跳登入密碼、Windows 用 Hello PIN<br>⁶ 連外網:外網可以,本機(127.0.0.1)與內網一律擋;某一位要連時彈出卡片給你選<br>⁷ 🚧 這一版還沒有,沙盒連外網做好才有(現在討論研究 / 沙盒開發連不出去)`)}</div>`;
   }
   // S1b A:底部摘要(示意 #sum):品牌 · 模式 · 人格 · 現在幾位在工作
   function apSum(A, pv) {
@@ -6450,7 +6450,7 @@
     const nm = (id) => ((S.hs.list || []).find((h) => h.id === id) || {}).name || id;
     return `<div class="aplab">連主機做過什麼 <em class="apex">紀錄,不是防線</em></div>${L.length ? `<div class="ptlog">${L.map((x) => `<div class="ptlr ${x.stopped ? 'gone' : ''}"><span>${esc(String(x.at || '').replace('T', ' ').slice(5, 16))}</span><b>${esc(nm(x.host_id))}</b><i>${esc(String(x.command || '').slice(0, 200))}</i><em>${x.stopped ? '被停掉' : 'rc ' + esc(String(x.rc))}</em></div>`).join('')}</div>` : '<div class="apn">還沒有紀錄</div>'}`;
   }
-  const hsWhy = (e) => { const c = hsCode(e), why = String((e && ((e.body && e.body.error && e.body.error.reason) || (e.body && e.body.reason) || e.reason)) || ''); if (c === 'host_addr_refused' && HS_ADDR[why]) return '這個位址不能加:' + HS_ADDR[why]; return HS_WHY[c] || REPO_WHY[c] || errText(e); };
+  const hsWhy = (e) => { const c = hsCode(e), why = String((e && ((e.body && e.body.error && e.body.error.reason) || (e.body && e.body.reason) || e.reason)) || ''); if (c === 'host_addr_refused' && HS_ADDR[why]) return '這個位址不能加:' + HS_ADDR[why]; return (typeof fpSay === 'function' ? fpSay : (t) => t)(HS_WHY[c] || REPO_WHY[c] || errText(e)); };
   const hsOk = (h) => h && typeof h.id === 'string' && h.id && typeof h.name === 'string';
   // 模式那一排的第四顆;不能開就整顆不畫(不放灰的)
   // Windows:W5 / W6 沒實機量過前灰掉、寫「Windows 待驗」(aibd 量過會帶 capabilities.host_windows_verified: true;欄位名見 IFACE-page2-fc7f9-1123)
@@ -6623,7 +6623,7 @@
   const ptRaised = (was, f) => !!was && ((was.base !== f.base && !(ptRank(was.base) >= 0 && ptRank(f.base) >= 0 && ptRank(f.base) < ptRank(was.base))) || PT_ITEMS.some(([k]) => f.items[k] && !was.items[k]));
   const ptOf = (uid) => ((S.pt && S.pt.list) || []).find((t) => t.tpl_uid === uid) || null;
   const ptCode = (e) => String((e && ((e.body && e.body.error && e.body.error.code) || e.reason || (e.body && e.body.reason) || e.code)) || '');
-  const ptWhy = (e) => { const c = ptCode(e); if (c === 'template_more_than_given') { const m = String((e && ((e.body && e.body.error && e.body.error.message) || e.message)) || '').trim(); return m && m !== c ? m : PT_MORE; } return PT_WHY[c] || REPO_WHY[c] || errText(e); };
+  const ptWhy = (e) => { const c = ptCode(e); if (c === 'template_more_than_given') { const m = String((e && ((e.body && e.body.error && e.body.error.message) || e.message)) || '').trim(); return m && m !== c ? m : PT_MORE; } return (typeof fpSay === 'function' ? fpSay : (t) => t)(PT_WHY[c] || REPO_WHY[c] || errText(e)); };
   const ptNeWords = (ne) => { const L = Array.isArray(ne) ? ne.map((k) => { const it = k && typeof k === 'object' ? String(k.item || '') : String(k); const nm = it === 'base:host' ? '連主機的模式' : ptName(it); return k && typeof k === 'object' && k.platform ? nm + '(' + String(k.platform) + ')' : nm; }) : []; return L.length ? '這幾項這一版還沒有,用它開的夥伴實際拿不到:' + L.join('、') : ''; };
   function ptCheck(f, list) {
     const nm = String((f && f.name) || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();

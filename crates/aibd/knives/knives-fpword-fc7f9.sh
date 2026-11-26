@@ -39,3 +39,17 @@ k 'text: '\''沒有交回:'\'' + (typeof fpSay === '\''function'\'' ? fpSay : (t
 k 'G.msg = (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(GHTOK_WHY[rs] || errText(e));' 'G.msg = GHTOK_WHY[rs] || errText(e);'
 # FW15 PR 關閉原因不經平台字(3e53b L1 PR)
 k 'S.prOff = (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(PR_WHY[rs]);' 'S.prOff = PR_WHY[rs];'
+# FW16 人格提案錯誤不經平台字(f163c L1 ppWhy)
+k 'const ppWhy = (e) => (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(PP_WHY[rgCode(e)] || errText(e));' 'const ppWhy = (e) => (PP_WHY[rgCode(e)] || errText(e));'
+# FW17 網路授權錯誤不經平台字(f163c L1 netWhy)
+k 'const netWhy = (e) => (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(NET_WHY[rgCode(e)] || errText(e));' 'const netWhy = (e) => (NET_WHY[rgCode(e)] || errText(e));'
+# FW18 加主機錯誤不經平台字(f163c L1 hsWhy)
+k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(HS_WHY[c] || REPO_WHY[c] || errText(e));' 'return (HS_WHY[c] || REPO_WHY[c] || errText(e));'
+# FW19 權限模板錯誤不經平台字(f163c L1 ptWhy)
+k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(PT_WHY[c] || REPO_WHY[c] || errText(e));' 'return (PT_WHY[c] || REPO_WHY[c] || errText(e));'
+# FW20 新增大腦 / 人格的驗證窗上限不經平台字(f163c L1)
+k ': gateWhy(e) ? (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(gateWhy(e))' ': gateWhy(e) ? (gateWhy(e))'
+# FW21 方案對照表註腳不經平台字
+k '<div class="apn apfn">${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(`¹ ' '<div class="apn apfn">${(`¹ '
+# FW22 新加一句沒經 fpSay 的指紋字(總刀 fp_win_every_shown_word,ebab8 13:4x)
+k 'const regNotYet = (kind) => '\''這一版還不能從頁面新增'\'' + REG_KIND[kind][0];' 'const regNotYet = (kind) => '\''這一版還不能從頁面新增(要按指紋)'\'' + REG_KIND[kind][0];'
