@@ -63,6 +63,8 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::seat_trust::UNTRUST,
     crate::drive_switch::TOGGLE,
     crate::drive_switch::STATUS,
+    crate::owner_method::SET,
+    crate::owner_method::STATUS,
     crate::seat_move::MOVE,
     crate::seat_move::UNMOVE,
     crate::test_host_web::LIST,
@@ -749,6 +751,24 @@ pub async fn act(
                 crate::seat_trust::trust(st, body, by).await
             } else {
                 crate::seat_trust::untrust(st, body, by).await
+            };
+        }
+        // 指紋或密碼 (PLAN-owner-method r3): the built-in page in this pairing only; a change is
+        // signed by the pairing key itself (the fingerprint for a fingerprint key)
+        Some(k @ (crate::owner_method::SET | crate::owner_method::STATUS)) => {
+            let method_from_user_page = held_as_user_page(&page).await;
+            if method_from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "the owner check's method is changed from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::owner_method::SET {
+                crate::owner_method::set(st, body, by).await
+            } else {
+                crate::owner_method::status().await
             };
         }
         // D7a (DECISION-council-driveweb r1 §2): the dispatch switch, from the built-in page in

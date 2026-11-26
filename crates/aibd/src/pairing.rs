@@ -609,13 +609,19 @@ impl Pairing {
         let mut inner = self.lock();
         let now = (self.clock)();
         Self::purge(&mut inner, now);
-        match inner.pairs.get_mut(pair_id) {
+        let confirmed = match inner.pairs.get_mut(pair_id) {
             Some(p) if p.state(now) == PairState::AwaitingConfirmation => {
                 p.stored = Stored::Confirmed;
                 Ok(())
             }
             _ => Err("pair_touch_late"),
+        };
+        drop(inner);
+        // the first pairing pins the key it was confirmed with (PLAN-owner-method r3)
+        if let (Ok(()), Some(public)) = (confirmed, presence.public()) {
+            crate::owner_method::after_pairing(&public);
         }
+        confirmed
     }
 
     /// 5d33a REVIEW-touchid-8ec571dc M1 (DESIGN r3 §3, against a same-account AI raising window
