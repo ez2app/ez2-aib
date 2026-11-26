@@ -2568,6 +2568,15 @@ impl aibd::winsetup::Ops for SetupOps {
         // remove_dir refuses a folder with anything in it
         let _ = std::fs::remove_dir(dir);
     }
+    fn shortcut_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        aib_sys::winshortcut::folders()
+    }
+    fn shortcut_read(&self, link: &Path) -> Result<(PathBuf, String), String> {
+        aib_sys::winshortcut::read(link)
+    }
+    fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String> {
+        aib_sys::winshortcut::make(link, exe, args, "Open the AIB workbench")
+    }
 }
 
 /// What `aibd setup` was asked to do.
@@ -2770,6 +2779,22 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     }
     // N-web-oneline 1: the one line also starts aibd (through launchd) when it is not answering
     if args.first() == Some(&"web") {
+        // Windows (ebab8 11-26 12:20): the installed aibd.exe starts itself, as the setup does;
+        // once it answers, wake_if_down below has nothing to do
+        if cfg!(windows) {
+            if let Ok(p) = aibd::winsetup::places(std::env::var_os("LOCALAPPDATA").as_deref()) {
+                let me =
+                    std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
+                let data = std::env::var_os("AIBD_DATA_DIR").map(PathBuf::from);
+                let bind_set = std::env::var_os("AIBD_BIND").is_some_and(|b| !b.is_empty());
+                let default = aibd::platform::default_data_dir();
+                let resident =
+                    aibd::wake::names_resident(data.as_deref(), default.as_deref(), bind_set);
+                if aibd::winsetup::wake(&p, &me, resident, &SetupOps)? {
+                    println!("aibd was not running; started it");
+                }
+            }
+        }
         wake_if_down(
             &mut || {
                 Client::from_runtime()

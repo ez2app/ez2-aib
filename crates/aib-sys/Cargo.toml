@@ -75,7 +75,10 @@ windows-sys = { version = "=0.61.2", features = [
 windows = { version = "=0.62.2", features = [
     "Security_Credentials_UI",
     "Win32_Foundation",
+    "Win32_Storage_FileSystem", # winshortcut: IShellLinkW::GetPath names WIN32_FIND_DATAW (ebab8 11-26 12:20)
+    "Win32_System_Com", # winshortcut: CoCreateInstance(ShellLink), IPersistFile Save / Load
     "Win32_System_WinRT",
+    "Win32_UI_Shell", # winshortcut: IShellLinkW, SHGetKnownFolderPath(Desktop / Programs)
 ] }
 
 # AP26 W-4 (PRE-READ-w4-winsys-features 3e53b condition 1): features only the owner-present

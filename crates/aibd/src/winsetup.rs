@@ -185,6 +185,56 @@ pub trait Ops {
     fn settings_delete_if(&self, name: &str, expected: &str) -> Result<bool, String>;
     /// Remove the folder `dir` if it is empty; anything in it keeps it.
     fn remove_dir_if_empty(&self, dir: &Path);
+    /// The folders an "AIB" shortcut goes in: this user's desktop and Start menu.
+    fn shortcut_dirs(&self) -> Result<Vec<PathBuf>, String>;
+    /// Target and arguments written in the shortcut `link`.
+    fn shortcut_read(&self, link: &Path) -> Result<(PathBuf, String), String>;
+    /// Write the shortcut `link` to `exe` with `args`.
+    fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String>;
+}
+
+/// The shortcut's file name, on the desktop and in the Start menu.
+pub const SHORTCUT: &str = "AIB.lnk";
+/// What the shortcut runs after the installed aibd.exe: open the workbench.
+pub const SHORTCUT_ARGS: &str = "ctl web";
+
+/// Is `link` the setup's own shortcut: not a link itself, readable, pointing at `exe` (case
+/// aside, Windows paths) with [`SHORTCUT_ARGS`]? Anything else is somebody else's.
+fn shortcut_ours(link: &Path, exe: &Path, ops: &dyn Ops) -> bool {
+    if ops.is_link(link) {
+        return false;
+    }
+    let same = |a: &Path, b: &Path| {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    };
+    matches!(ops.shortcut_read(link), Ok((t, a)) if same(&t, exe) && a == SHORTCUT_ARGS)
+}
+
+/// Step 3 (ebab8 11-26 12:20): an "AIB" shortcut on the desktop and in the Start menu that
+/// opens the workbench. Written when none is there or it is ours; somebody else's file of
+/// that name (or a link) is left as it is. Never stops the setup: a line says what happened.
+fn shortcuts(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
+    let dirs = match ops.shortcut_dirs() {
+        Ok(d) => d,
+        Err(e) => {
+            say(&format!("3/5 no AIB shortcut: {e}"));
+            return;
+        }
+    };
+    for d in dirs {
+        let link = d.join(SHORTCUT);
+        if ops.exists(&link) && !shortcut_ours(&link, &p.exe, ops) {
+            say(&format!(
+                "3/5 {} is somebody else's; left as it is",
+                link.display()
+            ));
+            continue;
+        }
+        match ops.shortcut_make(&link, &p.exe, SHORTCUT_ARGS) {
+            Ok(()) => say(&format!("3/5 AIB shortcut: {}", link.display())),
+            Err(e) => say(&format!("3/5 no AIB shortcut in {}: {e}", d.display())),
+        }
+    }
 }
 
 /// This aibd's version, shown in Settings > Apps.
@@ -350,30 +400,56 @@ fn run_with(
     if let Err(e) = settings_entry(p, command, ops) {
         say(&format!("3/5 not listed in Settings > Apps: {e}"));
     }
+    shortcuts(p, ops, say);
     // 4. running now
     if ops.healthy() {
         done.already_running = true;
         say("4/5 aibd is already running");
     } else {
-        ops.start(&p.exe)
-            .map_err(|e| format!("could not start {}: {e}", p.exe.display()))?;
-        let mut waited = Duration::ZERO;
-        while !ops.healthy() {
-            if waited >= HEALTH_WAIT {
-                return Err(format!(
-                    "aibd did not answer within {} s after starting",
-                    HEALTH_WAIT.as_secs()
-                ));
-            }
-            ops.pace(HEALTH_STEP);
-            waited += HEALTH_STEP;
-        }
+        start_and_wait(p, ops)?;
         say("4/5 aibd started");
     }
     // 5. the page
     say("5/5 opening the page");
     ops.open_page()?;
     Ok(done)
+}
+
+/// Start the installed aibd.exe (no window) and wait until it answers.
+fn start_and_wait(p: &Places, ops: &dyn Ops) -> Result<(), String> {
+    ops.start(&p.exe)
+        .map_err(|e| format!("could not start {}: {e}", p.exe.display()))?;
+    let mut waited = Duration::ZERO;
+    while !ops.healthy() {
+        if waited >= HEALTH_WAIT {
+            return Err(format!(
+                "aibd did not answer within {} s after starting",
+                HEALTH_WAIT.as_secs()
+            ));
+        }
+        ops.pace(HEALTH_STEP);
+        waited += HEALTH_STEP;
+    }
+    Ok(())
+}
+
+/// `aibd ctl web` on Windows when aibd does not answer (ebab8 11-26 12:20: the AIB shortcut
+/// must work after AIB was ended): start the installed aibd.exe and wait for it, as step 4
+/// does. Only when this program is the installed copy and the line names the resident aibd
+/// (`resident`, [`crate::wake::names_resident`]); otherwise one line says what to do.
+/// `Ok(true)` = started here, `Ok(false)` = it already answered.
+pub fn wake(p: &Places, current: &Path, resident: bool, ops: &dyn Ops) -> Result<bool, String> {
+    if ops.healthy() {
+        return Ok(false);
+    }
+    if !resident || !ops.same_file(current, &p.exe) {
+        return Err(format!(
+            "aibd is not running. Double-click AIB on the desktop (or run {} ctl web)",
+            p.exe.display()
+        ));
+    }
+    start_and_wait(p, ops)?;
+    Ok(true)
 }
 
 /// `aibd setup --uninstall` (also what Settings > Apps runs): remove the Run value and the
@@ -409,6 +485,23 @@ fn uninstall_with(
             }
         }
         say("removed AIB from Settings > Apps");
+    }
+    if let Ok(dirs) = ops.shortcut_dirs() {
+        for d in dirs {
+            let link = d.join(SHORTCUT);
+            if !ops.exists(&link) {
+                continue;
+            }
+            if shortcut_ours(&link, &p.exe, ops) {
+                ops.remove(&link);
+                say(&format!("removed the shortcut {}", link.display()));
+            } else {
+                say(&format!(
+                    "the shortcut {} is not ours; left as it is",
+                    link.display()
+                ));
+            }
+        }
     }
     let running = ops.healthy();
     if running {
@@ -525,6 +618,8 @@ mod tests {
         healthy_after: Option<usize>,
         calls: RefCell<Vec<String>>,
         health_asks: RefCell<usize>,
+        lnk: RefCell<BTreeMap<PathBuf, (PathBuf, String)>>,
+        lnk_dirs_err: bool,
     }
 
     impl Fake {
@@ -634,6 +729,30 @@ mod tests {
             }
             Ok(false)
         }
+        fn shortcut_dirs(&self) -> Result<Vec<PathBuf>, String> {
+            if self.lnk_dirs_err {
+                return Err("no desktop".into());
+            }
+            Ok(vec![PathBuf::from("desk"), PathBuf::from("menu")])
+        }
+        fn shortcut_read(&self, link: &Path) -> Result<(PathBuf, String), String> {
+            self.lnk
+                .borrow()
+                .get(link)
+                .cloned()
+                .ok_or_else(|| "unreadable".to_string())
+        }
+        fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String> {
+            self.log(format!("lnk {}", link.display()));
+            self.lnk
+                .borrow_mut()
+                .insert(link.to_path_buf(), (exe.to_path_buf(), args.to_string()));
+            let mut f = self.files.borrow_mut();
+            if !f.iter().any(|x| x == link) {
+                f.push(link.to_path_buf());
+            }
+            Ok(())
+        }
         fn remove_dir_if_empty(&self, dir: &Path) {
             self.log(format!("rmdir {}", dir.display()));
         }
@@ -679,12 +798,15 @@ mod tests {
                 format!("rename {} {}", p.new.display(), p.exe.display()),
                 "hello".to_string(),
                 format!("run AIB={CMD}"),
+                format!("lnk {}", Path::new("desk").join(SHORTCUT).display()),
+                format!("lnk {}", Path::new("menu").join(SHORTCUT).display()),
                 format!("start {}", p.exe.display()),
                 "open".to_string(),
             ],
             "reason: order"
         );
-        assert_eq!(lines.len(), 5, "reason: one line per step {lines:?}");
+        // one line per step, plus one per shortcut
+        assert_eq!(lines.len(), 7, "reason: one line per step {lines:?}");
     }
 
     #[cfg(windows)]
@@ -986,6 +1108,156 @@ mod tests {
             "reason: words {e}"
         );
         assert!(!f.has("open"), "reason: opened");
+    }
+
+    /// ebab8 11-26 12:20: the setup leaves an "AIB" shortcut on the desktop and in the Start
+    /// menu that runs the installed aibd.exe with `ctl web`.
+    #[test]
+    fn the_setup_puts_aib_on_the_desktop_and_in_the_start_menu() {
+        let f = Fake {
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        let exe = here().exe;
+        for d in ["desk", "menu"] {
+            assert_eq!(
+                f.lnk.borrow().get(&Path::new(d).join(SHORTCUT)),
+                Some(&(exe.clone(), SHORTCUT_ARGS.to_string())),
+                "reason: shortcut_{d} {lines:?}"
+            );
+        }
+        assert_eq!(SHORTCUT_ARGS, "ctl web", "reason: args");
+    }
+
+    /// Somebody else's AIB.lnk (another target) is not written over.
+    #[test]
+    fn somebody_elses_aib_shortcut_is_left_as_it_is() {
+        let other = (PathBuf::from(r"C:\other\x.exe"), String::new());
+        let desk = Path::new("desk").join(SHORTCUT);
+        let f = Fake {
+            healthy_after: Some(1),
+            files: RefCell::new(vec![desk.clone()]),
+            lnk: RefCell::new(BTreeMap::from([(desk.clone(), other.clone())])),
+            ..Fake::default()
+        };
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert_eq!(
+            f.lnk.borrow().get(&desk),
+            Some(&other),
+            "reason: overwritten"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("somebody else's")),
+            "reason: not_said {lines:?}"
+        );
+        assert!(
+            f.lnk
+                .borrow()
+                .contains_key(&Path::new("menu").join(SHORTCUT)),
+            "reason: menu_skipped"
+        );
+    }
+
+    /// An AIB.lnk that is itself a link is never written through, even when it reads as ours.
+    #[test]
+    fn a_shortcut_that_is_a_link_is_not_written_through() {
+        let desk = Path::new("desk").join(SHORTCUT);
+        let f = Fake {
+            healthy_after: Some(1),
+            links: vec![desk.clone()],
+            files: RefCell::new(vec![desk.clone()]),
+            lnk: RefCell::new(BTreeMap::from([(
+                desk.clone(),
+                (here().exe, SHORTCUT_ARGS.to_string()),
+            )])),
+            ..Fake::default()
+        };
+        let (r, _) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert!(
+            !f.has(&format!("lnk {}", desk.display())),
+            "reason: written_through {:?}",
+            f.calls.borrow()
+        );
+    }
+
+    /// No desktop / Start menu folder ⇒ the setup still finishes and opens the page.
+    #[test]
+    fn no_shortcut_does_not_stop_the_setup() {
+        let f = Fake {
+            healthy_after: Some(1),
+            lnk_dirs_err: true,
+            ..Fake::default()
+        };
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert!(f.has("open"), "reason: page_not_opened");
+        assert!(
+            lines.iter().any(|l| l.starts_with("3/5 no AIB shortcut")),
+            "reason: not_said {lines:?}"
+        );
+    }
+
+    /// Uninstall removes our shortcuts and leaves somebody else's.
+    #[test]
+    fn uninstall_removes_only_our_shortcuts() {
+        let p = here();
+        let desk = Path::new("desk").join(SHORTCUT);
+        let menu = Path::new("menu").join(SHORTCUT);
+        let f = Fake {
+            files: RefCell::new(vec![desk.clone(), menu.clone()]),
+            lnk: RefCell::new(BTreeMap::from([
+                (desk.clone(), (p.exe.clone(), SHORTCUT_ARGS.to_string())),
+                (
+                    menu.clone(),
+                    (PathBuf::from(r"C:\other\x.exe"), String::new()),
+                ),
+            ])),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &f, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(!f.exists(&desk), "reason: ours_kept {lines:?}");
+        assert!(f.exists(&menu), "reason: theirs_removed {lines:?}");
+    }
+
+    /// The shortcut after AIB was ended: `ctl web` from the installed copy starts it again.
+    #[test]
+    fn web_from_the_installed_copy_starts_a_stopped_aib() {
+        let p = here();
+        let f = Fake {
+            same: true,
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        assert_eq!(wake(&p, &p.exe, true, &f), Ok(true), "reason: not_started");
+        assert!(
+            f.has(&format!("start {}", p.exe.display())),
+            "reason: {:?}",
+            f.calls.borrow()
+        );
+    }
+
+    /// Another program, or a line naming another aibd (a test, a preview), starts nothing.
+    #[test]
+    fn web_from_elsewhere_starts_nothing() {
+        let p = here();
+        for (same, resident) in [(false, true), (true, false)] {
+            let f = Fake {
+                same,
+                healthy_after: Some(1),
+                ..Fake::default()
+            };
+            let r = wake(&p, Path::new("dl/aibd.exe"), resident, &f);
+            assert!(
+                r.as_ref().is_err_and(|e| e.contains("not running")),
+                "reason: {r:?}"
+            );
+            assert!(!f.has("start"), "reason: started {same} {resident}");
+        }
     }
 
     #[test]
