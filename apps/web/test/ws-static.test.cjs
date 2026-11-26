@@ -289,6 +289,11 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     box.S.th = { list: [{ name: 'okbox', address: 'x', usable: true, pinned: true }, { name: 'nbox', address: 'y', usable: true, pinned: false }], pinned: 1, max: 16, row: {}, open: true }; h = box.testHostHtml();
     ok(/Runs receipts/.test(h) && />Take back</.test(h) && />Add</.test(h) && /Not added/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_rows_not_english ' + h.slice(0, 400));
     box.S.th = null; box.S.thWant = false; h = box.testHostHtml(); ok(/<b>Test machines<\/b>/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_collapsed_title_not_english ' + h);
+    // ebab8 21:51 客戶 Windows:測試機是開發用(收據、只收 Mac)⇒ Windows 整塊不出;Mac 照舊。用 ws.js 真的 thDev 那一行
+    { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ok(!!dl, 'reason: th_dev_line_found');
+      vm.runInContext(dl.trim().replace('const thDev', 'this.thDev') , box); box.win = false; box.fpWin = () => box.win;
+      box.S.th = null; box.S.thWant = false; const hm = box.testHostHtml(); box.win = true; const hw = box.testHostHtml(); box.S.thWant = true; const hw2 = box.testHostHtml(); box.S.thWant = false;
+      ok(/data-thopen="1"/.test(hm) && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hw + hw2); delete box.thDev; delete box.fpWin; }
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
@@ -972,6 +977,11 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       { id: 'hosts', lit: !!lit, steps: [st('host_add', false, 'none', 'add_host'), st('host_reach', false, 'next_version'), st('host_handoff', false, 'next_version'), st('site_first', false, 'next_version')] }] });
     const cOk = st('claude', true, 'ok'), aOk = st('allow', true, 'ok'), fOk = st('first', true, 'ok'), tOk = st('tour', true, 'ok');
     const c = mk();
+    // ebab8 21:51:Windows 的「加一台主機」接的是開發用測試機 ⇒ 標下一版、不出鈕、不是現在那一步;Mac 照舊
+    { const all = G(cOk, aOk, fOk, tOk, true), w = mk('zh-TW', true), m = mk('zh-TW', false); w.S.guide = all; m.S.guide = all;
+      const ha = all.projects[1].steps[0];
+      ok(w.X.gState(ha) === 'later' && m.X.gState(ha) === 'bad' && w.X.guideCur(all) === null && m.X.guideCur(all).step.id === 'host_add', 'reason: guide_host_add_later_on_windows');
+      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && /data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300)); }
     const X = c.X;
     // 四語:每個步驟、鈕、原因短碼都有字
     const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
@@ -1950,6 +1960,9 @@ const hsChecks = (async () => {
       store.has.managed_host_candidates = false; store.has.test_host_list = true; const h1 = F.hsTestChips(); ok(tloads.length === 0 && /data-thopen="1"/.test(h1), 'reason: hs_test_chips_th_read_before_asked ' + tloads.length);
       ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
       const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
+      { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ctx.fpWin = () => true; vm.runInContext(dl.trim().replace('const thDev', 'this.thDev'), ctx);
+        const hw = F.hsTestChips(); ctx.fpWin = () => false; const hm = F.hsTestChips(); delete ctx.thDev; delete ctx.fpWin;
+        ok(hw === '' && /goodbox/.test(hm), 'reason: hs_test_chips_hidden_on_windows ' + hw); } // ebab8 21:51
       { const kx = ctx.thX; ctx.thX = () => ({ title: 'Test machines', loading: 'Loading…' }); const h3 = F.hsTestChips(); ctx.thX = kx; ok(/>Test machines</.test(h3) && !/測試機/.test(h3), 'reason: hs_test_chips_title_not_english ' + h3); }
       delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();

@@ -318,6 +318,8 @@
   // 暗格 / 遮罩 / 路線只是畫面:不送 act、不改任何鈕的 disabled 與焦點、沒有閘讀它;按下去走的都是頁面上原本那顆鈕。
   // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
+  // ebab8 21:51(客戶 Windows 實用回報):測試機 = 收據用、只收 Mac 的開發功能;Windows 客戶當成「加主機」按了回 internal ⇒ Windows 整塊不出,指引的「加一台主機」標下一版
+  const thDev = () => !(typeof fpWin === 'function' && fpWin());
   const GUIDE_W = {
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
       tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
@@ -365,6 +367,7 @@
   function gState(s) {
     if (!s) return 'bad';
     if (s.why === 'next_version') return 'later';
+    if (s.id === 'host_add' && typeof thDev === 'function' && !thDev()) return 'later'; // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
     if (s.why === 'locked' || !Object.prototype.hasOwnProperty.call(s, 'done')) return 'lock';
     return s.done === true ? 'ok' : s.done === null ? 'unsure' : 'bad';
   }
@@ -1483,7 +1486,7 @@
       : `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(none)}</span><button type="button" class="k" data-thopen="1">${esc(open)}</button></div>`; };
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
-    if (hasAct('test_host_list') !== true) return '';
+    if (hasAct('test_host_list') !== true || (typeof thDev === 'function' && !thDev())) return '';
     const T = S.th;
     if (!T && !thWant()) return thClosed(thW().none, thW().open);
     if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thX().loading)}</span></div>`; }
@@ -6511,6 +6514,7 @@
     H.busy = false; render();
   }
   function hsTestChips() {
+    if (typeof thDev === 'function' && !thDev()) return ''; // 測試機候選 / 收據機也是開發功能,Windows 不出
     // f163c 897efdc8cd L1:「+ AI 夥伴」面板一打開也會讀 ssh 設定 ⇒ 跟設定頁同一個開關,沒按過只出一行 + 同一顆鈕
     if ((hsHas('cand') || hasAct('test_host_list') === true) && !thWant()) return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thW().none)} <button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
     if (hsHas('cand')) {
