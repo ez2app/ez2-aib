@@ -1232,7 +1232,7 @@
     if (hasAct('test_host_list') !== true || (S.th && S.th.loading)) return;
     S.th = Object.assign(S.th || {}, { loading: true });
     try { const r = await act('test_host_list', {}); S.th = { list: Array.isArray(r && r.machines) ? r.machines : [], pinned: Number(r && r.pinned) || 0, max: Number(r && r.max) || 0, at: Date.now(), row: (S.th && S.th.row) || {} }; }
-    catch (e) { S.th = { err: TH_ERR[e && (e.code || e.reason)] || errText(e), at: Date.now(), row: {} }; }
+    catch (e) { S.th = { err: thErr(e && (e.code || e.reason)) || errText(e), at: Date.now(), row: {} }; }
     render();
   }
   // ebab8 11:56(客戶 Windows 截圖):客戶 ssh 設定裡的 9 台全列、8 台紅叉,客戶以為壞了,還把他的主機名與位址印在畫面上
@@ -1253,12 +1253,26 @@
   const thWantSet = (v) => { S.thWant = v; try { if (v) localStorage.setItem('aib.th.want', '1'); else localStorage.removeItem('aib.th.want'); } catch (e) { /* 存不了就只記這一頁 */ } };
   // f163c 5d00 N1:測試機塊的標題 / 狀態 / 鈕也要四語(原本寫死中文)
   const TH_X = {
-    'zh-TW': {"title": "測試機", "loading": "讀取中…", "recv": "收據可用 ", "max": " / 最多 ", "reload": "重讀", "reloadT": "重讀這台 ssh 設定裡的機器", "busy": "處理中…", "ok": "✅ 可跑收據", "half": "⚠️ 寫了但收據閘沒回", "add": "加", "rm": "收回這台", "notyet": "還沒加", "added": "已加上,之後收據可以排到這台", "removed": "已收回", "gateless": "已寫上,但那台的收據閘沒回;可以收回這台"},
-    en: {"title": "Test machines", "loading": "Loading…", "recv": "Usable for receipts ", "max": " / max ", "reload": "Reload", "reloadT": "Read the machines in this computer's ssh settings again", "busy": "Working…", "ok": "✅ Runs receipts", "half": "⚠️ Written, but its receipt gate didn't answer", "add": "Add", "rm": "Take back", "notyet": "Not added", "added": "Added; receipts can now be queued on this machine", "removed": "Taken back", "gateless": "Written, but that machine's receipt gate didn't answer; you can take it back"},
-    ja: {"title": "テスト機", "loading": "読み込み中…", "recv": "レシート可 ", "max": " / 最大 ", "reload": "再読み込み", "reloadT": "このパソコンの ssh 設定にあるマシンを読み直す", "busy": "処理中…", "ok": "✅ レシート実行可", "half": "⚠️ 書き込んだがレシートゲートが応答なし", "add": "追加", "rm": "外す", "notyet": "未追加", "added": "追加しました。以後レシートをこのマシンに回せます", "removed": "外しました", "gateless": "書き込みましたが、そのマシンのレシートゲートが応答しません。外すことができます"},
-    ko: {"title": "테스트 기기", "loading": "읽는 중…", "recv": "영수증 가능 ", "max": " / 최대 ", "reload": "다시 읽기", "reloadT": "이 컴퓨터의 ssh 설정에 있는 기기를 다시 읽기", "busy": "처리 중…", "ok": "✅ 영수증 실행 가능", "half": "⚠️ 기록했지만 영수증 게이트가 응답 없음", "add": "추가", "rm": "빼기", "notyet": "추가 안 함", "added": "추가했습니다. 이제 영수증을 이 기기에 보낼 수 있습니다", "removed": "뺐습니다", "gateless": "기록했지만 그 기기의 영수증 게이트가 응답하지 않습니다. 뺄 수 있습니다"},
+    'zh-TW': {"title": "測試機", "loading": "讀取中…", "recv": "收據可用 ", "max": " / 最多 ", "reload": "重讀", "reloadT": "重讀這台 ssh 設定裡的機器", "busy": "處理中…", "ok": "✅ 可跑收據", "half": "⚠️ 寫了但收據閘沒回", "add": "加", "rm": "收回這台", "notyet": "還沒加", "added": "已加上,之後收據可以排到這台", "removed": "已收回", "gateless": "已寫上,但那台的收據閘沒回;可以收回這台", "tap": "點一下開", "given": "已交給夥伴管", "give": "交給夥伴管", "cantGive": "這台不能交", "unsupported": "不支援", "evid": "交給夥伴的測試機,上面的收據在那段時間不能當證據", "testNo": "測試機還不能交給夥伴管:這一版 AIB 還沒有;要管就先在「伺服器」加一台主機"},
+    en: {"title": "Test machines", "loading": "Loading…", "recv": "Usable for receipts ", "max": " / max ", "reload": "Reload", "reloadT": "Read the machines in this computer's ssh settings again", "busy": "Working…", "ok": "✅ Runs receipts", "half": "⚠️ Written, but its receipt gate didn't answer", "add": "Add", "rm": "Take back", "notyet": "Not added", "added": "Added; receipts can now be queued on this machine", "removed": "Taken back", "gateless": "Written, but that machine's receipt gate didn't answer; you can take it back", "tap": "Click to open", "given": "Already handed to the partner", "give": "Hand to the partner", "cantGive": "Can't hand this one over", "unsupported": "Not supported", "evid": "While a test machine is handed to the partner, receipts run on it during that time don't count as evidence", "testNo": "Test machines can't be handed to the partner yet: this version of AIB doesn't have it; to manage one, add it as a host under “Servers” first"},
+    ja: {"title": "テスト機", "loading": "読み込み中…", "recv": "レシート可 ", "max": " / 最大 ", "reload": "再読み込み", "reloadT": "このパソコンの ssh 設定にあるマシンを読み直す", "busy": "処理中…", "ok": "✅ レシート実行可", "half": "⚠️ 書き込んだがレシートゲートが応答なし", "add": "追加", "rm": "外す", "notyet": "未追加", "added": "追加しました。以後レシートをこのマシンに回せます", "removed": "外しました", "gateless": "書き込みましたが、そのマシンのレシートゲートが応答しません。外すことができます", "tap": "クリックで開く", "given": "パートナーに任せ済み", "give": "パートナーに任せる", "cantGive": "このマシンは任せられません", "unsupported": "未対応", "evid": "パートナーに任せている間、そのテスト機で回したレシートは証拠になりません", "testNo": "テスト機はまだパートナーに任せられません(この版の AIB にはありません)。管理するには先に「サーバー」でホストとして追加してください"},
+    ko: {"title": "테스트 기기", "loading": "읽는 중…", "recv": "영수증 가능 ", "max": " / 최대 ", "reload": "다시 읽기", "reloadT": "이 컴퓨터의 ssh 설정에 있는 기기를 다시 읽기", "busy": "처리 중…", "ok": "✅ 영수증 실행 가능", "half": "⚠️ 기록했지만 영수증 게이트가 응답 없음", "add": "추가", "rm": "빼기", "notyet": "추가 안 함", "added": "추가했습니다. 이제 영수증을 이 기기에 보낼 수 있습니다", "removed": "뺐습니다", "gateless": "기록했지만 그 기기의 영수증 게이트가 응답하지 않습니다. 뺄 수 있습니다", "tap": "클릭해서 열기", "given": "이미 파트너에게 맡김", "give": "파트너에게 맡기기", "cantGive": "이 기기는 맡길 수 없습니다", "unsupported": "지원하지 않음", "evid": "파트너에게 맡긴 동안 그 테스트 기기에서 돌린 영수증은 증거가 되지 않습니다", "testNo": "테스트 기기는 아직 파트너에게 맡길 수 없습니다(이번 버전 AIB에는 없음). 관리하려면 먼저 「서버」에서 호스트로 추가하세요"},
   };
   const thX = () => TH_X[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_X['zh-TW'];
+  // f163c b67 / de39 N1:不能用原因、加 / 收回的錯誤也跟頁面語言(中文仍讀 TH_WHY / TH_ERR 原表)
+  const TH_WHY_L = {
+    en: {"reached_through_something_else": "Reached through a jump host; not supported", "config_has_match_or_include": "The ssh settings use Match / Include and can't be read reliably; not supported", "no_identity_file": "This machine's ssh settings can't be understood", "identity_file_not_absolute": "This machine's ssh settings can't be understood", "value_with_a_token": "This machine's ssh settings can't be understood", "port": "This machine's ssh settings can't be understood", "aibd_own_key": "This entry uses AIB's own key"},
+    ja: {"reached_through_something_else": "踏み台経由のため未対応", "config_has_match_or_include": "ssh 設定に Match / Include があり正確に読めないため未対応", "no_identity_file": "このマシンの ssh 設定が読み取れません", "identity_file_not_absolute": "このマシンの ssh 設定が読み取れません", "value_with_a_token": "このマシンの ssh 設定が読み取れません", "port": "このマシンの ssh 設定が読み取れません", "aibd_own_key": "この設定は AIB 自身の鍵を使っています"},
+    ko: {"reached_through_something_else": "점프 호스트를 거쳐야 해서 지원하지 않음", "config_has_match_or_include": "ssh 설정에 Match / Include가 있어 정확히 읽을 수 없어 지원하지 않음", "no_identity_file": "이 기기의 ssh 설정을 이해할 수 없음", "identity_file_not_absolute": "이 기기의 ssh 설정을 이해할 수 없음", "value_with_a_token": "이 기기의 ssh 설정을 이해할 수 없음", "port": "이 기기의 ssh 설정을 이해할 수 없음", "aibd_own_key": "이 설정은 AIB 자체 키를 사용합니다"},
+  };
+  const TH_ERR_L = {
+    en: {"no_receipt_gate": "That machine has no receipt gate yet; install it first, then add it", "not_a_mac": "That machine isn't a Mac, so it can't run receipts yet", "owner_login_failed": "Your own ssh can't reach that machine", "write_failed": "Couldn't write that machine's settings", "remove_failed": "Couldn't take it back: that machine's settings can't be changed", "owner_check_not_approved": "The owner check wasn't confirmed", "owner_check_unavailable": "This computer can't show the owner-check window right now", "page_only": "Only this computer's built-in AIB page can change test machines", "finger_denied": "The owner check was refused", "finger_expired": "The owner-check window timed out", "finger_timeout": "Timed out waiting for the owner check"},
+    ja: {"no_receipt_gate": "そのマシンにはまだレシートゲートがありません。先に入れてから追加してください", "not_a_mac": "そのマシンは Mac ではないため、まだレシートを回せません", "owner_login_failed": "あなた自身の ssh でそのマシンにつながりません", "write_failed": "そのマシンの設定に書き込めません", "remove_failed": "外せません:そのマシンの設定を変更できません", "owner_check_not_approved": "本人確認が通りませんでした", "owner_check_unavailable": "このパソコンは今、本人確認の画面を出せません", "page_only": "テスト機を変更できるのはこのパソコンの AIB 内蔵ページだけです", "finger_denied": "本人確認が拒否されました", "finger_expired": "本人確認の画面が時間切れになりました", "finger_timeout": "本人確認の待ち時間が切れました"},
+    ko: {"no_receipt_gate": "그 기기에는 아직 영수증 게이트가 없습니다. 먼저 설치한 뒤 추가하세요", "not_a_mac": "그 기기는 Mac이 아니어서 아직 영수증을 돌릴 수 없습니다", "owner_login_failed": "본인 ssh로 그 기기에 연결되지 않습니다", "write_failed": "그 기기의 설정에 쓸 수 없습니다", "remove_failed": "뺄 수 없습니다: 그 기기의 설정을 바꿀 수 없습니다", "owner_check_not_approved": "본인 확인이 되지 않았습니다", "owner_check_unavailable": "이 컴퓨터는 지금 본인 확인 창을 띄울 수 없습니다", "page_only": "테스트 기기는 이 컴퓨터의 AIB 내장 페이지에서만 바꿀 수 있습니다", "finger_denied": "본인 확인이 거부되었습니다", "finger_expired": "본인 확인 창 시간이 지났습니다", "finger_timeout": "본인 확인을 기다리다 시간이 지났습니다"},
+  };
+  const thL = () => (typeof askLang === 'function' ? askLang() : 'zh-TW');
+  const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c]) || TH_WHY[c] || '';
+  const thErr = (c) => ((TH_ERR_L[thL()] || {})[c]) || TH_ERR[c] || '';
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
@@ -1277,7 +1291,7 @@
       // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
       const half = isHalf(m);
       const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
-      const X = thX(), st = R.busy ? (R.wait || X.busy) : m.pinned ? X.ok : half ? X.half : m.usable ? X.notyet : '❌ ' + (TH_WHY[m.why] || '不支援');
+      const X = thX(), st = R.busy ? (R.wait || X.busy) : m.pinned ? X.ok : half ? X.half : m.usable ? X.notyet : '❌ ' + (thWhy(m.why) || X.unsupported);
       const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${esc(m.pinned || half ? X.rm : X.add)}</button>`;
       h += `<div class="thr"><span class="hd ${dot}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(String(m.address || ''))}</i></span><span class="hv">${esc(st)}</span>${btn}${R.msg ? `<div class="thm ${R.bad ? 'bad' : ''}" role="${R.bad ? 'alert' : 'status'}">${esc(R.msg)}</div>` : ''}</div>`;
     }
@@ -1291,7 +1305,7 @@
       const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = FP_SEE; render(); });
       if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: thX().gateless, bad: true }; }
       else T.row[name] = { msg: kind === 'add' ? thX().added : thX().removed };
-    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: TH_ERR[c] || errText(e), bad: true }; }
+    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: thErr(c) || errText(e), bad: true }; }
     S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }
 
@@ -6224,7 +6238,6 @@
   }
   const hsLine = (h) => [h.addr ? String(h.addr) + (h.port ? ':' + Number(h.port) : '') : '', h.user ? '使用者 ' + h.user : '', h.hostkey_sha256 ? '指紋 ' + String(h.hostkey_sha256).slice(0, 80) : ''].filter(Boolean).join(' · ');
   // 「可管的主機」那一列(模式選了管理主機才出)
-  const HS_TEST_NO = '測試機還不能交給夥伴管:這一版 AIB 還沒有;要管就先在「伺服器」加一台主機';
   async function hsCandLoad() {
     const H = S.hs; H.candBusy = true;
     try { const r = await act(HS_ACTS.cand, { kind: 'test' }); H.cand = Array.isArray(r && r.hosts) ? r.hosts.filter((m) => m && typeof m.name === 'string' && m.name).slice(0, 40) : []; }
@@ -6249,13 +6262,13 @@
     if (hsHas('cand')) {
       const H = S.hs; if (!H.cand) { if (!H.candBusy) setTimeout(hsCandLoad, 0); return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thX().loading)}</div>`; }
       if (!H.cand.length) return H.candErr ? `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(H.candErr)}</div>` : '';
-      return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(TH_EVID)}</div><div class="apl">${H.cand.map((m) => m.already ? `<span class="apr off"><b>${esc(m.name)}</b><i>已交給夥伴管</i></span>` : m.refused ? `<span class="apr off"><b>${esc(m.name)}</b><i>${esc(HS_WHY[m.refused] || '這台不能交')}</i></span>` : `<button type="button" class="apr" data-hstadd="${esc(m.name)}"><b>${esc(m.name)}</b><i>${esc(String(m.os || ''))}${m.os ? ' · ' : ''}交給夥伴管</i></button>`).join('')}</div>`;
+      return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thX().evid)}</div><div class="apl">${H.cand.map((m) => m.already ? `<span class="apr off"><b>${esc(m.name)}</b><i>${esc(thX().given)}</i></span>` : m.refused ? `<span class="apr off"><b>${esc(m.name)}</b><i>${esc(HS_WHY[m.refused] || thX().cantGive)}</i></span>` : `<button type="button" class="apr" data-hstadd="${esc(m.name)}"><b>${esc(m.name)}</b><i>${esc(String(m.os || ''))}${m.os ? ' · ' : ''}${esc(thX().give)}</i></button>`).join('')}</div>`;
     }
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th; if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thX().loading)}</div>`; }
     const ok = T.err ? [] : T.list.filter((m) => m.usable || m.pinned); // 只列能用的(不能用的不出名字)
     if (!ok.length) return '';
-    return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apl hsoff">${ok.slice(0, 20).map((m) => `<button type="button" class="apr" data-hstest="${esc(String(m.name || ''))}"><b>${esc(String(m.name || ''))}</b><i>點一下開</i></button>`).join('')}</div>`;
+    return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apl hsoff">${ok.slice(0, 20).map((m) => `<button type="button" class="apr" data-hstest="${esc(String(m.name || ''))}"><b>${esc(String(m.name || ''))}</b><i>${esc(thX().tap)}</i></button>`).join('')}</div>`;
   }
   const HS_OTHER_NO = '這一版還沒有:別的模式還不能另外開主機;要管主機,模式選「管理主機」';
   function hsRowOff(A) {
@@ -7282,7 +7295,7 @@
       const na = x.closest('[data-netans]'); if (na) { const i = na.dataset.netans.lastIndexOf('|'); return netAnswer(na.dataset.netans.slice(0, i), na.dataset.netans.slice(i + 1)); } // 3e53b 網路例外卡
       const nrv = x.closest('[data-netrv]'); if (nrv) { const p = nrv.dataset.netrv.split('|'); return netRevoke(p[0], p.slice(1, -1).join('|'), p[p.length - 1]); }
       const hso = x.closest('[data-hsoff]'); if (hso) { S.add.hsOffMsg = HS_OTHER_NO; return render(); }
-      if (x.closest('[data-hstest]')) { S.add.hsOffMsg = HS_TEST_NO; return render(); }
+      if (x.closest('[data-hstest]')) { S.add.hsOffMsg = thX().testNo; return render(); }
       const hta = x.closest('[data-hstadd]'); if (hta) return hsTestAdd(hta.dataset.hstadd);
       const ms = x.closest('[data-apms]'); if (ms) { S.add.mineSeat = S.add.mineSeat === ms.dataset.apms ? '' : ms.dataset.apms; S.pt.seat = S.add.mineSeat; S.pt.seatMsg = null; render(); if (S.pt.seat && !S.pt.list && !S.pt.off) await ptLoad(); if (S.pt.seat && hasAct('seat_perm_log') === true) await ptLogLoad(S.pt.seat); const se = S.add.mineSeat && seatById(S.add.mineSeat); if (se && se.mode === 'host' && hasAct(HS_ACTS.log) === true) await hsLogLoad(se.seat_id); return; }
       const mt = x.closest('[data-apmate]'); if (mt) { const u = mt.dataset.apmate, M = S.add.mates || (S.add.mates = []); const i = M.indexOf(u); if (i >= 0) M.splice(i, 1); else if (M.length < 7) M.push(u); S.add.msg = null; return render(); }

@@ -263,7 +263,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     const LS = {}, loads = [];
     const box = { S: {}, hasAct: () => true, esc: (x) => String(x), thLoad: () => { loads.push(1); }, TH_WHY: {}, TH_ERR: {}, setTimeout: (f) => f(), navigator: { languages: ['zh-TW'] }, localStorage: { getItem: (k) => (k in LS ? LS[k] : null), setItem: (k, v) => { LS[k] = String(v); }, removeItem: (k) => { delete LS[k]; } } };
     vm.createContext(box);
-    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.testHostHtml = testHostHtml; this.thWantSet = thWantSet;', box);
+    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.testHostHtml = testHostHtml; this.thWantSet = thWantSet; this.thWhy = thWhy; this.thErr = thErr; this.thX = thX; this.TH_WHY_L = TH_WHY_L; this.TH_ERR_L = TH_ERR_L;', box);
     // ebab8 12:00:沒按過 ⇒ 不呼叫 test_host_list(不讀 ssh 設定)、只出一行 + 鈕
     { const h0 = box.testHostHtml(); ok(loads.length === 0 && /data-thopen="1"/.test(h0) && /按了才讀/.test(h0), 'reason: th_reads_before_asked ' + loads.length + ' ' + h0.slice(0, 200)); }
     box.thWantSet(true); box.testHostHtml(); ok(loads.length === 1 && LS['aib.th.want'] === '1', 'reason: th_want_not_loading ' + loads.length);
@@ -289,6 +289,17 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     box.S.th = null; box.S.thWant = false; h = box.testHostHtml(); ok(/<b>Test machines<\/b>/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_collapsed_title_not_english ' + h);
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
+    // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
+    { const keysOf = (name) => { const m = ws.match(new RegExp('const ' + name + ' = \\{([\\s\\S]*?)\\n  \\};')); return m ? [...m[1].matchAll(/\b([a-z_]+): '/g)].map((x) => x[1]) : []; };
+      const kw = keysOf('TH_WHY'), ke = keysOf('TH_ERR');
+      ok(kw.length === 7 && ke.length === 11, 'reason: th_zh_tables_moved ' + kw.length + ' ' + ke.length);
+      for (const l of ['en', 'ja', 'ko']) { ok(kw.every((k) => box.TH_WHY_L[l] && box.TH_WHY_L[l][k]), 'reason: th_why_missing ' + l); ok(ke.every((k) => box.TH_ERR_L[l] && box.TH_ERR_L[l][k]), 'reason: th_err_missing ' + l); }
+      box.navigator.languages = ['en-US'];
+      ok(box.thWhy('port') === "This machine's ssh settings can't be understood" && box.thErr('not_a_mac') === "That machine isn't a Mac, so it can't run receipts yet", 'reason: th_why_err_not_english ' + box.thWhy('port'));
+      const X = box.thX(); ok(['tap', 'given', 'give', 'cantGive', 'evid', 'testNo', 'unsupported'].every((k) => X[k] && !/[\u4e00-\u9fff]/.test(X[k])), 'reason: th_panel_words_not_english');
+      box.S.th = { list: [{ name: 'x1', usable: false, why: 'nope_code' }], row: {}, open: true }; box.S.thWant = true;
+      box.navigator.languages = ['ja-JP']; ok(box.thX().unsupported === '未対応', 'reason: th_unsupported_not_japanese');
+      box.navigator.languages = ['zh-TW']; box.S.thWant = null; box.S.th = null; }
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ": \\{ none: ", 'm').test(ws.slice(a, b)), 'reason: th_words_missing_lang ' + l);
     ok(/if \(x\.closest\('\[data-thopen\]'\)\) \{ thWantSet\(true\); if \(!S\.th \|\| !S\.th\.list\) await thLoad\(\);/.test(ws) && /if \(x\.closest\('\[data-thclose\]'\)\) \{ thWantSet\(false\); S\.th = null;/.test(ws), 'reason: th_open_close_not_wired');
   }
@@ -1516,7 +1527,7 @@ const rgChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
-  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…', tap: '點一下開', given: '已交給夥伴管', give: '交給夥伴管', cantGive: '這台不能交', evid: '交給夥伴的測試機,上面的收據在那段時間不能當證據', testNo: '測試機還不能交給夥伴管:這一版 AIB 還沒有;要管就先在「伺服器」加一台主機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
   vm.runInContext('// x' + blk + '\nthis.F = { rgWrap, rgBox, rgClick, rgNote, rgHas, RG_ACTS };', ctx);
   const F = ctx.F;
   const mk = (sel, ds) => ({ closest: (q) => (q === sel ? { dataset: ds || {} } : null) });
@@ -1621,7 +1632,7 @@ const hsChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
-  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…', tap: '點一下開', given: '已交給夥伴管', give: '交給夥伴管', cantGive: '這台不能交', evid: '交給夥伴的測試機,上面的收據在那段時間不能當證據', testNo: '測試機還不能交給夥伴管:這一版 AIB 還沒有;要管就先在「伺服器」加一台主機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
   const tloads = []; ctx.setTimeout = (f) => { tloads.push(f); }; ctx.thLoad = () => {};
   vm.runInContext('// x' + blk + '\nthis.F = { hsModeBtn, hsCan, hsLoad, hsRow, hsRowOff, hsCheck, hsClick, HS_SHELL, hsWinWait, HS_WIN_NET, hsWhy, hsLogLoad, hsLogHtml, HS_WHY, hsTestChips, hsTestAdd, hsCandLoad, TH_EVID };', ctx);
   const F = ctx.F;
@@ -1695,7 +1706,7 @@ const hsChecks = (async () => {
     S.add = A; store.acts.length = 0; await F.hsClick(mk('[data-hsoff]', { hsoff: 'h1' })); S.add = null;
     ok(store.acts.length === 0 && !A.hosts, 'reason: s1d_hosts_off_sends'); }
   ok(ws.includes("const hso = x.closest('[data-hsoff]'); if (hso) { S.add.hsOffMsg = HS_OTHER_NO; return render(); }") && ws.includes("S.pt.seat = S.add.mineSeat; S.pt.seatMsg = null;") && ws.includes("<div class=\"aplab\">套用我的權限模板</div>${ptSeatBox(x) || "), 'reason: s1d_mine_wired');
-  ok(ws.includes("${chips}${hsTestChips()}${msg}") && ws.includes("${rows}${form}${hsTestChips()}") && ws.includes("if (x.closest('[data-hstest]')) { S.add.hsOffMsg = HS_TEST_NO; return render(); }") && !ws.includes('猜 managed_host_list'), 'reason: s1f_hosts_groups');
+  ok(ws.includes("${chips}${hsTestChips()}${msg}") && ws.includes("${rows}${form}${hsTestChips()}") && ws.includes("if (x.closest('[data-hstest]')) { S.add.hsOffMsg = thX().testNo; return render(); }") && !ws.includes('猜 managed_host_list'), 'reason: s1f_hosts_groups');
   // IFACE-page2 r2 C(3e53b 04:03):host_addr_refused 的 reason 寫出來、拿掉回 stopped 數、做過什麼(managed_host_log,只在 version.acts 有才讀)
   { const ae = (code, reason) => Object.assign(new Error(code), { status: 400, code: '', body: { error: { code, reason } } });
     ok(F.hsWhy(ae('host_addr_refused', 'this_computer')) === '這個位址不能加:這台電腦自己' && F.hsWhy(ae('host_addr_refused', 'weird')) === F.HS_WHY.host_addr_refused && /OpenSSH/.test(F.hsWhy(ae('host_ssh_missing'))) && /主機驗證沒過/.test(F.hsWhy(ae('host_verify_failed'))), 'reason: hs_r2_errors');
