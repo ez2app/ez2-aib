@@ -282,6 +282,13 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     ok(/A developer feature/.test(h) && /Add from this computer/.test(h), 'reason: th_collapse_not_english ' + h.slice(0, 200));
     box.S.th.open = true; h = box.testHostHtml();
     ok(/AIB can use/.test(h) && /1 more can't be used/.test(h) && !/srv-/.test(h), 'reason: th_open_empty_words ' + h.slice(0, 300));
+    // f163c 5d00 N1:英文頁的測試機塊沒有中文(標題 / 收據可用 / 重讀 / 列狀態 / 鈕)
+    ok(/<b>Test machines<\/b>/.test(h) && /Usable for receipts 0 \/ max 16/.test(h) && />Reload</.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_header_not_english ' + h.slice(0, 300));
+    box.S.th = { list: [{ name: 'okbox', address: 'x', usable: true, pinned: true }, { name: 'nbox', address: 'y', usable: true, pinned: false }], pinned: 1, max: 16, row: {}, open: true }; h = box.testHostHtml();
+    ok(/Runs receipts/.test(h) && />Take back</.test(h) && />Add</.test(h) && /Not added/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_rows_not_english ' + h.slice(0, 400));
+    box.S.th = null; box.S.thWant = false; h = box.testHostHtml(); ok(/<b>Test machines<\/b>/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_collapsed_title_not_english ' + h);
+    box.S.thWant = null;
+    for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ": \\{ none: ", 'm').test(ws.slice(a, b)), 'reason: th_words_missing_lang ' + l);
     ok(/if \(x\.closest\('\[data-thopen\]'\)\) \{ thWantSet\(true\); if \(!S\.th \|\| !S\.th\.list\) await thLoad\(\);/.test(ws) && /if \(x\.closest\('\[data-thclose\]'\)\) \{ thWantSet\(false\); S\.th = null;/.test(ws), 'reason: th_open_close_not_wired');
   }

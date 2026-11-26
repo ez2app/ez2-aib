@@ -1251,17 +1251,25 @@
   // ebab8 12:00:客戶沒按就什麼都不讀(連 ssh 設定檔都不先讀);按過一次這個瀏覽器記住,開發機下次自己讀
   const thWant = () => { if (S.thWant != null) return S.thWant; try { return localStorage.getItem('aib.th.want') === '1'; } catch (e) { return false; } };
   const thWantSet = (v) => { S.thWant = v; try { if (v) localStorage.setItem('aib.th.want', '1'); else localStorage.removeItem('aib.th.want'); } catch (e) { /* 存不了就只記這一頁 */ } };
+  // f163c 5d00 N1:測試機塊的標題 / 狀態 / 鈕也要四語(原本寫死中文)
+  const TH_X = {
+    'zh-TW': {"title": "測試機", "loading": "讀取中…", "recv": "收據可用 ", "max": " / 最多 ", "reload": "重讀", "reloadT": "重讀這台 ssh 設定裡的機器", "busy": "處理中…", "ok": "✅ 可跑收據", "half": "⚠️ 寫了但收據閘沒回", "add": "加", "rm": "收回這台", "notyet": "還沒加", "added": "已加上,之後收據可以排到這台", "removed": "已收回", "gateless": "已寫上,但那台的收據閘沒回;可以收回這台"},
+    en: {"title": "Test machines", "loading": "Loading…", "recv": "Usable for receipts ", "max": " / max ", "reload": "Reload", "reloadT": "Read the machines in this computer's ssh settings again", "busy": "Working…", "ok": "✅ Runs receipts", "half": "⚠️ Written, but its receipt gate didn't answer", "add": "Add", "rm": "Take back", "notyet": "Not added", "added": "Added; receipts can now be queued on this machine", "removed": "Taken back", "gateless": "Written, but that machine's receipt gate didn't answer; you can take it back"},
+    ja: {"title": "テスト機", "loading": "読み込み中…", "recv": "レシート可 ", "max": " / 最大 ", "reload": "再読み込み", "reloadT": "このパソコンの ssh 設定にあるマシンを読み直す", "busy": "処理中…", "ok": "✅ レシート実行可", "half": "⚠️ 書き込んだがレシートゲートが応答なし", "add": "追加", "rm": "外す", "notyet": "未追加", "added": "追加しました。以後レシートをこのマシンに回せます", "removed": "外しました", "gateless": "書き込みましたが、そのマシンのレシートゲートが応答しません。外すことができます"},
+    ko: {"title": "테스트 기기", "loading": "읽는 중…", "recv": "영수증 가능 ", "max": " / 최대 ", "reload": "다시 읽기", "reloadT": "이 컴퓨터의 ssh 설정에 있는 기기를 다시 읽기", "busy": "처리 중…", "ok": "✅ 영수증 실행 가능", "half": "⚠️ 기록했지만 영수증 게이트가 응답 없음", "add": "추가", "rm": "빼기", "notyet": "추가 안 함", "added": "추가했습니다. 이제 영수증을 이 기기에 보낼 수 있습니다", "removed": "뺐습니다", "gateless": "기록했지만 그 기기의 영수증 게이트가 응답하지 않습니다. 뺄 수 있습니다"},
+  };
+  const thX = () => TH_X[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_X['zh-TW'];
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th;
-    if (!T && !thWant()) return `<div class="thh"><b>測試機</b><span class="hv">${esc(thW().none)}</span><button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
-    if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="thh"><b>測試機</b><span class="hv">讀取中…</span></div>'; }
-    let h = `<div class="thh"><b>測試機</b><span class="hv">${T.list ? '收據可用 ' + T.pinned + (T.max ? ' / 最多 ' + T.max : '') : ''}</span><button type="button" class="k" data-threload="1" title="重讀這台 ssh 設定裡的機器">重讀</button></div>`;
+    if (!T && !thWant()) return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thW().none)}</span><button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
+    if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thX().loading)}</span></div>`; }
+    let h = `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${T.list ? esc(thX().recv + T.pinned + (T.max ? thX().max + T.max : '')) : ''}</span><button type="button" class="k" data-threload="1" title="${esc(thX().reloadT)}">${esc(thX().reload)}</button></div>`;
     if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
     const W = thW(), isHalf = (m) => thHalf(T, m), open = !!T.open || thWant();
     const kept = T.list.filter((m) => m.pinned || isHalf(m)), canAdd = T.list.filter((m) => m.usable && !m.pinned && !isHalf(m)), nBad = T.list.length - kept.length - canAdd.length;
-    if (!kept.length && !open) return `<div class="thh"><b>測試機</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
+    if (!kept.length && !open) return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
     const shown = open ? kept.concat(canAdd) : kept;
     if (open) h += `<div class="thr hv">${esc(shown.length ? '' : W.empty)}${nBad > 0 ? esc((shown.length ? '' : ' · ') + W.bad(nBad)) : ''}<button type="button" class="k" data-thclose="1">${esc(W.close)}</button></div>`;
     for (const m of shown) {
@@ -1269,8 +1277,8 @@
       // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
       const half = isHalf(m);
       const dot = m.pinned ? 'hg' : half ? 'hq' : m.usable ? '' : 'hr';
-      const st = R.busy ? (R.wait || '處理中…') : m.pinned ? '✅ 可跑收據' : half ? '⚠️ 寫了但收據閘沒回' : m.usable ? '還沒加' : '❌ ' + (TH_WHY[m.why] || '不支援');
-      const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${m.pinned || half ? '收回這台' : '加'}</button>`;
+      const X = thX(), st = R.busy ? (R.wait || X.busy) : m.pinned ? X.ok : half ? X.half : m.usable ? X.notyet : '❌ ' + (TH_WHY[m.why] || '不支援');
+      const btn = !m.usable && !m.pinned && !half ? '' : `<button type="button" class="k ${m.pinned || half ? '' : 'g'}" data-th${m.pinned || half ? 'rm' : 'add'}="${esc(nm)}" ${R.busy ? 'disabled' : ''}>${esc(m.pinned || half ? X.rm : X.add)}</button>`;
       h += `<div class="thr"><span class="hd ${dot}"></span><span class="hn">${esc(nm)}<i class="aw">${esc(String(m.address || ''))}</i></span><span class="hv">${esc(st)}</span>${btn}${R.msg ? `<div class="thm ${R.bad ? 'bad' : ''}" role="${R.bad ? 'alert' : 'status'}">${esc(R.msg)}</div>` : ''}</div>`;
     }
     return h;
@@ -1281,8 +1289,8 @@
     render();
     try {
       const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = FP_SEE; render(); });
-      if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: '已寫上,但那台的收據閘沒回;可以收回這台', bad: true }; }
-      else T.row[name] = { msg: kind === 'add' ? '已加上,之後收據可以排到這台' : '已收回' };
+      if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: thX().gateless, bad: true }; }
+      else T.row[name] = { msg: kind === 'add' ? thX().added : thX().removed };
     } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: TH_ERR[c] || errText(e), bad: true }; }
     S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }

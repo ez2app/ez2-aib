@@ -30,3 +30,11 @@ k 'if (v) localStorage.setItem('\''aib.th.want'\'', '\''1'\'');' 'if (v) localSt
 k '{ thWantSet(false); S.th = null; return render(); }' '{ thWantSet(true); S.th = null; return render(); }'
 # CU12 記住過的開發機重整後仍收著(ebab8 12:00)
 k 'open = !!T.open || thWant();' 'open = !!T.open;'
+# CU13 標題寫死中文(f163c 5d00 N1)
+k 'if (!T && !thWant()) return `<div class="thh"><b>${esc(thX().title)}</b>' 'if (!T && !thWant()) return `<div class="thh"><b>測試機</b>'
+# CU14 收據可用 / 重讀寫死中文(f163c 5d00 N1)
+k 'esc(thX().recv + T.pinned' 'esc('\''收據可用 '\'' + T.pinned'
+# CU15 列鈕寫死中文(f163c 5d00 N1)
+k '${esc(m.pinned || half ? X.rm : X.add)}' '${m.pinned || half ? '\''收回這台'\'' : '\''加'\''}'
+# CU16 英文字表缺(f163c 5d00 N1)
+k '    en: {"title": "Test machines"' '    en0: {"title": "Test machines"'
