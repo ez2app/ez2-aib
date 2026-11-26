@@ -67,14 +67,15 @@ impl WinClass {
             WinClass::HelloSoftware => {
                 "這台沒有 TPM,Windows Hello 的金鑰存在軟體裡:一般動作可以做，要存簽章和高風險的動作不開放。"
             }
+            // B2 (Andy 11-26 10:1x): what a Hello machine is today, no pairing key
             WinClass::HelloKeyUnknown => {
-                "這台有 Windows Hello,還沒建配對金鑰。建好後才知道金鑰在不在硬體裡。"
+                "這台用 Windows Hello 確認是你本人:每次要你本人時，當下跳一次 Hello。"
             }
             WinClass::NoHello => {
                 "這台還沒設 Windows Hello,只能做一般動作。設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN。沒有 Windows 登入密碼的話，要先設密碼才能設 PIN。"
             }
             WinClass::Unknown => {
-                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好再建配對金鑰。"
+                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好就生效，不用重裝。"
             }
         }
     }
@@ -130,14 +131,13 @@ pub struct Win {
 #[cfg(windows)]
 impl Win {
     pub fn read(data: &std::path::Path) -> Win {
+        // B2 (Andy 11-26 10:1x): no pairing key; whether Hello is set up is read from
+        // UserConsentVerifier's availability (no window), the key's hardware flag is not read
+        let _ = data;
         let at_desk = aib_sys::hello::interactive_session().is_ok();
-        let provider = at_desk && aib_sys::hello_ncrypt::provider_ready().is_ok();
-        let key = provider
-            .then(|| crate::touch::load(&crate::touch::key_dir(data)).ok())
-            .flatten()
-            .filter(|k| aib_sys::hello_ncrypt::public_key(&k.blob).ok() == Some(k.public));
-        let enrolled = key.as_ref().map(|_| true);
-        let hardware = key.map(|k| crate::touch::WinHello::hardware_bound(&k.blob));
+        let enrolled = at_desk.then(|| aib_sys::hello_consent::available().is_ok());
+        let provider = enrolled == Some(true);
+        let hardware = None;
         Win {
             at_desk,
             provider,
@@ -163,9 +163,68 @@ impl WinDevice for Win {
     }
 }
 
+/// `GET /api/v1/owner-check` (ebab8 11-26 03:28, fields to fc7f9): what the page shows about
+/// this machine's owner check. `class` and `words` only on Windows (null elsewhere); the
+/// page's "check again" is this GET again. Read like the probe: no window, no key made.
+pub fn page_body(platform: &str, class: Option<WinClass>) -> Value {
+    json!({
+        "platform": platform,
+        "class": class.map(WinClass::word),
+        "class_is_final": false,
+        "words": class.map(WinClass::words),
+    })
+}
+
+/// The route's handler; the Windows reads run off the async threads.
+pub async fn state(
+    axum::extract::State(st): axum::extract::State<crate::api::AppState>,
+) -> axum::Json<Value> {
+    let data = crate::registry::data_of(&st);
+    let class = tokio::task::spawn_blocking(move || this_class(&data))
+        .await
+        .unwrap_or(None);
+    axum::Json(page_body(platform_word(), class))
+}
+
+#[cfg(windows)]
+fn this_class(data: &std::path::Path) -> Option<WinClass> {
+    Some(win_class(&Win::read(data)))
+}
+
+#[cfg(not(windows))]
+fn this_class(_data: &std::path::Path) -> Option<WinClass> {
+    None
+}
+
+fn platform_word() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "other"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ebab8 03:28: the page reads the class from a GET; a machine that is not Windows names
+    /// no class, and nothing the page shows is composed by the page
+    #[test]
+    fn the_page_reads_this_machines_class_and_aibds_own_words() {
+        let w = page_body("windows", Some(WinClass::NoHello));
+        assert_eq!(w["class"], "no_hello");
+        assert_eq!(w["words"], WinClass::NoHello.words());
+        assert_eq!(w["class_is_final"], false);
+        let m = page_body("macos", None);
+        assert!(
+            m["class"].is_null() && m["words"].is_null(),
+            "reason: class_off_windows {m}"
+        );
+        assert_eq!(m["platform"], "macos");
+    }
 
     struct Fake {
         desk: bool,

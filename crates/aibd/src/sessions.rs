@@ -439,8 +439,20 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
         program: name(argv0),
     };
     let real = allowlist::resolve(argv0, p).map_err(|r| refuse(r, argv0))?;
-    allowlist::env_allowed(p, req.env.iter().map(|(k, _)| k.as_str()))
-        .map_err(|r| refuse(r, argv0))?;
+    // a copilot seat's own home is aibd's to give ([`gate`] drops a request's), never a policy name
+    let own_home = |k: &str, v: &str| {
+        crate::copilot_wire::is_copilot(argv0)
+            && ((k == "COPILOT_HOME" && crate::copilot_wire::made_by_aibd(std::path::Path::new(v)))
+                || crate::copilot_wire::pin_entry(k, v))
+    };
+    allowlist::env_allowed(
+        p,
+        req.env
+            .iter()
+            .filter(|(k, v)| !own_home(k, v))
+            .map(|(k, _)| k.as_str()),
+    )
+    .map_err(|r| refuse(r, argv0))?;
     let real = real
         .into_os_string()
         .into_string()
@@ -530,24 +542,160 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             }
         }
     }
+    // 08de5 11-25 (ebab8 q_cd554b24 condition 1; TAKEOVER-brands-08de5-1125 §1): a grok seat is
+    // checked where it starts, as codex is — the measured version only, every safe flag exactly
+    // once and nothing that gives a tool back, and nothing of the user's own set-up that grok
+    // would load (MCP servers, hooks, plugins, LSP servers: grok 1.0.70 picks them up from
+    // ~/.cursor, ~/.claude plugins and its own config, and no flag turns them off). What
+    // `grok inspect --json` lists is read with the seat's own environment in the seat's folder;
+    // a list not read starts nothing.
+    if crate::grok_wire::is_grok(&real) {
+        let refuse_grok = |why: String| Refusal {
+            error: ApiError::new(
+                ErrorCode::ProgramNotAllowed,
+                format!("grok seat not started: {why}"),
+            ),
+            program: name(&real),
+        };
+        let env = codex_list_env(&req, p, std::env::vars_os());
+        grok_gate(&real, &req.argv, req.cwd.as_deref(), &env).map_err(refuse_grok)?;
+    }
+    // the same for a copilot seat (condition 1): the version its words were read against,
+    // every safe flag once and nothing that gives a tool back or puts the prompt in argv, and
+    // every MCP server `copilot mcp list --json` lists turned off by name (with the seat's own
+    // environment, in its folder); a list not read starts nothing
+    if crate::copilot_wire::is_copilot(&real) {
+        let refuse_copilot = |why: String| Refusal {
+            error: ApiError::new(
+                ErrorCode::ProgramNotAllowed,
+                format!("copilot seat not started: {why}"),
+            ),
+            program: name(&real),
+        };
+        let env = codex_list_env(&req, p, std::env::vars_os());
+        let off_words =
+            copilot_gate(&real, &req.argv, req.cwd.as_deref(), &env).map_err(refuse_copilot)?;
+        req.argv.extend(off_words);
+    }
     req.argv[0] = real;
     Ok(req)
 }
 
-/// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
-/// than [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a codex stuck on a login or a version
-/// check would hold the seat's start; the list not read, the seat does not start).
-fn codex_mcp_listed(
+/// The grok seat's gate, at its start and again before every turn (3e53b REVIEW-grok M1: grok
+/// starts anew and reads its set-up again each turn): the version measured, every safe flag
+/// once and nothing that gives a tool back, and nothing of the user's own set-up loaded
+/// (`grok inspect --json`). The version and the listing are read with `env` in `cwd`, cut
+/// after [`MCP_LIST_WAIT`] (3e53b N2: a grok stuck on `--version` held the start).
+fn grok_gate(
     real: &str,
-    flags: &[String],
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), String> {
+    let printed = probe_listed(real, &["--version".to_owned()], cwd, env);
+    if !aib_seatopen::grok_version_ok(&printed) {
+        let said: String = printed
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(60)
+            .collect();
+        return Err(format!(
+            "version not measured for aibd (1.0.70 only): {said} (grok_version)"
+        ));
+    }
+    if let Some(why) = aib_seatopen::grok_safe_refusal(argv) {
+        return Err(format!("safety flag {why} (grok_safety_flags)"));
+    }
+    let ask = ["inspect", "--json"].map(String::from);
+    let listed = probe_listed(real, &ask, cwd, env);
+    if let Err(why) = crate::grok_wire::nothing_loaded(&listed) {
+        return Err(format!("{why} (grok_user_setup)"));
+    }
+    Ok(())
+}
+
+/// [`grok_gate`] on one turn's words, with the environment that turn starts with (the
+/// seat's own, without the session marker), in the seat's folder.
+pub(crate) fn grok_turn_check(spec: &Spec) -> Result<(), String> {
+    let env = seat_env(spec, std::env::vars_os());
+    let real = spec.argv.first().map(String::as_str).unwrap_or_default();
+    grok_gate(real, &spec.argv, Some(&spec.cwd), &env)
+}
+
+/// The copilot seat's gate, at its start and again before every turn (as [`grok_gate`]):
+/// the version its words were read against, every safe flag once and nothing that gives a
+/// tool back or puts the prompt in argv; the words that turn off every MCP server `copilot
+/// mcp list --json` lists (read with `env` in `cwd`, cut after [`MCP_LIST_WAIT`]).
+fn copilot_gate(
+    real: &str,
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<Vec<String>, String> {
+    crate::copilot_wire::pinned(env).map_err(|why| format!("{why} (copilot_pin)"))?;
+    let printed = probe_listed(real, &["--version".to_owned()], cwd, env);
+    if !aib_seatopen::copilot_version_ok(&printed) {
+        let said: String = printed
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(60)
+            .collect();
+        return Err(format!(
+            "Copilot is now {said:?}, not measured by AIB yet (AIB runs {} only) (copilot_version)",
+            aib_seatopen::COPILOT_PINNED
+        ));
+    }
+    if let Some(why) = aib_seatopen::copilot_safe_refusal(argv) {
+        return Err(format!("safety flag {why} (copilot_safety_flags)"));
+    }
+    let here = cwd
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    crate::copilot_wire::nothing_runs(env, &here)
+        .map_err(|why| format!("{why} (copilot_hooks)"))?;
+    let ask = ["mcp", "list", "--json"].map(String::from);
+    let listed = probe_listed(real, &ask, cwd, env);
+    crate::copilot_wire::mcp_off(&listed).map_err(|why| format!("{why} (copilot_mcp)"))
+}
+
+/// [`copilot_gate`] on one turn's words: an MCP server listed now that the seat's words do
+/// not turn off (added after the seat opened) refuses the turn.
+pub(crate) fn copilot_turn_check(spec: &Spec) -> Result<(), String> {
+    let env = seat_env(spec, std::env::vars_os());
+    let real = spec.argv.first().map(String::as_str).unwrap_or_default();
+    let off_words = copilot_gate(real, &spec.argv, Some(&spec.cwd), &env)?;
+    for pair in off_words.chunks(2) {
+        if !spec.argv.windows(2).any(|w| w == pair) {
+            let name = pair.get(1).map_or("", String::as_str);
+            return Err(format!(
+                "MCP server {name} was added after the seat opened (copilot_mcp)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// What `real <args>` prints in `cwd` with `env`, or nothing when it fails or takes more than
+/// [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a program stuck on a login or a version check
+/// would hold the seat's start; a listing not read starts nothing). codex's MCP list and
+/// grok's set-up listing both read through it.
+fn probe_listed(
+    real: &str,
+    args: &[String],
     cwd: Option<&std::path::Path>,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> String {
     let mut c = std::process::Command::new(real);
     c.env_clear()
         .envs(env.iter().map(|(k, v)| (k, v)))
-        .args(flags)
-        .args(["mcp", "list", "--json"])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -564,7 +712,7 @@ fn codex_mcp_listed(
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
-        .name("aibd-codex-mcp-list".into())
+        .name("aibd-probe-list".into())
         .spawn(move || {
             let mut b = Vec::new();
             let _ = std::io::Read::read_to_end(&mut out, &mut b);
@@ -587,6 +735,20 @@ fn codex_mcp_listed(
     }
 }
 
+/// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
+/// than [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a codex stuck on a login or a version
+/// check would hold the seat's start; the list not read, the seat does not start).
+fn codex_mcp_listed(
+    real: &str,
+    flags: &[String],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> String {
+    let mut args: Vec<String> = flags.to_vec();
+    args.extend(["mcp", "list", "--json"].map(String::from));
+    probe_listed(real, &args, cwd, env)
+}
+
 /// The environment `codex mcp list` runs with: the one the seat's own codex gets
 /// ([`crate::platform::session::child_env`]: aibd's inherited names, the request's env, a
 /// preview's seat HOME), without the `AIBD_SESSION` marker (the list is not the session).
@@ -603,7 +765,16 @@ fn codex_list_env(
         pass: without(p.env.clone(), &req.withhold),
         input: false,
     };
-    let mut env = crate::platform::session::child_env(&spec, parent);
+    seat_env(&spec, parent)
+}
+
+/// The environment `spec`'s program starts with over `parent`, without the session marker: a
+/// listing or a check run beside the seat is not the seat (0eed7 VERIFY-codexcfg-65be8029).
+fn seat_env(
+    spec: &Spec,
+    parent: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = crate::platform::session::child_env(spec, parent);
     env.retain(|(k, _)| {
         !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)
     });
@@ -1538,7 +1709,49 @@ impl Sessions {
         if let Some(seat) = seat_id.as_deref() {
             crate::grants::seat_ended(seat);
         }
-        let res = (self.spawn)(&spec, self.lineage.clone());
+        // grok and copilot speak one program per turn (crate::turn_wire): every turn's program
+        // goes through aibd's own spawn and lineage (ebab8 q_cd554b24 condition 2); a prompt
+        // file in `<data dir>/turn-prompts`, owner only, beside the seats' default folder rather
+        // than in it (a seat started there does not see other seats' cards)
+        let first = spec.argv.first().map(String::as_str).unwrap_or_default();
+        // each turn checked again before it starts (3e53b REVIEW-grok M1)
+        let brand = if crate::grok_wire::is_grok(first) {
+            Some((
+                crate::grok_wire::brand(),
+                grok_turn_check as fn(&Spec) -> Result<(), String>,
+            ))
+        } else if crate::copilot_wire::is_copilot(first) {
+            Some((
+                crate::copilot_wire::brand(),
+                copilot_turn_check as fn(&Spec) -> Result<(), String>,
+            ))
+        } else {
+            None
+        };
+        let res = match brand {
+            Some((brand, check)) => {
+                let persona = seat_id.as_deref().and_then(|s| self.take_persona(s));
+                let turns = crate::turn_wire::Turns {
+                    spawn: self.spawn,
+                    lineage: self.lineage.clone(),
+                    prompt_dir: self
+                        .default_cwd
+                        .parent()
+                        .unwrap_or(&self.default_cwd)
+                        .join("turn-prompts"),
+                    check,
+                    // the copilot seat's own home goes with the seat
+                    own_dir: spec
+                        .env
+                        .iter()
+                        .find(|(k, _)| k == "COPILOT_HOME")
+                        .map(|(_, v)| std::path::PathBuf::from(v))
+                        .filter(|h| h.starts_with(copilot_homes(&self.default_cwd))),
+                };
+                crate::turn_wire::spawn(&spec, persona, turns, brand)
+            }
+            None => (self.spawn)(&spec, self.lineage.clone()),
+        };
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         g.started(seat_id.as_ref());
@@ -2747,13 +2960,52 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
 /// is audited.
 pub(crate) async fn gate(
     st: &AppState,
-    req: Request,
+    mut req: Request,
 ) -> Result<(Request, Option<String>), ApiError> {
     let policy = st.policy();
     let audit = st.sessions.clone();
     let asked = req.argv.first().cloned();
+    let homes = copilot_homes(st.sessions.private_dir());
     let run = move || {
+        // a copilot seat runs in a home of its own, never the user's (DESIGN-copilot-seat-home)
+        let own = if asked
+            .as_deref()
+            .is_some_and(crate::copilot_wire::is_copilot)
+        {
+            let user = crate::workspace::seat_login_home()
+                .unwrap_or_default()
+                .join(".copilot")
+                .join("config.json");
+            match crate::copilot_wire::seat_home(&homes, &user) {
+                Ok(h) => {
+                    crate::copilot_wire::set_homes(&homes);
+                    let pin = crate::copilot_wire::pin_dir(
+                        crate::workspace::seat_login_home().as_deref(),
+                    );
+                    copilot_seat_env(&mut req, &policy, &h, pin.as_deref());
+                    Some(h)
+                }
+                Err(why) => {
+                    let program = asked.clone().unwrap_or_default();
+                    audit.record_rejection(
+                        Instant::now(),
+                        TOKEN_ID_STARTUP,
+                        ErrorCode::ProgramNotAllowed,
+                        &program,
+                    );
+                    return Err(ApiError::new(
+                        ErrorCode::ProgramNotAllowed,
+                        format!("copilot seat not started: {why} (copilot_home)"),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         admit(req, &policy).map(|r| (r, asked)).map_err(|r| {
+            if let Some(h) = own.as_deref() {
+                let _ = std::fs::remove_dir_all(h);
+            }
             audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
@@ -2762,6 +3014,49 @@ pub(crate) async fn gate(
         Ok(Ok(r)) => Ok(r),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error")),
+    }
+}
+
+/// Where each copilot seat's own home is made: beside aibd's private sessions folder.
+fn copilot_homes(private: &std::path::Path) -> std::path::PathBuf {
+    private
+        .parent()
+        .unwrap_or(private)
+        .join(crate::copilot_wire::HOMES)
+}
+
+/// A copilot seat's environment: `COPILOT_HOME` = its own `home`, pinned to the measured
+/// version (3e53b 11-26: no update and the package at `pin`; a `pin` not known is left out and
+/// the gate refuses); nothing that moves copilot's set-up or token, whether the request or the
+/// policy brings it (c2f0b PRE-READ L1: the request's are dropped, the policy's are withheld
+/// from this session). The names aibd writes are aibd's alone: a request's or policy's go.
+fn copilot_seat_env(
+    req: &mut Request,
+    policy: &SessionPolicy,
+    home: &std::path::Path,
+    pin: Option<&str>,
+) {
+    let aibds = |k: &str| {
+        crate::copilot_wire::env_dropped(k)
+            || crate::copilot_wire::OWN_ENV
+                .iter()
+                .any(|o| k.eq_ignore_ascii_case(o))
+    };
+    req.env.retain(|(k, _)| !aibds(k));
+    req.env.push((
+        "COPILOT_HOME".to_owned(),
+        home.to_string_lossy().into_owned(),
+    ));
+    let (update, off) = crate::copilot_wire::PIN_UPDATE;
+    req.env.push((update.to_owned(), off.to_owned()));
+    if let Some(p) = pin {
+        req.env
+            .push((crate::copilot_wire::PIN_DIST.to_owned(), p.to_owned()));
+    }
+    for name in policy.env.iter().filter(|n| aibds(n)) {
+        if !req.withhold.contains(name) {
+            req.withhold.push(name.clone());
+        }
     }
 }
 
@@ -3255,6 +3550,485 @@ mod tests {
             withhold: Vec::new(),
             input: false,
         }
+    }
+
+    /// 08de5 11-25 (ebab8 q_cd554b24 condition 1): a grok seat is checked at the gate, not only
+    /// where its words are built — a safe flag missing, a version not measured, or any of the
+    /// user's own MCP servers / hooks / plugins / LSP servers grok would load: refused, saying
+    /// which; the seat's full safe words with nothing loaded: admitted. A stand-in `grok` (a
+    /// script, so interpreters are let through here) prints the version and the listing.
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_seat_is_checked_at_the_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("grok");
+        let script = |version: &str| {
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; inspect) cat '{}';; esac\n",
+                d.path().join("inspect.json").display()
+            )
+        };
+        let listing = |mcp: &str| {
+            std::fs::write(
+                d.path().join("inspect.json"),
+                format!(r#"{{"mcpServers":[{mcp}],"hooks":[],"lspServers":[],"plugins":[]}}"#),
+            )
+            .unwrap();
+        };
+        std::fs::write(&bin, script("grok 1.0.70 (test)")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        listing("");
+        let policy = SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "grok".into(),
+                path: bin.clone(),
+                signer: None,
+            }],
+            env: Vec::new(),
+            interpreters_ok: true,
+        };
+        let mut argv =
+            aib_seatopen::pipe_argv("grok", "safe", None, "0f1e2d3c-4b5a-4968-8776-655443322110")
+                .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        let ask = |argv: Vec<String>| {
+            let r = Request {
+                argv,
+                cwd: Some(d.path().to_path_buf()),
+                env: Vec::new(),
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            admit(r, &policy).map(|_| ()).map_err(|e| e.error.1)
+        };
+        assert_eq!(ask(argv.clone()), Ok(()), "reason: safe_grok_refused");
+        let i = argv.iter().position(|w| w == "--no-subagents").unwrap();
+        let mut short = argv.clone();
+        short.remove(i);
+        let e = ask(short).unwrap_err();
+        assert!(
+            e.contains("missing:--no-subagents (grok_safety_flags)"),
+            "reason: flag_missing_admitted {e}"
+        );
+        let mut more = argv.clone();
+        more.extend(["--tools".into(), "read_file".into()]);
+        assert!(
+            ask(more).unwrap_err().contains("forbidden:--tools"),
+            "reason: tool_given_back_admitted"
+        );
+        listing(r#"{"name":"notebooks"}"#);
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(
+            e.contains("mcpServers 1") && e.contains("(grok_user_setup)"),
+            "reason: user_mcp_admitted {e}"
+        );
+        std::fs::write(d.path().join("inspect.json"), "not json").unwrap();
+        assert!(
+            ask(argv.clone()).unwrap_err().contains("(grok_user_setup)"),
+            "reason: unread_listing_admitted"
+        );
+        listing("");
+        std::fs::write(&bin, script("grok 1.0.71 (test)")).unwrap();
+        let e = ask(argv).unwrap_err();
+        assert!(
+            e.contains("(grok_version)") && e.contains("1.0.71"),
+            "reason: unmeasured_version_admitted {e}"
+        );
+    }
+
+    /// 08de5 11-25, ebab8 q_cd554b24 condition 1 for copilot: checked at the gate, not only
+    /// where pipe_argv builds the words. A safe flag missing, a word giving a tool back or the
+    /// prompt in argv, a version not read, or an MCP list not read: refused, saying which;
+    /// every listed MCP server turned off by name on the seat's words. A stand-in `copilot`
+    /// (a script, so interpreters are let through here) prints the version and the list.
+    #[cfg(unix)]
+    #[test]
+    fn a_copilot_seat_is_checked_at_the_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("copilot");
+        let home = d.path().join("h");
+        std::fs::create_dir_all(home.join(".copilot")).unwrap();
+        std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
+        let pin = d
+            .path()
+            .join("pkg")
+            .join("darwin-arm64")
+            .join(aib_seatopen::COPILOT_PINNED);
+        std::fs::create_dir_all(&pin).unwrap();
+        let home_env = vec![
+            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+            (
+                "COPILOT_CLI_DIST_DIR".to_owned(),
+                pin.to_string_lossy().into_owned(),
+            ),
+        ];
+        let script = |version: &str| {
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo '{version}';; mcp) cat '{}';; esac\n",
+                d.path().join("mcp.json").display()
+            )
+        };
+        let listing = |body: &str| std::fs::write(d.path().join("mcp.json"), body).unwrap();
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.116.")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        listing(r#"{"mcpServers":{"computer-use":{"source":"builtin"},"mine":{"source":"user"}}}"#);
+        let policy = SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "copilot".into(),
+                path: bin.clone(),
+                signer: None,
+            }],
+            // the stand-in HOME the request brings (aibd's own is not read in a test)
+            env: vec!["HOME".into()],
+            interpreters_ok: true,
+        };
+        let mut argv = aib_seatopen::pipe_argv(
+            "copilot",
+            "safe",
+            None,
+            "0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+        .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        let ask_with = |argv: Vec<String>, env: Vec<(String, String)>| {
+            let r = Request {
+                argv,
+                cwd: Some(d.path().to_path_buf()),
+                env,
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            admit(r, &policy).map(|r| r.argv).map_err(|e| e.error.1)
+        };
+        let ask = |argv: Vec<String>| ask_with(argv, home_env.clone());
+        let got = ask(argv.clone()).expect("reason: safe_copilot_refused");
+        // 3e53b 11-26: pinned, or not started. No update off: refused; the pinned package gone
+        // from copilot's cache: refused, saying so
+        let no_update = vec![home_env[0].clone(), home_env[2].clone()];
+        let e = ask_with(argv.clone(), no_update).unwrap_err();
+        assert!(
+            e.contains("COPILOT_AUTO_UPDATE is not false (copilot_pin)"),
+            "reason: auto_update_left_on_admitted {e}"
+        );
+        let e = ask_with(argv.clone(), home_env[..2].to_vec()).unwrap_err();
+        assert!(e.contains("(copilot_pin)"), "reason: unpinned_admitted {e}");
+        for off in ["true", "FALSE", ""] {
+            let mut env = home_env.clone();
+            env[1].1 = off.to_owned();
+            let e = ask_with(argv.clone(), env).unwrap_err();
+            assert!(!e.is_empty(), "reason: update_on_admitted {off}");
+        }
+        std::fs::remove_dir(&pin).unwrap();
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(
+            e.contains("no longer on this computer") && e.contains("(copilot_pin)"),
+            "reason: cleared_pin_admitted {e}"
+        );
+        std::fs::create_dir(&pin).unwrap();
+        assert_eq!(
+            &got[argv.len()..],
+            [
+                "--disable-mcp-server",
+                "computer-use",
+                "--disable-mcp-server",
+                "mine"
+            ],
+            "reason: listed_mcp_left_on {got:?}"
+        );
+        let i = argv
+            .iter()
+            .position(|w| w == "--disable-builtin-mcps")
+            .unwrap();
+        let mut short = argv.clone();
+        short.remove(i);
+        let e = ask(short).unwrap_err();
+        assert!(
+            e.contains("missing:--disable-builtin-mcps (copilot_safety_flags)"),
+            "reason: flag_missing_admitted {e}"
+        );
+        for more in [["--allow-all-tools", ""], ["-p", "CARD"]] {
+            let mut b = argv.clone();
+            b.extend(
+                more.iter()
+                    .filter(|w| !w.is_empty())
+                    .map(|w| (*w).to_owned()),
+            );
+            let e = ask(b).unwrap_err();
+            assert!(
+                e.contains(&format!("forbidden:{}", more[0])),
+                "reason: forbidden_admitted {e}"
+            );
+        }
+        // a hook copilot would run by itself (3e53b REVIEW-copilot M1)
+        std::fs::create_dir(home.join(".copilot").join("hooks")).unwrap();
+        std::fs::write(home.join(".copilot").join("hooks").join("m.json"), "{}").unwrap();
+        let e = ask(argv.clone()).unwrap_err();
+        assert!(e.contains("(copilot_hooks)"), "reason: hook_admitted {e}");
+        std::fs::remove_file(home.join(".copilot").join("hooks").join("m.json")).unwrap();
+        // the home aibd made for the seat is admitted though no policy lists COPILOT_HOME;
+        // a home of any other shape is a name the request may not set
+        let homes = d.path().join(crate::copilot_wire::HOMES);
+        let own = homes.join("c_00ff");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("config.json"), "{}").unwrap();
+        // c2f0b: the whole path counts; a folder of the same shape elsewhere is not aibd's
+        let elsewhere = d
+            .path()
+            .join("x")
+            .join(crate::copilot_wire::HOMES)
+            .join("c_00ff");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("config.json"), "{}").unwrap();
+        let odd = homes.join("x_00ff");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("config.json"), "{}").unwrap();
+        // the only test that records a homes folder (the global is set by the gate)
+        crate::copilot_wire::set_homes(&homes);
+        for (h, ok) in [
+            (own.clone(), true),
+            (home.join(".copilot"), false),
+            (elsewhere, false),
+            (odd, false),
+        ] {
+            let r = Request {
+                argv: argv.clone(),
+                cwd: Some(d.path().to_path_buf()),
+                env: vec![
+                    ("COPILOT_HOME".to_owned(), h.to_string_lossy().into_owned()),
+                    home_env[1].clone(),
+                    home_env[2].clone(),
+                ],
+                timeout: None,
+                withhold: Vec::new(),
+                input: true,
+            };
+            assert_eq!(
+                admit(r, &policy).is_ok(),
+                ok,
+                "reason: copilot_home_gate {h:?}"
+            );
+        }
+        listing("not json");
+        assert!(
+            ask(argv.clone()).unwrap_err().contains("(copilot_mcp)"),
+            "reason: unread_mcp_list_admitted"
+        );
+        listing(r#"{"mcpServers":{}}"#);
+        std::fs::write(&bin, script("GitHub Copilot CLI 1.0.117.")).unwrap();
+        let e = ask(argv).unwrap_err();
+        assert!(
+            e.contains("(copilot_version)") && e.contains("1.0.117"),
+            "reason: unread_version_admitted {e}"
+        );
+    }
+
+    /// DESIGN-copilot-seat-home + c2f0b PRE-READ L1: a copilot seat gets the home aibd made
+    /// for it, and nothing that moves copilot's set-up or token, from the request or the
+    /// policy; the gate admits that home only when aibd made it.
+    #[test]
+    fn a_copilot_seat_gets_its_own_home_and_nothing_that_moves_it() {
+        let d = tempfile::tempdir().unwrap();
+        let homes = d.path().join(crate::copilot_wire::HOMES);
+        let home = homes.join("c_0123456789abcdef");
+        std::fs::create_dir_all(&home).unwrap();
+        let policy = SessionPolicy {
+            programs: Vec::new(),
+            env: vec![
+                "GH_TOKEN".into(),
+                "COPILOT_ALLOW_ALL".into(),
+                "FOO".into(),
+                "COPILOT_CLI_DIST_DIR".into(),
+                "copilot_auto_update".into(),
+            ],
+            interpreters_ok: true,
+        };
+        let mut req = Request {
+            argv: vec!["copilot".into()],
+            cwd: None,
+            env: vec![
+                ("COPILOT_HOME".into(), "/elsewhere".into()),
+                ("GH_TOKEN".into(), "t".into()),
+                ("copilot_github_token".into(), "t".into()),
+                ("COPILOT_AUTO_UPDATE".into(), "true".into()),
+                ("copilot_cli_dist_dir".into(), "/elsewhere".into()),
+                (
+                    "COPILOT_CLI_ENABLED_FEATURE_FLAGS".into(),
+                    "DECISIONS_API".into(),
+                ),
+                ("FOO".into(), "1".into()),
+            ],
+            timeout: None,
+            withhold: Vec::new(),
+            input: true,
+        };
+        let pin = "/u/Library/Caches/copilot/pkg/darwin-arm64/1.0.116";
+        let bare = req.clone();
+        copilot_seat_env(&mut req, &policy, &home, Some(pin));
+        let ours = [
+            (
+                "COPILOT_HOME".to_owned(),
+                home.to_string_lossy().into_owned(),
+            ),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+        ];
+        let mut want = vec![("FOO".to_owned(), "1".to_owned())];
+        want.extend(ours.clone());
+        want.push(("COPILOT_CLI_DIST_DIR".to_owned(), pin.to_owned()));
+        assert_eq!(req.env, want, "reason: copilot_env_kept {:?}", req.env);
+        // a pin not known: no package named (the gate then refuses), the rest the same
+        let mut unknown = bare;
+        copilot_seat_env(&mut unknown, &policy, &home, None);
+        assert_eq!(
+            unknown.env[1..],
+            ours,
+            "reason: unknown_pin_env {:?}",
+            unknown.env
+        );
+        for n in [
+            "GH_TOKEN",
+            "COPILOT_ALLOW_ALL",
+            "COPILOT_CLI_DIST_DIR",
+            "copilot_auto_update",
+        ] {
+            assert!(
+                req.withhold.iter().any(|w| w == n),
+                "reason: policy_env_passed {n}"
+            );
+        }
+        assert!(
+            !req.withhold.iter().any(|w| w == "FOO"),
+            "reason: other_env_withheld"
+        );
+    }
+
+    /// 3e53b M1: the same gate runs on each turn's words with the turn's environment, so a
+    /// hook added after the seat opened refuses the next turn. A stand-in `grok` (a script)
+    /// prints the version and the listing.
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_turn_is_checked_again_before_it_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("grok");
+        let listing = d.path().join("inspect.json");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo 'grok 1.0.70 (test)';; inspect) cat '{}';; esac\n",
+                listing.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let set_up = |hooks: &str| {
+            std::fs::write(
+                &listing,
+                format!(r#"{{"mcpServers":[],"hooks":[{hooks}],"lspServers":[],"plugins":[]}}"#),
+            )
+            .unwrap();
+        };
+        let mut argv =
+            aib_seatopen::pipe_argv("grok", "safe", None, "0f1e2d3c-4b5a-4968-8776-655443322110")
+                .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        argv.extend(["--prompt-file".into(), "/x/p_1.prompt".into()]);
+        let spec = Spec {
+            id: "s_0123456789abcdef".into(),
+            argv,
+            cwd: d.path().into(),
+            env: Vec::new(),
+            pass: Vec::new(),
+            input: false,
+        };
+        set_up("");
+        assert_eq!(grok_turn_check(&spec), Ok(()), "reason: clean_turn_refused");
+        set_up(r#"{"event":"session_start","hookType":"command","target":"x"}"#);
+        let e = grok_turn_check(&spec).unwrap_err();
+        assert!(
+            e.contains("hooks 1") && e.contains("(grok_user_setup)"),
+            "reason: hook_added_after_open_admitted {e}"
+        );
+    }
+
+    /// 3e53b M1 for copilot: the same gate runs on each turn's words, so an MCP server added
+    /// after the seat opened (not turned off by the seat's words) refuses the next turn.
+    #[cfg(unix)]
+    #[test]
+    fn a_copilot_turn_is_checked_again_before_it_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("copilot");
+        let home = d.path().join("h");
+        std::fs::create_dir_all(home.join(".copilot")).unwrap();
+        std::fs::write(home.join(".copilot").join("config.json"), "{}").unwrap();
+        let pin = d
+            .path()
+            .join("pkg")
+            .join("darwin-arm64")
+            .join(aib_seatopen::COPILOT_PINNED);
+        std::fs::create_dir_all(&pin).unwrap();
+        let home_env = vec![
+            ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+            ("COPILOT_AUTO_UPDATE".to_owned(), "false".to_owned()),
+            (
+                "COPILOT_CLI_DIST_DIR".to_owned(),
+                pin.to_string_lossy().into_owned(),
+            ),
+        ];
+        let listing = d.path().join("mcp.json");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in --version) echo 'GitHub Copilot CLI 1.0.116.';; mcp) cat '{}';; esac\n",
+                listing.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut argv = aib_seatopen::pipe_argv(
+            "copilot",
+            "safe",
+            None,
+            "0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+        .unwrap();
+        argv[0] = bin.to_string_lossy().into_owned();
+        argv.extend(["--disable-mcp-server".into(), "computer-use".into()]);
+        argv.push("--resume=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into());
+        let spec = Spec {
+            id: "s_0123456789abcdef".into(),
+            argv,
+            cwd: d.path().into(),
+            env: home_env,
+            pass: Vec::new(),
+            input: true,
+        };
+        std::fs::write(&listing, r#"{"mcpServers":{"computer-use":{}}}"#).unwrap();
+        assert_eq!(
+            copilot_turn_check(&spec),
+            Ok(()),
+            "reason: clean_turn_refused"
+        );
+        std::fs::write(&listing, r#"{"mcpServers":{"computer-use":{},"mine":{}}}"#).unwrap();
+        let e = copilot_turn_check(&spec).unwrap_err();
+        assert!(
+            e.contains("mine was added") && e.contains("(copilot_mcp)"),
+            "reason: mcp_added_after_open_admitted {e}"
+        );
+        // a hook set up after the seat opened refuses the next turn
+        std::fs::write(&listing, r#"{"mcpServers":{"computer-use":{}}}"#).unwrap();
+        std::fs::create_dir(home.join(".copilot").join("hooks")).unwrap();
+        std::fs::write(home.join(".copilot").join("hooks").join("m.json"), "{}").unwrap();
+        let e = copilot_turn_check(&spec).unwrap_err();
+        assert!(
+            e.contains("(copilot_hooks)"),
+            "reason: hook_added_after_open_admitted {e}"
+        );
     }
 
     #[test]

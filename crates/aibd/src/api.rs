@@ -105,12 +105,12 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
         ACT, ASSIGNMENTS, BRAINS, BRAIN_CANDIDATES, CONTACTS, DOC, EVENTS, EVENTS_STREAM, FLOWS,
-        HEALTH, HOST, HOSTS, METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_PREVIEW_TREE,
-        NODE_USAGE, NOW, OWNER_TICKET, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT, PAIR_PREFS,
-        PAIR_PREVIEW, PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS,
-        PREVIEW, PREVIEW_HANDOFF, PREVIEW_SWAP, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN,
-        SEAT_SESSIONS, SEAT_TREE, SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS, SESSION_OUTPUT,
-        SESSION_POLICY, SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
+        GUIDE, HEALTH, HOST, HOSTS, METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_PREVIEW_TREE,
+        NODE_USAGE, NOW, OWNER_CHECK, OWNER_TICKET, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT,
+        PAIR_PREFS, PAIR_PREVIEW, PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS,
+        PREFS, PREVIEW, PREVIEW_HANDOFF, PREVIEW_SWAP, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS,
+        SEATS_OPEN, SEAT_SESSIONS, SEAT_TREE, SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS,
+        SESSION_OUTPUT, SESSION_POLICY, SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -178,6 +178,8 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         PAIR_PREVIEW => post(pair_api::preview_pass).fallback(nope),
         OWNER_TICKET => get(crate::owner_ok::ticket_state).fallback(nope),
         SESSION_POLICY => get(crate::session_policy_setup::state).fallback(nope),
+        OWNER_CHECK => get(crate::owner_probe_win::state).fallback(nope),
+        GUIDE => get(crate::guide::get).fallback(nope),
         _ => return None,
     })
 }

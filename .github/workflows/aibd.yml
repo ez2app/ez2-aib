@@ -3860,6 +3860,11 @@ jobs:
             [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
             cp "target-winexe/release/$b.exe" winexe/
           done
+          # 90856 W3 (ebab8 11-26 04:46): AIB-Setup.exe is the same aibd.exe under the name that runs the
+          #   installer on a double-click (aibd main.rs: an exe named AIB-Setup*.exe started with no
+          #   arguments runs `aibd setup`). A plain copy, listed in SHA256SUMS like every other file.
+          cp winexe/aibd.exe winexe/AIB-Setup.exe
+          cmp winexe/aibd.exe winexe/AIB-Setup.exe
           # 90856 PLAN-windows-onsite §3 A: the laptop cannot build, so aib-wincheck.exe runs test
           #   executables built here. A test executable holds absolute paths of where it was built
           #   (CARGO_BIN_EXE_*, fixtures under CARGO_MANIFEST_DIR), so they are built at a fixed

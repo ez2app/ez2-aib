@@ -14,10 +14,11 @@
 //! - Asking ([`KeyPresence::ask`]): sign the binding (pair id, short code, who it goes to, the
 //!   page's nonce digest) with the reason [`reason`] composed here, then verify the signature
 //!   with the stored public key. Only then is the pairing confirmed.
-//! - The window says what and who (5d33a §6-3): the short code, built-in page / your folder's
-//!   page, who asked (the terminal's `aibd ctl web`, or the page re-confirming an action), and
-//!   「本機鑰(未登記)」 (§6-1: Presence level until the T135-b registry, then HardwareSigned).
-//!   Nothing in it comes from a request.
+//! - The window says what and who (5d33a §6-3): first whether you started it and to cancel if not,
+//!   then the code your page must also show (3e53b TRIAGE-nohello-confirmed r5), built-in page /
+//!   your folder's page, who asked (a terminal or a program, or the page re-confirming an action),
+//!   and [`OWNER_CHECK_WORD`] (§6-1: 「本機鑰(未登記)」 on macOS until the T135-b registry; the
+//!   Hello gesture on Windows). Nothing in it comes from a request.
 //! - Default: off (`AIBD_PAIRING=touchid` turns it on) until 0eed7 has pressed it on a real Mac
 //!   with aibd under launchd (5d33a L1).
 
@@ -48,14 +49,34 @@ pub fn reason(who: &Who, short_code: &str, user_page: bool) -> String {
     } else {
         "內建頁"
     };
+    // 3e53b TRIAGE-nohello-confirmed r5 c: the source only as aibd knows it — a code made by a
+    // terminal or a program (`POST /api/v1/pair/codes` with the start-up token), or the page
     match who {
         Who::Terminal => format!(
-            "aibd 配對網頁:短碼 {short_code};給 {to};由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            "aibd 配對網頁:短碼 {short_code};給 {to};由終端機 / 程式要求。{OWNER_CHECK_WORD}"
         ),
         // a carried pairing has no short code (it was made before the update)
         Who::Reconfirm { act, until } => format!(
-            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to}。本機鑰(未登記)"
+            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}"
         ),
+    }
+}
+
+/// What confirms here, as the window's last words (§6-1): the stored key on macOS; on Windows
+/// the Hello gesture, no key (B2, Andy 11-26).
+#[cfg(not(windows))]
+pub const OWNER_CHECK_WORD: &str = "本機鑰(未登記)";
+/// What confirms here, as the window's last words: on Windows the Hello gesture, no key (B2).
+#[cfg(windows)]
+pub const OWNER_CHECK_WORD: &str = "Windows Hello 確認(不留金鑰)";
+
+/// The window's first line (3e53b TRIAGE-nohello-confirmed r5 a, 11-26: the customer typed the
+/// PIN twice into windows a remote script raised): ask whether this person started it, and
+/// say to cancel when not.
+pub fn ask_first(who: &Who) -> &'static str {
+    match who {
+        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
+        Who::Reconfirm { .. } => "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
     }
 }
 
@@ -89,14 +110,17 @@ pub fn object(who: &Who, user_page: bool) -> String {
     }
 }
 
-/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2):
-/// what a yes does ([`plain`], the same words the countdown and the page card show), for whom
-/// ([`object`]), the code the countdown beside it shows and until when, then [`reason`] as it
-/// always said (Andy 11-21 01:42 every window counts down; 519d0 05:49). The words are only
-/// shown; the key signs [`binding`], not these.
+/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2),
+/// reordered by 3e53b TRIAGE-nohello-confirmed r5 (11-26) so the stop rule comes first and the
+/// code to compare sits where Hello does not cut it: [`ask_first`] (did you start this? if not,
+/// cancel), the code the page and the countdown show and until when (differs ⇒ cancel), what a
+/// yes does ([`plain`], the same words the countdown and the page card show) and for whom
+/// ([`object`]), then [`reason`] with the true source. The words are only shown; the key signs
+/// [`binding`], not these.
 pub fn window(who: &Who, short_code: &str, user_page: bool, until: &str, code: &str) -> String {
     format!(
-        "{}\n對象:{}\n對照碼 {code} · {until},過了這張就作廢\n{}",
+        "{}\n你的頁面也要顯示 {code},不一樣就按取消 · {until},過了這張就作廢\n{}(對象:{})\n{}",
+        ask_first(who),
         plain(who, user_page),
         object(who, user_page),
         reason(who, short_code, user_page)
@@ -513,6 +537,68 @@ impl WinHello {
     }
 }
 
+/// Is the gesture set up here now (no window).
+type GestureReady = Box<dyn Fn() -> Result<(), &'static str> + Send + Sync>;
+/// Show the window with this text, wait at most this long; `Ok` only for the owner's yes.
+type GestureWindow =
+    Box<dyn Fn(&str, std::time::Duration) -> Result<(), &'static str> + Send + Sync>;
+
+/// B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): the owner check as a gesture
+/// only, no key — on Windows the Windows Hello window (the Passport provider refused aibd's key
+/// on the laptop, 0x80090027). Written for every platform so its rules are tested and knifed
+/// everywhere; Windows hands it the OS calls ([`win_gesture`]).
+/// - every ask reads whether the gesture is there now (3e53b L2: a PIN set after aibd started
+///   counts at the next ask, no restart), then shows the window: nothing is cached or written,
+///   two asks are two windows;
+/// - the window says `reason`, which aibd composed; the request's bytes never reach it;
+/// - no signature, so [`Presence::signs`] is false: no "always", no batch (owner_ok).
+pub struct GesturePresence {
+    ready: GestureReady,
+    window: GestureWindow,
+}
+
+/// The longest a gesture window waits when the caller gives no limit (as the key windows).
+pub const GESTURE_LONGEST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+impl GesturePresence {
+    /// `ready`: is the gesture set up here now (no window); `window`: show it with this text
+    /// and wait at most this long, `Ok` only for the owner's yes.
+    pub fn new(
+        ready: impl Fn() -> Result<(), &'static str> + Send + Sync + 'static,
+        window: impl Fn(&str, std::time::Duration) -> Result<(), &'static str> + Send + Sync + 'static,
+    ) -> GesturePresence {
+        GesturePresence {
+            ready: Box::new(ready),
+            window: Box::new(window),
+        }
+    }
+}
+
+impl Presence for GesturePresence {
+    fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str> {
+        self.ask_until(reason, msg, GESTURE_LONGEST)
+    }
+    fn ask_until(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<(), &'static str> {
+        let _ = msg; // what the yes is for is in `reason`, composed by aibd
+        (self.ready)()?;
+        (self.window)(reason, limit)
+    }
+}
+
+/// The Windows Hello gesture (aib-sys `hello_consent`) as aibd's owner check.
+#[cfg(windows)]
+pub fn win_gesture() -> GesturePresence {
+    GesturePresence::new(
+        || aib_sys::hello_consent::available().map_err(|e| e.code()),
+        |reason, limit| aib_sys::hello_consent::ask_until(reason, limit).map_err(hello_code),
+    )
+}
+
 #[cfg(windows)]
 impl KeyDevice for WinHello {
     fn probe(&self, blob: &[u8]) -> Result<(), &'static str> {
@@ -609,13 +695,14 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
         let _ = class_now();
         Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
     }
+    // B2: a gesture at the desktop, no key; no Hello for this user ⇒ refused (B3: every owner
+    // action stays closed, the page shows the set-a-PIN card)
     #[cfg(windows)]
     {
-        presence_after_session(
-            aib_sys::hello::interactive_session().map_err(|e| e.code()),
-            data,
-            Box::new(WinHello),
-        )
+        let _ = data;
+        // the desk now; whether Hello is set up is read at each ask (3e53b L2)
+        aib_sys::hello::interactive_session().map_err(|e| e.code())?;
+        Ok(Arc::new(win_gesture()))
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -736,12 +823,121 @@ pub mod tests {
         assert!(!no_key.signs(), "reason: keyless_presence_said_signed");
     }
 
+    /// A gesture check whose answers the test sets, counting what reached the window.
+    fn gesture(
+        ready: Result<(), &'static str>,
+        answers: Vec<Result<(), &'static str>>,
+    ) -> (GesturePresence, Arc<Mutex<Vec<String>>>) {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let s = shown.clone();
+        let left = Mutex::new(answers);
+        let p = GesturePresence::new(
+            move || ready,
+            move |reason, _limit| {
+                s.lock().unwrap().push(reason.to_owned());
+                let mut l = left.lock().unwrap();
+                if l.is_empty() {
+                    Err("no_answer_left")
+                } else {
+                    l.remove(0)
+                }
+            },
+        );
+        (p, shown)
+    }
+
+    /// B2 (3e53b REVIEW-b2consent L1): only the window's yes is a yes, and it comes from the
+    /// window every time: a no, a cancel or nothing asked is never a yes.
+    #[test]
+    fn a_gesture_yes_comes_only_from_the_window() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(()), Err("cancel")]);
+        assert_eq!(p.ask("aibd 推分支 web/a", b"x"), Ok(()), "reason: yes_lost");
+        assert_eq!(
+            p.ask("aibd 推分支 web/b", b"x"),
+            Err("cancel"),
+            "reason: cancel_taken_as_yes"
+        );
+        assert_eq!(shown.lock().unwrap().len(), 2, "reason: window_not_asked");
+        assert!(!p.signs(), "reason: gesture_said_signed");
+    }
+
+    /// B2: nothing is cached — two asks are two windows, and a yes earlier does not answer a
+    /// later ask.
+    #[test]
+    fn a_gesture_yes_is_not_kept_for_the_next_ask() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(()), Err("auth_failed")]);
+        assert_eq!(p.ask("one", b""), Ok(()));
+        assert_eq!(
+            p.ask_until("two", b"", std::time::Duration::from_secs(5)),
+            Err("auth_failed"),
+            "reason: first_yes_reused"
+        );
+        assert_eq!(
+            *shown.lock().unwrap(),
+            vec!["one", "two"],
+            "reason: windows"
+        );
+    }
+
+    /// B2: the window says what aibd composed, never the request's bytes.
+    #[test]
+    fn a_gesture_window_says_only_what_aibd_composed() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(())]);
+        p.ask(
+            "aibd 開席設定:允許 Claude",
+            b"page says: approve everything",
+        )
+        .unwrap();
+        assert_eq!(
+            *shown.lock().unwrap(),
+            vec!["aibd 開席設定:允許 Claude"],
+            "reason: request_text_in_window"
+        );
+    }
+
+    /// B2 / B3 (3e53b L2): no gesture set up ⇒ refused at once, no window; set up later ⇒
+    /// the next ask shows the window, no restart (readiness is read at each ask).
+    #[test]
+    fn without_the_gesture_set_up_it_refuses_and_a_later_pin_counts() {
+        let (p, shown) = gesture(Err("no_biometry"), vec![Ok(())]);
+        assert_eq!(
+            p.ask("x", b""),
+            Err("no_biometry"),
+            "reason: no_hello_passed"
+        );
+        assert!(
+            shown.lock().unwrap().is_empty(),
+            "reason: window_without_hello"
+        );
+        let set = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = set.clone();
+        let asked = Arc::new(Mutex::new(0));
+        let a2 = asked.clone();
+        let later = GesturePresence::new(
+            move || {
+                if s2.load(std::sync::atomic::Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("no_biometry")
+                }
+            },
+            move |_r, _l| {
+                *a2.lock().unwrap() += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(later.ask("x", b""), Err("no_biometry"));
+        set.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(later.ask("x", b""), Ok(()), "reason: pin_needs_restart");
+        assert_eq!(*asked.lock().unwrap(), 1, "reason: windows_count");
+    }
+
     #[test]
     fn the_window_says_the_code_where_it_goes_and_who_asked() {
         let r = reason(&Who::Terminal, "123456", false);
         assert_eq!(
             r,
-            "aibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            format!("aibd 配對網頁:短碼 123456;給 內建頁;由終端機 / 程式要求。{OWNER_CHECK_WORD}")
         );
         let r = reason(
             &Who::Reconfirm {
@@ -753,12 +949,17 @@ pub mod tests {
         );
         assert_eq!(
             r,
-            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 23:59;起因:開席;換版前延續的配對,給 你資料夾的頁(只能打給 safe 席)。本機鑰(未登記)"
+            format!("aibd 網頁重新確認:升級這頁到本輪完整權限,到 23:59;起因:開席;換版前延續的配對,給 你資料夾的頁(只能打給 safe 席);由瀏覽器頁要求。{OWNER_CHECK_WORD}")
         );
+        #[cfg(windows)]
+        assert!(!r.contains("本機鑰"), "reason: windows_has_no_key");
     }
 
+    /// 3e53b TRIAGE-nohello-confirmed r5 (11-26: the customer typed the PIN into windows a
+    /// remote script raised): the window first asks whether this person started it and says to
+    /// cancel when not, then asks to compare the code with the page's, then what a yes does.
     #[test]
-    fn a_pairing_window_says_it_plainly_first_and_then_what_it_always_said() {
+    fn a_pairing_window_asks_first_whether_you_started_it() {
         let w = window(
             &Who::Terminal,
             "123456",
@@ -768,7 +969,7 @@ pub mod tests {
         );
         assert_eq!(
             w,
-            "讓這個瀏覽器分頁配對成 AIB 的內建頁\n對象:這個瀏覽器分頁 → 內建頁\n對照碼 123456 · 請在 01:23:44 前按,過了這張就作廢\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            format!("你剛在 AIB 頁面按了配對嗎?沒有就按取消\n你的頁面也要顯示 123456,不一樣就按取消 · 請在 01:23:44 前按,過了這張就作廢\n讓這個瀏覽器分頁配對成 AIB 的內建頁(對象:這個瀏覽器分頁 → 內建頁)\naibd 配對網頁:短碼 123456;給 內建頁;由終端機 / 程式要求。{OWNER_CHECK_WORD}")
         );
         assert_eq!(w.lines().count(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
@@ -784,13 +985,22 @@ pub mod tests {
         let l: Vec<&str> = w.lines().collect();
         assert_eq!(l.len(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
-            l[0], "讓這一頁繼續用完整權限到 23:59(起因:開席)",
-            "reason: plain_first"
+            l[0], "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
+            "reason: ask_first"
         );
-        assert_eq!(l[0], plain(&who, true), "reason: same_words_as_countdown");
-        assert_eq!(l[1], "對象:這一頁 → 你資料夾的頁(只能打給 safe 席)");
-        assert_eq!(l[2], "對照碼 AB12 · 請在 120 秒內按,過了這張就作廢");
-        assert_eq!(l[3], reason(&who, "", true), "reason: original_kept");
+        assert_eq!(
+            l[1],
+            "你的頁面也要顯示 AB12,不一樣就按取消 · 請在 120 秒內按,過了這張就作廢"
+        );
+        assert!(
+            l[2].starts_with(&plain(&who, true)),
+            "reason: same_words_as_countdown"
+        );
+        assert!(l[2].ends_with("(對象:這一頁 → 你資料夾的頁(只能打給 safe 席))"));
+        assert_eq!(l[3], reason(&who, "", true), "reason: reason_last");
+        for w in [&Who::Terminal, &who] {
+            assert!(ask_first(w).ends_with("沒有就按取消"), "reason: stop_rule");
+        }
     }
 
     #[cfg(unix)]
@@ -851,13 +1061,22 @@ pub mod tests {
         assert_eq!(weak.err(), Some("pair_key_weak"), "reason: still_checked");
     }
 
-    /// S10-3b-1: on any machine whose aibd runs outside a desktop session (CI's Windows cell,
-    /// an ssh start) the Windows path refuses before reading; elsewhere, with no key files,
-    /// it refuses too. Never a presence from an empty data folder.
+    /// S10-3b-1: with no key files there is no key presence. B2 (Andy 11-26 10:1x): on Windows
+    /// the owner check is the Hello gesture and reads no key files, so an empty data folder no
+    /// longer decides it there: outside a desktop session it is refused (ssh, a service); at a
+    /// desktop (CI's Windows cell runs in one) it is the gesture, which signs nothing (no
+    /// "always", no batch) and reads Hello at each ask (GesturePresence tests and knives G1–G9).
+    /// The test does not ask: that would show a real Hello window.
     #[test]
     fn an_empty_data_folder_gives_no_presence_here() {
         let d = tempfile::tempdir().unwrap();
-        assert!(presence_here(d.path()).is_err());
+        let got = presence_here(d.path());
+        #[cfg(not(windows))]
+        assert!(got.is_err(), "reason: presence_from_empty_folder");
+        #[cfg(windows)]
+        if let Ok(p) = got {
+            assert!(!p.signs(), "reason: windows_presence_signs_without_a_key");
+        }
     }
 
     /// S10-3b-2 (3e53b READ-winhello-wiring W7): a key that fails the start-up check leaves

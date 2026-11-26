@@ -44,7 +44,7 @@ k 'sel = AP_LEVEL[A.mode] ? A.mode : '\''safe'\'', s = (m) => (m === sel ? '\'' 
 # PGSF18
 k '<em class="adang d4">危險程度:最高</em></button>`; // S1b 5' '</button>`; // S1b 5'
 # PGSF20
-k 'return n ? ` · ${n} 個人格` : '\'' · <span class="apwarn">這台還沒有對應人格</span>'\''; }' 'return '\'''\''; }'
+k 'return n ? ` · ${n} 個人格` : personas().some(([u]) => personaBuiltin(u)) ? ` · 用${esc(pbW()[1])}的 ${esc(pbW()[0])}` : '\'' · <span class="apwarn">這台還沒有對應人格</span>'\''; }' 'return '\'''\''; }'
 # PGSF21
 k '<em class="${X.id === '\''sens'\'' ? '\''sens'\'' : '\'''\''}">${AP_NUM[X.id] || '\''—'\''}</em>' ''
 # PGSF22

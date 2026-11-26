@@ -37,10 +37,13 @@
 
 use std::fmt;
 
+pub mod measured;
+pub use measured::{claude_version_ok, measured_for, Measured, MEASURED};
 pub mod pipe;
 pub use pipe::{
-    add_persona_file, claude_project_dir, codex_version_ok, codex_work_args, pipe_argv, pipe_modes,
-    resume_argv, PipeRefused, PIPE_PROVIDERS, RESUME_FLAG,
+    add_persona_file, claude_project_dir, codex_version_ok, codex_work_args, copilot_safe_refusal,
+    copilot_version_ok, grok_safe_refusal, grok_version_ok, pipe_argv, pipe_modes, resume_argv,
+    PipeRefused, COPILOT_PINNED, PIPE_PROVIDERS, RESUME_FLAG,
 };
 
 /// The AIs a seat can open with (1.x `PROVIDERS`, :147).
@@ -64,7 +67,7 @@ pub const PROVIDERS: &[&str] = &[
 /// The brands AIB 2.0 opens a seat with (SPEC-workspace-multiseat §22, Andy 11-18 22:2x):
 /// the ones aibd drives through a pipe. `agy` and `grok` join when their pipe is done.
 /// [`PROVIDERS`] stays the 1.x list the old command line reads; it is never shown on a page.
-pub const AIB2_BRANDS: &[&str] = &["claude", "codex"];
+pub const AIB2_BRANDS: &[&str] = &["claude", "codex", "grok", "copilot"];
 
 /// 1.x `MODES` (:148): `dgrs` = the AI changes files and runs commands without asking.
 pub const MODES: &[&str] = &["dgrs", "safe"];

@@ -19,7 +19,7 @@ wp '            None if windows => ConfirmChannel::TouchId,' \
    a_windows_aibd_pairs_through_hello_unless_told_otherwise
 # WD2 a Windows aibd with AIBD_OWNER_TOUCH unset keeps the page's owner asks off
 wo '        None => windows,' \
-   '        None => false,' \
+   '        None => { let _ = windows; false }' \
    the_owners_yes_approves_one_act_for_one_page_once
 # WD3 selfcheck reads the pairing by the old rule: a Windows aibd with nothing set says off (f163c / 3e53b N1)
 ws '    let ch = ConfirmChannel::from_env_here(env_value, windows);' '    let ch = ConfirmChannel::from_env_value(env_value);' \

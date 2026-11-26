@@ -25,12 +25,8 @@ na '        crate::egress::Local::Machine => Err("machine_port"),' '        crat
 na '            v["listener"] = serde_json::json!(self.listener.as_deref().unwrap_or("查不到"));' '            v["listener"] = serde_json::json!(self.listener.as_deref().unwrap_or("")); // knife' net_card::tests::a_local_service_gets_the_high_risk_card_and_aibd_or_the_whole_machine_none
 # NW1–NW5 (ebab8 11-23 09:11 standing rule; f163c REVIEW-netcardact L1 L2): the gates at the
 # door, through real requests where a daemon can show them.
-# $4 is "--lib" or "--test <name>": left unquoted on purpose so "--test net_card" reaches
-# cargo as two words (quoted, cargo refused it as one unknown argument, rc 1 before any build:
-# #898 crate knives macOS 1/3, NW1 MISSES rc=1 failed=[])
-# shellcheck disable=SC2086
 nw() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$5" \
-  -- cargo test -p aibd --locked $4 "$5"; }
+  -- cargo test -p aibd --locked "$4" "$5"; }
 # NW1 a user folder page lists and answers cards
 nw crates/aibd/src/seat_input.rs '            if net_outside {' '            if false && net_outside { // knife' '--test net_card' a_card_is_answered_by_the_built_in_page_only_and_a_yes_only_through_the_owner
 # NW2 a window that could not be raised locks the card (L1)

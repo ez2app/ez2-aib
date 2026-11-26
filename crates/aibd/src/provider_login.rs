@@ -3,7 +3,7 @@
 //! card with 「重新登入」; the built-in page in this pairing presses it, the owner's fingerprint
 //! approves it, and aibd runs the provider's own login program the session policy lists.
 //!
-//! - `{"type":"provider_relogin","provider":"claude"|"codex","ticket"?}`: the fingerprint ask,
+//! - `{"type":"provider_relogin","provider":"claude"|"codex"|"grok"|"copilot","ticket"?}`: the fingerprint ask,
 //!   then the program is started with fixed words ([`args_of`]) and the environment a seat gets.
 //!   The answer to this one request (no event, no replay) carries the sign-in address it printed,
 //!   checked by [`url_ok`] (https, no user, no port, host exactly [`host_of`]) and rebuilt, and
@@ -16,11 +16,15 @@
 //! The address, the code and the output live in memory for the round only: never a file, a log
 //! line or an event. Events are `provider.login_started` / `provider.login_ended` with
 //! `{provider, login_id, ok?, reason?}`. A preview aibd refuses (`login_in_parent`): its seats
-//! use the parent's login (`AIBD_SEAT_HOME`). Windows refuses until it is tried there
-//! (5d33a N5).
+//! use the parent's login (`AIBD_SEAT_HOME`). On Windows only claude logs in from the page
+//! (Andy 11-26 02:0x「用那台既有的登入,過期或沒有一樣彈出綁定視窗」, c2f0b W-10: the native
+//! exe the policy lists, run in the user's profile, the round in its own Job); the others
+//! refuse until each is tried there (5d33a N5).
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::{Child, ChildStdin, Command, Stdio};
+#[cfg(unix)]
+use std::process::{Child, Stdio};
+use std::process::{ChildStdin, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,6 +68,8 @@ pub fn status_args_of(provider: &str) -> Option<&'static [&'static str]> {
     match provider {
         "claude" => Some(&["auth", "status", "--json"]),
         "codex" => Some(&["login", "status"]),
+        // grok 1.0.70 has no status command; `models` says which account it uses (exit 0 either way)
+        "grok" => Some(&["models"]),
         _ => None,
     }
 }
@@ -203,6 +209,9 @@ fn rounds() -> &'static Rounds {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The providers whose login runs from the page on Windows (ebab8 11-26 02:08: claude only).
+pub const WINDOWS_LOGINS: [&str; 1] = ["claude"];
+
 /// May a round for `provider` start now? `(status, reason)` of the refusal.
 pub fn gate(
     provider: &str,
@@ -216,7 +225,7 @@ pub fn gate(
     if in_preview {
         return Err((StatusCode::CONFLICT, "login_in_parent"));
     }
-    if on_windows {
+    if on_windows && !WINDOWS_LOGINS.contains(&p) {
         return Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here"));
     }
     let g = rounds()
@@ -242,6 +251,19 @@ pub fn ask_of(provider: &str, by: String) -> crate::owner_ok::Ask {
         params: serde_json::to_vec(&json!({"provider": provider})).unwrap_or_default(),
         by,
     }
+}
+
+/// [`env_of`] for `provider`'s login; a copilot login pinned as its seats are (3e53b 11-26:
+/// it runs in the user's HOME, where it would download an update into the user's cache).
+fn login_env(provider: &str, pass: &[String]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = env_of(pass);
+    if crate::copilot_wire::is_copilot(provider) {
+        crate::copilot_wire::pin_login(
+            &mut env,
+            crate::copilot_wire::pin_dir(crate::workspace::seat_login_home().as_deref()),
+        );
+    }
+    env
 }
 
 /// The environment the login runs in: what a seat's session gets from aibd (the same HOME, so
@@ -270,7 +292,7 @@ fn command(
     c.args(args)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k, v)));
-    if let Some(home) = env.iter().find(|(k, _)| k == "HOME").map(|(_, v)| v) {
+    if let Some(home) = home_of(env, cfg!(windows)) {
         c.current_dir(home);
     }
     #[cfg(unix)]
@@ -282,18 +304,123 @@ fn command(
     c
 }
 
-fn kill_all(child: &mut Child) {
+/// Where the login runs: `HOME`; on Windows `USERPROFILE` (c2f0b W-10 b: the user's profile,
+/// where claude keeps its login), names read as Windows reads them (any case).
+pub fn home_of(
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+    windows: bool,
+) -> Option<&std::ffi::OsString> {
+    let name = if windows { "USERPROFILE" } else { "HOME" };
+    env.iter()
+        .find(|(k, _)| {
+            if windows {
+                k.to_str().is_some_and(|k| k.eq_ignore_ascii_case(name))
+            } else {
+                k == name
+            }
+        })
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty())
+}
+
+/// The login program and everything it starts (c2f0b W-10 c): on unix its own process group,
+/// killed whole; on Windows its own Job ([`aib_sys::session::SessionTree`], KILL_ON_JOB_CLOSE,
+/// inside aibd's J0, as a seat is), so nothing of a round outlives it on either.
+pub struct Proc {
     #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
+    child: Child,
+    #[cfg(windows)]
+    tree: aib_sys::session::SessionTree,
+}
+
+/// How long a Windows kill waits for the round's Job to empty.
+#[cfg(windows)]
+const KILL_LIMIT: Duration = Duration::from_secs(5);
+
+impl Proc {
+    /// Start `prog args` with exactly `env`, stdin / stdout / stderr piped; the output pipes
+    /// are handed to [`read_into`].
+    fn spawn(
+        prog: &std::path::Path,
+        args: &[&str],
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+        out: &Out,
+    ) -> Result<(Proc, Option<ChildStdin>), &'static str> {
+        #[cfg(unix)]
+        {
+            let mut cmd = command(prog, args, env);
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|_| "login_not_started")?;
+            if let Some(o) = child.stdout.take() {
+                read_into(o, out.clone());
+            }
+            if let Some(e) = child.stderr.take() {
+                read_into(e, out.clone());
+            }
+            let input = child.stdin.take();
+            Ok((Proc { child }, input))
+        }
+        #[cfg(windows)]
+        {
+            // a path that is not text is not guessed at: the policy's exe is a plain path
+            let exe = prog.to_str().ok_or("login_not_started")?;
+            let spec = aib_sys::session::Spec {
+                argv: std::iter::once(exe.to_owned())
+                    .chain(args.iter().map(|a| (*a).to_owned()))
+                    .collect(),
+                cwd: home_of(env, true).map(std::path::PathBuf::from),
+                env: env.to_vec(),
+                clear_env: true,
+                stdin: true,
+            };
+            let mut tree =
+                aib_sys::session::SessionTree::spawn(&spec).map_err(|_| "login_not_started")?;
+            if let Some((o, e)) = tree.take_output() {
+                read_into(o, out.clone());
+                read_into(e, out.clone());
+            }
+            let input = tree.take_input();
+            Ok((Proc { tree }, input))
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+
+    /// `Some(exit code)` once the program ended (`Some(None)`: ended with no code); not reaped
+    /// on unix, so the group's number stays ours for [`Proc::kill`].
+    fn ended(&mut self) -> Option<Option<i32>> {
+        #[cfg(unix)]
+        {
+            crate::gh_view::ended_unreaped(&mut self.child)
+        }
+        #[cfg(windows)]
+        {
+            match self.tree.try_exit() {
+                Ok(Some(c)) => Some(Some(c)),
+                Ok(None) => None,
+                Err(_) => Some(None),
+            }
+        }
+    }
+
+    /// Kill the program and whatever it started.
+    fn kill(&mut self) {
+        #[cfg(unix)]
+        {
+            if let Ok(pid) = i32::try_from(self.child.id()) {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.tree.kill(KILL_LIMIT);
+        }
+    }
 }
 
 /// The program's output so far, in memory, at most [`OUT_MAX`] bytes.
@@ -332,20 +459,9 @@ pub fn start(
     provider: &str,
     args: &[&str],
     env: &[(std::ffi::OsString, std::ffi::OsString)],
-) -> Result<(Child, Option<ChildStdin>, Started), &'static str> {
-    let mut cmd = command(prog, args, env);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|_| "login_not_started")?;
+) -> Result<(Proc, Option<ChildStdin>, Started), &'static str> {
     let out: Out = Arc::new(Mutex::new(Vec::new()));
-    if let Some(o) = child.stdout.take() {
-        read_into(o, out.clone());
-    }
-    if let Some(e) = child.stderr.take() {
-        read_into(e, out.clone());
-    }
-    let input = child.stdin.take();
+    let (mut child, input) = Proc::spawn(prog, args, env, &out)?;
     let op = crate::timers::PROVIDER_LOGIN_URL_WAIT.begin(None);
     loop {
         let text = {
@@ -362,7 +478,7 @@ pub fn start(
             let code = device_code(&text);
             if whole && (!matches!(provider, "codex" | "grok" | "copilot") || code.is_some()) {
                 let Some(url) = url_ok(&a, provider) else {
-                    kill_all(&mut child);
+                    child.kill();
                     return Err("url_host_refused");
                 };
                 return Ok((
@@ -375,8 +491,8 @@ pub fn start(
                 ));
             }
         }
-        if crate::gh_view::ended_unreaped(&mut child).is_some() || !op.tick() {
-            kill_all(&mut child);
+        if child.ended().is_some() || !op.tick() {
+            child.kill();
             return Err("no_url");
         }
     }
@@ -390,13 +506,15 @@ pub fn logged_in(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> bool {
     let Some(args) = status_args_of(provider) else {
-        if matches!(provider, "grok" | "copilot") {
+        if provider == "copilot" {
             let home = env
                 .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("HOME"))
+                .find(|(k, _)| k == "HOME")
                 .map(|(_, v)| std::path::PathBuf::from(v))
                 .or_else(crate::workspace::seat_login_home);
-            return home.is_some_and(|h| crate::workspace::logged_in(provider, &h, None));
+            return home.is_some_and(|h| {
+                crate::workspace::copilot_users(&h.join(".copilot").join("config.json"))
+            }) && crate::workspace::copilot_token_stored("copilot-cli");
         }
         return false;
     };
@@ -413,14 +531,24 @@ pub fn logged_in(
                     .and_then(|v| v.get("loggedIn").and_then(Value::as_bool))
                     == Some(true)
         }
+        "grok" => code == Some(0) && grok_says_logged_in(&out),
         _ => code == Some(0),
     }
+}
+
+/// `grok models`' first line: `You are logged in with …` or `You are not authenticated.`
+/// (grok 1.0.70, measured 08de5 11-25); its exit is 0 both ways, so the words are read.
+pub fn grok_says_logged_in(out: &[u8]) -> bool {
+    strip_ansi(&String::from_utf8_lossy(out))
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| l.trim_start().starts_with("You are logged in"))
 }
 
 /// Wait for the program's end (at most [`crate::timers::PROVIDER_LOGIN_WAIT`]), then ask the
 /// status. The reason code when it did not log in.
 pub fn finish(
-    mut child: Child,
+    mut child: Proc,
     prog: &std::path::Path,
     provider: &str,
     env: &[(std::ffi::OsString, std::ffi::OsString)],
@@ -428,16 +556,16 @@ pub fn finish(
     let op = crate::timers::PROVIDER_LOGIN_WAIT.begin(None);
     let code = loop {
         // seen without being reaped: the group's number stays ours for the kill below
-        if let Some(c) = crate::gh_view::ended_unreaped(&mut child) {
+        if let Some(c) = child.ended() {
             break c;
         }
         if !op.tick() {
-            kill_all(&mut child);
+            child.kill();
             return Err("timeout");
         }
     };
-    // what it started may still hold the group: nothing of it outlives the round
-    kill_all(&mut child);
+    // what it started may still hold the group (Job): nothing of it outlives the round
+    child.kill();
     if code != Some(0) {
         return Err("exit_not_0");
     }
@@ -566,7 +694,7 @@ pub async fn relogin(st: AppState, body: Value, by: String) -> Response {
             },
         );
     }
-    let env = env_of(&st.policy().env);
+    let env = login_env(provider, &st.policy().env);
     let args = args_of(provider).unwrap_or_default();
     let (p2, e2) = (prog.clone(), env.clone());
     let started = tokio::task::spawn_blocking(move || start(&p2, provider, args, &e2))
@@ -754,6 +882,60 @@ mod tests {
             Some("https://auth.openai.com/codex/device")
         );
         assert_eq!(url_ok("https://claude.com/x", "gemini"), None);
+        // grok / copilot: the hosts their device logins print (measured 08de5 11-25)
+        assert_eq!(
+            url_ok("https://accounts.x.ai/oauth2/device?user_code=X", "grok").as_deref(),
+            Some("https://accounts.x.ai/oauth2/device?user_code=X")
+        );
+        assert_eq!(
+            url_ok("https://github.com/login/device", "copilot").as_deref(),
+            Some("https://github.com/login/device")
+        );
+        for (bad, p) in [
+            ("https://x.ai/oauth2/device", "grok"),
+            ("https://accounts.x.ai.evil.example/x", "grok"),
+            ("https://github.com.evil.example/login/device", "copilot"),
+            ("https://gist.github.com/x", "copilot"),
+            ("https://github.com/login/device", "grok"),
+        ] {
+            assert_eq!(url_ok(bad, p), None, "reason: handed_on {bad}");
+        }
+    }
+
+    /// ebab8 condition 5: grok's and copilot's own words, as their login and status print them
+    /// (grok 1.0.70, copilot 1.0.115; codes made up).
+    #[test]
+    fn grok_and_copilot_logins_are_read_from_their_own_words() {
+        let grok = "To sign in, open this URL in your browser:\n\n  https://accounts.x.ai/oauth2/device?user_code=QWER-TY12\n\nConfirm this code in your browser:\n\n  QWER-TY12\n";
+        assert_eq!(
+            first_address(grok).as_deref(),
+            Some("https://accounts.x.ai/oauth2/device?user_code=QWER-TY12")
+        );
+        assert_eq!(device_code(grok).as_deref(), Some("QWER-TY12"));
+        let copilot = "To authenticate, visit https://github.com/login/device and enter code ABCD-1234\nWaiting for authorization...\n";
+        assert_eq!(
+            first_address(copilot).as_deref(),
+            Some("https://github.com/login/device")
+        );
+        assert_eq!(device_code(copilot).as_deref(), Some("ABCD-1234"));
+        assert_eq!(args_of("grok"), Some(&["login", "--device-auth"][..]));
+        assert_eq!(args_of("copilot"), Some(&["login", "--device-code"][..]));
+        // grok: `models` exits 0 both ways; its first line is what says it
+        assert_eq!(status_args_of("grok"), Some(&["models"][..]));
+        assert!(grok_says_logged_in(
+            b"You are logged in with grok.com.\n\nDefault model: grok-4.6\n"
+        ));
+        assert!(
+            !grok_says_logged_in(b"You are not authenticated.\n\nDefault model: grok-4.6\n"),
+            "reason: grok_not_authenticated_is_logged_in"
+        );
+        assert!(!grok_says_logged_in(b""), "reason: grok_empty_is_logged_in");
+        assert!(
+            !grok_says_logged_in(b"Default model: grok-4.6\nYou are logged in with grok.com.\n"),
+            "reason: grok_not_first_line"
+        );
+        // copilot has no status words: its config and the stored token are looked at
+        assert_eq!(status_args_of("copilot"), None);
     }
 
     #[test]
@@ -810,10 +992,20 @@ mod tests {
             Err((StatusCode::CONFLICT, "login_in_parent")),
             "reason: preview_logs_in"
         );
-        assert_eq!(
+        // 11-26: on Windows claude logs in from the page; the others not yet (another test's
+        // claude round may be running or cooling here, so only "not refused for Windows" is read)
+        assert_ne!(
             gate("claude", false, true, now),
-            Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here"))
+            Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here")),
+            "reason: windows_claude_refused"
         );
+        for p in ["codex", "grok", "copilot"] {
+            assert_eq!(
+                gate(p, false, true, now),
+                Err((StatusCode::NOT_IMPLEMENTED, "login_not_tried_here")),
+                "reason: windows_{p}_let_through"
+            );
+        }
         assert_eq!(
             gate("bash", false, false, now),
             Err((StatusCode::BAD_REQUEST, "provider"))
@@ -871,6 +1063,56 @@ mod tests {
         assert!(!a.resource.contains("http"));
     }
 
+    /// 3e53b 11-26: a copilot login is pinned (no update downloaded into the user's cache);
+    /// another provider's login gets no copilot names.
+    #[test]
+    fn a_copilot_login_is_pinned() {
+        let get = |env: &[(std::ffi::OsString, std::ffi::OsString)], k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        let cp = login_env("copilot", &[]);
+        assert_eq!(
+            get(&cp, "COPILOT_AUTO_UPDATE").as_deref(),
+            Some("false"),
+            "reason: copilot_login_unpinned"
+        );
+        for other in ["codex", "grok", "claude"] {
+            let env = login_env(other, &[]);
+            assert!(
+                get(&env, "COPILOT_AUTO_UPDATE").is_none(),
+                "reason: pin_given_to {other}"
+            );
+        }
+    }
+
+    /// c2f0b W-10 b: the login runs in HOME on unix and in the user's profile on Windows, the
+    /// name read in any case there; an empty one is no folder.
+    #[test]
+    fn the_login_runs_in_the_users_profile_on_windows() {
+        let env: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("HOME".into(), "/Users/u".into()),
+            ("UserProfile".into(), r"C:\Users\u".into()),
+        ];
+        assert_eq!(
+            home_of(&env, false).map(|v| v.to_string_lossy().into_owned()),
+            Some("/Users/u".into()),
+            "reason: unix_not_home"
+        );
+        assert_eq!(
+            home_of(&env, true).map(|v| v.to_string_lossy().into_owned()),
+            Some(r"C:\Users\u".into()),
+            "reason: windows_not_profile"
+        );
+        let bare: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("HOME".into(), "/Users/u".into()),
+            ("USERPROFILE".into(), "".into()),
+        ];
+        assert_eq!(home_of(&bare, true), None, "reason: windows_used_home");
+        assert_eq!(home_of(&[], false), None);
+    }
+
     /// RL10: the login runs with the seats' HOME and without a browser of its own; aibd's own
     /// keys and the session marker are not given.
     #[test]
@@ -898,6 +1140,62 @@ mod tests {
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// ebab8 condition 5: a grok / copilot login hands the page the address and the code only;
+    /// whatever else the program prints (a token among it) is not in what comes back, and a
+    /// device login without its code is not handed on.
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_or_copilot_login_hands_on_the_address_and_the_code_only() {
+        let d = tempfile::tempdir().unwrap();
+        let env = vec![("PATH".into(), "/usr/bin:/bin".into())];
+        for (provider, body, url, code) in [
+            (
+                "grok",
+                "echo 'token: xai-SECRETSECRETSECRET'\necho 'open: https://accounts.x.ai/oauth2/device?user_code=QWER-TY12 '\necho 'Confirm: QWER-TY12'\necho 'refresh_token=SECRETSECRET'\nsleep 30",
+                "https://accounts.x.ai/oauth2/device?user_code=QWER-TY12",
+                "QWER-TY12",
+            ),
+            (
+                "copilot",
+                "echo 'gho_SECRETSECRETSECRET'\necho 'To authenticate, visit https://github.com/login/device and enter code ABCD-1234'\nsleep 30",
+                "https://github.com/login/device",
+                "ABCD-1234",
+            ),
+        ] {
+            let p = script(d.path(), body);
+            let (mut child, _input, s) = start(&p, provider, &[], &env).unwrap();
+            child.kill();
+            assert_eq!(s.url, url, "reason: {provider}_url");
+            assert_eq!(s.device_code.as_deref(), Some(code), "reason: {provider}_code");
+            let handed = format!("{} {:?}", s.url, s.device_code);
+            assert!(!handed.contains("SECRET"), "reason: {provider}_token_handed_on");
+        }
+        // an address with no code yet is waited on, not handed on without it
+        let p = script(
+            d.path(),
+            "echo 'visit https://github.com/login/device now'\nexit 0",
+        );
+        assert_eq!(
+            start(&p, "copilot", &[], &env).err(),
+            Some("no_url"),
+            "reason: copilot_without_code"
+        );
+        // grok's status: exit 0 with "not authenticated" is not a login
+        let p = script(
+            d.path(),
+            "echo 'You are not authenticated.'\necho\necho 'Default model: grok-4.6'\nexit 0",
+        );
+        assert!(
+            !logged_in(&p, "grok", &env),
+            "reason: grok_exit_0_is_logged_in"
+        );
+        let p = script(
+            d.path(),
+            "echo 'You are logged in with grok.com.'\necho\necho 'Default model: grok-4.6'\nexit 0",
+        );
+        assert!(logged_in(&p, "grok", &env));
     }
 
     /// RL5 / RL6 / RL7: the address comes back, the code reaches the program once as a line,

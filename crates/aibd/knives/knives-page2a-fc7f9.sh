@@ -46,7 +46,7 @@ k 'const [v, u] = await Promise.all([soft(get('\''/api/v1/version'\'')).catch(()
 # PGSK1 (S1f:f163c L1 伺服器 / 測試機兩組)
 k '<div class="aplab apgold">伺服器</div>${chips}' '${chips}'
 # PGSK2 (S1f:f163c L1 伺服器 / 測試機兩組)
-k 'if (x.closest('\''[data-hstest]'\'')) { S.add.hsOffMsg = HS_TEST_NO; return render(); }' ' '
+k 'if (x.closest('\''[data-hstest]'\'')) { S.add.hsOffMsg = thX().testNo; return render(); }' ' '
 # PGNK1 (S1g:3e53b capabilities.net(sandboxnet r7 §16)+ Andy 05:5x DECISION 十七 Windows 只是提示 + f163c 討論研究不能上網)
 k 'if (nv) return `<i class=' 'if (false) return `<i class='
 # PGNK2 (S1g:3e53b capabilities.net(sandboxnet r7 §16)+ Andy 05:5x DECISION 十七 Windows 只是提示 + f163c 討論研究不能上網)
@@ -78,11 +78,11 @@ k 'if (S.add !== A || A.from !== code) return;' ' '
 # PGTH1 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
 k '    if (hsHas('\''cand'\'')) {' '    if (false) {'
 # PGTH2 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
-k 'm.already ? `<span class="apr off"><b>${esc(m.name)}</b><i>已交給夥伴管</i></span>` : ' ''
+k 'm.already ? `<span class="apr off"><b>${esc(m.name)}</b><i>${esc(thX().given)}</i></span>` : ' ''
 # PGTH3 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
 k 'fingerAct(HS_ACTS.add, { from: '\''trusted'\'', name })' 'fingerAct(HS_ACTS.add, { name })'
 # PGTH4 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
-k '<div class="apn">${esc(TH_EVID)}</div><div class="apl">' '<div class="apl">'
+k '<div class="apn">${esc(thX().evid)}</div><div class="apl">' '<div class="apl">'
 # PGTH5 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
 k '['\''收據'\'', TH_EVID, true]' '['\''收據'\'', '\'''\'']'
 # PGTH6 (3e53b DESIGN-hostmode 13.3/13.6:測試機交給夥伴管)
@@ -94,7 +94,7 @@ k '    if (card && !chg.length) { R.msg = { text: '\''沒有改動,不用送'\''
 # PGAN3 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '    if (card && !R.review) { R.review = true; R.msg = null; return render(); }' ' '
 # PGAN4 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
-k '<div class="apn"><b>送出前看一次</b>:指紋窗只列段名與字數,內容以這裡為準</div>' ''
+k '<div class="apn"><b>送出前看一次</b>:${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t)('\''指紋窗只列段名與字數'\'')},內容以這裡為準</div>' ''
 # PGAN5 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '.replace(new RegExp(AIB_UNSEEN, '\''gu'\''), (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\''' '.replace(/[\u00ad]/g, (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\'''
 # PGAN6 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
