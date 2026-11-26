@@ -81,6 +81,15 @@ pub fn hello_error_line(e: &aib_sys::hello::HelloError) -> String {
 /// B2 / B3: what to do when Windows Hello is not set up; AIB picks it up without a reinstall.
 const HELLO_LATER_HOW: &str =
     "set up a Windows Hello PIN (Settings > Accounts > Sign-in options); no need to install again";
+/// How to end the running AIB before the setup (or a rollback) can swap the program (U1,
+/// PLAN-win-upgrade-path-90856-1126, 3e53b 11:2x). aibd on Windows has no console to stop it
+/// with, and signing out and back in does not help: the Run value starts it again at sign-in.
+pub fn quit_how(then: &str) -> String {
+    format!(
+        "to update it: 1. open Task Manager (Ctrl+Shift+Esc) > Details, select aibd.exe, End task \
+         (AI seats that are open stop too; your data stays); 2. {then}"
+    )
+}
 /// How long the setup waits for the new aibd to answer.
 pub const HEALTH_WAIT: Duration = Duration::from_secs(20);
 /// One wait step.
@@ -246,8 +255,9 @@ fn check(p: &Places, ops: &dyn Ops) -> Result<(), String> {
 fn place(p: &Places, current: &Path, ops: &dyn Ops) -> Result<String, String> {
     if ops.exists(&p.exe) && ops.healthy() {
         return Err(format!(
-            "installer_running: AIB is running from {}; quit it (signing out and back in also works), then double-click again",
-            p.exe.display()
+            "installer_running: AIB is running from {}; {}",
+            p.exe.display(),
+            quit_how("double-click AIB-Setup again")
         ));
     }
     ops.make_dir(&p.dir)?;
@@ -445,8 +455,9 @@ pub fn rollback(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) -> Result<
     let busy = ops.exists(&p.exe) && ops.healthy();
     if busy {
         return Err(format!(
-            "installer_running: AIB is running from {}; quit it (signing out and back in also works), then try again",
-            p.exe.display()
+            "installer_running: AIB is running from {}; {}",
+            p.exe.display(),
+            quit_how("run it again")
         ));
     }
     ops.remove(&p.new);
@@ -741,6 +752,17 @@ mod tests {
                 .is_err_and(|e| e.starts_with("installer_running")),
             "reason: {r:?}"
         );
+        // U1: the line says how to end it (Task Manager), and not "sign out", which the Run
+        // value undoes at sign-in
+        let e = r.unwrap_err();
+        assert!(
+            e.contains("Task Manager")
+                && e.contains("aibd.exe")
+                && e.contains("double-click")
+                && e.contains("your data stays"),
+            "reason: no_way_out {e}"
+        );
+        assert!(!e.contains("sign"), "reason: sign_out_said {e}");
         assert!(
             !f.has("copy") && !f.has("rename"),
             "reason: touched {:?}",
