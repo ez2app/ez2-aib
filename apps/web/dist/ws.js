@@ -320,22 +320,22 @@
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
   const GUIDE_W = {
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
-      tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['要 Windows Hello', '要 Touch ID 或密碼'],
+      tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
       step: { health: 'AIB 已安裝並在執行', pair: '讓這個瀏覽器連上 AIB', claude: '找到 Claude 並已登入', allow: '允許 AIB 在這台開 Claude', first: '跟第一位 AI 夥伴說一句話', tour: '看看完整的選單', host_add: '加一台主機', host_reach: 'AIB 連得上那台', host_handoff: '交給一位夥伴管', site_first: '第一個網站' },
       go: { provider_install: '安裝 Claude', provider_relogin: '重新登入 Claude', session_policy_init: '打開開席設定', start_claude: '開始用 Claude', focus_chat: '去說一句', open_partner_panel: '打開「+ AI 夥伴」', add_host: '打開測試機' },
       why: { not_paired: '還沒配對', not_found: '這台找不到 Claude', npm_only: '這台的 Claude 是 npm 版,AIB 不能用', not_logged_in: 'Claude 還沒登入或已過期', login_unknown: '還不知道 Claude 登入了沒', no_policy: '還沒有開席設定', no_claude: '開席設定裡沒有 Claude', none_yet: '還沒跟夥伴說過話', not_yet: '還沒打開過完整選單', after_first: '先跟夥伴說一句話', none: '還沒有主機', source_error: 'AIB 這一項讀不到', unknown: '判不出來', write_failed: '沒記上,下次打開再試一次' } },
     en: { start: 'Get started with AIB', hosts: 'Manage sites / hosts', hostsOff: ' (opens after the steps above)', builtin: 'Built-in', later: 'Next version', unsure: 'Can’t tell', skip: 'Skip the guide', again: 'Show again', dim: 'Opens after “Get started with AIB”', here: 'this page', pin: 'No Windows Hello? Set up a PIN first',
-      tourLine: 'Everything is open now: you can pick other plans, personas, second brains and roles, or open several partners at once.', hello: ['Needs Windows Hello', 'Needs Touch ID or password'],
+      tourLine: 'Everything is open now: you can pick other plans, personas, second brains and roles, or open several partners at once.', hello: ['May ask for Windows Hello', 'May ask for Touch ID or password'],
       step: { health: 'AIB is installed and running', pair: 'Connect this browser to AIB', claude: 'Claude is found and signed in', allow: 'Let AIB open Claude on this computer', first: 'Say one thing to your first AI partner', tour: 'See the full menu', host_add: 'Add a host', host_reach: 'AIB can reach it', host_handoff: 'Hand it to a partner', site_first: 'Your first site' },
       go: { provider_install: 'Install Claude', provider_relogin: 'Sign in to Claude again', session_policy_init: 'Open seat settings', start_claude: 'Start with Claude', focus_chat: 'Say something', open_partner_panel: 'Open “+ AI partner”', add_host: 'Open test machines' },
       why: { not_paired: 'Not paired yet', not_found: 'Claude isn’t on this computer', npm_only: 'This Claude is the npm version, which AIB can’t use', not_logged_in: 'Claude isn’t signed in, or the sign-in expired', login_unknown: 'Not known yet whether Claude is signed in', no_policy: 'No seat settings yet', no_claude: 'Seat settings don’t include Claude', none_yet: 'You haven’t talked to a partner yet', not_yet: 'You haven’t opened the full menu yet', after_first: 'Say one thing to a partner first', none: 'No hosts yet', source_error: 'AIB couldn’t read this', unknown: 'Can’t tell', write_failed: 'Not recorded; it will try again next time' } },
     ja: { start: 'AIB をはじめる', hosts: 'サイト / ホストの管理', hostsOff: '（上の手順が終わると使えます）', builtin: '内蔵', later: '次のバージョン', unsure: '判定できません', skip: 'ガイドをスキップ', again: 'もう一度見る', dim: '「AIB をはじめる」が終わると使えます', here: 'このページ', pin: 'Windows Hello 未設定?先に PIN を設定',
-      tourLine: 'すべて使えるようになりました:ほかのプラン、人格、第二の脳、役割を選んだり、複数のパートナーを一度に開いたりできます。', hello: ['Windows Hello が必要', 'Touch ID またはパスワードが必要'],
+      tourLine: 'すべて使えるようになりました:ほかのプラン、人格、第二の脳、役割を選んだり、複数のパートナーを一度に開いたりできます。', hello: ['Windows Hello を求められることがあります', 'Touch ID またはパスワードを求められることがあります'],
       step: { health: 'AIB がインストールされ動いている', pair: 'このブラウザを AIB につなぐ', claude: 'Claude が見つかりサインイン済み', allow: 'このパソコンで AIB が Claude を開くのを許可', first: '最初の AI パートナーにひとこと話す', tour: 'メニュー全体を見る', host_add: 'ホストを 1 台追加', host_reach: 'AIB がそのホストにつながる', host_handoff: 'パートナーに管理を任せる', site_first: '最初のサイト' },
       go: { provider_install: 'Claude をインストール', provider_relogin: 'Claude に再サインイン', session_policy_init: '席の設定を開く', start_claude: 'Claude ではじめる', focus_chat: 'ひとこと話す', open_partner_panel: '「+ AI パートナー」を開く', add_host: 'テスト機を開く' },
       why: { not_paired: 'まだペアリングしていません', not_found: 'このパソコンに Claude がありません', npm_only: 'この Claude は npm 版で、AIB では使えません', not_logged_in: 'Claude が未サインインか期限切れです', login_unknown: 'Claude のサインイン状態がまだ分かりません', no_policy: '席の設定がまだありません', no_claude: '席の設定に Claude がありません', none_yet: 'まだパートナーと話していません', not_yet: 'まだメニュー全体を開いていません', after_first: '先にパートナーにひとこと話してください', none: 'ホストがまだありません', source_error: 'AIB がこの項目を読めません', unknown: '判定できません', write_failed: '記録できませんでした。次に開いたとき再試行します' } },
     ko: { start: 'AIB 시작하기', hosts: '사이트 / 호스트 관리', hostsOff: ' (위 단계를 마치면 열립니다)', builtin: '기본 제공', later: '다음 버전', unsure: '판단할 수 없음', skip: '안내 건너뛰기', again: '다시 보기', dim: '「AIB 시작하기」를 마치면 열립니다', here: '바로 이 페이지', pin: 'Windows Hello가 없나요? 먼저 PIN을 설정하세요',
-      tourLine: '이제 모두 열렸습니다: 다른 플랜, 인격, 제2의 뇌, 역할을 고르거나 여러 파트너를 한 번에 열 수 있습니다.', hello: ['Windows Hello 필요', 'Touch ID 또는 암호 필요'],
+      tourLine: '이제 모두 열렸습니다: 다른 플랜, 인격, 제2의 뇌, 역할을 고르거나 여러 파트너를 한 번에 열 수 있습니다.', hello: ['Windows Hello를 요청할 수 있음', 'Touch ID 또는 암호를 요청할 수 있음'],
       step: { health: 'AIB가 설치되어 실행 중', pair: '이 브라우저를 AIB에 연결', claude: 'Claude를 찾았고 로그인됨', allow: '이 컴퓨터에서 AIB가 Claude를 열도록 허용', first: '첫 AI 파트너에게 한마디 하기', tour: '전체 메뉴 보기', host_add: '호스트 한 대 추가', host_reach: 'AIB가 그 호스트에 연결됨', host_handoff: '파트너에게 관리 맡기기', site_first: '첫 사이트' },
       go: { provider_install: 'Claude 설치', provider_relogin: 'Claude 다시 로그인', session_policy_init: '좌석 설정 열기', start_claude: 'Claude로 시작', focus_chat: '한마디 하기', open_partner_panel: '「+ AI 파트너」 열기', add_host: '테스트 머신 열기' },
       why: { not_paired: '아직 페어링하지 않음', not_found: '이 컴퓨터에 Claude가 없음', npm_only: '이 Claude는 npm 버전이라 AIB에서 쓸 수 없음', not_logged_in: 'Claude가 로그인되지 않았거나 만료됨', login_unknown: 'Claude 로그인 여부를 아직 모름', no_policy: '좌석 설정이 아직 없음', no_claude: '좌석 설정에 Claude가 없음', none_yet: '아직 파트너와 대화하지 않음', not_yet: '아직 전체 메뉴를 열지 않음', after_first: '먼저 파트너에게 한마디 하세요', none: '아직 호스트가 없음', source_error: 'AIB가 이 항목을 읽지 못함', unknown: '판단할 수 없음', write_failed: '기록하지 못했습니다. 다음에 열 때 다시 시도합니다' } },
@@ -459,6 +459,8 @@
     const D = Array.from(doc.querySelectorAll('.dlgbg'));
     return D.length > 1 || (D.length === 1 && !D[0].querySelector('.adlg.ap'));
   }
+  // 對話框裡的關閉 / 取消(只有「+ AI 夥伴」那一個;它們不送 act)
+  const guideExits = (doc) => Array.from(doc.querySelectorAll('.adlg.ap [data-addx]'));
   const gRect = (r, p) => ({ x: Math.round(r.left - p), y: Math.round(r.top - p), w: Math.round(r.width + 2 * p), h: Math.round(r.height + 2 * p) });
   // 蓋暗的一層:整個畫面一個框,挖掉的洞(現在那一步 + 終點)用 evenodd 不畫 ⇒ 洞裡點得到底下原本的鈕
   const guidePathD = (vw, vh, holes) => `M0 0H${vw}V${vh}H0Z` + holes.map((o) => `M${o.x} ${o.y}h${o.w}v${o.h}h${-o.w}Z`).join('');
@@ -488,11 +490,12 @@
     const b = gRect(tr, 6), holes = [b];
     const fr = R.from && R.from.getBoundingClientRect(), a = fr && fr.width ? gRect(fr, 4) : null;
     if (a) holes.push(a);
+    for (const x of guideExits(document)) { const r = x.getBoundingClientRect(); if (r.width) holes.push(gRect(r, 3)); } // f163c N1:面板的 ✕ / 取消也點得到
     const d = old || document.createElement('div');
     d.id = 'gtour'; d.className = 'gtour';
     d.innerHTML = `<svg class="gsvg" viewBox="0 0 ${vw} ${vh}" width="${vw}" height="${vh}" aria-hidden="true"><path class="gdimp" fill-rule="evenodd" d="${guidePathD(vw, vh, holes)}"/>${a ? `<path class="gline" d="${guideLineD(a, b)}"/>` : ''}<rect class="gring" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8"/></svg><button type="button" class="k gskip" data-gskip="1">${esc(gW('skip'))} · Esc</button>`;
     if (!old) {
-      d.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (e.target.closest('[data-gskip]')) guideSkip(true); });
+      d.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (e.target.closest('[data-gskip]')) return guideSkip(true); if (guideBlocked(document)) d.remove(); }); // 只吞不轉送;3e53b / f163c N2:確認類已在畫面上 ⇒ 拆層
       document.body.appendChild(d);
     }
   }
@@ -500,6 +503,8 @@
     window.addEventListener('resize', guidePaintSoon, { passive: true });
     document.addEventListener('scroll', guidePaintSoon, { passive: true, capture: true });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('gtour')) guideSkip(true); });
+    // f163c / 3e53b N2:本人確認卡等不經 render 冒出來也要重判;路線層自己的變動不算
+    if (typeof MutationObserver === 'function') new MutationObserver((ms) => { if (document.getElementById('gtour') && ms.some((m) => !(m.target.closest && m.target.closest('#gtour')))) guidePaintSoon(); }).observe(document.body || document.documentElement, { childList: true, subtree: true });
   }
   // ---------- 新用戶指引 end ----------
 

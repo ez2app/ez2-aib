@@ -81,6 +81,12 @@ k 'gW('\''hello'\'')[typeof fpWin === '\''function'\'' && fpWin() ? 0 : 1]' 'gW(
 k 'const pin = win && typeof ocW === '\''function'\'' ?' 'const pin = typeof ocW === '\''function'\'' ?'
 # GD36 終點指到核准並啟用
 k '    session_policy_init: { hello: true, to: ['\''[data-add="1"]'\''] },' '    session_policy_init: { hello: true, to: ['\''[data-spok="1"]'\''] },'
+# GD42 終點指到安裝(lcgo,會跳本人確認)
+k '    provider_install: { hello: true, to: ['\''[data-add="1"]'\''] },' '    provider_install: { hello: true, to: ['\''[data-lcgo="claude"]'\''] },'
+# GD43 終點指到重新登入(relogin,會跳本人確認)
+k '    provider_relogin: { hello: true, to: ['\''[data-add="1"]'\''] },' '    provider_relogin: { hello: true, to: ['\''[data-relogin="claude"]'\''] },'
+# GD44 終點指到加測試機(thadd,會跳本人確認)
+k '    add_host: { to: ['\''[data-thopen="1"]'\''] },' '    add_host: { to: ['\''[data-thadd="x"]'\''] },'
 # GD37 韓文少一個步驟字
 k 'host_handoff: '\''파트너에게 관리 맡기기'\'', site_first: '\''첫 사이트'\'' },' 'host_handoff: '\''파트너에게 관리 맡기기'\'' },'
 # GD38 剛走完的那一句沒放進面板
@@ -91,6 +97,12 @@ k '<b>專案</b><small>唯讀</small></div>${guideHtml()}<div class="treebox">' 
 k '    start_claude: { hello: true, to:' '    start_claude: { to:'
 # GD41 連不上 AIB / 讀取出錯時遮罩還蓋著
 k 'const gDown = () => !!(S.banner && S.bannerKind === '\''err'\'');' 'const gDown = () => false;'
+# GD45 面板的 ✕ / 取消被遮罩蓋住
+k 'const guideExits = (doc) => Array.from(doc.querySelectorAll('\''.adlg.ap [data-addx]'\''));' 'const guideExits = (doc) => [];'
+# GD46 點到遮罩時確認卡已在畫面上也不拆
+k 'if (guideBlocked(document)) d.remove(); });' '});'
+# GD47 不經 render 冒出的確認卡不重判
+k 'ms.some((m) => !(m.target.closest && m.target.closest('\''#gtour'\'')))) guidePaintSoon(); })' 'false) guidePaintSoon(); })'
 # GC1 路線層整片擋點擊
 kc '.gtour{position:fixed;inset:0;z-index:60;pointer-events:none}' '.gtour{position:fixed;inset:0;z-index:60}'
 # GC2 路線那條線擋點擊

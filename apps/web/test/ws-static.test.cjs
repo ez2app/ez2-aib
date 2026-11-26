@@ -930,7 +930,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // 四語:每個步驟、鈕、原因短碼都有字
     const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
     ok(['zh-TW', 'en', 'ja', 'ko'].every((l) => W[l] && steps.every((s) => W[l].step[s]) && gos.every((k) => W[l].go[k]) && whys.every((k) => W[l].why[k]) && W[l].dim && W[l].skip && W[l].again && W[l].hello.length === 2), 'reason: guide_four_langs');
-    ok(!/指紋/.test(JSON.stringify(W)) && W['zh-TW'].hello[0] === '要 Windows Hello', 'reason: guide_windows_says_hello');
+    ok(!/指紋/.test(JSON.stringify(W)) && W['zh-TW'].hello[0] === '可能要 Windows Hello', 'reason: guide_windows_says_hello');
     // 舊 aibd(404 ⇒ null):整塊不出、面板不動、配對頁不加
     c.S.guide = null;
     const panel = '<div class="apsrc">從這台 AIB 讀的</div><button type="button" class="apc on" data-apcat="life">生活</button><button type="button" class="apc" data-apcat="work">工作</button><button type="button" class="apc sub on" data-apsub="life:0">聊天陪伴</button><button type="button" class="apc sub" data-apsub="life:1">分身</button><button type="button" class="apc" data-aprc="design:0">設計</button><button type="button" class="aprh" data-aprow="brand" aria-expanded="false"><span>AI</span></button><button type="button" class="aprh" data-aprow="mode" aria-expanded="false"><span>模式與權限</span></button><button type="button" class="aprh" data-aprow="persona" aria-expanded="false"><span>人格</span></button><button type="button" class="apmh" data-apmine="1">我的 AI 夥伴</button><button type="button" class="go" data-addgo="1">開</button>';
@@ -938,9 +938,9 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // 第 3 步沒登入:兩個勾、只亮一顆鈕(重新登入 Claude)、標要 Windows Hello、寫原因
     c.S.guide = G(st('claude', false, 'not_logged_in', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
     let h = X.guideHtml();
-    ok((h.match(/data-ggo="/g) || []).length === 1 && /data-ggo="provider_relogin">重新登入 Claude</.test(h) && (h.match(/<span class="tw">✓<\/span>/g) || []).length === 2 && /Claude 還沒登入或已過期/.test(h) && /<em class="ghello">要 Touch ID 或密碼<\/em>/.test(h), 'reason: guide_one_button_at_a_time ' + h);
+    ok((h.match(/data-ggo="/g) || []).length === 1 && /data-ggo="provider_relogin">重新登入 Claude</.test(h) && (h.match(/<span class="tw">✓<\/span>/g) || []).length === 2 && /Claude 還沒登入或已過期/.test(h) && /<em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(h), 'reason: guide_one_button_at_a_time ' + h);
     ok(/<progress class="mini" max="6" value="2"/.test(h) && /管理網站 \/ 主機（完成上面後開放）/.test(h) && !/data-gstep="host_add"/.test(h), 'reason: guide_hosts_grey_until_done ' + h);
-    ok(mk('zh-TW', true).X && /要 Windows Hello/.test((() => { const w = mk('zh-TW', true); w.S.guide = c.S.guide; return w.X.guideHtml(); })()), 'reason: guide_hello_word_on_windows');
+    ok(mk('zh-TW', true).X && /可能要 Windows Hello/.test((() => { const w = mk('zh-TW', true); w.S.guide = c.S.guide; return w.X.guideHtml(); })()), 'reason: guide_hello_word_on_windows');
     // 判不出(done null)不打勾、不擋後面
     c.S.guide = G(st('claude', null, 'login_unknown', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
     h = X.guideHtml();
@@ -970,7 +970,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'constructor'), st('tour', false, 'after_first', 'open_partner_panel'));
     ok(!/data-ggo/.test(X.guideHtml()), 'reason: guide_unknown_act_no_button');
     c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
-    ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
+    ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
     // 終點挑法:面板關著有「開始用 Claude」⇒ 它;沒有 ⇒ + AI 夥伴;面板開著只挑面板裡的;「開」沒 disabled 才挑
     const L = X.GUIDE_GO.start_claude.to, hv = (m) => (s) => (s in m ? m[s] : null);
     const o = { ok: true, inDlg: false, disabled: false }, i = { ok: true, inDlg: true, disabled: false };
@@ -1008,6 +1008,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     const css = fs.readFileSync(path.join(__dirname, '..', 'dist', 'ws.css'), 'utf8');
     ok(/\.gtour\{position:fixed;inset:0;z-index:60;pointer-events:none\}/.test(css) && /\.gtour \.gsvg\{[^}]*pointer-events:none\}/.test(css) && /\.gtour \.gline\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gring\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gdimp\{[^}]*pointer-events:visiblePainted\}/.test(css) && /\.gtour \.gskip\{[^}]*pointer-events:auto/.test(css), 'reason: guide_layer_clicks_fall_through');
     ok(/@media \(prefers-reduced-motion:reduce\)\{\.gtour \.gline,\.gtour \.gring\{animation:none\}\}/.test(css), 'reason: guide_reduced_motion_static');
+    ok(/for \(const x of guideExits\(document\)\) \{ const r = x\.getBoundingClientRect\(\); if \(r\.width\) holes\.push\(gRect\(r, 3\)\); \}/.test(ws) && /const guideExits = \(doc\) => Array\.from\(doc\.querySelectorAll\('\.adlg\.ap \[data-addx\]'\)\);/.test(ws), 'reason: guide_panel_close_stays_clickable');
+    ok(/if \(e\.target\.closest\('\[data-gskip\]'\)\) return guideSkip\(true\); if \(guideBlocked\(document\)\) d\.remove\(\); \}\);/.test(ws) && /new MutationObserver\(\(ms\) => \{ if \(document\.getElementById\('gtour'\) && ms\.some\(\(m\) => !\(m\.target\.closest && m\.target\.closest\('#gtour'\)\)\)\) guidePaintSoon\(\); \}\)\.observe\(document\.body \|\| document\.documentElement, \{ childList: true, subtree: true \}\);/.test(ws) && !/dispatchEvent|\.click\(\)/.test(ws.slice(ws.indexOf('  function guidePaint() {'), ws.indexOf('  // ---------- 新用戶指引 end'))), 'reason: guide_layer_rechecks_without_render');
     ok(/document\.addEventListener\('keydown', \(e\) => \{ if \(e\.key === 'Escape' && document\.getElementById\('gtour'\)\) guideSkip\(true\); \}\);/.test(ws) && /class="k gskip" data-gskip="1"/.test(ws), 'reason: guide_skip_esc_visible');
   }
   ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isArch\(s\)\); return L\.length === 1 && !isLegacy\(L\[0\]\) \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
