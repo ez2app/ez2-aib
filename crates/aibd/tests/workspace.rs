@@ -160,7 +160,8 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
         let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["display_name", "uid", "usual_brain"],
+            // `builtin` (08de5 11-26): true only for the one persona of a machine with no cards
+            ["builtin", "display_name", "uid", "usual_brain"],
             "reason: persona_says_more {p}"
         );
         assert!(p["usual_brain"].is_null(), "{p}");

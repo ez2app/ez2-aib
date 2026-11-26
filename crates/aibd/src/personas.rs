@@ -132,11 +132,23 @@ pub fn parse_cards(text: &str) -> Result<Vec<PersonaCard>, PersonaSourceError> {
 /// file, so it never stands beside (or for) a registry card.
 pub const BUILTIN_UID: &str = "aib000";
 /// Its name, fixed here: no page or API writes it.
-pub const BUILTIN_NAME: &str = "AIB 助手";
+/// fc7f9 / ebab8 12:1x: not 助手 (the page has an 助理 line); the page shows it in its own
+/// language from `builtin: true`.
+pub const BUILTIN_NAME: &str = "AIB 夥伴";
 /// What its sha is taken over. It has no card text: a seat opened with it runs as the provider
 /// itself (a card with no text path opens without text, S89-live-persona), and as there is no
 /// text file, `persona_edit` / `persona_write` find nothing to change.
 const BUILTIN_SHA_OF: &str = "aibd built-in persona aib000: no card text";
+
+/// The refusal reason for any change to the built-in persona (3e53b DECISION-builtin-persona
+/// -bounds 1-4): it is answered before any owner window.
+pub const BUILTIN_READ_ONLY: &str = "builtin_persona_read_only";
+
+/// Is this card the built-in one (its uid and its sha, so a 1.x card that one day has the
+/// same uid is not taken for it)?
+pub fn is_builtin(c: &PersonaCard) -> bool {
+    c == &builtin_card()
+}
 
 /// The one persona of a machine with no cards file.
 pub fn builtin_card() -> PersonaCard {
@@ -357,7 +369,11 @@ mod tests {
         assert_eq!(got, vec![builtin_card()], "reason: no_file_not_builtin");
         assert_eq!(got[0].uid, BUILTIN_UID);
         assert!(uid_shape(BUILTIN_UID) && got[0].text_path.is_none());
-        assert_eq!(got[0].persona_sha.len(), 64);
+        // the sha is pinned: the built-in card's content changes only with a reviewed edit here
+        assert_eq!(
+            got[0].persona_sha, "f63539efbf94ab4e4f706a80c034bd4f4654b96301f5b4eb8601938da52e7cee",
+            "reason: builtin_sha_changed"
+        );
         // a file that is there but cannot be opened is still unreadable, never the built-in
         std::fs::create_dir_all(dir.join("cards.json")).unwrap();
         assert!(

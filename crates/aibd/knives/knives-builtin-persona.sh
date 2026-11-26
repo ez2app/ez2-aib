@@ -15,3 +15,33 @@ python3 -I scripts/knife.py crates/aibd/src/personas.rs \
   '            Err(e) if e.kind() != std::io::ErrorKind::OutOfMemory => return Ok(vec![builtin_card()]),' \
   --expect-fail 'personas::tests::a_missing_file_is_the_built_in_persona_and_no_home_is_unavailable' \
   -- cargo test -p aibd --locked --lib 'personas::tests::a_missing_file_is_the_built_in_persona_and_no_home_is_unavailable'
+# PB3 (3e53b 9a) a broken cards file is read as the built-in persona
+python3 -I scripts/knife.py crates/aibd/src/personas.rs \
+  '        parse_cards(&text)' \
+  '        parse_cards(&text).or_else(|_| Ok(vec![builtin_card()]))' \
+  --expect-fail cards_that_cannot_be_read_are_503_and_the_list_still_answers \
+  -- cargo test -p aibd --locked --test seats_open cards_that_cannot_be_read_are_503_and_the_list_still_answers
+# PB4 (3e53b 9b) persona_set may change the built-in persona
+python3 -I scripts/knife.py crates/aibd/src/persona_edit.rs \
+  '    if uid == crate::personas::BUILTIN_UID {' \
+  '    if uid == "-" {' \
+  --expect-fail the_built_in_persona_is_listed_and_never_changed \
+  -- cargo test -p aibd --locked --test persona_edit_acts the_built_in_persona_is_listed_and_never_changed
+# PB5 (3e53b 9c) seat_open takes a uid that only looks like the built-in one
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+  '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) else {' \
+  '    let Some(card) = cards.into_iter().find(|c| c.uid.get(..3) == req.persona_uid.get(..3)) else {' \
+  --expect-fail cards_that_cannot_be_read_are_503_and_the_list_still_answers \
+  -- cargo test -p aibd --locked --test seats_open cards_that_cannot_be_read_are_503_and_the_list_still_answers
+# PB6 (3e53b 9d) a machine with a cards file lists the built-in persona too
+python3 -I scripts/knife.py crates/aibd/src/personas.rs \
+  '        parse_cards(&text)' \
+  '        parse_cards(&text).map(|mut v| { v.push(builtin_card()); v })' \
+  --expect-fail personas::tests::a_cards_file_never_lists_the_built_in_persona \
+  -- cargo test -p aibd --locked --lib personas::tests::a_cards_file_never_lists_the_built_in_persona
+# PB7 (f163c 6) the built-in card's content changes by one character and nothing notices
+python3 -I scripts/knife.py crates/aibd/src/personas.rs \
+  'const BUILTIN_SHA_OF: &str = "aibd built-in persona aib000: no card text";' \
+  'const BUILTIN_SHA_OF: &str = "aibd built-in persona aib000: no card text!";' \
+  --expect-fail personas::tests::a_missing_file_is_the_built_in_persona_and_no_home_is_unavailable \
+  -- cargo test -p aibd --locked --lib personas::tests::a_missing_file_is_the_built_in_persona_and_no_home_is_unavailable

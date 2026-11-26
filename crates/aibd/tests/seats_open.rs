@@ -485,6 +485,22 @@ async fn cards_that_cannot_be_read_are_503_and_the_list_still_answers() {
         list.json
     );
     assert_eq!(list.json["personas"][0]["uid"], "aib000");
+    assert_eq!(list.json["personas"][0]["builtin"], true, "{}", list.json);
+    // only the whole uid opens it, never one that only looks like it
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("aib001", "")),
+            &key("c"),
+        )
+        .await;
+    assert_eq!(
+        (r.code, r.json["reason"].as_str()),
+        (400, Some("persona_missing")),
+        "reason: similar_uid_opens {}",
+        r.json
+    );
     let r = d
         .call(
             "POST",

@@ -20,6 +20,13 @@ pub fn keep_home() {
     KEEP_HOME.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+static NO_CARDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This test process's aibd has no cards file (a new machine: the built-in persona only).
+pub fn no_cards() {
+    NO_CARDS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// HOME as it is when it has a claude and a codex login (the files aibd reads; nothing in
 /// them); else one folder for this process that has both, made once and kept for its life
 /// (tests run side by side: a per-test folder would go away under another test).
@@ -124,7 +131,9 @@ impl Daemon {
             "schema_version": "aib-cards/v2",
             "cards": { "un0eba": {"uid": "un0eba", "display_name": "送字測試", "persona_sha": SHA} }
         });
-        std::fs::write(&cards, doc.to_string()).unwrap();
+        if !NO_CARDS.load(std::sync::atomic::Ordering::SeqCst) {
+            std::fs::write(&cards, doc.to_string()).unwrap();
+        }
         // S89-live-2: the same fake as `codex` (its file name is what makes aibd speak codex)
         let codex = dir
             .join("bin")
