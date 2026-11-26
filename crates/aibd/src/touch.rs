@@ -1023,13 +1023,22 @@ pub mod tests {
         assert_eq!(weak.err(), Some("pair_key_weak"), "reason: still_checked");
     }
 
-    /// S10-3b-1: on any machine whose aibd runs outside a desktop session (CI's Windows cell,
-    /// an ssh start) the Windows path refuses before reading; elsewhere, with no key files,
-    /// it refuses too. Never a presence from an empty data folder.
+    /// S10-3b-1: with no key files there is no key presence. B2 (Andy 11-26 10:1x): on Windows
+    /// the owner check is the Hello gesture and reads no key files, so an empty data folder no
+    /// longer decides it there: outside a desktop session it is refused (ssh, a service); at a
+    /// desktop (CI's Windows cell runs in one) it is the gesture, which signs nothing (no
+    /// "always", no batch) and reads Hello at each ask (GesturePresence tests and knives G1–G9).
+    /// The test does not ask: that would show a real Hello window.
     #[test]
     fn an_empty_data_folder_gives_no_presence_here() {
         let d = tempfile::tempdir().unwrap();
-        assert!(presence_here(d.path()).is_err());
+        let got = presence_here(d.path());
+        #[cfg(not(windows))]
+        assert!(got.is_err(), "reason: presence_from_empty_folder");
+        #[cfg(windows)]
+        if let Ok(p) = got {
+            assert!(!p.signs(), "reason: windows_presence_signs_without_a_key");
+        }
     }
 
     /// S10-3b-2 (3e53b READ-winhello-wiring W7): a key that fails the start-up check leaves
