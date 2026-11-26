@@ -265,32 +265,6 @@ pub async fn held_as_user_page(page: &crate::pairing::PageAccess) -> bool {
             .unwrap_or(true)
 }
 
-/// `POST /api/v1/act` as routed: [`act`], then `act.done` in the event journal when the act
-/// carried an owner ticket and answered success (3e53b READ-spinit-owner-audit-3e53b-1126;
-/// [`crate::owner_ok::act_done`] writes it only for a ticket approved and used up here).
-pub async fn act_journaled(
-    st: State<AppState>,
-    c: Extension<Caller>,
-    body: Option<Json<Value>>,
-) -> Response {
-    let said = body.as_ref().map(|Json(b)| {
-        let s = |k: &str| b.get(k).and_then(Value::as_str).map(str::to_owned);
-        (s("type"), s("ticket"))
-    });
-    let r = act(st, c, body).await;
-    if let Some((Some(kind), Some(ticket))) = said {
-        if done_with_ticket(r.status()) {
-            crate::owner_ok::act_done(&kind, &ticket);
-        }
-    }
-    r
-}
-
-/// An act's answer that means it was done: success, not `202` (a window asked, nothing done).
-pub fn done_with_ticket(status: StatusCode) -> bool {
-    status.is_success() && status != StatusCode::ACCEPTED
-}
-
 /// `POST /api/v1/act` `{"type":"seat_input","seat_id":…,"text":…}`.
 pub async fn act(
     State(st): State<AppState>,
@@ -1552,35 +1526,6 @@ pub async fn type_to_seat(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 3e53b READ-spinit-owner-audit-3e53b-1126: act.done only for an act that was done, not
-    /// for the 202 that raised a window nor for a refusal; and the route is the journaled one.
-    #[test]
-    fn only_a_done_act_counts_for_act_done() {
-        assert!(done_with_ticket(StatusCode::OK));
-        assert!(done_with_ticket(StatusCode::CREATED));
-        assert!(
-            !done_with_ticket(StatusCode::ACCEPTED),
-            "reason: window_is_not_done"
-        );
-        for s in [
-            StatusCode::FORBIDDEN,
-            StatusCode::CONFLICT,
-            StatusCode::BAD_REQUEST,
-        ] {
-            assert!(!done_with_ticket(s), "reason: refused_is_not_done {s}");
-        }
-        let api = include_str!("api.rs");
-        assert!(
-            api.contains("ACT => post(crate::seat_input::act_journaled)"),
-            "reason: act_route_not_journaled"
-        );
-        let server = include_str!("server.rs");
-        assert!(
-            server.contains("crate::owner_ok::set_journal(journal_to(store.clone(), \"owner\"));"),
-            "reason: owner_journal_not_wired"
-        );
-    }
 
     /// The act-type names in the patterns of the page's `match kind.as_deref()` (from the first
     /// one to the `unknown_act_type` arm): `crate::m::NAME` and this file's bare `NAME`s.

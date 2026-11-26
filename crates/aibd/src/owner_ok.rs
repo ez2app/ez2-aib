@@ -785,14 +785,16 @@ pub struct Owner {
     gate: std::sync::Arc<dyn WindowGate>,
     clock: fn() -> u64,
     /// aibd's event journal (3e53b READ-spinit-owner-audit-3e53b-1126): each answer
-    /// ([`OWNER_ANSWER`]) and each act done with a used ticket ([`ACT_DONE`]).
+    /// ([`OWNER_ANSWER`]) and each approved ticket used up by the act it was for ([`OWNER_USED`]).
     journal: std::sync::OnceLock<crate::pairing::Journal>,
 }
 
 /// Event kind: the owner answered a ticket's window (approved / refused:<code> / expired).
 pub const OWNER_ANSWER: &str = "owner.answer";
-/// Event kind: an act that used up an approved ticket answered success.
-pub const ACT_DONE: &str = "act.done";
+/// Event kind: an approved ticket was used up by the very act it was approved for (operation,
+/// resource and params matched, same page), once per ticket, right before that act runs
+/// (3e53b REVIEW-pack2 L1: a page cannot pair a used ticket with another act to write one).
+pub const OWNER_USED: &str = "owner.used";
 /// How much of a ticket's resource words go in the journal (shown on the window anyway; the
 /// params, such as a file's text, never do).
 pub const RESOURCE_CHARS: usize = 80;
@@ -833,22 +835,6 @@ impl Owner {
         if let Some(j) = self.journal.get() {
             j(kind, payload);
         }
-    }
-
-    /// An act answered success with `ticket`: journaled only when that ticket was approved and
-    /// used up here, so a request naming any ticket writes nothing.
-    pub fn act_done(&self, act: &str, ticket: &str) {
-        let op = {
-            let s = self.slots();
-            match s.get(ticket) {
-                Some(v) if v.rec.used && v.rec.approved => v.rec.operation.clone(),
-                _ => return,
-            }
-        };
-        self.journal(
-            ACT_DONE,
-            serde_json::json!({"act": act, "operation": op, "ticket": ticket}),
-        );
     }
 
     /// The words every window of this owner starts with ([`mark_for`]).
@@ -1131,13 +1117,22 @@ impl Owner {
     fn take(&self, ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
         let now = (self.clock)();
         let mut s = self.slots();
-        match s.get_mut(ticket) {
+        let (sig, used) = match s.get_mut(ticket) {
             Some(v) if v.by == ask.by && record_matches(&v.rec, ticket, ask, now) => {
                 v.rec.used = true;
-                Some(v.sig.clone())
+                let used = serde_json::json!({
+                    "ticket": ticket,
+                    "operation": v.rec.operation,
+                    "by": v.by,
+                });
+                (v.sig.clone(), used)
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        drop(s);
+        // record_matches refuses a used ticket, so this runs once per ticket
+        self.journal(OWNER_USED, used);
+        Some(sig)
     }
 
     /// Whether `sig` is the owner's key's signature of `msg` (a stored approval checked again).
@@ -1224,13 +1219,6 @@ pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
 pub fn set_journal(j: crate::pairing::Journal) {
     if let Some(o) = OWNER.get() {
         o.set_journal(j);
-    }
-}
-
-/// [`Owner::act_done`] of this aibd's owner (none without the switch).
-pub fn act_done(act: &str, ticket: &str) {
-    if let Some(o) = OWNER.get() {
-        o.act_done(act, ticket);
     }
 }
 
@@ -1931,11 +1919,12 @@ mod tests {
         seen
     }
 
-    /// 3e53b READ-spinit-owner-audit-3e53b-1126: each answer goes to the journal (what, who,
-    /// how it ended, how long it took, never the params), and an act done with a used ticket
-    /// too; a ticket never approved or not used writes no act.done.
+    /// 3e53b READ-spinit-owner-audit-3e53b-1126 / REVIEW-pack2 L1: each answer goes to the
+    /// journal (what, who, how it ended, how long it took, never the params), and an approved
+    /// ticket used up by its own act once (owner.used); a ticket not approved, used again or
+    /// offered for another act writes nothing; the journal is wired at start.
     #[test]
-    fn every_answer_and_every_act_done_with_a_ticket_is_journaled() {
+    fn every_answer_and_every_used_ticket_is_journaled_once() {
         let _clock = clock();
         let o = owner(Ok(()));
         let seen = journaled(&o);
@@ -1944,12 +1933,16 @@ mod tests {
             at(1007);
             inline(f)
         }));
-        o.act_done("repo_register", &t);
-        assert_eq!(seen.lock().unwrap().len(), 1, "reason: act_done_before_use");
+        assert_eq!(seen.lock().unwrap().len(), 1, "reason: used_before_use");
+        // another act offering this ticket: not used, nothing written
+        let mut other = x.clone();
+        other.operation = "worktree.open";
+        assert!(!o.approved_for(&t, &other));
+        assert_eq!(seen.lock().unwrap().len(), 1, "reason: used_by_another_act");
         assert!(o.approved_for(&t, &x));
-        o.act_done("repo_register", &t);
+        assert!(!o.approved_for(&t, &x), "reason: used_twice");
         let got = seen.lock().unwrap().clone();
-        assert_eq!(got.len(), 2, "reason: answer_and_done {got:?}");
+        assert_eq!(got.len(), 2, "reason: answer_and_one_use {got:?}");
         assert_eq!(got[0].0, OWNER_ANSWER);
         let a = &got[0].1;
         assert_eq!(a["ticket"], t.as_str());
@@ -1964,21 +1957,20 @@ mod tests {
             ["by", "operation", "outcome", "resource", "secs", "ticket"],
             "reason: params_in_journal {a}"
         );
-        assert_eq!(got[1].0, ACT_DONE);
+        assert_eq!(got[1].0, OWNER_USED);
         assert_eq!(
             got[1].1,
-            serde_json::json!({"act": "repo_register", "operation": x.operation, "ticket": t})
+            serde_json::json!({"ticket": t, "operation": x.operation, "by": x.by})
         );
-        // a no: the window's word, and no act.done for it
+        // a no: the window's word, and no use of it
         at(1000);
         let o = owner(Err("user_cancel"));
         let seen = journaled(&o);
         let t = ticket(o.ask(&x, inline));
         assert!(!o.approved_for(&t, &x));
-        o.act_done("repo_register", &t);
-        o.act_done("repo_register", "ot_not_mine");
+        assert!(!o.approved_for("ot_not_mine", &x));
         let got = seen.lock().unwrap().clone();
-        assert_eq!(got.len(), 1, "reason: no_done_for_a_no {got:?}");
+        assert_eq!(got.len(), 1, "reason: no_use_for_a_no {got:?}");
         assert_eq!(got[0].1["outcome"], "refused:user_cancel");
         // the resource words are cut, the params never written
         let mut long = reg();
@@ -1993,6 +1985,11 @@ mod tests {
             got[0].1["resource"].as_str().unwrap().chars().count(),
             RESOURCE_CHARS,
             "reason: resource_cut"
+        );
+        let server = include_str!("server.rs");
+        assert!(
+            server.contains("crate::owner_ok::set_journal(journal_to(store.clone(), \"owner\"));"),
+            "reason: owner_journal_not_wired"
         );
     }
 
