@@ -1238,28 +1238,32 @@
   // ebab8 11:56(客戶 Windows 截圖):客戶 ssh 設定裡的 9 台全列、8 台紅叉,客戶以為壞了,還把他的主機名與位址印在畫面上
   // ⇒ 沒有登記過的測試機時整塊收成一行 + 「從這台的 ssh 設定加」;按了才列 AIB 能用的那幾台;不能用的不列名字、不出紅叉,只寫幾台
   const TH_L = {
-    'zh-TW': { none: '還沒加(開發用的功能)', open: '從這台的 ssh 設定加', close: '收起', bad: (n) => `另有 ${n} 台不能用(ssh 設定看不懂或要經跳板),沒有列出`, empty: '這台的 ssh 設定裡沒有 AIB 能用的機器' },
-    en: { none: 'None added (a developer feature)', open: "Add from this computer's ssh settings", close: 'Hide', bad: (n) => `${n} more can't be used (ssh settings not understood, or reached through a jump host); not listed`, empty: "This computer's ssh settings have no machine AIB can use" },
-    ja: { none: 'まだ追加していません(開発者向けの機能)', open: 'このパソコンの ssh 設定から追加', close: '閉じる', bad: (n) => `ほかに ${n} 台は使えません(ssh 設定が読めない、または踏み台経由)。一覧には出していません`, empty: 'このパソコンの ssh 設定には AIB が使えるマシンがありません' },
-    ko: { none: '아직 추가하지 않음(개발자용 기능)', open: '이 컴퓨터의 ssh 설정에서 추가', close: '접기', bad: (n) => `그 밖에 ${n}대는 쓸 수 없습니다(ssh 설정을 읽을 수 없거나 점프 호스트 경유). 목록에 넣지 않았습니다`, empty: '이 컴퓨터의 ssh 설정에는 AIB가 쓸 수 있는 기기가 없습니다' },
+    'zh-TW': { none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加', close: '收起', bad: (n) => `另有 ${n} 台不能用(ssh 設定看不懂或要經跳板),沒有列出`, empty: '這台的 ssh 設定裡沒有 AIB 能用的機器' },
+    en: { none: "A developer feature; this computer's ssh settings are read only when you press the button", open: "Add from this computer's ssh settings", close: 'Hide', bad: (n) => `${n} more can't be used (ssh settings not understood, or reached through a jump host); not listed`, empty: "This computer's ssh settings have no machine AIB can use" },
+    ja: { none: '開発者向けの機能です。ボタンを押したときだけこのパソコンの ssh 設定を読みます', open: 'このパソコンの ssh 設定から追加', close: '閉じる', bad: (n) => `ほかに ${n} 台は使えません(ssh 設定が読めない、または踏み台経由)。一覧には出していません`, empty: 'このパソコンの ssh 設定には AIB が使えるマシンがありません' },
+    ko: { none: '개발자용 기능입니다. 버튼을 눌렀을 때만 이 컴퓨터의 ssh 설정을 읽습니다', open: '이 컴퓨터의 ssh 설정에서 추가', close: '접기', bad: (n) => `그 밖에 ${n}대는 쓸 수 없습니다(ssh 설정을 읽을 수 없거나 점프 호스트 경유). 목록에 넣지 않았습니다`, empty: '이 컴퓨터의 ssh 설정에는 AIB가 쓸 수 있는 기기가 없습니다' },
   };
   function thHalf(T, m) {
     const R = T.row[String(m.name || '')] || {};
     const half = 'half' in m ? m.half === true : R.half || (m.pinned === false && R.gateless);
     return half;
   }
+  // ebab8 12:00:客戶沒按就什麼都不讀(連 ssh 設定檔都不先讀);按過一次這個瀏覽器記住,開發機下次自己讀
+  const thWant = () => { if (S.thWant != null) return S.thWant; try { return localStorage.getItem('aib.th.want') === '1'; } catch (e) { return false; } };
+  const thWantSet = (v) => { S.thWant = v; try { if (v) localStorage.setItem('aib.th.want', '1'); else localStorage.removeItem('aib.th.want'); } catch (e) { /* 存不了就只記這一頁 */ } };
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th;
+    if (!T && !thWant()) return `<div class="thh"><b>測試機</b><span class="hv">${esc(thW().none)}</span><button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
     if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="thh"><b>測試機</b><span class="hv">讀取中…</span></div>'; }
     let h = `<div class="thh"><b>測試機</b><span class="hv">${T.list ? '收據可用 ' + T.pinned + (T.max ? ' / 最多 ' + T.max : '') : ''}</span><button type="button" class="k" data-threload="1" title="重讀這台 ssh 設定裡的機器">重讀</button></div>`;
     if (T.err) return h + `<div class="thr bad">${esc(T.err)}</div>`;
-    const W = thW(), isHalf = (m) => thHalf(T, m);
+    const W = thW(), isHalf = (m) => thHalf(T, m), open = !!T.open || thWant();
     const kept = T.list.filter((m) => m.pinned || isHalf(m)), canAdd = T.list.filter((m) => m.usable && !m.pinned && !isHalf(m)), nBad = T.list.length - kept.length - canAdd.length;
-    if (!kept.length && !T.open) return `<div class="thh"><b>測試機</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
-    const shown = T.open ? kept.concat(canAdd) : kept;
-    if (T.open) h += `<div class="thr hv">${esc(shown.length ? '' : W.empty)}${nBad > 0 ? esc((shown.length ? '' : ' · ') + W.bad(nBad)) : ''}<button type="button" class="k" data-thclose="1">${esc(W.close)}</button></div>`;
+    if (!kept.length && !open) return `<div class="thh"><b>測試機</b><span class="hv">${esc(W.none)}</span><button type="button" class="k" data-thopen="1">${esc(W.open)}</button></div>`;
+    const shown = open ? kept.concat(canAdd) : kept;
+    if (open) h += `<div class="thr hv">${esc(shown.length ? '' : W.empty)}${nBad > 0 ? esc((shown.length ? '' : ' · ') + W.bad(nBad)) : ''}<button type="button" class="k" data-thclose="1">${esc(W.close)}</button></div>`;
     for (const m of shown) {
       const nm = String(m.name || ''), R = T.row[nm] || {};
       // b4297 f942d22137:list 每列有 half(寫上了但閘沒回);舊版沒這欄才用頁面自己記的
@@ -7046,8 +7050,8 @@
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
     const tha = x.closest('[data-thadd],[data-thrm]'); if (tha) return thAct(tha.dataset.thadd ? 'add' : 'rm', tha.dataset.thadd || tha.dataset.thrm);
     if (x.closest('[data-threload]')) { const o = !!(S.th && S.th.open); S.th = null; await thLoad(); if (S.th) { S.th.open = o; render(); } return; }
-    if (x.closest('[data-thopen]') && S.th) { S.th.open = true; return render(); }
-    if (x.closest('[data-thclose]') && S.th) { S.th.open = false; return render(); }
+    if (x.closest('[data-thopen]')) { thWantSet(true); if (!S.th || !S.th.list) await thLoad(); if (S.th) S.th.open = true; return render(); }
+    if (x.closest('[data-thclose]')) { thWantSet(false); S.th = null; return render(); }
     if (x.closest('[data-tsreload]')) { S.ts = null; return tsLoad(); }
     if (x.closest('[data-tschattog]')) { S.tsChatOpen = !S.tsChatOpen; return render(); }
     const tsf = x.closest('[data-tschatf]'); if (tsf) { S.tsChatFilter = tsf.dataset.tschatf; return render(); }

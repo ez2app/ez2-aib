@@ -260,24 +260,30 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   {
     const a = ws.indexOf('  const TH_L = {'), b = ws.indexOf('  async function thAct(');
     ok(a > 0 && b > a, 'reason: th_collapse_slice');
-    const box = { S: {}, hasAct: () => true, esc: (x) => String(x), thLoad: () => {}, TH_WHY: {}, TH_ERR: {}, setTimeout: () => {}, navigator: { languages: ['zh-TW'] } };
+    const LS = {}, loads = [];
+    const box = { S: {}, hasAct: () => true, esc: (x) => String(x), thLoad: () => { loads.push(1); }, TH_WHY: {}, TH_ERR: {}, setTimeout: (f) => f(), navigator: { languages: ['zh-TW'] }, localStorage: { getItem: (k) => (k in LS ? LS[k] : null), setItem: (k, v) => { LS[k] = String(v); }, removeItem: (k) => { delete LS[k]; } } };
     vm.createContext(box);
-    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.testHostHtml = testHostHtml;', box);
+    vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(a, b) + '\nthis.testHostHtml = testHostHtml; this.thWantSet = thWantSet;', box);
+    // ebab8 12:00:沒按過 ⇒ 不呼叫 test_host_list(不讀 ssh 設定)、只出一行 + 鈕
+    { const h0 = box.testHostHtml(); ok(loads.length === 0 && /data-thopen="1"/.test(h0) && /按了才讀/.test(h0), 'reason: th_reads_before_asked ' + loads.length + ' ' + h0.slice(0, 200)); }
+    box.thWantSet(true); box.testHostHtml(); ok(loads.length === 1 && LS['aib.th.want'] === '1', 'reason: th_want_not_loading ' + loads.length);
+    box.thWantSet(false); box.S.thWant = null; loads.length = 0; box.testHostHtml(); ok(loads.length === 0 && !('aib.th.want' in LS), 'reason: th_close_still_reads ' + loads.length);
     const bad = (w) => ({ name: 'srv-' + w, address: 'ai@host-' + w + '.example:2202', usable: false, pinned: false, why: 'reached_through_something_else' });
     const list = [bad(1), bad(2), bad(3), { name: 'okbox', address: 'ai@okbox.example:22', usable: true, pinned: false }];
     box.S.th = { list, pinned: 0, max: 16, row: {} };
     let h = box.testHostHtml();
+    box.S.thWant = true; { const hw = box.testHostHtml(); ok(/okbox/.test(hw) && /data-thclose/.test(hw), 'reason: th_want_reload_not_open ' + hw.slice(0, 200)); } box.S.thWant = null;
     ok(/data-thopen="1"/.test(h) && !/srv-|okbox|example|❌/.test(h), 'reason: th_not_collapsed ' + h.slice(0, 200));
     box.S.th.open = true; h = box.testHostHtml();
     ok(/okbox/.test(h) && !/srv-|host-|❌/.test(h) && /另有 3 台不能用/.test(h) && /data-thclose="1"/.test(h), 'reason: th_open_lists_bad_or_misses_good ' + h.slice(0, 300));
     box.S.th = { list: [Object.assign({}, list[3], { pinned: true }), bad(1)], pinned: 1, max: 16, row: {} }; h = box.testHostHtml();
     ok(/okbox/.test(h) && /可跑收據/.test(h) && !/srv-|data-thopen/.test(h), 'reason: th_kept_host_hidden ' + h.slice(0, 300));
     box.navigator.languages = ['en-US']; box.S.th = { list: [bad(1)], pinned: 0, max: 16, row: {} }; h = box.testHostHtml();
-    ok(/None added \(a developer feature\)/.test(h) && /Add from this computer/.test(h), 'reason: th_collapse_not_english ' + h.slice(0, 200));
+    ok(/A developer feature/.test(h) && /Add from this computer/.test(h), 'reason: th_collapse_not_english ' + h.slice(0, 200));
     box.S.th.open = true; h = box.testHostHtml();
     ok(/AIB can use/.test(h) && /1 more can't be used/.test(h) && !/srv-/.test(h), 'reason: th_open_empty_words ' + h.slice(0, 300));
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ": \\{ none: ", 'm').test(ws.slice(a, b)), 'reason: th_words_missing_lang ' + l);
-    ok(/'\[data-thopen\]'/.test(ws) && /'\[data-thclose\]'/.test(ws), 'reason: th_open_close_not_wired');
+    ok(/if \(x\.closest\('\[data-thopen\]'\)\) \{ thWantSet\(true\); if \(!S\.th \|\| !S\.th\.list\) await thLoad\(\);/.test(ws) && /if \(x\.closest\('\[data-thclose\]'\)\) \{ thWantSet\(false\); S\.th = null;/.test(ws), 'reason: th_open_close_not_wired');
   }
   // ebab8 11:56:輸入框上方黃字印了 send_history_list / fav_add / screen_capture ⇒ 白話四語、灰字、只缺截圖時不出
   {
