@@ -62,3 +62,7 @@ k '    pair_key_missing: '\''這台還沒有配對金鑰。請先建配對金鑰
 k 'const OWNER_LOCK_NA = '\''解鎖時間:這一版 AIB 還沒有。'\'';' 'const OWNER_LOCK_NA = '\''解鎖時間:這一版 AIB 還沒給。'\'';'
 # AP4L15 ko 刪 class_na
 k '      class_na: '\''이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.'\'',' ' '
+# PGOW14 (B2 批次碼沒白話、直接印碼;c2f0b 8ea92b569e、ebab8 10:43)
+k '    owner_batch_one_at_a_time: '\''這台每件要分開確認(每件跳一次 Windows Hello),請一件一件按。'\'',' ' '
+# PGOW15 (英文表少批次碼、退回中文)
+k '      owner_batch_one_at_a_time: '\''On this computer each item' '      owner_batch_one_at_a_time0: '\''On this computer each item'

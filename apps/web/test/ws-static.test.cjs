@@ -1711,6 +1711,7 @@ lateChecks.push((async () => {
   const win = mk('Win32'), mac = mk('MacIntel');
   const want = {
     owner_check_unmeasured: 'Windows Hello 還沒在這台電腦上實測過,高風險動作先不開放。',
+    owner_batch_one_at_a_time: '這台每件要分開確認(每件跳一次 Windows Hello),請一件一件按。',
     unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後再按。',
     no_biometry: '這台沒有設定 Windows Hello。',
     cancel: '你按了取消,沒有動任何東西。',
@@ -1722,7 +1723,7 @@ lateChecks.push((async () => {
     pair_key_missing: '這台還沒有配對金鑰。請先建配對金鑰。',
     pair_touch_not_on_this_system: '這台電腦的系統目前還不支援本人驗證。',
   };
-  ok(src.length > 500 && Object.keys(win.W).length === 18, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
+  ok(src.length > 500 && Object.keys(win.W).length === 19, 'reason: ap26_owner_words_table_size ' + (src ? Object.keys(win.W).length : 'none'));
   for (const [k, v] of Object.entries(want)) ok((k === 'no_biometry' ? win.f(k).startsWith(v) : win.f(k) === v) && mac.f(k) === v, 'reason: ap26_owner_word ' + k + ' ' + win.f(k));
   // c2f0b 18:03:這個碼只有 macOS 的本人驗證會發(Windows 讀不到指紋時系統自己退到 PIN),所以只核 Mac
   ok(mac.f('owner_check_finger_not_now') === '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。', 'reason: ap26_finger_not_now_mac_only ' + mac.f('owner_check_finger_not_now'));
@@ -1747,6 +1748,7 @@ lateChecks.push((async () => {
     en: {
       owner_check_too_weak: "This computer's owner verification is not strong enough, so this action is not available.",
       owner_check_unmeasured: "Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.",
+      owner_batch_one_at_a_time: "On this computer each item has to be confirmed separately (Windows Hello asks once per item); please do them one at a time.",
       unavailable: "AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.",
       no_biometry: "Windows Hello is not set up on this computer.",
       cancel: "You pressed Cancel. Nothing was changed.",
@@ -1772,6 +1774,7 @@ lateChecks.push((async () => {
     ja: {
       owner_check_too_weak: "このパソコンの本人確認の方式が十分に強くないため、この操作は使えません。",
       owner_check_unmeasured: "Windows Hello はまだこのパソコンで実測していないため、高リスクの操作は今は使えません。",
+      owner_batch_one_at_a_time: "このパソコンでは 1 件ずつ確認が必要です(1 件ごとに Windows Hello が表示されます)。1 件ずつ押してください。",
       no_biometry: "このパソコンには Windows Hello が設定されていません。",
       cancel: "キャンセルを押しました。何も変更していません。",
       pair_touch_timeout: "確認ウィンドウが長いあいだ応答しませんでした。何も変更していません。もう一度押せます。",
@@ -1794,6 +1797,7 @@ lateChecks.push((async () => {
     ko: {
       owner_check_too_weak: "이 컴퓨터의 본인 확인 방식이 충분히 강하지 않아 이 작업은 사용할 수 없습니다.",
       owner_check_unmeasured: "Windows Hello를 아직 이 컴퓨터에서 실측하지 않아 고위험 작업은 지금 사용할 수 없습니다.",
+      owner_batch_one_at_a_time: "이 컴퓨터에서는 항목마다 따로 확인해야 합니다(항목마다 Windows Hello가 한 번씩 뜹니다). 하나씩 눌러 주세요.",
       no_biometry: "이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다.",
       cancel: "취소를 눌렀습니다. 아무것도 바꾸지 않았습니다.",
       pair_touch_timeout: "확인 창이 너무 오래 응답하지 않았습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
