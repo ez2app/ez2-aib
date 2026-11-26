@@ -2666,9 +2666,10 @@ jobs:
           kp '            if mode == "dgrs" {' \
              '            if mode == "dgrs" && model.is_none() { // knife' \
              claude_dgrs_with_a_model_is_the_whole_row
-          # SP2 an AI not measured yet (grok) is started in claude's form (IFACE §3 Q1; codex has its own arm since S89-live-2)
+          # SP2 an AI not measured yet (agy) is started in claude's form (IFACE §3 Q1; codex has its own arm since S89-live-2,
+          # grok since #900: with grok here the mutant left that arm unreachable and failed -D warnings, f163c 00:46)
           kp '        "claude" => {' \
-             '        "claude" | "grok" => { // knife' \
+             '        "claude" | "agy" => { // knife' \
              a_provider_not_measured_is_refused
           # SP3 a session id that is not a uuid is passed on
           kp '    if !crate::uuid_shape(session_id) {' \
