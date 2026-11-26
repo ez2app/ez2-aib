@@ -103,6 +103,8 @@ k 'const guideExits = (doc) => Array.from(doc.querySelectorAll('\''.adlg.ap [dat
 k 'if (guideBlocked(document)) d.remove(); });' '});'
 # GD47 不經 render 冒出的確認卡不重判
 k 'ms.some((m) => !(m.target.closest && m.target.closest('\''#gtour'\'')))) guidePaintSoon(); })' 'false) guidePaintSoon(); })'
+# GD48 配對前 401 不畫 1、2 步(f163c b0abe2097a N1)
+k '.catch((e) => (e && e.status === 401 && S.pair ? GUIDE_UNPAIRED : null));' '.catch(() => null);'
 # GC1 路線層整片擋點擊
 kc '.gtour{position:fixed;inset:0;z-index:60;pointer-events:none}' '.gtour{position:fixed;inset:0;z-index:60}'
 # GC2 路線那條線擋點擊

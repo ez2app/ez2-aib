@@ -918,7 +918,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         act: async (t, f) => { c.sent.push([t, f]); if (c.fail) throw c.fail; return { ok: true, at: '2026-11-26T05:00:00Z', source: 'opened' }; },
         get: async () => { c.loads++; return c.next || null; }, soft: (p) => p, render: () => { c.renders++; }, localStorage: { m: {}, getItem(k) { return this.m[k] || null; }, setItem(k, v) { this.m[k] = v; }, removeItem(k) { delete this.m[k]; } } };
       vm.createContext(c);
-      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown };', c);
+      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown, guideLoad };', c);
       return c;
     };
     const st = (id, done, why, na) => Object.assign({ id, why }, done === undefined ? {} : { done }, na ? { next_act: na } : {});
@@ -964,6 +964,10 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     const pre = X.guidePreHtml();
     ok((pre.match(/>✓</g) || []).length === 1 && (pre.match(/>▶</g) || []).length === 1 && (pre.match(/>🔒</g) || []).length === 4 && /就是這一頁/.test(pre) && !/gpin/.test(pre), 'reason: guide_pre_pair_only_two ' + pre);
     { const w = mk('zh-TW', true); w.S.guide = c.S.guide; ok(/沒設 Windows Hello\?先設一個 PIN/.test(w.X.guidePreHtml()) && /設 PIN/.test(w.X.guidePreHtml()), 'reason: guide_pre_pair_pin_on_windows'); }
+    { const u = mk(); u.S.pair = { view: 'code' }; u.get = async () => { throw Object.assign(new Error('401'), { status: 401 }); }; vm.runInContext('get = this.get', u);
+      const w = mk(); w.get = u.get; vm.runInContext('get = this.get', w);
+      (async () => { await u.X.guideLoad(); await w.X.guideLoad(); const ph = u.X.guidePreHtml();
+        ok((ph.match(/>✓</g) || []).length === 1 && (ph.match(/>▶</g) || []).length === 1 && (ph.match(/>🔒</g) || []).length === 4 && w.S.guide === null, 'reason: guide_unpaired_401_draws_two ' + ph); })().catch((e) => { console.error(e); process.exitCode = 1; }); }
     // 終點白名單:next_act 只當鍵;沒有放行 / 本人確認 / 加測試機 / dgrs / work 那幾顆
     const GO = JSON.stringify(Object.values(X.GUIDE_GO).map((v) => v.to));
     ok(!/spok|lcgo|relogin|thadd|hsok|dgrs|work|apmode|danger/.test(GO) && Object.keys(X.GUIDE_GO).every((k) => X.GUIDE_GO[k].to.every((s) => /^(\[data-(add|startclaude|thopen)="1"\]|\.adlg\.ap \[data-ap(cat|sub)="life(:0)?"\]|\.adlg\.ap \.afoot \.go|#inp)$/.test(s))), 'reason: guide_targets_whitelist ' + GO);

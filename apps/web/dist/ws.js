@@ -356,6 +356,7 @@
   // 新手期「+ AI 夥伴」只亮這一條路:聊天陪伴(= 開始用 Claude 那組)與 AI 那一列
   const GUIDE_LIT = { apcat: 'life', apsub: 'life:0', aprc: 'life:0', aprow: 'brand' };
   const GUIDE_SKIP = 'aib.guide.skip';
+  const GUIDE_UNPAIRED = { panel_lit: false, projects: [{ id: 'start', lit: true, steps: [{ id: 'health', done: true, why: 'ok' }, { id: 'pair', done: false, why: 'not_paired', next_act: 'pair' }].concat(['claude', 'allow', 'first', 'tour'].map((id) => ({ id, why: 'locked' }))) }] };
   const gProj = (G, id) => (G && Array.isArray(G.projects) ? G.projects.find((p) => p && p.id === id) : null) || null;
   const gSteps = (P, id) => (P && Array.isArray(P.steps) ? P.steps.filter((s) => s && GUIDE_STEPS[id].includes(s.id)) : []);
   // 新手期 = aibd 說面板還沒全亮(panel_lit 只由 aibd 算;頁面不看 1–5 自己推)
@@ -379,7 +380,8 @@
   function guideSkip(on) { S.gSkip = on !== false; try { if (S.gSkip) localStorage.setItem(GUIDE_SKIP, '1'); else localStorage.removeItem(GUIDE_SKIP); } catch (e) { /* 只存本機偏好,存不了就只記這一頁 */ } render(); }
   async function guideLoad() {
     S.gAt = Date.now();
-    const r = await soft(get('/api/v1/guide')).catch(() => null);
+    // f163c b0abe2097a N1:配對前沒有權杖 ⇒ aibd 回 401;回得了 401 就是 AIB 在跑 ⇒ 配對頁照實畫 1 打勾、2 配對、其他鎖著(不推其他步)
+    const r = await soft(get('/api/v1/guide')).catch((e) => (e && e.status === 401 && S.pair ? GUIDE_UNPAIRED : null));
     S.guide = r && typeof r === 'object' && Array.isArray(r.projects) ? r : null;
   }
   const gHello = (k) => (gOwn(GUIDE_GO, k) && GUIDE_GO[k].hello ? `<em class="ghello">${esc(gW('hello')[typeof fpWin === 'function' && fpWin() ? 0 : 1])}</em>` : '');
