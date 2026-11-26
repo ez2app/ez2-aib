@@ -604,13 +604,22 @@ fn web(
     // SPEC §19c (Andy 11-18 20:3x): the code rides after # (never sent to the server) and the
     // page puts it in the box; the code is printed too, in case the box is empty
     let url = format!("http://{}/#code={code}", c.addr);
-    println!(
-        "Open {url} : the code is already in the box; tick or untick, then send. \
-         The code, if the box is empty: {code}  (valid {expires_in} s)"
-    );
+    // the AIB shortcut's own window (Windows): two plain lines in the user's language, the code
+    // kept; a terminal keeps the full line (ebab8 11-26 12:39)
+    if aib_sys::winrun::own_console() {
+        for l in aibd::winsetup::shortcut_wait_lines(aib_sys::winrun::ui_lang(), &code, expires_in)
+        {
+            println!("{l}");
+        }
+    } else {
+        println!(
+            "Open {url} : the code is already in the box; tick or untick, then send. \
+             The code, if the box is empty: {code}  (valid {expires_in} s)"
+        );
+    }
     if open {
         if let Err(e) = aibd::platform::open_in_browser(&url) {
-            println!("(could not open the browser: {e}; open the address yourself)");
+            println!("(could not open the browser: {e}; open {url} yourself)");
         }
     }
     let mut path = format!("/api/v1/pair/codes/{pair_id}");
@@ -2553,7 +2562,8 @@ impl aibd::winsetup::Ops for SetupOps {
         std::thread::sleep(d);
     }
     fn open_page(&self) -> Result<(), String> {
-        run(&["web"])
+        // not run(): the setup's own window already waits for Enter at its end
+        run_here(&["web"])
     }
     fn settings_get(&self, name: &str) -> Result<Option<String>, String> {
         aib_sys::winrun::uninstall_get(name).map_err(|e| e.to_string())
@@ -2763,6 +2773,24 @@ fn wake_if_down(
 }
 
 pub fn run(args: &[&str]) -> Result<(), String> {
+    let r = run_here(args);
+    // `aibd ctl web` from the AIB shortcut (Windows): the window closes when this ends, so a
+    // failure is said and waits for Enter (ebab8 11-26 12:39); a terminal is left as it was
+    if let Err(e) = &r {
+        if args.first() == Some(&"web") && aib_sys::winrun::own_console() {
+            eprintln!("aibd ctl: {e}");
+            println!(
+                "{}",
+                aibd::winsetup::shortcut_close_line(aib_sys::winrun::ui_lang())
+            );
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+        }
+    }
+    r
+}
+
+fn run_here(args: &[&str]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
         return Ok(());

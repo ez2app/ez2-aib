@@ -434,6 +434,41 @@ fn run_with(
     Ok(done)
 }
 
+/// The two plain lines the AIB shortcut's window shows while the page pairs (ebab8 11-26 12:39:
+/// the window is the customer's, not a terminal's). The code stays visible: it is what the
+/// person compares with the page (3e53b PREREAD-win-shortcut-wake r1).
+pub fn shortcut_wait_lines(lang: &str, code: &str, secs: u64) -> [String; 2] {
+    match lang {
+        "zh-TW" => [
+            "正在打開 AIB 工作台…".to_string(),
+            format!("配對碼 {code}(頁面上已自動填好,{secs} 秒內有效)"),
+        ],
+        "ja" => [
+            "AIB ワークベンチを開いています…".to_string(),
+            format!("ペアリングコード {code}(ページに入力済み、{secs} 秒間有効)"),
+        ],
+        "ko" => [
+            "AIB 워크벤치를 여는 중…".to_string(),
+            format!("페어링 코드 {code} (페이지에 이미 입력됨, {secs}초 동안 유효)"),
+        ],
+        _ => [
+            "Opening the AIB workbench…".to_string(),
+            format!("Pairing code {code} (already filled in on the page; valid {secs} s)"),
+        ],
+    }
+}
+
+/// What the shortcut's window says before it closes after a failure, so the reason above it
+/// can be read first.
+pub fn shortcut_close_line(lang: &str) -> &'static str {
+    match lang {
+        "zh-TW" => "按 Enter 關閉這個視窗。",
+        "ja" => "Enter キーを押すと、このウィンドウを閉じます。",
+        "ko" => "Enter 키를 누르면 이 창이 닫힙니다.",
+        _ => "Press Enter to close this window.",
+    }
+}
+
 /// Start the installed aibd.exe (no window) and wait until it answers.
 fn start_and_wait(exe: &Path, ops: &dyn Ops) -> Result<(), String> {
     ops.start(exe)
@@ -1429,6 +1464,30 @@ mod tests {
         for bad in ["\"cmd", "ShellExecute", "powershell", "explorer", "/c"] {
             assert!(!body.contains(bad), "reason: shell {bad}");
         }
+    }
+
+    /// The shortcut's window: two lines in each of the four languages, the code always shown.
+    #[test]
+    fn the_shortcut_window_says_two_plain_lines_with_the_code() {
+        for lang in ["en", "ja", "ko", "zh-TW"] {
+            let l = shortcut_wait_lines(lang, "K7Q2", 90);
+            assert!(
+                l[1].contains("K7Q2") && l[1].contains("90"),
+                "reason: code_{lang}"
+            );
+            for w in ["http", "box", "tick"] {
+                assert!(!l.concat().contains(w), "reason: technical_{lang}_{w}");
+            }
+            assert!(
+                shortcut_close_line(lang).contains("Enter"),
+                "reason: close_{lang}"
+            );
+        }
+        assert_ne!(
+            shortcut_wait_lines("zh-TW", "K", 1),
+            shortcut_wait_lines("en", "K", 1),
+            "reason: one_language"
+        );
     }
 
     #[test]

@@ -433,3 +433,66 @@ mod tests {
         assert!(matches!(elevated(), Err(crate::SysError::Unsupported)));
     }
 }
+
+/// Is this process alone on its console, i.e. the window was opened for it (the AIB shortcut,
+/// a double-click) and closes when it ends? `GetConsoleProcessList` (ebab8 11-26 12:39: a
+/// failure must not vanish with the window). Off Windows, or on any error: false.
+#[cfg(windows)]
+pub fn own_console() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleProcessList;
+    let mut ids = [0u32; 4];
+    // SAFETY: `ids` is writable for 4 u32s; the call writes at most that many.
+    let n = unsafe { GetConsoleProcessList(ids.as_mut_ptr(), 4) };
+    n == 1
+}
+
+/// No console window of our own off Windows.
+#[cfg(not(windows))]
+pub fn own_console() -> bool {
+    false
+}
+
+/// This user's display language as one of the page's four: `en`, `ja`, `ko`, `zh-TW`
+/// (`GetUserDefaultUILanguage`). Off Windows: `en`.
+#[cfg(windows)]
+pub fn ui_lang() -> &'static str {
+    // SAFETY: no arguments, returns a LANGID.
+    lang_of(unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() })
+}
+
+/// `en` off Windows (the shortcut's window is Windows only).
+#[cfg(not(windows))]
+pub fn ui_lang() -> &'static str {
+    "en"
+}
+
+/// A Windows LANGID as one of `en`, `ja`, `ko`, `zh-TW`: any Chinese reads the page's
+/// Traditional Chinese, anything else English.
+pub fn lang_of(langid: u16) -> &'static str {
+    match langid & 0x3ff {
+        0x04 => "zh-TW",
+        0x11 => "ja",
+        0x12 => "ko",
+        _ => "en",
+    }
+}
+
+#[cfg(test)]
+mod lang_tests {
+    use super::lang_of;
+
+    #[test]
+    fn windows_languages_map_to_the_four_page_languages() {
+        for (id, want) in [
+            (0x0404, "zh-TW"),
+            (0x0C04, "zh-TW"),
+            (0x0804, "zh-TW"),
+            (0x0411, "ja"),
+            (0x0412, "ko"),
+            (0x0409, "en"),
+            (0x0407, "en"),
+        ] {
+            assert_eq!(lang_of(id), want, "reason: {id:#06x}");
+        }
+    }
+}

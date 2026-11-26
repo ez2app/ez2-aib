@@ -50,6 +50,7 @@ block2 = { version = "=0.6.2", default-features = false, features = ["alloc"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Globalization", # ui_lang: GetUserDefaultUILanguage, the words of the shortcut's window (ebab8 11-26 12:39)
     "Win32_Graphics_Gdi", # AP26 W-5: CreateDesktopW / RegisterClassW need it (BitBlt etc.: test code only, source guard)
     "Win32_Security",
     "Win32_Security_Cryptography", # S10-3 / W1b hello_ncrypt: NCrypt Passport key + BCryptHash

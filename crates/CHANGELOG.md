@@ -15,7 +15,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `Win32_UI_Shell` (IShellLinkW, SHGetKnownFolderPath: the desktop may be moved to OneDrive),
   `Win32_System_Com` (CoCreateInstance, IPersistFile) and `Win32_Storage_FileSystem` (only because
   IShellLinkW::GetPath names WIN32_FIND_DATAW): no new crate, `Cargo.lock` unchanged
-  (3e53b PREREAD-win-shortcut-wake r1). Knives SC1–SC11.
+  (3e53b PREREAD-win-shortcut-wake r1). The shortcut's own window (ebab8 12:39) says two plain
+  lines in the user's language (en / ja / ko / zh-TW from `GetUserDefaultUILanguage`, hence
+  `windows-sys` `Win32_Globalization`) with the pairing code kept, and after a failure waits for
+  Enter so the reason can be read; a terminal is unchanged. Knives SC1–SC12, WL1.
 
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without

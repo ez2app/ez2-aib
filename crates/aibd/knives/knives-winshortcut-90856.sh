@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# SC1–SC11: the Windows setup's "AIB" shortcut and `ctl web` starting a stopped AIB (ebab8 11-26 12:20,
+# SC1–SC12: the Windows setup's "AIB" shortcut and `ctl web` starting a stopped AIB (ebab8 11-26 12:20,
 # Andy「要最快讓用戶一鍵可用」). The rules are plain Rust in winsetup.rs, tested on every platform with
 # the stand-in Ops; os=macos like knives-winsetup-90856.sh (same tests, same cell). Each knife must turn
 # its own test red. Run from the repo root.
@@ -54,3 +54,7 @@ python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
   '        let mut c = std::process::Command::new("cmd");' \
   --expect-fail winsetup::tests::the_real_start_runs_the_program_directly_no_shell \
   -- cargo test -p aibd --locked --lib winsetup::tests::the_real_start_runs_the_program_directly_no_shell
+# SC12 (ebab8 12:39; 3e53b r1: the code is not hidden) the shortcut window's line drops the pairing code
+sc '            format!("配對碼 {code}(頁面上已自動填好,{secs} 秒內有效)"),' \
+   '            format!("配對碼(頁面上已自動填好,{secs} 秒內有效)"),' \
+   the_shortcut_window_says_two_plain_lines_with_the_code
