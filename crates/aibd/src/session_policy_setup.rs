@@ -858,7 +858,7 @@ mod tests {
         let user = d.path().join("user");
         std::fs::create_dir_all(&user).unwrap();
         file(&user, "claude.exe", b"MZ\x90\x00");
-        let found = vec![look_in("claude", &[user.clone()], true)];
+        let found = vec![look_in("claude", std::slice::from_ref(&user), true)];
         let v = placed_verified(found, &data, Some("win32-x64"), true);
         assert_eq!(
             v[0].path,
