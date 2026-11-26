@@ -14,8 +14,8 @@ k 'body += `<button type="button" class="k" data-omask="1">' 'body += `<button t
 k "用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後" "之後"
 # OM4 Windows 不寫去哪改(Windows 不出選項是結構:windows_hello 分支排在按鈕分支前,om_windows_never_choice 核)
 k "    if (m === 'windows_hello') body += esc(W.winHow);" "    if (m === 'windows_hello') body += '';"
-# OM5 沒讀到金鑰時(can_change 也 true)不寫原因
-k "    else if (m === 'unknown') body += esc(W.nokey);" "    else if (m === 'unknown' && !set) body += esc(W.nokey);"
+# OM5 沒讀到金鑰時還說目前用指紋(f163c a179d649 N1)
+k '</b>${esc(W.nokey)}' '</b>目前用指紋。${esc(W.nokey)}'
 # OM6 不看 can_change
 k "const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;" "const m = d.method, set = hasAct(OM_SET) === true;"
 # OM7 多送欄位
@@ -56,6 +56,6 @@ k "<div class=\"occ omcard\" role=\"alertdialog\"" "<div class=\"occ omcard\" ro
 k 'return `<div class="gbox">${typeof omCard ' 'return `<div class="gbox">${typeof omCardGone '
 
 # OM25 沒讀到金鑰也寫成要重設 / 重新配對(f163c 04019a58 L1)
-k "    else if (m === 'unknown') body += esc(W.nokey);" "    else if (m === 'unknown') body += esc(W.reset);"
+k '${esc(W.nokey)}</div>' '${esc(W.reset)}</div>'
 # OM26 收起設定寫死中文(f163c N1)
 k '>${esc(omW().setClose)}</button>' '>收起設定</button>'
