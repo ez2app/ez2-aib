@@ -469,13 +469,18 @@ fn verify_any(_: &[u8], _: &[u8], _: &[u8]) -> bool {
 /// (`pair-key` to `pair-key.old.<at>`, `.new` to `pair-key`) → the key in use → the pin → the
 /// old folder gone. Any failure before the swap removes `.new` and keeps the old key and its
 /// records. Returns the method it was.
+/// Checks a signature: `(public key, message, signature)`.
+pub type VerifyFn = dyn Fn(&[u8], &[u8], &[u8]) -> bool;
+/// Makes a key for a method: its blob and public key.
+pub type CreateFn = dyn Fn(Method) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>;
+
 pub struct Change<'a> {
     pub data: &'a Path,
     pub to: Method,
     pub presence: &'a dyn crate::touch::Presence,
-    pub create: &'a dyn Fn(Method) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>,
+    pub create: &'a CreateFn,
     pub dev: &'a dyn KeyDevice,
-    pub verify: &'a dyn Fn(&[u8], &[u8], &[u8]) -> bool,
+    pub verify: &'a VerifyFn,
     pub at: u64,
     pub reason: String,
     pub limit: std::time::Duration,
@@ -698,6 +703,7 @@ fn change_here(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::touch::Presence;
 
     const OLD: &[u8] = b"old-key-public";
     const NEW: &[u8] = b"new-key-public";
