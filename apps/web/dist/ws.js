@@ -1719,11 +1719,11 @@
   const tsHm = (u) => (Number.isFinite(Number(u)) && Number(u) > 0 ? hhmm(new Date(Number(u) * 1000).toISOString()) : '');
   // 每席那顆的說明:來源、上次 / 下次、卡住
   const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,AIB 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.until) > 0 ? '核准到 ' + new Date(Number(t.until) * 1000).toLocaleDateString() : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
-  const tickWhy = (e) => { const k = e && (e.reason || e.code); return TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e); };
+  const tickWhy = (e) => { const k = e && (e.reason || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e)); };
   // b1efc3b571 的 seat_tick_list 每筆多 approved / changed_since_approved:沒經指紋設的舊筆、或字跟核准那版不同(aibd 不送)⇒ 標出來,改 = 重新核准
   // a9136 54b400fdef(11-21 01:30):每筆多 not_sent(現在不會送的原因;會送 = null)與 until(核准到期 unix 秒);not_sent 不是 null 就給「重新核准」
   const tickNeedsOk = (t) => !!t && ((t.not_sent !== undefined && t.not_sent !== null) || t.approved === false || t.changed_since_approved === true);
-  const tickOkWhy = (t) => (t && t.not_sent ? (TICK_SKIP[t.not_sent] || '現在不會送(' + t.not_sent + ')') + (/重新核准/.test(TICK_SKIP[t.not_sent] || '') ? '' : ';按「重新核准」再按一次指紋') : t && t.changed_since_approved === true ? '字跟本人核准那版不同,AIB 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
+  const tickOkWhy = (t) => (typeof fpSay === 'function' ? fpSay : (t) => t)((t && t.not_sent ? (TICK_SKIP[t.not_sent] || '現在不會送(' + t.not_sent + ')') + (/重新核准/.test(TICK_SKIP[t.not_sent] || '') ? '' : ';按「重新核准」再按一次指紋') : t && t.changed_since_approved === true ? '字跟本人核准那版不同,AIB 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : ''));
   const tickWait = (T) => (ticket, sec) => { if (S.tickEdit === T) { T.msg = FP_SEE; render(); } };
   // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
   const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
@@ -4570,7 +4570,7 @@
   // ebab8 12:12(Andy 12:1x 徹查 Windows 開席):Windows 上沒有「指紋」,本人確認是 Windows Hello(PIN);字跟 AIB 那台的平台走,Mac 原字不動
   const fpWin = () => { const o = String((S.version && (S.version.os || (S.version.capabilities && S.version.capabilities.os))) || (S.thermal && S.thermal.os) || '').toLowerCase(); return o ? /^win/.test(o) : /Win/.test(String((globalThis.navigator && navigator.platform) || '')); };
   const FP_WIN_SAY = [['不用按指紋', '不用 Windows Hello 確認'], ['按一次指紋', '用 Windows Hello 確認一次'], ['按這台的指紋', '用這台的 Windows Hello 確認'], ['沒按指紋', '沒用 Windows Hello 確認'], ['按指紋', '用 Windows Hello 確認'], ['指紋沒按過', 'Windows Hello 沒確認'], ['指紋沒過', 'Windows Hello 沒通過'], ['指紋視窗', 'Windows Hello 視窗'], ['指紋窗', 'Windows Hello 視窗'], ['看到指紋按過', '看到 Windows Hello 確認過'], ['等指紋', '等 Windows Hello'], ['指紋', 'Windows Hello']];
-  const fpSay = (t) => { if (typeof t !== 'string' || !t.includes('指紋') || !fpWin()) return t; let o = t; for (const [a, b] of FP_WIN_SAY) o = o.split(a).join(b); return o; };
+  const fpSay = (t) => { if (typeof t !== 'string' || !t.includes('指紋') || !fpWin()) return t; let o = t.split('金鑰指紋').join('\u0001'); for (const [a, b] of FP_WIN_SAY) o = o.split(a).join(b); return o.split('\u0001').join('金鑰指紋'); }; // 3e53b N1:主機金鑰指紋是雜湊,不換
   const FP_SEE = '等你驗證 · 看畫面上那張卡'; // 倒數、對象、取消都在「等你驗證」卡上
   const FINGER_GONE = '這張已過期,視窗若還在請按取消';
   // 第 4 件「在網頁跑測試拿收據」(7ebca 4758a4702b 21:43,蓋過 b4297 IFACE r0):receipt_request / receipt_read / receipt_withdraw。
@@ -4628,7 +4628,7 @@
     for (const x of live) { try { rcpKeep(await act('receipt_read', { run_id: x.run_id })); } catch {} }
     render();
   }
-  const rcpWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return RCP_WHY[rs] || errText(e); };
+  const rcpWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(RCP_WHY[rs] || errText(e)); };
   async function rcpGo(id) {
     const s = seatById(id), A = S.rcpAsk; if (!s || !A) return;
     const tests = A.scope === 'narrow' ? String(A.tests || '').split(/[,\s]+/).filter(Boolean) : [];
@@ -4767,7 +4767,7 @@
     }
     S.sending = false; render();
   }
-  const pushWhy = (T, e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return T[rs] || errText(e); };
+  const pushWhy = (T, e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(T[rs] || errText(e)); };
   async function pushGo(id) {
     const O = S.sbOk; if (!O || O.seat !== id) return;
     if (!/^web\/[A-Za-z0-9]+-\d{4}-\d+$/.test(O.branch)) { S.pushMsg = { seat: id, bad: true, text: PUSH_WHY.branch_not_web }; render(); return; }
@@ -5119,7 +5119,7 @@
     return false;
   }
   // ---------- lifecycle 卡到這裡 ----------
-  const trustWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return TRUST_WHY[rs] || errText(e); };
+  const trustWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(TRUST_WHY[rs] || errText(e)); };
   async function seatTrust(id, on) {
     S.trustMsg = null;
     try {
@@ -5160,7 +5160,7 @@
     if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>${(typeof fpSay === 'function' ? fpSay : (t) => t)('按指紋搬')}</button><button type="button" class="k" data-moveno>取消</button>`;
     return `<button type="button" class="k" data-move="${esc(id)}" title="${(typeof fpSay === 'function' ? fpSay : (t) => t)('把一個舊式席的信改送到這一席(要按這台的指紋)')}" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
   }
-  const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
+  const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(MOVE_WHY[rs] || errText(e)); };
   // 0eed7 VERIFY-integ3 r1 M4:搬進成功那句列出這席帶著的開著的派工信(第一行「派工:」),寫「這些是你的」,別席的不列。
   // 來源:aibd 回 letters [{id, first_line}] 就用它;沒有 ⇒ 重讀待審框(GET /api/v1/inbox),挑收件席 = 這席、沒結、沒被取代、
   // 第一行「派工:」、箭頭後指名的席(有寫)是舊席碼或這席;列上有 dm_to / forwarded_to 時再核是不是從這個舊席碼轉來的
@@ -7041,7 +7041,7 @@
   }
 
   // ---------- 動作 ----------
-  function say(msg, kind) { S.hint = msg; S.hintKind = kind || ''; }
+  function say(msg, kind) { S.hint = (typeof fpSay === 'function' ? fpSay : (t) => t)(msg); S.hintKind = kind || ''; } // 3e53b 2a6a99a871 L1:提示列也跟平台走
   // 0eed7 pv7 L(519d0 07:46):指紋閘擋下的三種講真正原因;滿了講幾點幾分幾秒後可以再試(鐘點是 aibd 給的 retry_hms,同指紋窗的字)
   function gateWhy(e) {
     const b = (e && e.body) || {}, rs = e && (e.reason || b.reason || e.code);

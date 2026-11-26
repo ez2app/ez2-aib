@@ -25,3 +25,11 @@ k 'return { text: (typeof fpWin === '\''function'\'' && fpWin()) ? '\''這台用
 k '沒有指紋就輸入電腦登入密碼。'\''}' '沒有指紋就輸入電腦登入密碼(Windows 用 Hello PIN)。'\''}'
 # FW8 對照表少一條(逐台按指紋)
 k '${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t)('\''逐台按指紋'\'')}</i>' '逐台按指紋</i>'
+# FW9 提示列不經平台字(3e53b L1)
+k 'S.hint = (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(msg);' 'S.hint = msg;'
+# FW10 主機金鑰指紋也被換成 Windows Hello(3e53b N1)
+k 'let o = t.split('\''金鑰指紋'\'').join('\''\u0001'\'');' 'let o = t;'
+# FW11 推送 / 權杖錯誤不經平台字(3e53b L1)
+k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(T[rs] || errText(e)); };' 'return T[rs] || errText(e); };'
+# FW12 搬舊席錯誤不經平台字(3e53b L1)
+k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(MOVE_WHY[rs] || errText(e)); };' 'return MOVE_WHY[rs] || errText(e); };'
