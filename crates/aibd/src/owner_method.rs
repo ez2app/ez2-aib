@@ -470,17 +470,17 @@ fn verify_any(_: &[u8], _: &[u8], _: &[u8]) -> bool {
 /// old folder gone. Any failure before the swap removes `.new` and keeps the old key and its
 /// records. Returns the method it was.
 /// Checks a signature: `(public key, message, signature)`.
-pub type VerifyFn = dyn Fn(&[u8], &[u8], &[u8]) -> bool;
+pub type VerifyFn<'f> = dyn Fn(&[u8], &[u8], &[u8]) -> bool + 'f;
 /// Makes a key for a method: its blob and public key.
-pub type CreateFn = dyn Fn(Method) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>;
+pub type CreateFn<'f> = dyn Fn(Method) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String> + 'f;
 
 pub struct Change<'a> {
     pub data: &'a Path,
     pub to: Method,
     pub presence: &'a dyn crate::touch::Presence,
-    pub create: &'a CreateFn,
+    pub create: &'a CreateFn<'a>,
     pub dev: &'a dyn KeyDevice,
-    pub verify: &'a VerifyFn,
+    pub verify: &'a VerifyFn<'a>,
     pub at: u64,
     pub reason: String,
     pub limit: std::time::Duration,
