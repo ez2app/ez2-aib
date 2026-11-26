@@ -2381,7 +2381,7 @@ fn pair_key_init() -> Result<(), String> {
         || {
             aib_sys::hello_ncrypt::create(name.as_bytes())
                 .map(|public| (name.as_bytes().to_vec(), public))
-                .map_err(|e| format!("could not make the Windows Hello key: {}", e.code()))
+                .map_err(|e| format!("could not make the Windows Hello key: {} ({e})", e.code()))
         },
         &WinHello,
         |blob| {

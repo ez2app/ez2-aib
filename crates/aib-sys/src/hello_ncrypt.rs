@@ -396,6 +396,93 @@ mod w0 {
 
     const NAME: &[u8] = b"aibd-w0-test-key";
 
+    /// W0-0 (c2f0b 11-26 diag, laptop se_error = 0x80090027 at create): which key name and
+    /// algorithm the Passport provider takes. Each row: create, (RSA) length, gesture flag; the
+    /// key is never finalized unless `AIB_DIAG_FINALIZE=1` (finalizing may show Hello), so
+    /// nothing is kept. `AIB_DIAG_SID` = the user's SID (`whoami /user`).
+    #[test]
+    #[ignore = "W0: owner at the Windows laptop"]
+    fn w0_0_which_name_and_algorithm_the_provider_takes() {
+        use windows_sys::Win32::Security::Cryptography::{
+            NCRYPT_LENGTH_PROPERTY, NCRYPT_RSA_ALGORITHM,
+        };
+        let sid = std::env::var("AIB_DIAG_SID").unwrap_or_default();
+        let fin = std::env::var("AIB_DIAG_FINALIZE").as_deref() == Ok("1");
+        let mut names = vec![("plain", "aibd-diag-plain".to_string())];
+        if !sid.is_empty() {
+            names.push(("sid//dom/sub/name", format!("{sid}//aib.local/aibd/diag-a")));
+            names.push(("sid//dom/name", format!("{sid}//aib.local/diag-b")));
+            names.push(("sid//dom//name", format!("{sid}//aib.local//diag-c")));
+        }
+        let algs = [
+            ("P256", NCRYPT_ECDSA_P256_ALGORITHM),
+            ("RSA", NCRYPT_RSA_ALGORITHM),
+        ];
+        let p = provider();
+        println!("W0-0 provider: {:?}", p.as_ref().map(|_| ()));
+        let p = p.unwrap();
+        for (label, name) in &names {
+            for (alg_label, alg) in algs {
+                for gesture in [false, true] {
+                    let w = wide(name).unwrap();
+                    let mut k: NCRYPT_KEY_HANDLE = 0;
+                    // SAFETY: provider open; static algorithm id; NUL-terminated name
+                    let c = unsafe { NCryptCreatePersistedKey(p.0, &mut k, alg, w.as_ptr(), 0, 0) };
+                    let mut row = format!(
+                        "name={label} alg={alg_label} gesture={gesture} create=0x{:08x}",
+                        c as u32
+                    );
+                    if c == 0 {
+                        let k = Key(k);
+                        if alg_label == "RSA" {
+                            let len: u32 = 2048;
+                            // SAFETY: key being made; 4-byte value
+                            let l = unsafe {
+                                NCryptSetProperty(
+                                    k.0,
+                                    NCRYPT_LENGTH_PROPERTY,
+                                    (&raw const len).cast(),
+                                    4,
+                                    0,
+                                )
+                            };
+                            row += &format!(" length=0x{:08x}", l as u32);
+                        }
+                        if gesture {
+                            let one: u32 = 1;
+                            // SAFETY: key being made; 4-byte value
+                            let g = unsafe {
+                                NCryptSetProperty(
+                                    k.0,
+                                    NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
+                                    (&raw const one).cast(),
+                                    4,
+                                    0,
+                                )
+                            };
+                            row += &format!(" gesture=0x{:08x}", g as u32);
+                        }
+                        if fin {
+                            // SAFETY: key being made
+                            let f = unsafe { NCryptFinalizeKey(k.0, 0) };
+                            row += &format!(" finalize=0x{:08x}", f as u32);
+                            if f == 0 {
+                                let mut k = k;
+                                // SAFETY: a finalized key; delete frees the handle
+                                let d = unsafe { NCryptDeleteKey(k.0, 0) };
+                                if d == 0 {
+                                    k.0 = 0;
+                                }
+                                row += &format!(" delete=0x{:08x}", d as u32);
+                            }
+                        }
+                    }
+                    println!("W0-0 {row}");
+                }
+            }
+        }
+    }
+
     /// W0-1: a third-party P-256 key in the Passport provider (plan A stands or falls here).
     #[test]
     #[ignore = "W0: owner at the Windows laptop"]
