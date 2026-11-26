@@ -202,6 +202,20 @@ impl Store {
         )?;
         Ok(yes != 0)
     }
+
+    /// Is a seat's session running or waiting to start now (the preview.2 route's, `seat_id`
+    /// NULL, never)? Only yes or no (6770f guide r7, fc7f9 B1: a seat is open but has not
+    /// spoken ⇒ the first step points at the chat, not at opening another).
+    pub fn a_seat_is_open(&self) -> Result<bool> {
+        let c = self.read()?;
+        let yes: i64 = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions
+                 WHERE seat_id IS NOT NULL AND (state = 'running' OR state = 'pending'))",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(yes != 0)
+    }
 }
 
 /// How many seats' sessions are running (or waiting to start) in the aibd store at `db`, read

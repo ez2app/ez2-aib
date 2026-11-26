@@ -44,6 +44,8 @@ pub struct Facts {
     pub allow: &'static str,
     /// A seat's session has written a line; `None`: the store could not be read.
     pub first: Option<bool>,
+    /// A seat's session runs now (r7, fc7f9 B1); a store that cannot say ⇒ false.
+    pub open: bool,
     pub record: Record,
     /// aibd's pinned host list names a machine; `None`: the list could not be read.
     pub hosts: Option<bool>,
@@ -110,6 +112,8 @@ pub fn body(f: &Facts) -> Value {
     );
     let first = match f.first {
         Some(true) => step("first", Some(true), "ok", None),
+        // r7 (fc7f9 B1): a seat is there and has not spoken ⇒ the chat, not another seat
+        Some(false) if f.open => step("first", Some(false), "seat_open", Some("focus_chat")),
         Some(false) => step("first", Some(false), "none_yet", Some("start_claude")),
         None => step("first", Some(false), "source_error", Some("start_claude")),
     };
@@ -219,6 +223,7 @@ pub fn gather(data: &Path, store: &aib_store::Store, programs: &[String]) -> Fac
         claude: claude_word(kind, || crate::workspace::login_now("claude")),
         allow: allow_word(programs),
         first: spoken(store),
+        open: store.a_seat_is_open().unwrap_or(false),
         record: read_record(data),
         hosts: pinned(data),
     }
@@ -457,6 +462,7 @@ mod tests {
             claude: "ok",
             allow: "ok",
             first: Some(true),
+            open: false,
             record: Record::Done {
                 at: "2026-11-26T05:00:00.000Z".into(),
                 source: "opened".into(),
@@ -557,6 +563,29 @@ mod tests {
         assert_eq!(v["done_at"], Value::Null);
     }
 
+    /// r7 (fc7f9 B1): a seat open and silent ⇒ focus_chat; spoken or failed ⇒ as before
+    #[test]
+    fn an_open_seat_that_has_not_spoken_points_at_the_chat() {
+        let mut f = facts();
+        f.record = Record::None;
+        f.first = Some(false);
+        let s = steps(&body(&f), 0);
+        assert_eq!(of(&s, "first")["why"], "none_yet");
+        assert_eq!(of(&s, "first")["next_act"], "start_claude");
+        f.open = true;
+        let s = steps(&body(&f), 0);
+        assert_eq!(of(&s, "first")["why"], "seat_open");
+        assert_eq!(of(&s, "first")["next_act"], "focus_chat");
+        assert_eq!(of(&s, "first")["done"], false);
+        f.first = None;
+        let s = steps(&body(&f), 0);
+        assert_eq!(of(&s, "first")["why"], "source_error");
+        f.first = Some(true);
+        let s = steps(&body(&f), 0);
+        assert_eq!(of(&s, "first")["why"], "ok");
+        assert!(of(&s, "first").get("next_act").is_none());
+    }
+
     /// knife l (r3a): a record that cannot be read leaves the panel lit when a seat has spoken
     #[test]
     fn an_unreadable_record_keeps_an_old_users_panel_lit() {
@@ -607,6 +636,7 @@ mod tests {
             "no_policy",
             "no_claude",
             "none_yet",
+            "seat_open",
             "source_error",
             "not_yet",
             "after_first",
@@ -621,6 +651,7 @@ mod tests {
                         claude,
                         allow: "no_policy",
                         first: None,
+                        open: false,
                         record: record.clone(),
                         hosts,
                     }));

@@ -109,6 +109,15 @@ async fn the_guide_reads_the_steps_and_its_record_changes_nothing_else() {
 
     // a seat answers
     let (seat, _) = d.open("safe", &cwd).await;
+    // r7 (fc7f9 B1): open and silent ⇒ the chat, not another seat
+    let r = guide(&d, &page).await;
+    assert_eq!(step(&r.json, 0, "first")["why"], "seat_open", "{}", r.body);
+    assert_eq!(
+        step(&r.json, 0, "first")["next_act"],
+        "focus_chat",
+        "{}",
+        r.body
+    );
     let r = d.act(Some(&page), &seat, "hello").await;
     assert!(r.code < 300, "{}", r.body);
     let mut spoke = false;

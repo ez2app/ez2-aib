@@ -395,3 +395,33 @@ fn a_seat_has_spoken_only_once_a_seats_session_wrote_a_line() {
     s.append(vec![out("s_a", 2, "session.output")]).unwrap();
     assert!(spoken(&s), "reason: seat_line_not_seen");
 }
+
+#[test]
+fn a_seat_is_open_only_while_a_seats_session_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    assert!(!s.a_seat_is_open().unwrap(), "reason: empty_store_open");
+    seat(&s, "seat_a");
+    let at = "2026-11-26T05:00:00.000Z";
+    s.session_event(
+        row("s_route", None, "running", false, at),
+        ev("s_route", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(
+        !s.a_seat_is_open().unwrap(),
+        "reason: route_session_counted"
+    );
+    s.session_event(
+        row("s_a", Some("seat_a"), "exited", false, at),
+        ev("s_a", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(!s.a_seat_is_open().unwrap(), "reason: ended_counted");
+    s.session_event(
+        row("s_b", Some("seat_a"), "running", true, at),
+        ev("s_b", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(s.a_seat_is_open().unwrap(), "reason: running_not_seen");
+}

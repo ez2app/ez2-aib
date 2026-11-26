@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix   # the guide's integration test and its link test are cfg(unix)
-# GD1–GD22 (6770f IFACE-guide-6770f-1126 r3–r4b; 3e53b DECISION-onboarding-bounds r3b; f163c PREREAD 1–13):
+# GD1–GD25 (6770f IFACE-guide-6770f-1126 r3–r4b; 3e53b DECISION-onboarding-bounds r3b; f163c PREREAD 1–13):
 # GET /api/v1/guide answers booleans and fixed words from what aibd already has, says nothing but "pair next"
 # before pairing, writes nothing and starts nothing; act guide_done takes no value, waits for a seat's first
 # answer and writes once; nothing else reads the guide. Each, broken, turns its own test red.
@@ -60,4 +60,14 @@ gl '    (is_time(at) && matches!(source, "opened" | "existing")).then(|| Record:
 gs '            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE s.seat_id IS NOT NULL AND EXISTS (' '            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE (s.seat_id IS NOT NULL OR 1) AND EXISTS ( -- knife'
 # GD22 (first) any output event counts as a line
 gs '                 SELECT 1 FROM events e WHERE e.aggregate_id = s.session_id || ?1 AND e.type = ?2))",' '                 SELECT 1 FROM events e WHERE e.aggregate_id = s.session_id || ?1 AND (e.type = ?2 OR length(?2) > 0)))", // knife'
-echo "guide knives: 22/22 bite"
+# GD23 (r7, fc7f9 B1) an open, silent seat still points at opening one
+gl '        Some(false) if f.open => step("first", Some(false), "seat_open", Some("focus_chat")),' '        Some(false) if f.open && false => step("first", Some(false), "seat_open", Some("focus_chat")), // knife' an_open_seat_that_has_not_spoken_points_at_the_chat
+# GD24 (r7) a seat that is not running counts as open
+python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+  "                 WHERE seat_id IS NOT NULL AND (state = 'running' OR state = 'pending'))\"," \
+  "                 WHERE seat_id IS NOT NULL AND (state = 'running' OR state = 'pending' OR 1))\", // knife" \
+  --expect-fail a_seat_is_open_only_while_a_seats_session_runs \
+  -- cargo test -p aib-store --locked --test sessions a_seat_is_open_only_while_a_seats_session_runs
+# GD25 (r7) the GET never asks whether a seat is open
+gi crates/aibd/src/guide.rs '        open: store.a_seat_is_open().unwrap_or(false),' '        open: store.a_seat_is_open().unwrap_or(false) && false, // knife'
+echo "guide knives: 25/25 bite"
