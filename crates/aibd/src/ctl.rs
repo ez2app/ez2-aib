@@ -2350,19 +2350,11 @@ fn pair_key_init() -> Result<(), String> {
     Ok(())
 }
 
-/// What to do when `pair-key init` makes nothing (S10-2b-1 §4a).
+/// What to do when `pair-key init` makes nothing (S10-2b-1 §4a): the same words
+/// `aibd install` gives ([`aibd::touch::pair_key_not_now_words`]).
 #[cfg(target_os = "macos")]
 fn pair_key_not_now_words(why: &str) -> &'static str {
-    match why {
-        "owner_check_finger_not_now" => {
-            "Touch ID is there but not usable now: open the lid or connect the Touch ID \
-             keyboard, then run this again"
-        }
-        "owner_check_finger_not_enrolled" => {
-            "this Mac has Touch ID but no fingerprint: add one in System Settings first"
-        }
-        _ => "this Mac has no owner check (no Touch ID and no login password)",
-    }
+    aibd::touch::pair_key_not_now_words(why)
 }
 
 /// `aibd ctl pair-key init` on Windows (S10-3b-2): a Windows Hello (Passport) key named

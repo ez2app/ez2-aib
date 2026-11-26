@@ -228,6 +228,33 @@ pub struct Svc<'a> {
     pub ld: &'a dyn Launchd,
     pub health: &'a dyn Health,
     pub pace: &'a dyn Fn(std::time::Duration),
+    /// the pairing key step ([`PairKey`])
+    pub key: &'a dyn PairKey,
+}
+
+/// `aibd install`'s pairing key step (ebab8 11-26 第四包: a first install on a Mac must not
+/// send the person to a terminal): with a fingerprint pairing, make the key or check the one
+/// there ([`crate::touch::ensure_pair_key`]). Tests hand in a stand-in.
+pub trait PairKey {
+    fn ensure(&self, data: &Path) -> Result<crate::touch::PairKeyMade, String>;
+}
+
+/// This computer's pairing key: the Secure Enclave on macOS. Elsewhere there is none to make
+/// ([`owner_touch_env`] refuses a fingerprint pairing there before this is reached).
+pub struct HerePairKey;
+
+impl PairKey for HerePairKey {
+    fn ensure(&self, data: &Path) -> Result<crate::touch::PairKeyMade, String> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::touch::ensure_pair_key_here(data)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = data;
+            Err("a fingerprint pairing key is made on macOS only".into())
+        }
+    }
 }
 
 /// Everything a command reads from the process, so tests can hand it in.
@@ -401,20 +428,6 @@ pub fn owner_touch_env(
             Ok(true)
         }
     }
-}
-
-/// The step left after an install that pairs by fingerprint: the key is made once, by the owner
-/// at this Mac (`aibd ctl pair-key init`); this command never asks for a fingerprint itself.
-pub fn pair_key_next(env: &BTreeMap<String, String>, data: &Path) -> Option<String> {
-    let key = crate::touch::key_dir(data);
-    (env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID)
-        && !(key.join("key.blob").exists() && key.join("key.pub").exists()))
-    .then(|| {
-        format!(
-            "NEXT aibd ctl pair-key init (no fingerprint key in {} yet: pairing and the page's fingerprint asks stay unavailable until the owner makes it at this Mac)",
-            key.display()
-        )
-    })
 }
 
 fn env_key_ok(k: &str) -> bool {
@@ -1406,6 +1419,25 @@ fn install_steps(
             ));
         }
     }
+    // ebab8 11-26 第四包: a fingerprint pairing gets its key here, made or checked, before
+    // anything is stopped, copied or written, so a failure changes nothing (3e53b r1 a–c)
+    if !o.adopt && env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID) {
+        let data = data_dir_for(h, &env)?;
+        match svc.key.ensure(&data) {
+            Ok(crate::touch::PairKeyMade::Checked) => {
+                out.say("PAIR-KEY checked (the key there passed aibd's start-up check)")
+            }
+            Ok(crate::touch::PairKeyMade::Made(k)) => out.say(format!(
+                "PAIR-KEY made ({})",
+                match k {
+                    crate::owner_probe::KeyKind::Finger => "it asks for your fingerprint",
+                    crate::owner_probe::KeyKind::LoginPassword =>
+                        "this Mac has no Touch ID, so it asks for your login password",
+                }
+            )),
+            Err(why) => return Err(format!("pairing key: {why}")),
+        }
+    }
     // 5d33a T97-2m r1 M1: an aibd already in launchd is taken out (and waited for) before
     // the plist is rewritten; otherwise bootstrap answers 5 and the new plist is not used
     if !o.no_start {
@@ -1552,9 +1584,6 @@ fn install_steps(
     let data = data_dir_for(h, &rec.env)?;
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
-    if let Some(next) = pair_key_next(&rec.env, &data) {
-        out.say(next);
-    }
 
     // moved with --dir: take away the old copy when it is still the recorded build
     if let Some(r) = &old_rec {
@@ -1796,6 +1825,22 @@ mod tests {
         bootout: RefCell<Option<LaunchdOut>>,
         /// at bootout: did this file still exist
         watch: RefCell<Option<(PathBuf, bool)>>,
+        /// the pairing key step: the data folders it was handed, and its answer (made a
+        /// fingerprint key when unset)
+        pub(super) key_asked: RefCell<Vec<PathBuf>>,
+        pub(super) key_answer: RefCell<Option<Result<crate::touch::PairKeyMade, String>>>,
+    }
+
+    impl PairKey for FakeLd {
+        fn ensure(&self, data: &Path) -> Result<crate::touch::PairKeyMade, String> {
+            self.key_asked.borrow_mut().push(data.to_path_buf());
+            self.key_answer
+                .borrow()
+                .clone()
+                .unwrap_or(Ok(crate::touch::PairKeyMade::Made(
+                    crate::owner_probe::KeyKind::Finger,
+                )))
+        }
     }
 
     impl FakeLd {
@@ -1804,6 +1849,7 @@ mod tests {
                 ld: self,
                 health: h,
                 pace: &|_| {},
+                key: self,
             }
         }
         pub(super) fn calls(&self) -> Vec<String> {
@@ -2069,6 +2115,7 @@ mod tests {
             ld: &f,
             health: &hl,
             pace: &|_| *n.borrow_mut() += 1,
+            key: &f,
         };
         let o = m.run("stop", &[], &svc);
         assert_eq!(o.code, RC_RUNNING, "{o:?}");
@@ -2287,10 +2334,10 @@ mod tests {
             &svc,
         );
         assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(!o.stdout.contains("PAIR-KEY"), "{}", o.stdout);
         assert!(
-            !o.stdout.contains("NEXT aibd ctl pair-key init"),
-            "{}",
-            o.stdout
+            f.key_asked.borrow().is_empty(),
+            "reason: key_for_weak_pairing"
         );
         // the switch added later: the kept weak pairing is raised, the limit stays
         let o = m.run("install", &["--no-start", "--env", &ot], &svc);
@@ -2300,11 +2347,15 @@ mod tests {
             "{}",
             o.stdout
         );
+        // ebab8 11-26 第四包: the key is made here, no terminal step left
         assert!(
-            o.stdout.contains("NEXT aibd ctl pair-key init"),
+            o.stdout
+                .contains("PAIR-KEY made (it asks for your fingerprint)"),
             "{}",
             o.stdout
         );
+        assert!(!o.stdout.contains("NEXT"), "{}", o.stdout);
+        assert_eq!(f.key_asked.borrow().as_slice(), &[m.p("data")]);
         let e = plist_env(&m);
         assert_eq!(e.get(sw).map(String::as_str), Some("1"));
         assert_eq!(e[PAIRING_ENV], PAIRING_TOUCHID, "reason: weak_pairing_kept");
@@ -2325,14 +2376,36 @@ mod tests {
         let o = m.run("install", &["--no-start", "--unset-env", PAIRING_ENV], &svc);
         assert_eq!(o.code, RC_REFUSED, "{o:?}");
         assert_eq!(plist_env(&m), e);
-        // with the key made, no NEXT line
-        let key = crate::touch::key_dir(&m.p("data"));
-        std::fs::create_dir_all(&key).unwrap();
-        std::fs::write(key.join("key.blob"), b"b").unwrap();
-        std::fs::write(key.join("key.pub"), b"p").unwrap();
+        // a key there that passes the check: said so, nothing else
+        *f.key_answer.borrow_mut() = Some(Ok(crate::touch::PairKeyMade::Checked));
         let o = m.run("install", &["--no-start"], &svc);
         assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(o.stdout.contains("PAIR-KEY checked"), "{}", o.stdout);
         assert!(!o.stdout.contains("NEXT"), "{}", o.stdout);
+        assert!(f.calls().is_empty(), "{:?}", f.calls());
+    }
+
+    /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 b: a pairing key that cannot be made now
+    /// (Touch ID not usable) or one there that fails aibd's start-up check stops the install
+    /// before anything is copied or written, and says why.
+    #[test]
+    fn a_pairing_key_that_fails_installs_nothing() {
+        let sw = crate::owner_ok::SWITCH;
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        *f.key_answer.borrow_mut() = Some(Err(
+            "pair_key_weak: the pairing key in x did not pass".into()
+        ));
+        let ot = format!("{sw}=1");
+        let o = m.run("install", &["--no-start", "--env", &ot], &svc);
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(o.stderr.contains("pairing key: pair_key_weak"), "{o:?}");
+        assert!(!o.stdout.contains("PAIR-KEY"), "{o:?}");
+        assert!(!m.plist().exists(), "reason: plist_written_on_key_failure");
+        assert!(!m.p("bin/aibd").exists(), "reason: copied_on_key_failure");
+        assert_eq!(f.key_asked.borrow().len(), 1);
         assert!(f.calls().is_empty(), "{:?}", f.calls());
     }
 
