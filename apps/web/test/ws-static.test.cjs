@@ -855,7 +855,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const blk = (ws.split('  const APS = ')[1] || '').split('  function apCounts()')[0];
   const store = {};
   const ctx = vm.createContext({ localStorage: { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = String(v); } }, personas: () => [['u1', '研究專家甲'], ['u2', '頁面工程師乙']], brainPreselect: (A) => { A.brain = 'b_' + A.persona; }, idem: () => 'k', personaHasBrain: (u) => u === 'u3', personaBuiltin: (u) => u === 'aib000', pbW: () => ['AIB 夥伴', '內建'], esc: (x) => String(x) });
-  vm.runInContext('const APS = ' + blk + '\nthis.AP_CATS = AP_CATS; this.apPick = apPick; this.apRecent = apRecent; this.apRecentSave = apRecentSave; this.apPersonaSum = apPersonaSum; this.apPkN = apPkN;', ctx);
+  ctx.S = { seats: [], personaList: [] }; ctx.isArch = (x) => x.state === 'archived'; ctx.providers = () => [{ key: 'claude', open: true }];
+  vm.runInContext('const APS = ' + blk + '\nthis.AP_CATS = AP_CATS; this.apPick = apPick; this.apRecent = apRecent; this.apRecentSave = apRecentSave; this.apPersonaSum = apPersonaSum; this.apPkN = apPkN; this.apFirstDefaults = apFirstDefaults;', ctx);
   const modes = new Set(); for (const C of ctx.AP_CATS) for (const p of C.subs) { modes.add(p.mode); ok(!('node' in p), 'reason: s1_plan_carries_node ' + p.name); }
   ok([...modes].every((m) => ['safe', 'work', 'dgrs', ''].includes(m)), 'reason: s1_plan_mode_not_existing');
   ok(ctx.AP_CATS.length === 12 && ctx.AP_CATS.some((C) => C.back) && ctx.AP_CATS.some((C) => C.id === 'custom'), 'reason: s1_twelve_categories');
@@ -876,6 +877,22 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(n >= 30 && pks.size >= 28, 'reason: s1_pk_plans_count ' + n + ' ' + pks.size);
     ctx.personas = () => []; const Z = { node: '', mode: 'safe' }; ctx.apPick(Z, 'life:0'); ok(Z.persona === '' && !ctx.apPersonaSum(Z, '').includes('唐僧') && !ctx.apPkN({ pk: '唐僧' }).includes('唐僧'), 'reason: s1_no_persona_names_pk');
     ctx.personas = keep; }
+  // ebab8 12:20:新機第一次打開(只有內建人格、沒有席)⇒ 全部選好,只要按「開」;有席或有別的人格就不動
+  { const keep = ctx.personas; ctx.personas = () => [['aib000', 'AIB 夥伴']]; ctx.S.personaList = [['aib000', 'AIB 夥伴']]; ctx.S.seats = [];
+    const F1 = { node: '', mode: 'work', provider: '', persona: '', role: 'author', brain: 'b1' };
+    ok(ctx.apFirstDefaults(F1) === true && F1.plan === 'life:0' && F1.persona === 'aib000' && F1.provider === 'claude' && F1.mode === 'safe' && F1.brain === '' && F1.role === '' && !F1.pkMiss, 'reason: first_open_not_defaulted ' + JSON.stringify(F1));
+    ok(ctx.apFirstDefaults(F1) === false, 'reason: first_open_defaults_twice');
+    ctx.S.seats = [{ seat_id: 's1', state: 'active' }]; ok(ctx.apFirstDefaults({ node: '' }) === false, 'reason: first_open_defaults_with_seats');
+    ctx.S.seats = [{ seat_id: 's1', state: 'archived' }]; ok(ctx.apFirstDefaults({ node: '' }) === true, 'reason: first_open_archived_seat_blocks');
+    ctx.S.seats = []; ctx.S.personaList = [['aib000', 'AIB 夥伴'], ['p2', '別的']]; ok(ctx.apFirstDefaults({ node: '' }) === false, 'reason: first_open_defaults_with_other_personas');
+    ctx.S.personaList = [['p9', '別的']]; ok(ctx.apFirstDefaults({ node: '' }) === false, 'reason: first_open_defaults_without_builtin');
+    ctx.personas = keep; ctx.S.personaList = []; }
+  ok(/if \(x\.closest\('\[data-add\],\[data-startclaude\]'\)\) \{\n      S\.add = \{ provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem\(\), autoGo: !!x\.closest\('\[data-startclaude\]'\) \};/.test(ws), 'reason: start_claude_not_wired');
+  ok(/\{ const A = S\.add; if \(A && apFirstDefaults\(A\)\) render\(\); if \(A && A\.autoGo && A\.plan && A\.persona && !A\.busy\) \{ A\.autoGo = false; doAdd\(\); \} \}/.test(ws), 'reason: start_claude_not_auto_open');
+  ok(/<span class="none">沒有在跑的 2\.0 席<\/span><button type="button" class="k g startc" data-startclaude="1"[^>]*>開始用 Claude<\/button>/.test(ws), 'reason: start_claude_button_missing');
+  // 只有一席在跑、沒 @ ⇒ 交給那一席;空狀態照實說
+  ok(/let T = targets\(text\);\n    if \(!T\.length && !\(targets\.amb \|\| \[\]\)\.length && soleSeat\(\)\) T = \[soleSeat\(\)\];/.test(ws), 'reason: sole_seat_not_default_target');
+  ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isLegacy\(s\) && !isArch\(s\)\); return L\.length === 1 \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
   ctx.apPick(A, 'design:0');
   ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
   ctx.apRecentSave('tech:0'); ctx.apRecentSave('writing:1'); ctx.apRecentSave('tech:0'); ctx.apRecentSave('custom:0'); ctx.apRecentSave('life:0'); ctx.apRecentSave('learn:0');

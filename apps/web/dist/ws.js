@@ -2758,7 +2758,7 @@
     const rows = sharedRows();
     const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}<em class="atn">${esc(atName(s))}</em>${s.mode === 'dgrs' ? '<em class="dg">不擋工具</em>' : ''}</span>`).join('')}${P.length ? `<span class="all" data-at="all">@all${P.some((s) => s.mode === 'dgrs') ? '<em class="dg">含不擋工具的席</em>' : ''}</span>` : '<span class="st">沒有在跑的席</span>'}</div>`;
     return `${headHtml()}
-      <div class="tl" id="tl">${rows || '<div class="empty">還沒有對話。打 @ 選一席,寫一句送出。</div>'}</div>
+      <div class="tl" id="tl">${rows || `<div class="empty">${soleSeat() ? '還沒有對話。寫一句送出,就交給 @' + esc(seatName(soleSeat())) + ';有兩席以上再用 @ 選。' : '還沒有對話。打 @ 選一席,寫一句送出。'}</div>`}</div>
       ${atpop}${askBar()}
       ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
@@ -5470,6 +5470,17 @@
     if (b) { A.persona = b[0]; A.pkMiss = ''; } else { A.persona = ''; A.pkMiss = '1'; }
   }
   const apPersonaSum = (A, pn) => pn || (A.pkMiss ? '這台沒有這個方案配的人格,請自己選' : '還沒選');
+  // ebab8 12:20:新機第一次打開(清單只有內建人格、沒有席)⇒ 全部選好:Claude、討論研究、內建人格、第二大腦不綁、角色不掛、方案「聊天陪伴」;只要按一次「開」
+  const AP_FIRST_PLAN = 'life:0';
+  function apFirstDefaults(A) {
+    if (!A || A.firstDone || A.plan) return false;
+    const L = S.personaList || [];
+    if (!(L.length === 1 && personaBuiltin(L[0][0])) || (S.seats || []).some((s) => s && !isArch(s))) return false;
+    A.firstDone = true; apPick(A, AP_FIRST_PLAN);
+    const cl = providers().find((p) => p.key === 'claude' && p.open); if (cl) A.provider = 'claude';
+    A.mode = 'safe'; A.brain = ''; A.brainTouched = true; A.role = '';
+    return true;
+  }
   function apPkN(p) { if (!p || !p.pk) return ''; const k = String(p.pk).toLowerCase(), n = personas().filter(([, x]) => String(x).toLowerCase().includes(k)).length; return n ? ` · ${n} 個人格` : personas().some(([u]) => personaBuiltin(u)) ? ` · 用${esc(pbW()[1])}的 ${esc(pbW()[0])}` : ' · <span class="apwarn">這台還沒有對應人格</span>'; }
   function apCols() { const g = typeof document !== 'undefined' && document.querySelector('.adlg.ap .apcats'); return g && g.clientWidth ? Math.max(1, Math.floor((g.clientWidth + 8) / 138)) : 4; }
   // S1b 2(Andy 11-23 03:00「點下去都會跳回最上方」):render 整頁重畫,加夥伴視窗的捲動位置與焦點記下來、畫完還原;剛展開的那一列捲進視野
@@ -6807,7 +6818,7 @@
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
     const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,AIB 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
-    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴${netDot()}</button></div>`;
+    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span><button type="button" class="k g startc" data-startclaude="1" title="用預設(Claude · 討論研究 · 內建人格)開一席">開始用 Claude</button>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴${netDot()}</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
@@ -6924,8 +6935,11 @@
     try { const r = await act('thread_open', { title: SHARED_TITLE, members: sharedMembers(), reuse: 'title' }); if (r && typeof r.existing === 'boolean') S.reuseOk = true; else S.reuseOk = false; return reuseOnly && !S.reuseOk ? '' : tidOf(r); }
     catch (e) { if (reuseOnly || !(e && e.status === 400)) throw e; return tidOf(await act('thread_open', { title: SHARED_TITLE, members: sharedMembers() })); }
   }
+  // ebab8 12:20(Andy「要最快讓用戶一鍵可用」):只有一席在跑、這句沒 @ ⇒ 就交給那一席;兩席以上照舊要 @
+  const soleSeat = () => { const L = present().filter((s) => !isLegacy(s) && !isArch(s)); return L.length === 1 ? L[0] : null; };
   async function sendShared(text) {
-    const T = targets(text);
+    let T = targets(text);
+    if (!T.length && !(targets.amb || []).length && soleSeat()) T = [soleSeat()];
     if ((targets.amb || []).length) { say(targets.amb.map((n) => '@' + n).join(' ') + ' 有兩席以上同名,這句沒送;點 @ 選頭像(名字後面有席碼),或打 @席碼', 'err'); return false; }
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
     // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
@@ -7283,8 +7297,8 @@
     }
     const lt = x.closest('[data-later]');
     if (lt) { const card = lt.dataset.later; const ex = slots().find((y) => y.card === card); if (ex) (S.dmc || (S.dmc = new Map())).set(card, ex); S.dismissed.add(card); render(); try { await act('slot_dismiss', { card_id: card }); } catch (er) { S.dismissed.delete(card); say(errText(er), 'err'); } return tick(true); }
-    if (x.closest('[data-add]')) {
-      S.add = { provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem() };
+    if (x.closest('[data-add],[data-startclaude]')) {
+      S.add = { provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem(), autoGo: !!x.closest('[data-startclaude]') };
       if (S.netCards > 0) S.add.mine = true; // 有連線卡等你決定 ⇒ 直接展開「我的 AI 夥伴」
       S.rg = null; S.rgMsg = null;
       render();
@@ -7300,6 +7314,7 @@
       if (L && S.add) { const P = L.filter((p) => p && p.uid); S.personaBuiltin = P.filter((p) => p.builtin === true).map((p) => String(p.uid)); S.personaList = P.map((p) => [String(p.uid), p.builtin === true ? pbW()[0] : String(p.display_name || p.name || p.uid)]); brainPreselect(S.add); }
       S.arch = Object.assign(S.arch || {}, { persona: rgArchOf(r) }); // A1:已封存的人格
       if (S.add) { S.add.personasIn = true; render(); } // 拿到或拿不到都算回來了,這時才預選上次的人格
+      { const A = S.add; if (A && apFirstDefaults(A)) render(); if (A && A.autoGo && A.plan && A.persona && !A.busy) { A.autoGo = false; doAdd(); } } // ebab8 12:20:新機預設;「開始用 Claude」= 選好就直接開
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
