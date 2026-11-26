@@ -44,3 +44,5 @@ k 'if ((hsHas('\''cand'\'') || hasAct('\''test_host_list'\'') === true) && !thWa
 k 'if ((hsHas('\''cand'\'') || hasAct('\''test_host_list'\'') === true) && !thWant())' 'if ((hsHas('\''cand'\'')) && !thWant())'
 # CU19 面板列出不能用的名字(f163c 897efdc8cd L1)
 k 'T.list.filter((m) => m.usable || m.pinned);' 'T.list.filter((m) => true);'
+# CU20 + AI 夥伴面板測試機標題寫死中文(f163c b67ffd54a4)
+k 'return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apl hsoff">' 'return `<div class="aplab apgold">測試機</div><div class="apl hsoff">'

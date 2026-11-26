@@ -1516,7 +1516,7 @@ const rgChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
-  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
   vm.runInContext('// x' + blk + '\nthis.F = { rgWrap, rgBox, rgClick, rgNote, rgHas, RG_ACTS };', ctx);
   const F = ctx.F;
   const mk = (sel, ds) => ({ closest: (q) => (q === sel ? { dataset: ds || {} } : null) });
@@ -1621,7 +1621,7 @@ const hsChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
-  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機', loading: '讀取中…' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
   const tloads = []; ctx.setTimeout = (f) => { tloads.push(f); }; ctx.thLoad = () => {};
   vm.runInContext('// x' + blk + '\nthis.F = { hsModeBtn, hsCan, hsLoad, hsRow, hsRowOff, hsCheck, hsClick, HS_SHELL, hsWinWait, HS_WIN_NET, hsWhy, hsLogLoad, hsLogHtml, HS_WHY, hsTestChips, hsTestAdd, hsCandLoad, TH_EVID };', ctx);
   const F = ctx.F;
@@ -1647,6 +1647,7 @@ const hsChecks = (async () => {
       store.has.managed_host_candidates = false; store.has.test_host_list = true; const h1 = F.hsTestChips(); ok(tloads.length === 0 && /data-thopen="1"/.test(h1), 'reason: hs_test_chips_th_read_before_asked ' + tloads.length);
       ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
       const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
+      { const kx = ctx.thX; ctx.thX = () => ({ title: 'Test machines', loading: 'Loading…' }); const h3 = F.hsTestChips(); ctx.thX = kx; ok(/>Test machines</.test(h3) && !/測試機/.test(h3), 'reason: hs_test_chips_title_not_english ' + h3); }
       delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
     const h = F.hsTestChips();
