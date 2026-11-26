@@ -2365,9 +2365,9 @@ fn pair_key_init() -> Result<(), String> {
     use aibd::touch::{key_dir, make_pair_key, WinHello};
     aib_sys::hello::interactive_session().map_err(|e| {
         format!(
-            "{}: run this at the computer, signed in at its desktop (not over ssh or remote \
-             desktop)",
-            e.code()
+            "{}: {}",
+            aibd::winsetup::hello_error_line(&e),
+            aibd::winsetup::DESKTOP_ONLY
         )
     })?;
     let dir = key_dir(&data_dir()?);
@@ -2381,7 +2381,12 @@ fn pair_key_init() -> Result<(), String> {
         || {
             aib_sys::hello_ncrypt::create(name.as_bytes())
                 .map(|public| (name.as_bytes().to_vec(), public))
-                .map_err(|e| format!("could not make the Windows Hello key: {} ({e})", e.code()))
+                .map_err(|e| {
+                    format!(
+                        "could not make the Windows Hello key: {}",
+                        aibd::winsetup::hello_error_line(&e)
+                    )
+                })
         },
         &WinHello,
         |blob| {
@@ -3323,7 +3328,7 @@ fn policy_init() -> Result<(), String> {
         .replace('\'', "'\\''");
     let mut programs = Vec::new();
     let search = std::env::var_os("PATH").ok_or("PATH is missing")?;
-    for name in ["claude", "codex", "grok", "copilot"] {
+    for name in ["claude", "codex"] {
         let candidate = std::env::split_paths(&search)
             .map(|d| d.join(name))
             .find(|p| p.is_file());
@@ -3550,7 +3555,7 @@ fn windows_policy(
 ) -> Result<(Value, Vec<String>), String> {
     let mut programs = Vec::new();
     let mut notes = Vec::new();
-    for name in ["claude", "codex", "grok", "copilot"] {
+    for name in ["claude", "codex"] {
         match find_native_provider(name, dirs) {
             Found::Native(p) => {
                 let p = p

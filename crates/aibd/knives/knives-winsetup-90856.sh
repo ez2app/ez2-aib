@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=macos
-# WS1–WS18, WS22–WS24, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
+# WS1–WS18, WS22–WS27, WR1–WR6: the Windows setup (aibd setup / AIB-Setup.exe; PLAN-win-customer-today-c2f0b-1126 rows 2–5; COND-win-installer-3e53b-1126 r1 §6 + r1 knives; 90856 11-26)
 # every knife keeps the code warning-free (`&& false`): RUSTFLAGS has -D warnings in CI
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -118,3 +118,15 @@ ws '        let back = ops.rename(&p.new, &p.exe);' \
 ws '        if !moved {' \
    '        if !moved && false {' \
    a_rollback_with_no_program_before_does_not_point_at_a_missing_copy
+# WS25 (ebab8 10:01, laptop se_error) every key error is told to set a PIN, also an se_error on a machine that has one
+ws '    } else if has("no_biometry") || has("unavailable") {' \
+   '    } else if has("no_biometry") || has("unavailable") || !why.is_empty() {' \
+   only_a_machine_without_hello_is_told_to_set_a_pin
+# WS26 the error line drops what Windows said (the HRESULT of an se_error)
+ws '    format!("{} ({e})", e.code())' \
+   '    format!("{} ({})", e.code(), "")' \
+   a_hello_error_line_keeps_the_hresult
+# WS27 not at the desktop session (unavailable from the session check) is told to set a PIN
+ws '    if why.contains(DESKTOP_ONLY) {' \
+   '    if why.contains(DESKTOP_ONLY) && false {' \
+   only_a_machine_without_hello_is_told_to_set_a_pin

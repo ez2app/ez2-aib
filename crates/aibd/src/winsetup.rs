@@ -11,7 +11,8 @@
 //!    installed copy itself, this step is skipped;
 //! 2. the pairing key, with the same code as `aibd ctl pair-key init` (Windows Hello once); a key
 //!    already there is kept (a reinstall is not a way to change keys). No key ⇒ stop here: no
-//!    Run value, nothing started ("set a PIN, then double-click again");
+//!    Run value, nothing started; the line keeps the code and the HRESULT, and only a machine
+//!    without Windows Hello is told to set a PIN ([`key_not_made_how`]);
 //! 3. the sign-in entry: current user's Run value `AIB` = the quoted path, nothing else (no
 //!    flags, no environment: the Windows defaults are aibd's own). A value of that name that is
 //!    not ours is left alone and the setup stops; what was written is read back and compared;
@@ -42,6 +43,48 @@ pub const SETUP_STEM: &str = "aib-setup";
 /// What to do when the pairing key could not be made (no PIN, cancelled).
 const NO_KEY_HOW: &str = "set up a Windows Hello PIN (Settings > Accounts > Sign-in options), \
      then double-click AIB-Setup again";
+/// What to do when Windows Hello was not answered (cancel, time-out).
+const KEY_UNANSWERED_HOW: &str =
+    "Windows Hello was not answered; double-click AIB-Setup again and answer its window";
+/// What to do when Windows refused to make the key for any other reason: the code and the
+/// HRESULT in the line say why; a PIN is not the answer there (ebab8 11-26 10:01, the laptop's
+/// `se_error` was read as "set a PIN" on a machine that has one).
+const KEY_REFUSED_HOW: &str = "Windows refused to make the key (the code above says why); \
+     double-click AIB-Setup again, and if the same line comes back, send it to support";
+
+/// What the key maker says when it is not running in the desktop session (ssh, remote
+/// desktop, a service); also how [`key_not_made_how`] tells that `unavailable` from a machine
+/// without Windows Hello.
+pub const DESKTOP_ONLY: &str =
+    "run this at the computer, signed in at its desktop (not over ssh or remote desktop)";
+/// What to do then.
+const KEY_DESKTOP_HOW: &str =
+    "double-click AIB-Setup at this computer's desktop (not over ssh, remote desktop or a task)";
+
+/// The hint after "pairing key not made (...)", by the 1.x code in it: only a machine without
+/// Windows Hello (`no_biometry`, `unavailable` not about the session) is told to set up a PIN.
+pub fn key_not_made_how(why: &str) -> &'static str {
+    let has = |code: &str| {
+        why.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|w| w == code)
+    };
+    if why.contains(DESKTOP_ONLY) {
+        KEY_DESKTOP_HOW
+    } else if has("no_biometry") || has("unavailable") {
+        NO_KEY_HOW
+    } else if has("cancel") || has("timeout") {
+        KEY_UNANSWERED_HOW
+    } else {
+        KEY_REFUSED_HOW
+    }
+}
+
+/// A Windows Hello error as the setup log says it: the 1.x code and what the OS said, so an
+/// `se_error` keeps its HRESULT (`se_error (os error 0x80004005)`) instead of losing it.
+pub fn hello_error_line(e: &aib_sys::hello::HelloError) -> String {
+    format!("{} ({e})", e.code())
+}
+
 /// What to do when the key there would be refused by aibd.
 const KEY_BAD_HOW: &str = "delete that folder, then double-click AIB-Setup again";
 /// How long the setup waits for the new aibd to answer.
@@ -308,7 +351,10 @@ fn run_with(
         }
         PairKey::None => {
             if let Err(e) = ops.pair_key_init() {
-                return Err(format!("pairing key not made ({e}); {NO_KEY_HOW}"));
+                return Err(format!(
+                    "pairing key not made ({e}); {}",
+                    key_not_made_how(&e)
+                ));
             }
             say("2/5 pairing key made (Windows Hello)");
         }
@@ -810,6 +856,72 @@ mod tests {
             "reason: went_on {:?}",
             f.calls.borrow()
         );
+    }
+
+    #[test]
+    fn only_a_machine_without_hello_is_told_to_set_a_pin() {
+        let pin = "Windows Hello PIN";
+        for (why, want_pin) in [
+            (
+                "could not make the Windows Hello key: se_error (os error 0x80004005)",
+                false,
+            ),
+            (
+                "could not make the Windows Hello key: no_biometry (no Windows Hello)",
+                true,
+            ),
+            (
+                "could not make the Windows Hello key: unavailable (no Windows Hello here)",
+                true,
+            ),
+            (
+                format!("unavailable (not available): {DESKTOP_ONLY}").as_str(),
+                false,
+            ),
+            (
+                "could not make the Windows Hello key: cancel (cancelled)",
+                false,
+            ),
+            (
+                "could not make the Windows Hello key: auth_failed (refused)",
+                false,
+            ),
+        ] {
+            let f = Fake {
+                key_err: Some(why.into()),
+                ..Fake::default()
+            };
+            let (r, _) = go(&f);
+            let e = r.expect_err("reason: no_key_went_on");
+            assert_eq!(e.contains(pin), want_pin, "reason: pin_hint {why} => {e}");
+            assert!(e.contains(why), "reason: code_lost {e}");
+            if !want_pin {
+                assert!(
+                    e.contains("answer its window") || e.contains("Windows refused"),
+                    "reason: no_hint {e}"
+                );
+            }
+        }
+        assert!(
+            key_not_made_how("se_error").contains("Windows refused"),
+            "reason: se_error_not_refused"
+        );
+        assert!(
+            key_not_made_how("timeout").contains("not answered"),
+            "reason: timeout_not_unanswered"
+        );
+    }
+
+    #[test]
+    fn a_hello_error_line_keeps_the_hresult() {
+        let e = aib_sys::hello::classify(0x8000_4005);
+        let line = hello_error_line(&e);
+        assert!(
+            line.starts_with("se_error (") && line.contains("0x80004005"),
+            "reason: hresult_lost {line}"
+        );
+        let c = hello_error_line(&aib_sys::hello::classify(0x8009_0036));
+        assert!(c.starts_with("cancel ("), "reason: code_first {c}");
     }
 
     #[test]
