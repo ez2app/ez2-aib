@@ -33,3 +33,9 @@ k 'let o = t.split('\''金鑰指紋'\'').join('\''\u0001'\'');' 'let o = t;'
 k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(T[rs] || errText(e)); };' 'return T[rs] || errText(e); };'
 # FW12 搬舊席錯誤不經平台字(3e53b L1)
 k 'return (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(MOVE_WHY[rs] || errText(e)); };' 'return MOVE_WHY[rs] || errText(e); };'
+# FW13 交回錯誤不經平台字(3e53b L1 SB)
+k 'text: '\''沒有交回:'\'' + (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(SB_WHY[k] || errText(e))' 'text: '\''沒有交回:'\'' + (SB_WHY[k] || errText(e))'
+# FW14 權杖錯誤不經平台字(3e53b L1 GHTOK)
+k 'G.msg = (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(GHTOK_WHY[rs] || errText(e));' 'G.msg = GHTOK_WHY[rs] || errText(e);'
+# FW15 PR 關閉原因不經平台字(3e53b L1 PR)
+k 'S.prOff = (typeof fpSay === '\''function'\'' ? fpSay : (t) => t)(PR_WHY[rs]);' 'S.prOff = PR_WHY[rs];'

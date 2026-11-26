@@ -4692,7 +4692,7 @@
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code), c = e && e.code;
       const k = SB_WHY[c] ? c : rs;
       const b = (e && e.body) || {};
-      S.sbMsg = { seat: id, bad: true, text: '沒有交回:' + (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
+      S.sbMsg = { seat: id, bad: true, text: '沒有交回:' + (typeof fpSay === 'function' ? fpSay : (t) => t)(SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : '') + (e && e.status === 409 ? '。沒有建分支;暫存的物件 git 之後會自己清' : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
     }
     if (S.sbMsg && S.sbMsg.bad) say(S.sbMsg.text, 'err'); // 519d0 10:07 第 1 點:席窗沒開或捲走了,頂端也寫同一句
     S.sb = null; render();
@@ -4763,7 +4763,7 @@
       S.ghTok = null; S.prOff = null; S.pushMsg = { seat: id, text: '權杖存好了(只存在這台的鑰匙圈);可以再按一次「推上去」或「開 PR」' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
-      G.left = null; G.msg = GHTOK_WHY[rs] || errText(e);
+      G.left = null; G.msg = (typeof fpSay === 'function' ? fpSay : (t) => t)(GHTOK_WHY[rs] || errText(e));
     }
     S.sending = false; render();
   }
@@ -4781,8 +4781,8 @@
       // pv8 第 9 格:這個倉沒有權杖 ⇒ aibd 在指紋窗前就說,這裡直接出權杖卡;權杖被 GitHub 拒 ⇒ 講哪裡不對
       const slug = e && e.body && typeof e.body.token_for === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(e.body.token_for) ? e.body.token_for : '';
       if (rs === 'gh_token_missing' && slug) S.ghTok = { seat: id, slug, left: null, msg: '這個倉還沒有 GitHub 權杖;存好之後再按一次「推上去」' };
-      else if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
-      else S.pushMsg = { seat: id, bad: true, text: /^gh_token_/.test(String(rs)) && GHTOK_WHY[rs] ? GHTOK_WHY[rs] : pushWhy(PUSH_WHY, e) };
+      else if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = (typeof fpSay === 'function' ? fpSay : (t) => t)(PUSH_WHY[rs]);
+      else S.pushMsg = { seat: id, bad: true, text: /^gh_token_/.test(String(rs)) && GHTOK_WHY[rs] ? (typeof fpSay === 'function' ? fpSay : (t) => t)(GHTOK_WHY[rs]) : pushWhy(PUSH_WHY, e) };
     }
     S.pushF = null; render();
   }
@@ -4800,7 +4800,7 @@
       S.prAsk = null;
       const slug = e && e.body && typeof e.body.token_for === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(e.body.token_for) ? e.body.token_for : '';
       if (rs === 'pr_open_unavailable' && slug) S.ghTok = { seat: id, slug, left: null, msg: '' };
-      else if (rs === 'unknown_act_type' || rs === 'pr_open_unavailable' || rs === 'pr_open_off' || rs === 'page_only') S.prOff = PR_WHY[rs]; else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
+      else if (rs === 'unknown_act_type' || rs === 'pr_open_unavailable' || rs === 'pr_open_off' || rs === 'page_only') S.prOff = (typeof fpSay === 'function' ? fpSay : (t) => t)(PR_WHY[rs]); else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
     }
     S.prF = null; S.sending = false; render();
   }
