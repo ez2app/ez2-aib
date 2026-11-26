@@ -38,7 +38,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   true source (「由終端機 / 程式要求」 / 「由瀏覽器頁要求」); Windows no longer says 「本機鑰」 (B2 has no key).
   Knives W1–W4 (`crates/aibd/knives/knives-pairwords-c2f0b.sh`); TK12 re-aimed.
 - Knives (90856 TRIAGE-890 on #890 run 45757604748): OTE3's mutant keeps `os` used (it no longer fails to build under
-  `-D warnings`, a false miss); PM1 moves to `knives-provider-maker-sign-c2f0b.sh` (macOS), since on Linux AIB offers
+  `-D warnings`, a false miss); PM1 and PM2 move to `knives-provider-maker-sign-c2f0b.sh` (macOS; PM2: Linux's `signed_by_maker` answers
+  not_offered for every provider, so its mutant changes nothing there), since on Linux AIB offers
   no download and its test returns before the signature check, so it could never bite there.
 
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
