@@ -149,3 +149,5 @@ k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: 
 k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan === '\'''\'' ? (t) => t : (t) => t);'
 # GD65 channel 還沒讀到也換成 Touch ID 字
 k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
+# GD66 imeBusy 不認 keyCode 229(組字中 Esc 會關指引;f163c aa7164f7ed N1 行為測試)
+k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
