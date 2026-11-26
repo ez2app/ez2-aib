@@ -414,7 +414,7 @@
       out.push(`<div class="row d0 gproj${all ? ' gok' : ''}" data-gproj="${id}"><div class="nm"><span class="tw" data-gtw="${id}">${L.length ? (open ? '▾' : '▸') : '·'}</span><span class="lv a">${esc(gW('builtin'))}</span><span class="tx">${esc(gW(id))}${all ? ` ✅ ${okN}/${tot}` : ''}</span></div>${tot ? `<progress class="mini" max="${tot}" value="${okN}" title="${okN} / ${tot}"></progress>` : '<span></span>'}<div class="seats">${again ? `<button type="button" class="k gagain" data-gagain="1">${esc(gW('again'))}</button>` : ''}</div></div>`);
       if (open) gRows(P, id, cur, out);
     }
-    return `<div class="gbox">${out.join('')}</div>`;
+    return `<div class="gbox">${typeof omCard === 'function' ? omCard() : ''}${out.join('')}</div>`;
   }
   // 配對前(沒有頁面憑證):aibd 只回 health 與 pair,其他四步 locked;配對鈕旁照實寫要先設 PIN(配對前不探 Hello)
   function guidePreHtml() {
@@ -6395,11 +6395,13 @@
   // 兩平台同一塊、同位置、同句型(Andy 22:0x);不一樣只在做不到的地方:Windows 不能在 AIB 裡選(can_change=false),只照實寫 Windows Hello 與去哪改
   const OM_ST = 'owner_method_status', OM_SET = 'owner_method_set';
   const OM_L = {
-    'zh-TW': { title: '本人確認方式', biometry: '目前用指紋。', password: '目前用登入密碼。', unknown: '目前用指紋(金鑰跟配對時不同)。', windows_hello: '目前用 Windows Hello(PIN、指紋或臉,由 Windows 設定決定)。', winHow: '要改請到 Windows 設定 › 帳戶 › 登入選項。', toPw: '改用登入密碼', toBio: '改回指紋', warn: '用指紋:只有你的手指能核准 AIB 的動作。用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後可以在設定裡改回來。', sure: '確定改用登入密碼', no: '不要', wait: '等你在本人確認視窗按…', donePw: '已改成登入密碼。', doneBio: '已改回指紋。', fail: '沒有改:', repair: '先重新配對一次再改。', notHere: '這台不能改本人確認方式。', cancel: '你按了取消,沒有改。', pageOnly: '只有這台 AIB 的內建頁能改。', read: '讀不到目前的方式。' },
-    en: { title: 'How you confirm', biometry: 'You confirm with your fingerprint.', password: 'You confirm with your login password.', unknown: 'You confirm with your fingerprint (the key differs from when you paired).', windows_hello: 'You confirm with Windows Hello (PIN, fingerprint or face, as set in Windows).', winHow: 'To change it, open Windows Settings › Accounts › Sign-in options.', toPw: 'Use login password instead', toBio: 'Go back to fingerprint', warn: 'With fingerprint: only your finger can approve AIB actions. With login password: anyone who knows this computer\'s login password can approve AIB actions. You can switch back in settings later.', sure: 'Yes, use login password', no: 'Cancel', wait: 'Waiting for you in the confirmation window…', donePw: 'Changed to login password.', doneBio: 'Back to fingerprint.', fail: 'Not changed: ', repair: 'Pair again first, then change it.', notHere: 'This computer cannot change how you confirm.', cancel: 'You cancelled; nothing changed.', pageOnly: 'Only this computer\'s built-in AIB page can change it.', read: 'Could not read the current method.' },
-    ja: { title: '本人確認の方法', biometry: '今は指紋で確認しています。', password: '今はログインパスワードで確認しています。', unknown: '今は指紋で確認しています(鍵がペアリング時と違います)。', windows_hello: '今は Windows Hello(PIN・指紋・顔、Windows の設定しだい)で確認しています。', winHow: '変更は Windows の設定 › アカウント › サインイン オプションで。', toPw: 'ログインパスワードに変える', toBio: '指紋に戻す', warn: '指紋なら、AIB の操作を承認できるのはあなたの指だけです。ログインパスワードなら、このパソコンのログインパスワードを知っている人は誰でも AIB の操作を承認できます。あとで設定から戻せます。', sure: 'ログインパスワードに変える', no: 'やめる', wait: '本人確認の画面で押してください…', donePw: 'ログインパスワードに変えました。', doneBio: '指紋に戻しました。', fail: '変更されていません:', repair: '先にもう一度ペアリングしてから変えてください。', notHere: 'このパソコンでは本人確認の方法を変えられません。', cancel: 'キャンセルしたので、変わっていません。', pageOnly: '変えられるのはこのパソコンの AIB 内蔵ページだけです。', read: '今の方法を読めませんでした。' },
-    ko: { title: '본인 확인 방법', biometry: '지금은 지문으로 확인합니다.', password: '지금은 로그인 암호로 확인합니다.', unknown: '지금은 지문으로 확인합니다(키가 페어링 때와 다릅니다).', windows_hello: '지금은 Windows Hello(PIN, 지문 또는 얼굴, Windows 설정에 따름)로 확인합니다.', winHow: '바꾸려면 Windows 설정 › 계정 › 로그인 옵션에서 하세요.', toPw: '로그인 암호로 바꾸기', toBio: '지문으로 되돌리기', warn: '지문을 쓰면 AIB 작업은 당신의 손가락으로만 승인할 수 있습니다. 로그인 암호를 쓰면 이 컴퓨터의 로그인 암호를 아는 사람은 누구나 AIB 작업을 승인할 수 있습니다. 나중에 설정에서 되돌릴 수 있습니다.', sure: '로그인 암호로 바꾸기', no: '취소', wait: '본인 확인 창에서 눌러 주세요…', donePw: '로그인 암호로 바꿨습니다.', doneBio: '지문으로 되돌렸습니다.', fail: '바뀌지 않았습니다: ', repair: '먼저 다시 페어링한 뒤 바꾸세요.', notHere: '이 컴퓨터에서는 본인 확인 방법을 바꿀 수 없습니다.', cancel: '취소해서 바뀌지 않았습니다.', pageOnly: '이 컴퓨터의 AIB 기본 페이지에서만 바꿀 수 있습니다.', read: '지금 방법을 읽지 못했습니다.' },
+    'zh-TW': { title: '本人確認方式', biometry: '目前用指紋。', password: '目前用登入密碼。', unknown: '目前用指紋(金鑰跟配對時不同)。', windows_hello: '目前用 Windows Hello(PIN、指紋或臉,由 Windows 設定決定)。', winHow: '要改請到 Windows 設定 › 帳戶 › 登入選項。', toPw: '改用登入密碼', toBio: '改回指紋', warn: '用指紋:只有你的手指能核准 AIB 的動作。用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後可以在設定裡改回來。', sure: '確定改用登入密碼', no: '不要', wait: '等你在本人確認視窗按…', donePw: '已改成登入密碼。', doneBio: '已改回指紋。', fail: '沒有改:', repair: '先重新配對一次再改。', notHere: '這台不能改本人確認方式。', cancel: '你按了取消,沒有改。', pageOnly: '只有這台 AIB 的內建頁能改。', read: '讀不到目前的方式。', reset: '目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。', pickT: '這台的本人確認要用什麼?', pickBio: '指紋(建議)', pickPw: '登入密碼(較弱)' },
+    en: { title: 'How you confirm', biometry: 'You confirm with your fingerprint.', password: 'You confirm with your login password.', unknown: 'You confirm with your fingerprint (the key differs from when you paired).', windows_hello: 'You confirm with Windows Hello (PIN, fingerprint or face, as set in Windows).', winHow: 'To change it, open Windows Settings › Accounts › Sign-in options.', toPw: 'Use login password instead', toBio: 'Go back to fingerprint', warn: 'With fingerprint: only your finger can approve AIB actions. With login password: anyone who knows this computer\'s login password can approve AIB actions. You can switch back in settings later.', sure: 'Yes, use login password', no: 'Cancel', wait: 'Waiting for you in the confirmation window…', donePw: 'Changed to login password.', doneBio: 'Back to fingerprint.', fail: 'Not changed: ', repair: 'Pair again first, then change it.', notHere: 'This computer cannot change how you confirm.', cancel: 'You cancelled; nothing changed.', pageOnly: 'Only this computer\'s built-in AIB page can change it.', read: 'Could not read the current method.', reset: 'Fingerprint only for now: the confirmation key or record differs from when you paired. To reset: quit AIB, delete pair-key-pin.json and pair-key-method.json in its folder, then open AIB and pair again.', pickT: 'How should this computer confirm it is you?', pickBio: 'Fingerprint (recommended)', pickPw: 'Login password (weaker)' },
+    ja: { title: '本人確認の方法', biometry: '今は指紋で確認しています。', password: '今はログインパスワードで確認しています。', unknown: '今は指紋で確認しています(鍵がペアリング時と違います)。', windows_hello: '今は Windows Hello(PIN・指紋・顔、Windows の設定しだい)で確認しています。', winHow: '変更は Windows の設定 › アカウント › サインイン オプションで。', toPw: 'ログインパスワードに変える', toBio: '指紋に戻す', warn: '指紋なら、AIB の操作を承認できるのはあなたの指だけです。ログインパスワードなら、このパソコンのログインパスワードを知っている人は誰でも AIB の操作を承認できます。あとで設定から戻せます。', sure: 'ログインパスワードに変える', no: 'やめる', wait: '本人確認の画面で押してください…', donePw: 'ログインパスワードに変えました。', doneBio: '指紋に戻しました。', fail: '変更されていません:', repair: '先にもう一度ペアリングしてから変えてください。', notHere: 'このパソコンでは本人確認の方法を変えられません。', cancel: 'キャンセルしたので、変わっていません。', pageOnly: '変えられるのはこのパソコンの AIB 内蔵ページだけです。', read: '今の方法を読めませんでした。', reset: '今は指紋だけです:本人確認の鍵か記録がペアリング時と違います。リセットするには、AIB を終了し、フォルダー内の pair-key-pin.json と pair-key-method.json を削除してから、AIB を開いてもう一度ペアリングしてください。', pickT: 'このパソコンの本人確認は何を使いますか?', pickBio: '指紋(おすすめ)', pickPw: 'ログインパスワード(弱め)' },
+    ko: { title: '본인 확인 방법', biometry: '지금은 지문으로 확인합니다.', password: '지금은 로그인 암호로 확인합니다.', unknown: '지금은 지문으로 확인합니다(키가 페어링 때와 다릅니다).', windows_hello: '지금은 Windows Hello(PIN, 지문 또는 얼굴, Windows 설정에 따름)로 확인합니다.', winHow: '바꾸려면 Windows 설정 › 계정 › 로그인 옵션에서 하세요.', toPw: '로그인 암호로 바꾸기', toBio: '지문으로 되돌리기', warn: '지문을 쓰면 AIB 작업은 당신의 손가락으로만 승인할 수 있습니다. 로그인 암호를 쓰면 이 컴퓨터의 로그인 암호를 아는 사람은 누구나 AIB 작업을 승인할 수 있습니다. 나중에 설정에서 되돌릴 수 있습니다.', sure: '로그인 암호로 바꾸기', no: '취소', wait: '본인 확인 창에서 눌러 주세요…', donePw: '로그인 암호로 바꿨습니다.', doneBio: '지문으로 되돌렸습니다.', fail: '바뀌지 않았습니다: ', repair: '먼저 다시 페어링한 뒤 바꾸세요.', notHere: '이 컴퓨터에서는 본인 확인 방법을 바꿀 수 없습니다.', cancel: '취소해서 바뀌지 않았습니다.', pageOnly: '이 컴퓨터의 AIB 기본 페이지에서만 바꿀 수 있습니다.', read: '지금 방법을 읽지 못했습니다.', reset: '지금은 지문만 씁니다: 본인 확인 키나 기록이 페어링 때와 다릅니다. 초기화하려면 AIB를 끄고 폴더에서 pair-key-pin.json과 pair-key-method.json을 지운 뒤 AIB를 열어 다시 페어링하세요.', pickT: '이 컴퓨터의 본인 확인은 무엇으로 할까요?', pickBio: '지문(권장)', pickPw: '로그인 암호(더 약함)' },
   };
+  // c2f0b eb6c979c71:status 的 why 是這四個碼之一 ⇒ 金鑰或紀錄跟配對時不同,只用指紋;同一句固定字 + 重設的出路(words 欄照規矩不讀)
+  const OM_RESET = ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved'];
   const OM_WHY = { owner_key_not_as_paired: 'repair', owner_method_not_here: 'notHere', user_cancel: 'cancel', page_only: 'pageOnly' };
   const omW = () => OM_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OM_L['zh-TW'];
   async function omLoad() {
@@ -6412,6 +6414,7 @@
     const O = S.om; if (!O) return '';
     const W = omW(), d = O.d, msg = O.msg ? `<div class="${O.msg.bad ? 'aerr' : 'aok'}" role="${O.msg.bad ? 'alert' : 'status'}">${esc(O.msg.text)}</div>` : '';
     if (!d) return `<div class="occ"><b>${esc(W.title)}</b>${O.bad ? esc(W.read) : ''}</div>${msg}`;
+    if (OM_RESET.includes(d.why)) return `<div class="occ"><b>${esc(W.title)}</b>${esc(W.reset)}</div>${msg}`; // 改不了,只寫重設的出路
     const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;
     let body = esc(Object.prototype.hasOwnProperty.call(W, m) && /^(biometry|password|unknown|windows_hello)$/.test(m) ? W[m] : W.read);
     if (m === 'windows_hello') body += esc(W.winHow); // Windows 不能在 AIB 裡選:做不到,照實寫去哪改
@@ -6426,8 +6429,23 @@
     const O = S.om; if (!O || O.busy || !O.d || (to !== 'password' && to !== 'biometry') || hasAct(OM_SET) !== true || O.d.can_change !== true) return;
     if (to === 'password' && !O.ask) return; // 沒先看過說明不送
     const W = omW(); O.busy = true; O.ask = false; O.msg = null; render();
-    try { await act(OM_SET, { to }); O.msg = { bad: false, text: to === 'password' ? W.donePw : W.doneBio }; } catch (e) { const k = OM_WHY[rgCode(e)]; O.msg = { bad: true, text: k ? W[k] : W.fail + errText(e) }; }
+    try { await act(OM_SET, { to }); O.msg = { bad: false, text: to === 'password' ? W.donePw : W.doneBio }; omMark(); } catch (e) { const k = OM_WHY[rgCode(e)]; O.msg = { bad: true, text: k ? W[k] : W.fail + errText(e) }; }
     O.busy = false; await omLoad();
+  }
+  // 安裝時的選擇卡(PLAN §2;c2f0b 05:45 照做):配對成功後、新手期指引最上面一張;只在 method=biometry 且 can_change 時出,選了就不再出(這個瀏覽器記住)
+  // 預設指紋;選密碼跟設定頁同一條路(先出降級白話字、再按一次才送)。role=alertdialog ⇒ 指引遮罩看到確認類就整層拆掉(guideBlocked),卡不會被蓋住
+  const OM_PICK = 'aib.om.pick';
+  const omPicked = () => { try { if (localStorage.getItem(OM_PICK) === '1') return true; } catch (e) { /* 本機偏好讀不到 ⇒ 看這一頁的 */ } return !!S.omPicked; };
+  function omMark() { S.omPicked = true; try { localStorage.setItem(OM_PICK, '1'); } catch (e) { /* 存不了就只記這一頁 */ } }
+  function omCard() {
+    if (S.pair || typeof guideNew !== 'function' || !guideNew(S.guide) || hasAct(OM_ST) !== true || hasAct(OM_SET) !== true || omPicked()) return '';
+    if (!S.om && !S.omTried) { S.omTried = true; omLoad(); return ''; }
+    const O = S.om, d = O && O.d; if (!d || d.method !== 'biometry' || d.can_change !== true || OM_RESET.includes(d.why)) return '';
+    const W = omW(), msg = O.msg && O.msg.bad ? `<div class="aerr" role="status">${esc(O.msg.text)}</div>` : '';
+    const body = O.busy ? `<button type="button" class="k" disabled>${esc(W.wait)}</button>`
+      : O.ask ? `<span class="omw">${esc(W.warn)}</span><button type="button" class="k" data-omno="1">${esc(W.no)}</button><button type="button" class="k" data-omset="password">${esc(W.sure)}</button>`
+      : `<button type="button" class="k g" data-ompick="1">${esc(W.pickBio)}</button><button type="button" class="k" data-omask="1">${esc(W.pickPw)}</button>`;
+    return `<div class="occ omcard" role="alertdialog" aria-label="${esc(W.pickT)}"><b>${esc(W.pickT)}</b>${body}${msg}</div>`;
   }
   // 設定面板(⚙️ 設定):目前只有本人確認方式;aibd 沒有 owner_method_status 就不出這顆鈕
   const setBtn = () => (hasAct(OM_ST) === true ? `<button type="button" class="ib${S.setOpen ? ' on' : ''}" data-setopen="1" aria-expanded="${S.setOpen ? 'true' : 'false'}" title="設定">⚙️ 設定</button>` : '');
@@ -7686,6 +7704,7 @@
     { const so = x.closest('[data-setopen]'); if (so) { S.setOpen = so.dataset.setopen === '1' ? !S.setOpen : false; if (S.setOpen) { S.om = null; omLoad(); } render(); return; } }
     if (x.closest('[data-omask]') && S.om) { S.om.ask = true; S.om.msg = null; render(); return; }
     if (x.closest('[data-omno]') && S.om) { S.om.ask = false; render(); return; }
+    if (x.closest('[data-ompick]')) { omMark(); render(); return; }
     { const os = x.closest('[data-omset]'); if (os && S.om) { omSet(os.dataset.omset); return; } }
     if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }
     if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }

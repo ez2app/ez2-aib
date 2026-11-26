@@ -2546,9 +2546,10 @@ lateChecks.push((async () => {
   const a = ws.indexOf('  // 本人確認方式(c2f0b'), b = ws.indexOf('  // 新增視窗裡的重新登入', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
   const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
   const c = vm.createContext({ S: {}, esc: E, render: () => {}, acts: ['owner_method_status', 'owner_method_set'], st: null, fail: null, lang: 'zh-TW', errText: (e) => 'ET:' + (e && e.reason),
-    hasAct: (t) => c.acts.includes(t), askLang: () => c.lang, rgCode: (e) => String((e && e.reason) || ''),
+    hasAct: (t) => c.acts.includes(t), askLang: () => c.lang, rgCode: (e) => String((e && e.reason) || ''), gnew: true, guideNew: () => c.gnew, store: {},
+    localStorage: { getItem: (k) => (Object.prototype.hasOwnProperty.call(c.store, k) ? c.store[k] : null), setItem: (k, v) => { c.store[k] = String(v); } },
     act: async (t, bd) => { sent.push(t + ' ' + JSON.stringify(bd)); if (t === 'owner_method_status') { if (c.stFail) throw c.stFail; return c.st; } if (c.fail) throw c.fail; return { done: true }; } });
-  vm.runInContext(src + '\nthis.F = { omLoad, omHtml, omSet, setBtn, setHtml, OM_L };', c);
+  vm.runInContext(src + '\nthis.F = { omLoad, omHtml, omSet, setBtn, setHtml, OM_L, omCard, omPicked };', c);
   const F = c.F; ok(src.length > 3000, 'reason: om_block_found');
   c.st = { method: 'biometry', can_change: true, why: null }; await F.omLoad(); ok(sent.join('|') === 'owner_method_status {}' && c.S.om.d === c.st, 'reason: om_status_read');
   let h = F.omHtml(); ok(h.includes('目前用指紋。') && h.includes('data-omask="1"') && h.includes('>改用登入密碼</button>') && !h.includes('data-omset'), 'reason: om_bio_offers_password_behind_ask ' + h);
@@ -2568,6 +2569,25 @@ lateChecks.push((async () => {
   c.S.om = null; c.stFail = { reason: 'x' }; await F.omLoad(); ok(c.S.om.d === null && F.omHtml().includes('讀不到目前的方式。'), 'reason: om_status_fail_says_so'); c.stFail = null;
   c.lang = 'en'; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.omHtml().includes('Use login password instead'), 'reason: om_en'); c.lang = 'zh-TW';
   ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OM_L[l]).join() === Object.keys(F.OM_L['zh-TW']).join()), 'reason: om_four_langs_same_keys');
+  // c2f0b eb6c979c71:status why 四個碼 ⇒ 同一句重設出路,不出改鈕
+  for (const w of ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved']) { c.S.om = { d: { method: 'biometry', can_change: true, why: w } }; const hh = F.omHtml(); ok(hh.includes('目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。') && !/data-om(ask|set)/.test(hh), 'reason: om_reset_words ' + w); }
+  c.S.om = { d: { method: 'biometry', can_change: true, why: 'something_else' } }; ok(!F.omHtml().includes('要重設') && F.omHtml().includes('data-omask'), 'reason: om_reset_only_those_codes');
+  // 安裝時的選擇卡:配對後新手期才出;第一次先讀狀態;biometry + can_change 才出;選了就不再出;密碼兩段同設定頁
+  c.S = { guide: {} }; c.store = {}; sent.length = 0; ok(F.omCard() === '' && sent.join('|') === 'owner_method_status {}', 'reason: om_card_loads_status_once ' + sent.join('|'));
+  await new Promise((r) => setTimeout(r, 0)); c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st };
+  h = F.omCard(); ok(h.includes('role="alertdialog"') && h.includes('這台的本人確認要用什麼?') && h.includes('data-ompick="1"') && h.includes('>指紋(建議)</button>') && h.includes('data-omask="1"') && h.includes('>登入密碼(較弱)</button>') && !h.includes('data-omset'), 'reason: om_card_two_choices ' + h);
+  c.S.om.ask = true; h = F.omCard(); ok(h.includes('知道這台電腦登入密碼的人,都能核准 AIB 的動作。') && h.includes('data-omset="password"') && h.includes('data-omno="1"'), 'reason: om_card_password_asks_first'); c.S.om.ask = false;
+  c.gnew = false; ok(F.omCard() === '', 'reason: om_card_only_new_users'); c.gnew = true;
+  c.S.pair = { code: 1 }; ok(F.omCard() === '', 'reason: om_card_not_before_pair'); c.S.pair = null;
+  for (const d of [{ method: 'password', can_change: true }, { method: 'windows_hello', can_change: false }, { method: 'windows_hello', can_change: true }, { method: 'unknown', can_change: true }, { method: 'biometry', can_change: false }, { method: 'biometry', can_change: true, why: 'owner_method_no_pin' }]) { c.S.om = { d }; ok(F.omCard() === '', 'reason: om_card_hidden_for ' + JSON.stringify(d)); }
+  c.acts = ['owner_method_status']; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.omCard() === '', 'reason: om_card_needs_set_act'); c.acts = ['owner_method_status', 'owner_method_set'];
+  c.store = { 'aib.om.pick': '1' }; ok(F.omCard() === '' && F.omPicked(), 'reason: om_card_picked_stays_hidden'); c.store = {}; c.S.omPicked = false;
+  c.S.om = { d: { method: 'biometry', can_change: true }, ask: true }; c.st = { method: 'password', can_change: true }; await F.omSet('password'); ok(c.store['aib.om.pick'] === '1' && F.omCard() === '', 'reason: om_card_marks_picked_on_success');
+  c.store = {}; c.S.omPicked = false; c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st, ask: true }; c.fail = { reason: 'user_cancel' }; await F.omSet('password'); c.fail = null; ok(!c.store['aib.om.pick'] && F.omCard().includes('你按了取消,沒有改。'), 'reason: om_card_stays_after_cancel');
+  ok(ws.includes("if (x.closest('[data-ompick]')) { omMark(); render(); return; }") && ws.includes("return `<div class=\"gbox\">${typeof omCard === 'function' ? omCard() : ''}${out.join('')}</div>`;"), 'reason: om_card_wired');
+  // 遮罩看到 alertdialog 就拆層(卡不會被蓋住)
+  ok(ws.includes("if (doc.querySelector('.pgbg,.anndlg,[role=\"alertdialog\"],[role=\"alert\"]')) return true;"), 'reason: om_card_unblocks_guide_overlay');
+  c.S = {};
   c.acts = []; c.S.om = { d: c.st }; await F.omLoad(); ok(c.S.om === null && F.setBtn() === '' && F.setHtml() === '', 'reason: om_old_aibd_nothing'); c.acts = ['owner_method_status', 'owner_method_set'];
   c.S.setOpen = false; ok(F.setBtn().includes('data-setopen="1"') && F.setHtml() === '', 'reason: om_settings_closed_by_default');
   c.S.setOpen = true; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.setHtml().includes('本人確認方式') && F.setHtml().includes('data-setopen="0"'), 'reason: om_settings_panel');

@@ -36,3 +36,22 @@ k "if (!O || O.busy || !O.d ||" "if (!O || !O.d ||"
 k "    else if (set && m === 'password') body +=" "    else if (set && m === 'password' && O.ask) body +="
 # OM15 讀不到狀態不照實寫
 k "O.d = null; O.bad = true; }" "O.d = null; }"
+# OM16 重設出路碼不照表(只剩一個)
+k "  const OM_RESET = ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved'];" "  const OM_RESET = ['owner_key_not_as_paired'];"
+# OM17 重設時還出改鈕
+k "    if (OM_RESET.includes(d.why)) return" "    if (false) return"
+# OM18 選擇卡不限新手期
+k "if (S.pair || typeof guideNew !== 'function' || !guideNew(S.guide) || hasAct(OM_ST)" "if (S.pair || typeof guideNew !== 'function' || hasAct(OM_ST)"
+# OM19 選擇卡不看 method(密碼 / Windows 也出)
+k "if (!d || d.method !== 'biometry' || d.can_change !== true" "if (!d || d.can_change !== true"
+# OM20 選擇卡選密碼不經說明
+k 'data-ompick="1">${esc(W.pickBio)}</button><button type="button" class="k" data-omask="1">' 'data-ompick="1">${esc(W.pickBio)}</button><button type="button" class="k" data-omset="password">'
+# OM21 選了還一直出
+k "|| hasAct(OM_SET) !== true || omPicked()) return '';" "|| hasAct(OM_SET) !== true) return '';"
+# OM22 改成功不記已選
+k "W.donePw : W.doneBio }; omMark(); }" "W.donePw : W.doneBio }; }"
+# OM23 卡不是確認類(指引遮罩會蓋住它)
+k "<div class=\"occ omcard\" role=\"alertdialog\"" "<div class=\"occ omcard\" role=\"group\""
+# OM24 選擇卡沒接進指引
+k 'return `<div class="gbox">${typeof omCard ' 'return `<div class="gbox">${typeof omCardGone '
+
