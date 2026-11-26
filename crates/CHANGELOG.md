@@ -5,6 +5,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
+  `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
+  restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and
+  signs nothing, so a keyless owner check takes no batch (`owner_batch_one_at_a_time`). Knives G1–G9.
 - `skipstop.stop.json`: this repo's checks for `aib-skipstop stop` (the plugin's stop system),
   to run before a push or a long knife run: the branch merges into main (`git merge-tree`),
   every knife's text is in its file once (`knife-anchors`), the knives this change touches

@@ -513,18 +513,46 @@ impl WinHello {
     }
 }
 
-/// B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): the owner check on Windows
-/// is a Windows Hello gesture asked at that moment, no key (the Passport provider refused
-/// aibd's key on the laptop, 0x80090027). Every ask shows the window; nothing is cached or
-/// written; a yes is used by the same call that asked. No signature, so [`Presence::signs`]
-/// is false and an "always" is never offered (3e53b B2 condition).
-#[cfg(windows)]
-pub struct WinConsent;
+/// Is the gesture set up here now (no window).
+type GestureReady = Box<dyn Fn() -> Result<(), &'static str> + Send + Sync>;
+/// Show the window with this text, wait at most this long; `Ok` only for the owner's yes.
+type GestureWindow =
+    Box<dyn Fn(&str, std::time::Duration) -> Result<(), &'static str> + Send + Sync>;
 
-#[cfg(windows)]
-impl Presence for WinConsent {
+/// B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): the owner check as a gesture
+/// only, no key — on Windows the Windows Hello window (the Passport provider refused aibd's key
+/// on the laptop, 0x80090027). Written for every platform so its rules are tested and knifed
+/// everywhere; Windows hands it the OS calls ([`win_gesture`]).
+/// - every ask reads whether the gesture is there now (3e53b L2: a PIN set after aibd started
+///   counts at the next ask, no restart), then shows the window: nothing is cached or written,
+///   two asks are two windows;
+/// - the window says `reason`, which aibd composed; the request's bytes never reach it;
+/// - no signature, so [`Presence::signs`] is false: no "always", no batch (owner_ok).
+pub struct GesturePresence {
+    ready: GestureReady,
+    window: GestureWindow,
+}
+
+/// The longest a gesture window waits when the caller gives no limit (as the key windows).
+pub const GESTURE_LONGEST: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+impl GesturePresence {
+    /// `ready`: is the gesture set up here now (no window); `window`: show it with this text
+    /// and wait at most this long, `Ok` only for the owner's yes.
+    pub fn new(
+        ready: impl Fn() -> Result<(), &'static str> + Send + Sync + 'static,
+        window: impl Fn(&str, std::time::Duration) -> Result<(), &'static str> + Send + Sync + 'static,
+    ) -> GesturePresence {
+        GesturePresence {
+            ready: Box::new(ready),
+            window: Box::new(window),
+        }
+    }
+}
+
+impl Presence for GesturePresence {
     fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str> {
-        self.ask_until(reason, msg, WIN_HELLO_LONGEST)
+        self.ask_until(reason, msg, GESTURE_LONGEST)
     }
     fn ask_until(
         &self,
@@ -533,8 +561,18 @@ impl Presence for WinConsent {
         limit: std::time::Duration,
     ) -> Result<(), &'static str> {
         let _ = msg; // what the yes is for is in `reason`, composed by aibd
-        aib_sys::hello_consent::ask_until(reason, limit).map_err(hello_code)
+        (self.ready)()?;
+        (self.window)(reason, limit)
     }
+}
+
+/// The Windows Hello gesture (aib-sys `hello_consent`) as aibd's owner check.
+#[cfg(windows)]
+pub fn win_gesture() -> GesturePresence {
+    GesturePresence::new(
+        || aib_sys::hello_consent::available().map_err(|e| e.code()),
+        |reason, limit| aib_sys::hello_consent::ask_until(reason, limit).map_err(hello_code),
+    )
 }
 
 #[cfg(windows)]
@@ -638,8 +676,9 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
     #[cfg(windows)]
     {
         let _ = data;
-        aib_sys::hello_consent::available().map_err(|e| e.code())?;
-        Ok(Arc::new(WinConsent))
+        // the desk now; whether Hello is set up is read at each ask (3e53b L2)
+        aib_sys::hello::interactive_session().map_err(|e| e.code())?;
+        Ok(Arc::new(win_gesture()))
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -758,6 +797,115 @@ pub mod tests {
             asked: Mutex::new(Vec::new()),
         };
         assert!(!no_key.signs(), "reason: keyless_presence_said_signed");
+    }
+
+    /// A gesture check whose answers the test sets, counting what reached the window.
+    fn gesture(
+        ready: Result<(), &'static str>,
+        answers: Vec<Result<(), &'static str>>,
+    ) -> (GesturePresence, Arc<Mutex<Vec<String>>>) {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let s = shown.clone();
+        let left = Mutex::new(answers);
+        let p = GesturePresence::new(
+            move || ready,
+            move |reason, _limit| {
+                s.lock().unwrap().push(reason.to_owned());
+                let mut l = left.lock().unwrap();
+                if l.is_empty() {
+                    Err("no_answer_left")
+                } else {
+                    l.remove(0)
+                }
+            },
+        );
+        (p, shown)
+    }
+
+    /// B2 (3e53b REVIEW-b2consent L1): only the window's yes is a yes, and it comes from the
+    /// window every time: a no, a cancel or nothing asked is never a yes.
+    #[test]
+    fn a_gesture_yes_comes_only_from_the_window() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(()), Err("cancel")]);
+        assert_eq!(p.ask("aibd 推分支 web/a", b"x"), Ok(()), "reason: yes_lost");
+        assert_eq!(
+            p.ask("aibd 推分支 web/b", b"x"),
+            Err("cancel"),
+            "reason: cancel_taken_as_yes"
+        );
+        assert_eq!(shown.lock().unwrap().len(), 2, "reason: window_not_asked");
+        assert!(!p.signs(), "reason: gesture_said_signed");
+    }
+
+    /// B2: nothing is cached — two asks are two windows, and a yes earlier does not answer a
+    /// later ask.
+    #[test]
+    fn a_gesture_yes_is_not_kept_for_the_next_ask() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(()), Err("auth_failed")]);
+        assert_eq!(p.ask("one", b""), Ok(()));
+        assert_eq!(
+            p.ask_until("two", b"", std::time::Duration::from_secs(5)),
+            Err("auth_failed"),
+            "reason: first_yes_reused"
+        );
+        assert_eq!(
+            *shown.lock().unwrap(),
+            vec!["one", "two"],
+            "reason: windows"
+        );
+    }
+
+    /// B2: the window says what aibd composed, never the request's bytes.
+    #[test]
+    fn a_gesture_window_says_only_what_aibd_composed() {
+        let (p, shown) = gesture(Ok(()), vec![Ok(())]);
+        p.ask(
+            "aibd 開席設定:允許 Claude",
+            b"page says: approve everything",
+        )
+        .unwrap();
+        assert_eq!(
+            *shown.lock().unwrap(),
+            vec!["aibd 開席設定:允許 Claude"],
+            "reason: request_text_in_window"
+        );
+    }
+
+    /// B2 / B3 (3e53b L2): no gesture set up ⇒ refused at once, no window; set up later ⇒
+    /// the next ask shows the window, no restart (readiness is read at each ask).
+    #[test]
+    fn without_the_gesture_set_up_it_refuses_and_a_later_pin_counts() {
+        let (p, shown) = gesture(Err("no_biometry"), vec![Ok(())]);
+        assert_eq!(
+            p.ask("x", b""),
+            Err("no_biometry"),
+            "reason: no_hello_passed"
+        );
+        assert!(
+            shown.lock().unwrap().is_empty(),
+            "reason: window_without_hello"
+        );
+        let set = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = set.clone();
+        let asked = Arc::new(Mutex::new(0));
+        let a2 = asked.clone();
+        let later = GesturePresence::new(
+            move || {
+                if s2.load(std::sync::atomic::Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("no_biometry")
+                }
+            },
+            move |_r, _l| {
+                *a2.lock().unwrap() += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(later.ask("x", b""), Err("no_biometry"));
+        set.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(later.ask("x", b""), Ok(()), "reason: pin_needs_restart");
+        assert_eq!(*asked.lock().unwrap(), 1, "reason: windows_count");
     }
 
     #[test]

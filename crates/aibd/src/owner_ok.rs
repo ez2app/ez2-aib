@@ -26,6 +26,10 @@ pub const RESOURCE_MAX: usize = 80;
 /// The refusal code for a caller when no fingerprint can be asked.
 pub const UNAVAILABLE: &str = "owner_check_unavailable";
 
+/// A batch refused because this owner check has no key (the Windows Hello gesture, B2): one
+/// window answers one thing, so the page asks for each item on its own.
+pub const BATCH_ONE_AT_A_TIME: &str = "owner_batch_one_at_a_time";
+
 /// What the page wants done and the owner approves.
 #[derive(Debug, Clone)]
 pub struct Ask {
@@ -927,6 +931,11 @@ impl Owner {
         let now = (self.clock)();
         if !ticket_ok(&b.ticket) {
             return Asked::Unavailable(UNAVAILABLE);
+        }
+        // B2 (3e53b REVIEW-b2consent L3; Andy 11-26 10:1x 「每做一件高風險的事當下跳一次」): an
+        // owner check with no key (the Windows Hello gesture) answers one thing per window
+        if !self.presence.signs() {
+            return Asked::Unavailable(BATCH_ONE_AT_A_TIME);
         }
         // the same gate as one ask: the whole list counts as one window
         if let Err(w) = self.gate.open() {
@@ -2339,6 +2348,10 @@ mod tests {
                 .push((reason.to_owned(), msg.to_vec()));
             Ok(())
         }
+        // a stand-in for a key-backed check (batches need one: B2 L3)
+        fn signs(&self) -> bool {
+            true
+        }
     }
 
     fn push_ask(branch: &str) -> Ask {
@@ -2350,6 +2363,35 @@ mod tests {
                 .unwrap(),
             by: "page:0123abcd".into(),
         }
+    }
+
+    /// B2 L3 (3e53b REVIEW-b2consent; Andy 「每做一件高風險的事當下跳一次」): an owner check
+    /// with no key never answers a list in one window; nothing is shown, nothing is kept.
+    #[test]
+    fn a_keyless_owner_check_does_not_take_a_batch() {
+        let o = owner(Ok(()));
+        let items = [push_ask("web/a"), push_ask("web/b")];
+        let told = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let t2 = told.clone();
+        let got = o.ask_batch(
+            BatchAsk {
+                ticket: "ot_batch_keyless".into(),
+                batch_sha: crate::owner_batch::batch_sha(&items),
+                lines: crate::owner_batch::window_lines(&items),
+                by: "page:0123abcd".into(),
+                answered: Box::new(move |t, yes| *t2.lock().unwrap() = Some((t, yes))),
+            },
+            inline,
+        );
+        assert!(
+            matches!(got, Asked::Unavailable(w) if w == BATCH_ONE_AT_A_TIME),
+            "reason: keyless_batch_taken"
+        );
+        assert!(told.lock().unwrap().is_none(), "reason: keyless_batch_told");
+        assert!(
+            o.state("ot_batch_keyless", "page:0123abcd") == State::Expired,
+            "reason: keyless_batch_kept"
+        );
     }
 
     /// r4 §2c §2d: one window lists every line and the key signs the list's hash; the list is
