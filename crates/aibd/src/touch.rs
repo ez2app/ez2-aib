@@ -670,6 +670,96 @@ pub fn make_pair_key(
     Ok(())
 }
 
+/// What [`ensure_pair_key`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairKeyMade {
+    /// A key was there and passed the start-up [`check`].
+    Checked,
+    /// No key was there; this one was made, of this kind.
+    Made(crate::owner_probe::KeyKind),
+}
+
+/// What to do when no pairing key can be made now (S10-2b-1 §4a), for a person.
+pub fn pair_key_not_now_words(why: &str) -> &'static str {
+    match why {
+        "owner_check_finger_not_now" => {
+            "Touch ID is there but not usable now: open the lid or connect the Touch ID \
+             keyboard, then run this again"
+        }
+        "owner_check_finger_not_enrolled" => {
+            "this Mac has Touch ID but no fingerprint: add one in System Settings first"
+        }
+        _ => "this Mac has no owner check (no Touch ID and no login password)",
+    }
+}
+
+/// `aibd install`'s pairing key (ebab8 11-26 第四包; 3e53b PLAN-mac-firstrun r1 a–d), written
+/// for every platform so it is tested everywhere:
+/// - a key already in `dir` is never replaced, and never taken on trust either: it must pass
+///   the same start-up [`check`] aibd makes (the device reports the stored public key, the key
+///   asks for the owner), or this fails and the person is told why (b);
+/// - no key: its kind is what the owner check reads now (`kind`, [`crate::owner_probe::key_kind`]);
+///   Touch ID there but not usable now, or no fingerprint, makes nothing and never falls back
+///   to a login-password key (a, d);
+/// - then [`make_pair_key`]: written new, checked, nothing kept on failure.
+///
+/// Nothing from the key goes into what this returns (c).
+pub fn ensure_pair_key(
+    dir: &Path,
+    kind: impl FnOnce() -> Result<crate::owner_probe::KeyKind, &'static str>,
+    create: impl FnOnce(crate::owner_probe::KeyKind) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), String>,
+    dev: &dyn KeyDevice,
+) -> Result<PairKeyMade, String> {
+    // a link counts as there (exists() would follow a dangling one and say no)
+    let there = |n: &str| std::fs::symlink_metadata(dir.join(n)).is_ok();
+    if there("key.blob") || there("key.pub") {
+        let k = load(dir).map_err(|why| key_there_failed(dir, why))?;
+        check(dev, &k).map_err(|why| key_there_failed(dir, why))?;
+        return Ok(PairKeyMade::Checked);
+    }
+    let k = kind().map_err(|why| format!("{why}: {}", pair_key_not_now_words(why)))?;
+    {
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    make_pair_key(dir, || create(k), dev, |_| {})?;
+    Ok(PairKeyMade::Made(k))
+}
+
+fn key_there_failed(dir: &Path, why: &str) -> String {
+    format!(
+        "{why}: the pairing key in {} did not pass aibd's start-up check; remove that folder \
+         yourself and run aibd install again to make a new one",
+        dir.display()
+    )
+}
+
+/// [`ensure_pair_key`] on this Mac: the Secure Enclave, the owner check read now.
+#[cfg(target_os = "macos")]
+pub fn ensure_pair_key_here(data: &Path) -> Result<PairKeyMade, String> {
+    use crate::owner_probe::{class_of, key_kind, KeyKind, Mac};
+    use aib_sys::presence_macos::{create, Acl};
+    ensure_pair_key(
+        &key_dir(data),
+        || key_kind(class_of(&Mac::read())),
+        |k| {
+            let acl = match k {
+                KeyKind::Finger => Acl::BiometryCurrentSet,
+                KeyKind::LoginPassword => Acl::UserPresence,
+            };
+            create(acl).map_err(|e| format!("could not make the key: {}", e.code()))
+        },
+        &MacSe,
+    )
+}
+
 /// Windows (3e53b READ-winhello-wiring W5): the desktop-session gate comes before anything is
 /// read, so aibd outside the signed-in user's console session (session 0, ssh, another
 /// session) refuses at once — no key read, no Hello window it could never show. Then the
@@ -1120,6 +1210,100 @@ pub mod tests {
             again.unwrap_err().contains("already"),
             "reason: no_overwrite"
         );
+    }
+
+    /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 a–d: `aibd install` makes the pairing key
+    /// of the kind the owner check reads now; Touch ID not usable now or no fingerprint makes
+    /// nothing (never a password key instead); a key already there is never replaced and must
+    /// pass the start-up check (a weak or swapped one fails, files untouched).
+    #[test]
+    fn install_makes_the_pairing_key_or_checks_the_one_there() {
+        use crate::owner_probe::KeyKind;
+        let made = |_: KeyKind| Ok((vec![1, 2, 3], [4; PUBLIC_KEY_LEN]));
+        // no key, Touch ID works: a fingerprint key
+        let d = tempfile::tempdir().unwrap();
+        let dir = key_dir(d.path());
+        let asked = Mutex::new(Vec::new());
+        let got = ensure_pair_key(
+            &dir,
+            || Ok(KeyKind::Finger),
+            |k| {
+                asked.lock().unwrap().push(k);
+                made(k)
+            },
+            &dev(true, true, true),
+        );
+        assert_eq!(got, Ok(PairKeyMade::Made(KeyKind::Finger)));
+        assert_eq!(asked.lock().unwrap().as_slice(), &[KeyKind::Finger]);
+        assert!(load(&dir).is_ok(), "reason: not_kept");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "reason: key_folder_open_to_others");
+        }
+        // run again: the key there is checked, not made again
+        let again = ensure_pair_key(
+            &dir,
+            || panic!("a key there is not made again"),
+            |_| panic!("a key there is not made again"),
+            &dev(true, true, true),
+        );
+        assert_eq!(again, Ok(PairKeyMade::Checked));
+        // a key there that signs without the owner: refused, left as it is
+        let weak = ensure_pair_key(&dir, || Ok(KeyKind::Finger), made, &dev(false, true, true));
+        assert!(
+            weak.as_ref().is_err_and(|e| e.starts_with("pair_key_weak")),
+            "reason: weak_key_there_taken {weak:?}"
+        );
+        assert_eq!(std::fs::read(dir.join("key.blob")).unwrap(), vec![1, 2, 3]);
+        // a key there whose public half is not the stored one: refused
+        let mut other = dev(true, true, true);
+        other.public = [5; PUBLIC_KEY_LEN];
+        let swapped = ensure_pair_key(&dir, || Ok(KeyKind::Finger), made, &other);
+        assert!(
+            swapped
+                .as_ref()
+                .is_err_and(|e| e.starts_with("pair_key_mismatch")),
+            "reason: swapped_key_there_taken {swapped:?}"
+        );
+        // only half a key there: refused, never made over
+        std::fs::remove_file(dir.join("key.pub")).unwrap();
+        let half = ensure_pair_key(
+            &dir,
+            || Ok(KeyKind::Finger),
+            |_| panic!("never made over a half key"),
+            &dev(true, true, true),
+        );
+        assert!(half.is_err(), "reason: half_key_taken");
+        // no key, Touch ID not usable now / no fingerprint: nothing made, no password key
+        for why in [
+            "owner_check_finger_not_now",
+            "owner_check_finger_not_enrolled",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let dir = key_dir(d.path());
+            let got = ensure_pair_key(
+                &dir,
+                || Err(why),
+                |_| panic!("nothing is made when Touch ID cannot be used now"),
+                &dev(true, true, true),
+            );
+            assert!(
+                got.as_ref().is_err_and(|e| e.starts_with(why)),
+                "reason: made_without_touch_id {got:?}"
+            );
+            assert!(!dir.join("key.blob").exists(), "reason: left_a_file");
+        }
+        // no biometry at all: the login-password key
+        let d = tempfile::tempdir().unwrap();
+        let got = ensure_pair_key(
+            &key_dir(d.path()),
+            || Ok(KeyKind::LoginPassword),
+            made,
+            &dev(true, true, true),
+        );
+        assert_eq!(got, Ok(PairKeyMade::Made(KeyKind::LoginPassword)));
     }
 
     /// N-webonly-c45: the limit reaches the device, a window nobody answered reads as
