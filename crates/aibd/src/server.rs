@@ -45,6 +45,26 @@ pub const LOCK_WAIT: std::time::Duration = std::time::Duration::ZERO;
 
 /// Take the single-instance lock, retrying for up to [`LOCK_WAIT`] on the registered
 /// `startup.lock_wait` timer (ADR 0005: no ad-hoc sleeps), off the async runtime.
+/// An event journal writing to `store`, each event its own aggregate of `aggregate` (one
+/// sequence, an `ev_` id).
+fn journal_to(store: Arc<Store>, aggregate: &'static str) -> crate::pairing::Journal {
+    Arc::new(move |kind, payload| {
+        let Ok(id) = crate::sessions::new_id("ev_") else {
+            return;
+        };
+        let _ = store.append(vec![aib_store::NewEvent {
+            event_id: id.clone(),
+            aggregate_type: aggregate.into(),
+            aggregate_id: id,
+            sequence: 1,
+            event_type: kind.into(),
+            correlation_id: None,
+            occurred_at: crate::sessions::now_rfc3339(),
+            payload,
+        }]);
+    })
+}
+
 async fn instance_lock_waiting(p: &std::path::Path) -> Result<std::fs::File, StartError> {
     if let Some(l) = platform::instance_lock(p)? {
         return Ok(l);
@@ -274,25 +294,11 @@ pub async fn run(
             Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
         }
     }
-    // SPEC §19d: each pairing step's outcome in the event journal (the tab may close)
-    {
-        let st = store.clone();
-        pairing.set_journal(Arc::new(move |kind, payload| {
-            let Ok(id) = crate::sessions::new_id("ev_") else {
-                return;
-            };
-            let _ = st.append(vec![aib_store::NewEvent {
-                event_id: id.clone(),
-                aggregate_type: "pairing".into(),
-                aggregate_id: id,
-                sequence: 1,
-                event_type: kind.into(),
-                correlation_id: None,
-                occurred_at: crate::sessions::now_rfc3339(),
-                payload,
-            }]);
-        }));
-    }
+    // SPEC §19d: each pairing step's outcome in the event journal (the tab may close); the
+    // owner check's answers and the acts done with its tickets too (3e53b
+    // READ-spinit-owner-audit-3e53b-1126: who approved what, when, what Windows answered)
+    pairing.set_journal(journal_to(store.clone(), "pairing"));
+    crate::owner_ok::set_journal(journal_to(store.clone(), "owner"));
     // S89-pair-carry: this build's own digest, for telling an update from a restart at stop
     let exe = tokio::task::spawn_blocking(crate::pair_carry::exe)
         .await

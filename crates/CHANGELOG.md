@@ -5,6 +5,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126; the laptop's session policy was approved and written with
+  nothing in the event journal): every answer to an owner window is journaled as `owner.answer` {ticket, operation,
+  resource (first 80 chars, never the params), outcome approved / refused:<code> / expired, secs, by}, and an act that
+  answered success with an approved, used-up ticket as `act.done` {act, operation, ticket} (`POST /api/v1/act` now
+  routes through `seat_input::act_journaled`). Knives OA1–OA8 (`crates/aibd/knives/knives-owner-audit-c2f0b.sh`).
 - Pairing window words (3e53b TRIAGE-nohello-confirmed-3e53b-1126 r5; on the laptop the customer typed the PIN
   into two Hello windows a remote script had raised): the first line asks 「你剛在 AIB 頁面按了配對嗎?沒有就按取消」,
   the second asks to compare the code with your page (「不一樣就按取消」), then what a yes does and for whom, then the

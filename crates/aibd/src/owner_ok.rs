@@ -784,6 +784,28 @@ pub struct Owner {
     slots: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
     gate: std::sync::Arc<dyn WindowGate>,
     clock: fn() -> u64,
+    /// aibd's event journal (3e53b READ-spinit-owner-audit-3e53b-1126): each answer
+    /// ([`OWNER_ANSWER`]) and each act done with a used ticket ([`ACT_DONE`]).
+    journal: std::sync::OnceLock<crate::pairing::Journal>,
+}
+
+/// Event kind: the owner answered a ticket's window (approved / refused:<code> / expired).
+pub const OWNER_ANSWER: &str = "owner.answer";
+/// Event kind: an act that used up an approved ticket answered success.
+pub const ACT_DONE: &str = "act.done";
+/// How much of a ticket's resource words go in the journal (shown on the window anyway; the
+/// params, such as a file's text, never do).
+pub const RESOURCE_CHARS: usize = 80;
+
+/// An answer's outcome word for the journal.
+fn outcome_word(state: &State) -> String {
+    match state {
+        State::Approved { .. } => "approved".to_owned(),
+        State::Refused(e) => format!("refused:{e}"),
+        State::Expired => "expired".to_owned(),
+        State::Pending => "pending".to_owned(),
+        State::Unavailable(w) => format!("unavailable:{w}"),
+    }
 }
 
 impl Owner {
@@ -798,7 +820,35 @@ impl Owner {
             slots: std::sync::Mutex::default(),
             gate,
             clock,
+            journal: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Where answers and done acts are written (the first call wins).
+    pub fn set_journal(&self, j: crate::pairing::Journal) {
+        let _ = self.journal.set(j);
+    }
+
+    fn journal(&self, kind: &'static str, payload: serde_json::Value) {
+        if let Some(j) = self.journal.get() {
+            j(kind, payload);
+        }
+    }
+
+    /// An act answered success with `ticket`: journaled only when that ticket was approved and
+    /// used up here, so a request naming any ticket writes nothing.
+    pub fn act_done(&self, act: &str, ticket: &str) {
+        let op = {
+            let s = self.slots();
+            match s.get(ticket) {
+                Some(v) if v.rec.used && v.rec.approved => v.rec.operation.clone(),
+                _ => return,
+            }
+        };
+        self.journal(
+            ACT_DONE,
+            serde_json::json!({"act": act, "operation": op, "ticket": ticket}),
+        );
     }
 
     /// The words every window of this owner starts with ([`mark_for`]).
@@ -914,8 +964,18 @@ impl Owner {
             Err(crate::touch::TIMEOUT) => State::Expired,
             Err(e) => State::Refused(e.to_owned()),
         };
+        let asked_at = slot.rec.expires_at.saturating_sub(TICKET_SECS);
+        let said = serde_json::json!({
+            "ticket": ticket,
+            "operation": slot.rec.operation,
+            "resource": slot.rec.resource.chars().take(RESOURCE_CHARS).collect::<String>(),
+            "outcome": outcome_word(&slot.state),
+            "secs": now.saturating_sub(asked_at),
+            "by": slot.by,
+        });
         let (told, yes) = (slot.on_answer.take(), slot.rec.approved);
         drop(s);
+        self.journal(OWNER_ANSWER, said);
         if let Some(f) = told {
             f(ticket.to_owned(), yes);
         }
@@ -1158,6 +1218,20 @@ pub async fn ticket_state(
 /// for this very act; a yes is used up. Without the switch nothing is approved.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
     OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
+}
+
+/// The owner check's answers and done acts go to aibd's event journal (server start).
+pub fn set_journal(j: crate::pairing::Journal) {
+    if let Some(o) = OWNER.get() {
+        o.set_journal(j);
+    }
+}
+
+/// [`Owner::act_done`] of this aibd's owner (none without the switch).
+pub fn act_done(act: &str, ticket: &str) {
+    if let Some(o) = OWNER.get() {
+        o.act_done(act, ticket);
+    }
 }
 
 #[doc(hidden)]
@@ -1845,6 +1919,81 @@ mod tests {
             Asked::Ticket(t) => t,
             other => panic!("reason: no_ticket {other:?}"),
         }
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, serde_json::Value)>>>;
+    fn journaled(o: &Owner) -> Seen {
+        let seen: Seen = std::sync::Arc::default();
+        let s2 = seen.clone();
+        o.set_journal(std::sync::Arc::new(move |k, v| {
+            s2.lock().unwrap().push((k, v))
+        }));
+        seen
+    }
+
+    /// 3e53b READ-spinit-owner-audit-3e53b-1126: each answer goes to the journal (what, who,
+    /// how it ended, how long it took, never the params), and an act done with a used ticket
+    /// too; a ticket never approved or not used writes no act.done.
+    #[test]
+    fn every_answer_and_every_act_done_with_a_ticket_is_journaled() {
+        let _clock = clock();
+        let o = owner(Ok(()));
+        let seen = journaled(&o);
+        let x = reg();
+        let t = ticket(o.ask(&x, |f| {
+            at(1007);
+            inline(f)
+        }));
+        o.act_done("repo_register", &t);
+        assert_eq!(seen.lock().unwrap().len(), 1, "reason: act_done_before_use");
+        assert!(o.approved_for(&t, &x));
+        o.act_done("repo_register", &t);
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "reason: answer_and_done {got:?}");
+        assert_eq!(got[0].0, OWNER_ANSWER);
+        let a = &got[0].1;
+        assert_eq!(a["ticket"], t.as_str());
+        assert_eq!(a["operation"], x.operation);
+        assert_eq!(a["resource"], x.resource.as_str());
+        assert_eq!(a["outcome"], "approved", "reason: outcome");
+        assert_eq!(a["secs"], 7, "reason: secs");
+        assert_eq!(a["by"], x.by.as_str());
+        let keys: Vec<&str> = a.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["by", "operation", "outcome", "resource", "secs", "ticket"],
+            "reason: params_in_journal {a}"
+        );
+        assert_eq!(got[1].0, ACT_DONE);
+        assert_eq!(
+            got[1].1,
+            serde_json::json!({"act": "repo_register", "operation": x.operation, "ticket": t})
+        );
+        // a no: the window's word, and no act.done for it
+        at(1000);
+        let o = owner(Err("user_cancel"));
+        let seen = journaled(&o);
+        let t = ticket(o.ask(&x, inline));
+        assert!(!o.approved_for(&t, &x));
+        o.act_done("repo_register", &t);
+        o.act_done("repo_register", "ot_not_mine");
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "reason: no_done_for_a_no {got:?}");
+        assert_eq!(got[0].1["outcome"], "refused:user_cancel");
+        // the resource words are cut, the params never written
+        let mut long = reg();
+        long.resource = "字".repeat(RESOURCE_CHARS + 5);
+        at(1000);
+        let o = owner(Err(crate::touch::TIMEOUT));
+        let seen = journaled(&o);
+        ticket(o.ask(&long, inline));
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got[0].1["outcome"], "expired");
+        assert_eq!(
+            got[0].1["resource"].as_str().unwrap().chars().count(),
+            RESOURCE_CHARS,
+            "reason: resource_cut"
+        );
     }
 
     #[test]

@@ -121,7 +121,7 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         THERMAL => get(thermal),
         SEATS => get(seats::list).post(seats::create).fallback(nope),
         SEATS_OPEN => post(seats::open).fallback(nope),
-        ACT => post(crate::seat_input::act).fallback(nope),
+        ACT => post(crate::seat_input::act_journaled).fallback(nope),
         CONTACTS => get(crate::contacts_api::list).fallback(nope),
         FLOWS => get(crate::contacts_api::flows).fallback(nope),
         VERSION => get(crate::workspace::version).fallback(nope),
