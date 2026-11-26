@@ -441,7 +441,16 @@ pub fn mend_dirs(data: &Path) {
                 && is_dir(p)
         })
         .collect();
-    olds.sort();
+    // by the number after the prefix, not its spelling (3e53b r2 N1: a 10-digit second sorts
+    // after a 20-digit nanosecond as text)
+    let num = |p: &PathBuf| -> u128 {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(OLD_PREFIX))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
+    };
+    olds.sort_by_key(num);
     if let Some(back) = olds.pop() {
         let _ = std::fs::rename(&back, &key);
         tracing::warn!("owner check: a change of method was cut short; the old key is back");
@@ -1219,7 +1228,8 @@ mod tests {
     fn a_change_cut_short_puts_the_old_key_back_and_never_takes_the_new_one() {
         let t = tempfile::tempdir().unwrap();
         let d = t.path();
-        put_key(&d.join(format!("{OLD_PREFIX}40")), 1);
+        put_key(&d.join(format!("{OLD_PREFIX}40")), 9);
+        put_key(&d.join(format!("{OLD_PREFIX}{:020}", 41)), 1);
         put_key(&d.join(NEW_DIR), 2);
         mend_dirs(d);
         assert_eq!(
