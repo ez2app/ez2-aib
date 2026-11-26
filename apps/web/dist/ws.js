@@ -3998,6 +3998,10 @@
       return { id: p ? p.id : k, key: k, name, b, nl: !!(p && !p.open && p.reason === 'not_logged_in'), open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why, models: ms, msrc: p && typeof p.models_source === 'string' ? p.models_source : '', mat: p && typeof p.models_fetched_at === 'string' ? p.models_fetched_at : '' };
     });
   }
+  // ebab8 12:14 / 08de5:沒有人格卡檔的機器,aibd 回一張寫死的內建人格(uid aib000、builtin: true);頁面照語言顯示名字、標「內建」、只有它一張時自動選好
+  const PERSONA_BUILTIN = { 'zh-TW': ['AIB 夥伴', '內建'], en: ['AIB Partner', 'Built-in'], ja: ['AIB パートナー', '内蔵'], ko: ['AIB 파트너', '기본 제공'] };
+  const pbW = () => PERSONA_BUILTIN[typeof askLang === 'function' ? askLang() : 'zh-TW'] || PERSONA_BUILTIN['zh-TW'];
+  const personaBuiltin = (u) => !!(S.personaBuiltin && S.personaBuiltin.includes(u));
   function personas() {
     if (S.personaList && S.personaList.length) return S.personaList;
     const m = new Map();
@@ -4049,7 +4053,7 @@
   }
   function personaRows(A) {
     const L = personaList(A.pq);
-    return L.length ? L.map(([u, nm]) => rgWrap('persona', u, `<button type="button" class="apr ${A.persona === u ? 'on' : ''}" data-addpu="${esc(u)}"><b>${esc(nm)}</b><i>${esc(u.slice(-6))}</i></button>`)).join('') : '<div class="apn">找不到</div>'; // S4:旁邊 ✎ / 🗑
+    return L.length ? L.map(([u, nm]) => rgWrap('persona', u, `<button type="button" class="apr ${A.persona === u ? 'on' : ''}" data-addpu="${esc(u)}"><b>${esc(nm)}</b><i>${esc(personaBuiltin(u) ? pbW()[1] : u.slice(-6))}</i></button>`, personaBuiltin(u))).join('') : '<div class="apn">找不到</div>'; // S4:旁邊 ✎ / 🗑
   }
   // ---------- §22b(Andy 04:5x):角色膠囊、第二大腦、三樣都能新增(b4297 IFACE-open-bind r0;界線 5d33a CHECK-ws-open-bind)----------
   // 內建六角色 uid 照舊英文字;aibd 有 GET roles 就照它(用戶新增的排後面),沒有退回內建表
@@ -4069,7 +4073,7 @@
     if (!(S.reg && S.reg.brainsLive)) {
       // 還沒有登記好的第二大腦:列 aibd 找到的資料夾,只能看;登記(brain_add)要在這台按指紋
       const k = String(A.bq || '').trim().toLowerCase(), CS = ((S.reg && S.reg.cands) || []).filter((c) => !k || c.name.toLowerCase().includes(k)).slice(0, 8);
-      return none + (CS.length ? `<div class="apn">下面是這台找到的資料夾,還沒登記成第二大腦;登記要在這台按指紋,這台還不能按。先不綁也能開席。</div>` + CS.map((c) => `<div class="apr off" title="還沒登記"><b>${esc(c.name)}</b><i>${c.notes != null ? esc(c.notes) + ' 篇' : ''}</i></div>`).join('') : `<div class="apn">${S.reg && (S.reg.brainRoot === 'unset' || S.reg.brainRoot === 'unusable') ? esc(brainRootWhy(S.reg.brainRoot)) + ';' : '這台還沒有登記好的第二大腦;'}先不綁也能開席。</div>`);
+      return none + (CS.length ? `<div class="apn">下面是這台找到的資料夾,還沒登記成第二大腦;這一版還不能從頁面登記成第二大腦;先不綁也能開席。</div>` + CS.map((c) => `<div class="apr off" title="還沒登記"><b>${esc(c.name)}</b><i>${c.notes != null ? esc(c.notes) + ' 篇' : ''}</i></div>`).join('') : `<div class="apn">${S.reg && (S.reg.brainRoot === 'unset' || S.reg.brainRoot === 'unusable') ? esc(brainRootWhy(S.reg.brainRoot)) + ';' : '這台還沒有登記好的第二大腦;'}先不綁也能開席。</div>`);
     }
     return none + (L.length ? L.map((b) => rgWrap('brain', b.uid, `<button type="button" class="apr ${A.brain === b.uid ? 'on' : ''}" data-addbu="${esc(b.uid)}" title="${esc(b.what || '')}"><b>${esc(b.name || b.uid)}</b><i>${b.notes != null ? esc(b.notes) + ' 篇 · ' : ''}${esc(String(b.uid).slice(-6))}</i></button>`)).join('') : (S.reg && S.reg.brains ? '<div class="apn">找不到</div>' : '<div class="apn">讀取中…</div>'));
   }
@@ -4102,10 +4106,15 @@
     if (root === 'unusable') return '第二大腦位置用不了,請檢查設定(要是完整路徑、是資料夾、讀得到裡面的筆記)';
     return '這個位置裡還沒有找到可用的資料夾';
   }
+  // ebab8 12:12 / FINDING-win-seatopen:persona_add / brain_add 後端沒接本人確認(每個平台都回 owner_check_unavailable、不跳窗)
+  // ⇒ 鈕留著(灰)、旁邊照實寫「這一版還不能從頁面新增」,不提指紋(ebab8 12:14:不藏,免得客戶以為沒這功能)。接上之後把這裡改 true 就回到原本的新增鈕
+  const REG_ADD_OPEN = { persona: false, brain: false, role: true };
+  const regNotYet = (kind) => '這一版還不能從頁面新增' + REG_KIND[kind][0];
   function regForm(kind) {
     const A = S.add, F = A.newf;
+    if (!REG_ADD_OPEN[kind]) return `<button type="button" class="anew" disabled aria-disabled="true" title="${esc(regNotYet(kind))}">+ 新增${REG_KIND[kind][0]}</button><div class="apn">${esc(regNotYet(kind))}</div>`;
     if (!F || F.kind !== kind) return `<button type="button" class="anew" data-addnew="${kind}">+ 新增${REG_KIND[kind][0]}</button>`;
-    const fp = kind === 'role' ? '用戶新增的角色不帶任何權限' : '建立要在這台按一次指紋';
+    const fp = kind === 'role' ? '用戶新增的角色不帶任何權限' : (typeof fpSay === 'function' ? fpSay : (t) => t)('建立要在這台按一次指紋');
     // b4297 05:0x:brain_add 收 {candidate_id, name},候選由 aibd 列(GET brains/candidates),頁面不送路徑
     // 7b81e c12(DECISION-brain-root-c12-7b81e-1120 Q2):candidates 帶 root = file | library | unset | unusable,不回路徑;不再寫「示範」
     const C = F.cands, second = kind !== 'brain' ? `<input class="apq" data-addnf="what" value="${esc(F.what || '')}" maxlength="${REG_KIND[kind][3]}" placeholder="一句話:做什麼" aria-label="說明" autocomplete="off">`
@@ -4132,7 +4141,7 @@
       F.busy = false;
       const rs = e && (e.reason || (e.body && e.body.reason));
       F.msg = e && (e.code === 'unknown_act_type' || e.reason === 'unknown_act_type' || e.code === 'not_built') ? '這版 AIB 還不能新增(示意)'
-        : rs === 'owner_check_unavailable' ? '要本人指紋,這台還不能按'
+        : rs === 'owner_check_unavailable' ? (F.kind === 'persona' || F.kind === 'brain' ? regNotYet(F.kind) : (typeof fpSay === 'function' ? fpSay : (t) => t)('要本人指紋,這台還不能按'))
         : gateWhy(e) ? gateWhy(e)
         : e && e.status === 403 ? '只有內建頁、這一輪配對的分頁能新增' : '沒建成:' + errText(e);
     }
@@ -4175,7 +4184,7 @@
   const RG_WHY = { unknown_act_type: '這一版 AIB 還沒有', not_archived: '它已經不在封存區了', archive_io: 'AIB 讀寫封存區失敗,稍後再試', section_hidden_char: '段落裡有看不見的零寬或方向字元(差異區標成 ⟦U+…⟧),刪掉再存', name_not_yet: '這版 AIB 還不能改人格名稱', persona_changed: '這個人格剛被別人改過;已重新讀一次,請再看一下再存', persona_in_use: '有夥伴正在用這個人格,先收掉或換人格', builtin_locked: '內建角色不能改或刪', role_builtin: '內建角色不能改或刪', name_taken: '名稱跟另一個重複', not_found: '找不到這一項(可能別的分頁改過)', page_only: '只有這台內建的頁面能改' };
   const rgOk = (r) => !!r && (r.done === true || (Number(r.__status) >= 200 && Number(r.__status) < 300 && Number(r.__status) !== 202));
   const rgCode = (e) => String((e && ((e.body && e.body.error && e.body.error.code) || e.reason || (e.body && e.body.reason) || e.code)) || '');
-  const rgWhy = (e) => { const c = rgCode(e); return RG_WHY[c] || REPO_WHY[c] || errText(e); };
+  const rgWhy = (e) => { const c = rgCode(e); return (typeof fpSay === 'function' ? fpSay : (t) => t)(RG_WHY[c] || REPO_WHY[c] || errText(e)); };
   // 正在用這個人格的夥伴(沒封存、還在跑或排隊)
   const rgUsers = (uid) => S.seats.filter((x) => x && x.persona_uid === uid && !isArch(x) && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'starting' || se.state === 'pending'))).map((x) => '@' + seatShort(x));
   function rgItem(kind, uid) {
@@ -4346,6 +4355,10 @@
   // 席的 JSON 之後有 trusted_until 就以它為準。這台沒開(trusted_seats_off)或這頁不能做(page_only)⇒ 這頁不再顯示鈕
   // c46:指紋窗可能沒到最前面 ⇒ 每個倒數都提示;c45:票過期後視窗可能還在、還能按 ⇒ 明講這張已過期、請按取消
   const FINGER_BEHIND = '視窗可能在其他視窗後面';
+  // ebab8 12:12(Andy 12:1x 徹查 Windows 開席):Windows 上沒有「指紋」,本人確認是 Windows Hello(PIN);字跟 AIB 那台的平台走,Mac 原字不動
+  const fpWin = () => { const o = String((S.version && (S.version.os || (S.version.capabilities && S.version.capabilities.os))) || (S.thermal && S.thermal.os) || '').toLowerCase(); return o ? /^win/.test(o) : /Win/.test(String((globalThis.navigator && navigator.platform) || '')); };
+  const FP_WIN_SAY = [['不用按指紋', '不用 Windows Hello 確認'], ['按一次指紋', '用 Windows Hello 確認一次'], ['按這台的指紋', '用這台的 Windows Hello 確認'], ['沒按指紋', '沒用 Windows Hello 確認'], ['按指紋', '用 Windows Hello 確認'], ['指紋沒按過', 'Windows Hello 沒確認'], ['指紋沒過', 'Windows Hello 沒通過'], ['指紋視窗', 'Windows Hello 視窗'], ['指紋窗', 'Windows Hello 視窗'], ['看到指紋按過', '看到 Windows Hello 確認過'], ['等指紋', '等 Windows Hello'], ['指紋', 'Windows Hello']];
+  const fpSay = (t) => { if (typeof t !== 'string' || !t.includes('指紋') || !fpWin()) return t; let o = t; for (const [a, b] of FP_WIN_SAY) o = o.split(a).join(b); return o; };
   const FP_SEE = '等你驗證 · 看畫面上那張卡'; // 倒數、對象、取消都在「等你驗證」卡上
   const FINGER_GONE = '這張已過期,視窗若還在請按取消';
   // 第 4 件「在網頁跑測試拿收據」(7ebca 4758a4702b 21:43,蓋過 b4297 IFACE r0):receipt_request / receipt_read / receipt_withdraw。
@@ -4616,7 +4629,7 @@
   const relogWhy = (e) => {
     const rs = typeof e === 'string' ? e : e && (e.reason || (e.body && e.body.reason) || e.code), L = RELOG_WHY_L[typeof askLang === 'function' ? askLang() : ''];
     if (typeof rs === 'string' && L && Object.prototype.hasOwnProperty.call(L, rs)) return L[rs];
-    return (typeof rs === 'string' && Object.prototype.hasOwnProperty.call(RELOG_WHY, rs) ? RELOG_WHY[rs] : '') || (typeof e === 'string' ? e : errText(e));
+    return (typeof fpSay === 'function' ? fpSay : (t) => t)((typeof rs === 'string' && Object.prototype.hasOwnProperty.call(RELOG_WHY, rs) ? RELOG_WHY[rs] : '') || (typeof e === 'string' ? e : errText(e)));
   };
   // 08de5 新登入卡(SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126):大字碼框、按了才複製、頂條寫家別 + 共幾步;
   // Andy 01:04:登入網址已帶碼(url 含 device_code)⇒ 不顯示碼框 / 複製,只留打開登入頁;有效時間 aibd 沒給 ⇒ 照實寫
@@ -4658,7 +4671,7 @@
     if (!RELOG_NAME[pv]) return '';
     const R = S.relog && S.relog.provider === pv ? S.relog : null, N = RELOG_NAME[pv];
     const msg = R && R.msg ? `<span class="${R.bad ? 'bad' : 'trs on'}" role="status">${esc(R.msg)}</span>` : '';
-    if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="按這台的指紋,在瀏覽器重新登入 ${esc(N)}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
+    if (!R || R.done) return `<button type="button" class="k g" data-relogin="${esc(pv)}" title="${esc((typeof fpSay === 'function' ? fpSay : (t) => t)('按這台的指紋,在瀏覽器重新登入 ' + N))}" ${S.relog && !S.relog.done ? 'disabled' : ''}>重新登入 ${esc(N)}</button>${msg}`;
     if (!R.url) return `<span class="trs" data-relogwait>${FP_SEE}</span>${msg}`;
     const link = `<a class="k g" href="${esc(R.url)}" target="_blank" rel="noopener noreferrer">打開 ${esc(N)} 登入頁</a>`;
     if (R.mode === 'device') return relogCard(R, N, msg);
@@ -5300,7 +5313,7 @@
     base_not_in_repo: '這個倉裡沒有那一顆提交(或沒有分支走得到它);檢查提交碼',
     tree_not_opened: '在這個倉開不出這一席自己的一份(分支);看倉是不是在改到一半',
   };
-  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return gateWhy(e) || REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
+  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return (typeof fpSay === 'function' ? fpSay : (t) => t)(gateWhy(e) || REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e))); };
   // 519d0 06:2x 判:做事席也能帶登記的倉(沙盒照舊、一律開自己的一份),7b81e 做;aibd 在 GET version 給 repo_modes 才開給做事席,沒給 = 只有能改程式席
   const repoModes = () => (S.version && Array.isArray(S.version.repo_modes) ? S.version.repo_modes.map(String) : ['dgrs']);
   const curRepo = (A) => { const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')) : []; return A.repo && R.includes(A.repo) && repoModes().includes(A.mode) ? A.repo : ''; };
@@ -5309,9 +5322,9 @@
     const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')).filter(Boolean) : null;
     if (!R) return '';
     const F = A.repoF;
-    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? FP_SEE : 'AIB 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
+    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? FP_SEE : esc((typeof fpSay === 'function' ? fpSay : (t) => t)('AIB 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'))}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? (typeof fpSay === 'function' ? fpSay : (t) => t)('等指紋…') : '讀倉中…') : '登記'}</button></div></div>` : '';
     const cur = A.repo && R.includes(A.repo) ? A.repo : '';
-    return `<div class="asec"><span>在登記過的倉裡做(開自己的分支)</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,${A.mode === 'work' ? '開的時候不用按指紋(做事席照舊在沙盒裡)' : '開之前要按一次指紋'};不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${cur ? `<div class="anf"><input class="apq" data-addf="base" value="${esc(A.base || '')}" maxlength="40" placeholder="從哪一顆開始(選填,40 碼提交;空白 = 倉現在的頭)" aria-label="從哪一顆提交開始" autocomplete="off" spellcheck="false"></div>` : ''}${form}</div>`;
+    return `<div class="asec"><span>在登記過的倉裡做(開自己的分支)</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,${esc((typeof fpSay === 'function' ? fpSay : (t) => t)(A.mode === 'work' ? '開的時候不用按指紋(做事席照舊在沙盒裡)' : '開之前要按一次指紋'))};不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${cur ? `<div class="anf"><input class="apq" data-addf="base" value="${esc(A.base || '')}" maxlength="40" placeholder="從哪一顆開始(選填,40 碼提交;空白 = 倉現在的頭)" aria-label="從哪一顆提交開始" autocomplete="off" spellcheck="false"></div>` : ''}${form}</div>`;
   }
   // S0-6(2e2cd 11-23 01:5x;ebab8 FINDING-reporeg-dash-ebab8-1123:Andy 打出「ez2−aib」(U+2212)被拒,也沒說是哪個字):
   // 名字先正規化 —— 各種橫線換成 -、全形英數符號轉半形、大寫轉小寫;還不合規才報錯,並指出第幾個字
@@ -5425,7 +5438,7 @@
     const x = apSub(key); if (!x) return;
     const p = x.p; A.plan = key; A.cat = x.C.id; A.rowOpen = null; A.noRepoAsk = false; A.pkMiss = '';
     if (p.mode) A.mode = p.mode;
-    if (p.pk) { const k = p.pk.toLowerCase(), hits = personas().filter(([, n]) => String(n).toLowerCase().includes(k)), hit = hits.find(([u]) => personaHasBrain(u)) || hits[0]; A.personaTried = true; A.brainTouched = false; if (hit) { A.persona = hit[0]; brainPreselect(A); } else { A.persona = ''; A.brain = ''; A.pkMiss = p.pk; } }
+    apPkPick(A, p);
     if (p.sens) { A.brain = ''; A.brainTouched = true; }
     if (x.C.id !== 'custom') A.role = p.role || '';
     A.key = idem();
@@ -5433,7 +5446,17 @@
   // 大分類一列幾顆:量上一次畫出來的格子(minmax 130 + 間距 8,示意 drawTop 同算法);還沒畫過照視窗寬 640 算 4 顆
   // 用途分類 15 類的編號(519d0 CATEGORIES-usecase-15,示意 data 同一套)
   const AP_NUM = { research: '06', writing: '02', business: '04', video: '07', design: '07', tech: '05', work: '03', learn: '01·14', life: '08·13', sens: '09–12·15' };
-  function apPkN(p) { if (!p || !p.pk) return ''; const k = String(p.pk).toLowerCase(), n = personas().filter(([, x]) => String(x).toLowerCase().includes(k)).length; return n ? ` · ${n} 個人格` : ' · <span class="apwarn">這台還沒有對應人格</span>'; }
+  // ebab8 / f163c 12:16(客戶截圖「找不到「唐僧」」):方案的 pk 是開發機上的人格名,客戶機沒有 ⇒ 不准把 pk 印出來;找不到就落到內建那張(08de5 aib000)並選好
+  function apPkPick(A, p) {
+    if (!p || !p.pk) return;
+    const k = String(p.pk).toLowerCase(), hits = personas().filter(([, n]) => String(n).toLowerCase().includes(k)), hit = hits.find(([u]) => personaHasBrain(u)) || hits[0];
+    A.personaTried = true; A.brainTouched = false;
+    if (hit) { A.persona = hit[0]; brainPreselect(A); return; }
+    const b = personas().find(([u]) => personaBuiltin(u)); A.brain = '';
+    if (b) { A.persona = b[0]; A.pkMiss = ''; } else { A.persona = ''; A.pkMiss = '1'; }
+  }
+  const apPersonaSum = (A, pn) => pn || (A.pkMiss ? '這台沒有這個方案配的人格,請自己選' : '還沒選');
+  function apPkN(p) { if (!p || !p.pk) return ''; const k = String(p.pk).toLowerCase(), n = personas().filter(([, x]) => String(x).toLowerCase().includes(k)).length; return n ? ` · ${n} 個人格` : personas().some(([u]) => personaBuiltin(u)) ? ` · 用${esc(pbW()[1])}的 ${esc(pbW()[0])}` : ' · <span class="apwarn">這台還沒有對應人格</span>'; }
   function apCols() { const g = typeof document !== 'undefined' && document.querySelector('.adlg.ap .apcats'); return g && g.clientWidth ? Math.max(1, Math.floor((g.clientWidth + 8) / 138)) : 4; }
   // S1b 2(Andy 11-23 03:00「點下去都會跳回最上方」):render 整頁重畫,加夥伴視窗的捲動位置與焦點記下來、畫完還原;剛展開的那一列捲進視野
   function apKeep(root) {
@@ -6113,6 +6136,7 @@
     const PS = personas();
     // 519d0 自測 L1:不再預設清單第一個(跟這件事無關的人格);用上次開席選的,不在清單就不選
     // S0-2:人格清單(GET /api/v1/personas)回來之前不試;先試會拿現有席湊的短清單比,上次用的不在裡面就永遠不再選
+    if (!A.persona && S.personaList && S.personaList.length === 1 && personaBuiltin(S.personaList[0][0])) A.persona = S.personaList[0][0]; // 只有內建那一張:客戶不用選
     if (!A.persona && !A.personaTried && (A.personasIn || (S.personaList && S.personaList.length))) { A.personaTried = true; let last = ''; try { last = localStorage.getItem('ws.lastPersona') || ''; } catch (e) { /* 沒有就不選 */ } if (last && PS.some(([u]) => u === last)) { A.persona = last; brainPreselect(A); } }
     const pn = (PS.find(([u]) => u === A.persona) || [A.persona, A.persona])[1];
     const NO = nodeOpts(); const node = A.node || ''; // S0-3:不默默帶左樹選中的那項,要用戶自己選
@@ -6152,7 +6176,7 @@
       ${apRow(A, 'mode', '模式與權限', (A.tpl && ptOf(A.tpl) ? esc(ptOf(A.tpl).name) + ' <em class="ptex">我的模板 · 底 ' + esc((AP_MODE[A.mode] || AP_MODE.safe)[0]) + '</em> ' : esc((AP_MODE[A.mode] || AP_MODE.safe)[0])) + ` <em class="adang d${A.mode === 'dgrs' ? 4 : A.mode === 'host' ? 3 : A.mode === 'work' ? 2 : 1}">危險程度:${esc((AP_MODE[A.mode] || AP_MODE.safe)[1])}</em>`, `<div class="amds">${mode}</div>${winHost && !(S.version && S.version.capabilities && (S.version.capabilities.net || S.version.capabilities.mode_net)) ? `<div class="apn">${esc(HS_WIN_NET)}</div>` : ''}${ptBlock(A)}${apCmp(A, { work: canW, dgrs: canD && !inPreview(), host: hsCan(pv) && !hsWinWait(), net: pv })}${ptFine(A)}`)}
       ${A.mode === 'host' ? hsRow(A) : hsRowOff(A)}
       ${repoBlk.trim() ? apRow(A, 'repo', '存哪裡', esc(curRepo(A) || (A.withSeat ? '跟 @' + seatShort(seatById(A.withSeat) || { seat_id: A.withSeat }) + ' 同一個資料夾' : '系統新開的資料夾')), repoBlk) : ''}
-      ${apRow(A, 'persona', '人格', esc(pn || (A.pkMiss ? '找不到「' + A.pkMiss + '」,請自己選' : '還沒選')), `${mgBtn(A, 'persona')}${mgPanel(A, 'persona')}${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${rgNote('persona')}${rgArchHtml('persona')}${regForm('persona')}`)}
+      ${apRow(A, 'persona', '人格', esc(apPersonaSum(A, pn)), `${mgBtn(A, 'persona')}${mgPanel(A, 'persona')}${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${rgNote('persona')}${rgArchHtml('persona')}${regForm('persona')}`)}
       ${apRow(A, 'brain', '第二大腦', esc(brN || '不綁'), `${mgBtn(A, 'brain')}${mgPanel(A, 'brain')}<div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${rgNote('brain')}${rgArchHtml('brain')}${regForm('brain')}`)}
       ${apRow(A, 'role', '角色', esc(roN), `${mgBtn(A, 'role')}${mgPanel(A, 'role')}<div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}`)}
       ${apRow(A, 'node', '專注已有專案', esc(nodeT || node || '不指定'), where)}
@@ -6575,7 +6599,7 @@
     // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
     if (c === 'cwd_has_project_settings' || why === 'cwd_has_project_settings') return '這個資料夾(或它上層)有自己的 Claude 專案設定,為了安全不在這裡開席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
     // 0eed7 VERIFY-realentry 基準 M3:人格卡讀不到 ⇒ 503 persona_source_unavailable(預覽沒帶到卡時)
-    if (c === 'persona_source_unavailable' || why === 'persona_source_unavailable') return '這台讀不到人格卡,開不了任何席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
+    if (c === 'persona_source_unavailable' || why === 'persona_source_unavailable') return '這台的人格卡檔讀不到(檔壞了或沒有權限),開不了任何席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
     // b4297 ed8d14cf:403 看 code、400 看 reason
     if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 AIB 不收這些欄位(' + why + ')';
     return c === 'shared_folder_writers_full' ? '這個資料夾已經有兩席在寫,請開在自己的資料夾' : c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 AIB 還不能從頁面開席' : errText(e);
@@ -6800,7 +6824,8 @@
     if (rs === 'pair_touch_limited') { const t = String(b.retry_hms || ''); return '10 分鐘內最多 3 張指紋窗(一小時最多 6 張)' + (/^\d\d:\d\d:\d\d$/.test(t) ? ',' + t + ' 後可以再試' : ',晚點再試'); }
     return rs === 'pair_touch_busy' || rs === 'pair_touch_cooling' ? REPO_WHY[rs] : '';
   }
-  function errText(e) {
+  function errText(e) { return (typeof fpSay === 'function' ? fpSay : (t) => t)(errText0(e)); }
+  function errText0(e) {
     if (!e) return '出錯了';
     if (gateWhy(e)) return gateWhy(e);
     if (e.pageMsg) return e.pageMsg;
@@ -7259,7 +7284,7 @@
       // 0eed7 L:人格清單有介面就用(GET /api/v1/personas,形狀未定:{personas:[{uid, display_name}]} 或陣列);沒有就從現有席收
       const r = await soft(get('/api/v1/personas')).catch(() => null);
       const L = r && (Array.isArray(r.personas) ? r.personas : Array.isArray(r) ? r : null);
-      if (L && S.add) { S.personaList = L.filter((p) => p && p.uid).map((p) => [String(p.uid), String(p.display_name || p.name || p.uid)]); brainPreselect(S.add); }
+      if (L && S.add) { const P = L.filter((p) => p && p.uid); S.personaBuiltin = P.filter((p) => p.builtin === true).map((p) => String(p.uid)); S.personaList = P.map((p) => [String(p.uid), p.builtin === true ? pbW()[0] : String(p.display_name || p.name || p.uid)]); brainPreselect(S.add); }
       S.arch = Object.assign(S.arch || {}, { persona: rgArchOf(r) }); // A1:已封存的人格
       if (S.add) { S.add.personasIn = true; render(); } // 拿到或拿不到都算回來了,這時才預選上次的人格
       return;

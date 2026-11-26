@@ -358,6 +358,47 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!/寫進你自己的記憶夾/.test(ws), 'reason: web_seat_told_to_write_memory_dir');
 }
 
+// ebab8 12:12(Andy 12:1x 徹查 Windows 開席):Windows 上本人確認字寫 Windows Hello、不寫指紋;persona_add / brain_add 沒接 ⇒ 照實「這一版還不能從頁面新增」
+{
+  const a = ws.indexOf('  const fpWin = () =>'), b = ws.indexOf('  const FP_SEE = ');
+  ok(a > 0 && b > a, 'reason: fp_say_slice');
+  const box = { S: { version: { os: 'windows' } }, globalThis: {} }; vm.createContext(box);
+  vm.runInContext(ws.slice(a, b) + '\nthis.fpSay = fpSay;', box);
+  const W = (t) => box.fpSay(t);
+  ok(W('開之前要按一次指紋') === '開之前要用 Windows Hello 確認一次' && W('開的時候不用按指紋(做事席照舊在沙盒裡)') === '開的時候不用 Windows Hello 確認(做事席照舊在沙盒裡)' && W('等指紋…') === '等 Windows Hello…', 'reason: fp_say_windows_words ' + W('開之前要按一次指紋'));
+  ok(W('按這台的指紋,在瀏覽器重新登入 Claude') === '用這台的 Windows Hello 確認,在瀏覽器重新登入 Claude', 'reason: fp_say_relogin ' + W('按這台的指紋,在瀏覽器重新登入 Claude'));
+  // 這條流程用到的錯誤表,Windows 上整張沒有「指紋」
+  for (const name of ['RELOG_WHY', 'REPO_WHY']) {
+    const m = ws.match(new RegExp('  const ' + name + ' = \\{([\\s\\S]*?)\\n  \\};'));
+    const vals = m ? [...m[1].matchAll(/'([^']*指紋[^']*)'/g)].map((x) => x[1]) : [];
+    ok(vals.length >= 2 && vals.every((v) => !W(v).includes('指紋')), 'reason: fp_say_left_finger ' + name + ' ' + vals.map(W).filter((v) => v.includes('指紋')).join(' | '));
+  }
+  box.S.version = { os: 'macos' }; ok(W('開之前要按一次指紋') === '開之前要按一次指紋', 'reason: fp_say_changed_mac');
+  box.S.version = null; box.S.thermal = { os: 'windows' }; ok(W('按指紋') === '用 Windows Hello 確認', 'reason: fp_say_no_thermal_fallback');
+  ok(/function errText\(e\) \{ return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(errText0\(e\)\); \}/.test(ws), 'reason: err_text_not_platform_words');
+  ok(/const rgWhy = \(e\) => \{ const c = rgCode\(e\); return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(RG_WHY\[c\]/.test(ws) && /const repoWhy = \(e\) => \{ const rs = [^\n]*return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(gateWhy\(e\)/.test(ws) && /return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(\(typeof rs === 'string' && Object\.prototype\.hasOwnProperty\.call\(RELOG_WHY, rs\)/.test(ws), 'reason: why_helpers_not_platform_words');
+  const c = ws.indexOf('  const REG_ADD_OPEN = '), d = ws.indexOf('  async function regAdd() {');
+  ok(c > 0 && d > c, 'reason: reg_add_slice');
+  const rb = { S: { add: {} }, REG_KIND: { role: ['角色', 'role_add', 20, 80], persona: ['人格', 'persona_add', 40, 500], brain: ['第二大腦', 'brain_add', 40, 500] }, esc: (x) => String(x) }; vm.createContext(rb);
+  vm.runInContext(ws.slice(c, d) + '\nthis.regForm = regForm;', rb);
+  const hp = rb.regForm('persona'), hb = rb.regForm('brain'), hr = rb.regForm('role');
+  ok(/這一版還不能從頁面新增人格/.test(hp) && !/data-addnew/.test(hp) && /這一版還不能從頁面新增第二大腦/.test(hb) && !/data-addnew/.test(hb) && /data-addnew="role"/.test(hr), 'reason: reg_add_not_yet ' + hp + ' ' + hb);
+  ok(/: rs === 'owner_check_unavailable' \? \(F\.kind === 'persona' \|\| F\.kind === 'brain' \? regNotYet\(F\.kind\)/.test(ws), 'reason: reg_add_refuse_says_finger');
+  ok(!/登記要在這台按指紋,這台還不能按/.test(ws) && /這一版還不能從頁面登記成第二大腦;先不綁也能開席。/.test(ws), 'reason: brain_cands_say_finger');
+  ok(/<button type="button" class="anew" disabled aria-disabled="true"[^>]*>\+ 新增人格<\/button>/.test(hp) && /<button type="button" class="anew" disabled/.test(hb), 'reason: reg_add_button_hidden ' + hp);
+  // 08de5 內建人格(uid aib000、builtin: true):頁面照語言顯示名字、標內建、鎖住不給改刪、只有它一張時自動選好
+  const e = ws.indexOf('  const PERSONA_BUILTIN = '), f = ws.indexOf('  function personas() {');
+  ok(e > 0 && f > e, 'reason: persona_builtin_slice');
+  const pb = { S: { personaBuiltin: ['aib000'] }, navigator: { languages: ['en-US'] } }; vm.createContext(pb);
+  vm.runInContext('const askLang = () => { const l = String(navigator.languages[0]).toLowerCase(); return /^ja/.test(l) ? "ja" : /^en/.test(l) ? "en" : /^ko/.test(l) ? "ko" : "zh-TW"; };\n' + ws.slice(e, f) + '\nthis.pbW = pbW; this.personaBuiltin = personaBuiltin; this.PB = PERSONA_BUILTIN;', pb);
+  ok(pb.pbW()[0] === 'AIB Partner' && pb.pbW()[1] === 'Built-in' && pb.personaBuiltin('aib000') && !pb.personaBuiltin('abc123'), 'reason: persona_builtin_words');
+  ok(['zh-TW', 'en', 'ja', 'ko'].every((l) => pb.PB[l] && pb.PB[l][0] && pb.PB[l][1]) && pb.PB['zh-TW'][0] === 'AIB 夥伴', 'reason: persona_builtin_four_langs');
+  ok(/S\.personaBuiltin = P\.filter\(\(p\) => p\.builtin === true\)\.map\(\(p\) => String\(p\.uid\)\); S\.personaList = P\.map\(\(p\) => \[String\(p\.uid\), p\.builtin === true \? pbW\(\)\[0\]/.test(ws), 'reason: persona_builtin_flag_not_read');
+  ok(/<i>\$\{esc\(personaBuiltin\(u\) \? pbW\(\)\[1\] : u\.slice\(-6\)\)\}<\/i><\/button>`, personaBuiltin\(u\)\)/.test(ws), 'reason: persona_builtin_not_tagged_or_editable');
+  ok(/if \(!A\.persona && S\.personaList && S\.personaList\.length === 1 && personaBuiltin\(S\.personaList\[0\]\[0\]\)\) A\.persona = S\.personaList\[0\]\[0\];/.test(ws), 'reason: persona_builtin_not_preselected');
+  ok(!/這台讀不到人格卡,開不了任何席/.test(ws) && /這台的人格卡檔讀不到\(檔壞了或沒有權限\),開不了任何席/.test(ws), 'reason: persona_unavailable_words');
+}
+
 // 19. a9136 da2520fac:拷交接檔的三個 reason 有人話
 for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_request' && why === '" + r + "'"), 'reason: carry_error_without_words ' + r);
 
@@ -802,8 +843,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   // 方案資料:只用三種模式,不帶專案項目;跑 apPick
   const blk = (ws.split('  const APS = ')[1] || '').split('  function apCounts()')[0];
   const store = {};
-  const ctx = vm.createContext({ localStorage: { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = String(v); } }, personas: () => [['u1', '研究專家甲'], ['u2', '頁面工程師乙']], brainPreselect: (A) => { A.brain = 'b_' + A.persona; }, idem: () => 'k', personaHasBrain: (u) => u === 'u3' });
-  vm.runInContext('const APS = ' + blk + '\nthis.AP_CATS = AP_CATS; this.apPick = apPick; this.apRecent = apRecent; this.apRecentSave = apRecentSave;', ctx);
+  const ctx = vm.createContext({ localStorage: { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = String(v); } }, personas: () => [['u1', '研究專家甲'], ['u2', '頁面工程師乙']], brainPreselect: (A) => { A.brain = 'b_' + A.persona; }, idem: () => 'k', personaHasBrain: (u) => u === 'u3', personaBuiltin: (u) => u === 'aib000', pbW: () => ['AIB 夥伴', '內建'], esc: (x) => String(x) });
+  vm.runInContext('const APS = ' + blk + '\nthis.AP_CATS = AP_CATS; this.apPick = apPick; this.apRecent = apRecent; this.apRecentSave = apRecentSave; this.apPersonaSum = apPersonaSum; this.apPkN = apPkN;', ctx);
   const modes = new Set(); for (const C of ctx.AP_CATS) for (const p of C.subs) { modes.add(p.mode); ok(!('node' in p), 'reason: s1_plan_carries_node ' + p.name); }
   ok([...modes].every((m) => ['safe', 'work', 'dgrs', ''].includes(m)), 'reason: s1_plan_mode_not_existing');
   ok(ctx.AP_CATS.length === 12 && ctx.AP_CATS.some((C) => C.back) && ctx.AP_CATS.some((C) => C.id === 'custom'), 'reason: s1_twelve_categories');
@@ -813,7 +854,17 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ctx.apPick(A, 'sens:0');
   ok(A.brain === '' && A.brainTouched === true, 'reason: s1_sensitive_takes_brain');
   ctx.apPick(A, 'video:2');
-  ok(A.persona === '' && A.pkMiss === '影片提示詞', 'reason: s1_missing_persona_not_said');
+  ok(A.persona === '' && A.pkMiss === '1' && ctx.apPersonaSum(A, '') === '這台沒有這個方案配的人格,請自己選', 'reason: s1_missing_persona_not_said');
+  // ebab8 / f163c 12:16(客戶截圖「找不到「唐僧」」):清單只有內建那張 ⇒ 每個方案都選好內建、人格列與方案上都不出任何 pk 字
+  { const keep = ctx.personas; ctx.personas = () => [['aib000', 'AIB 夥伴']];
+    const pks = new Set(); let n = 0;
+    ctx.AP_CATS.forEach((C) => C.subs.forEach((p, i) => { if (!p.pk || C.id === 'custom' || C.back) return; pks.add(p.pk); n++;
+      const B = { node: '', mode: 'safe' }; ctx.apPick(B, C.id + ':' + i);
+      const sum = ctx.apPersonaSum(B, B.persona === 'aib000' ? 'AIB 夥伴' : ''), tag = ctx.apPkN(p);
+      ok(B.persona === 'aib000' && !B.pkMiss && !sum.includes(p.pk) && !tag.includes(p.pk) && /AIB 夥伴/.test(tag), 'reason: s1_builtin_not_fallback_or_pk_shown ' + C.id + ':' + i + ' ' + sum + ' ' + tag); }));
+    ok(n >= 30 && pks.size >= 28, 'reason: s1_pk_plans_count ' + n + ' ' + pks.size);
+    ctx.personas = () => []; const Z = { node: '', mode: 'safe' }; ctx.apPick(Z, 'life:0'); ok(Z.persona === '' && !ctx.apPersonaSum(Z, '').includes('唐僧') && !ctx.apPkN({ pk: '唐僧' }).includes('唐僧'), 'reason: s1_no_persona_names_pk');
+    ctx.personas = keep; }
   ctx.apPick(A, 'design:0');
   ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
   ctx.apRecentSave('tech:0'); ctx.apRecentSave('writing:1'); ctx.apRecentSave('tech:0'); ctx.apRecentSave('custom:0'); ctx.apRecentSave('life:0'); ctx.apRecentSave('learn:0');
@@ -830,7 +881,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   const fnSrc = (name) => { const a = ws.indexOf('  function ' + name + '('); const b = ws.indexOf('\n  }\n', a); return a >= 0 && b > a ? ws.slice(a, b + 4) : ''; };
   const blk = (ws.split('  const APS = ')[1] || '').split('  function apCounts()')[0];
   const doc = { grid: null, querySelector: (q) => (q === '.adlg.ap .apcats' ? doc.grid : null), activeElement: null };
-  const ctx = vm.createContext({ document: doc, localStorage: { getItem: () => null, setItem: () => {} }, personas: () => [['u1', '研究專家甲'], ['u3', '研究專家丙'], ['u2', '頁面工程師乙']], brainPreselect: () => {}, idem: () => 'k', personaHasBrain: (u) => u === 'u3', S: {}, chBox: () => '<div class="apsubs apchat">chat</div>',
+  const ctx = vm.createContext({ document: doc, localStorage: { getItem: () => null, setItem: () => {} }, personas: () => [['u1', '研究專家甲'], ['u3', '研究專家丙'], ['u2', '頁面工程師乙']], brainPreselect: () => {}, idem: () => 'k', personaHasBrain: (u) => u === 'u3', personaBuiltin: () => false, pbW: () => ['AIB 夥伴', '內建'], S: {}, chBox: () => '<div class="apsubs apchat">chat</div>',
     esc: (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) });
   vm.runInContext('const APS = ' + blk + fnSrc('apCols') + fnSrc('apKeep') + fnSrc('apRestore') + fnSrc('apTop') + '\nthis.F = { AP_CATS, apPick, apCols, apKeep, apRestore, apTop };', ctx);
   const F = ctx.F;
