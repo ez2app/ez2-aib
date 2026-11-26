@@ -67,14 +67,15 @@ impl WinClass {
             WinClass::HelloSoftware => {
                 "這台沒有 TPM,Windows Hello 的金鑰存在軟體裡:一般動作可以做，要存簽章和高風險的動作不開放。"
             }
+            // B2 (Andy 11-26 10:1x): what a Hello machine is today, no pairing key
             WinClass::HelloKeyUnknown => {
-                "這台有 Windows Hello,還沒建配對金鑰。建好後才知道金鑰在不在硬體裡。"
+                "這台用 Windows Hello 確認是你本人:每次要你本人時，當下跳一次 Hello。"
             }
             WinClass::NoHello => {
                 "這台還沒設 Windows Hello,只能做一般動作。設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN。沒有 Windows 登入密碼的話，要先設密碼才能設 PIN。"
             }
             WinClass::Unknown => {
-                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好再建配對金鑰。"
+                "還不知道這台有沒有設 Windows Hello,先只開一般動作。還沒設的話，設一個 PIN(不用指紋硬體):設定 → 帳戶 → 登入選項 → PIN,設好就生效，不用重裝。"
             }
         }
     }
@@ -130,14 +131,13 @@ pub struct Win {
 #[cfg(windows)]
 impl Win {
     pub fn read(data: &std::path::Path) -> Win {
+        // B2 (Andy 11-26 10:1x): no pairing key; whether Hello is set up is read from
+        // UserConsentVerifier's availability (no window), the key's hardware flag is not read
+        let _ = data;
         let at_desk = aib_sys::hello::interactive_session().is_ok();
-        let provider = at_desk && aib_sys::hello_ncrypt::provider_ready().is_ok();
-        let key = provider
-            .then(|| crate::touch::load(&crate::touch::key_dir(data)).ok())
-            .flatten()
-            .filter(|k| aib_sys::hello_ncrypt::public_key(&k.blob).ok() == Some(k.public));
-        let enrolled = key.as_ref().map(|_| true);
-        let hardware = key.map(|k| crate::touch::WinHello::hardware_bound(&k.blob));
+        let enrolled = at_desk.then(|| aib_sys::hello_consent::available().is_ok());
+        let provider = enrolled == Some(true);
+        let hardware = None;
         Win {
             at_desk,
             provider,
