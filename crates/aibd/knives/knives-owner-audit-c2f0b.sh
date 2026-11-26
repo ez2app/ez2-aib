@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# OA1–OA7 owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126, 11-26: the laptop's session policy was approved
+# OA1–OA8 owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126, 11-26: the laptop's session policy was approved
 # and written with nothing in the event journal; REVIEW-pack2 L1: the use is written where the ticket is used up, not
 # after any act that names it): every owner answer goes to the journal as owner.answer (what, who, outcome, seconds,
 # never the params), and an approved ticket used up by its own act as owner.used, once. Each knife keeps the code
@@ -26,4 +26,6 @@ kn owner_ok.rs '            "secs": now.saturating_sub(asked_at),' '            
 kn server.rs '    crate::owner_ok::set_journal(journal_to(store.clone(), "owner"));' '    let _ = journal_to(store.clone(), "owner");' "$J"
 # OA7 a used ticket stays usable (it could be used again, and journaled again)
 kn owner_ok.rs '                let used = serde_json::json!({' '                v.rec.used = false; let used = serde_json::json!({' "$J"
+# OA8 a list ticket taken is not journaled (3e53b REVIEW-pack2 r1 N1)
+kn owner_ok.rs '        self.journal(OWNER_USED, list_used);' '        let _ = list_used;' owner_ok::tests::one_window_for_a_list_then_one_ticket_an_item
 exit "$fail"

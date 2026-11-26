@@ -1054,6 +1054,11 @@ impl Owner {
             return Err("batch_used");
         }
         v.rec.used = true;
+        // the batch ticket itself, as one ask's (3e53b REVIEW-pack2 r1 N1); each item's child
+        // ticket is journaled again where its own act uses it up
+        let list_used = serde_json::json!({"ticket": batch, "operation": OP_BATCH, "by": by});
+        drop(s);
+        self.journal(OWNER_USED, list_used);
         Ok(())
     }
 
@@ -2553,6 +2558,7 @@ mod tests {
             shown: std::sync::Mutex::default(),
         });
         let o = std::sync::Arc::new(Owner::new(w.clone(), gate(), bnow));
+        let seen = journaled(&o);
         let items = [push_ask("web/a"), push_ask("web/b")];
         let lines = crate::owner_batch::window_lines(&items);
         let sha = crate::owner_batch::batch_sha(&items);
@@ -2593,6 +2599,19 @@ mod tests {
             o.take_batch(&t, "page:0123abcd"),
             Err("batch_used"),
             "reason: taken_twice"
+        );
+        // 3e53b REVIEW-pack2 r1 N1: the list's own use is journaled, once
+        let used: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k == OWNER_USED)
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(
+            used,
+            [serde_json::json!({"ticket": t, "operation": OP_BATCH, "by": "page:0123abcd"})],
+            "reason: batch_use_not_journaled"
         );
         let c = o.child(&t, &items[0]).unwrap();
         // bound to that very ask: other params are not approved (params_changed), and once only
