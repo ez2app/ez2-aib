@@ -51,7 +51,7 @@ k '    en: {"reached_through_something_else":' '    en0: {"reached_through_somet
 # CU22 原因查表不看語言(f163c N1)
 k 'const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c])' 'const thWhy = (c) => ((TH_WHY_L['\''zh-TW'\''] || {})[c])'
 # CU23 錯誤查表不看語言(f163c N1)
-k 'const thErr = (c) => ((TH_ERR_L[thL()] || {})[c])' 'const thErr = (c) => ((TH_ERR_L['\''zh-TW'\''] || {})[c])'
+k '(t) => t)(((TH_ERR_L[thL()] || {})[c])' '(t) => t)(((TH_ERR_L['\''zh-TW'\''] || {})[c])'
 # CU24 面板英文鈕字寫回中文(f163c de39 N1)
 k '"tap": "Click to open"' '"tap": "點一下開"'
 # CU25 點測試機的訊息寫死中文(f163c N1)

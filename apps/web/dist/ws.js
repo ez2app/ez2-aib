@@ -1470,7 +1470,7 @@
   };
   const thL = () => (typeof askLang === 'function' ? askLang() : 'zh-TW');
   const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c]) || TH_WHY[c] || '';
-  const thErr = (c) => ((TH_ERR_L[thL()] || {})[c]) || TH_ERR[c] || '';
+  const thErr = (c) => (typeof fpSay === 'function' ? fpSay : (t) => t)(((TH_ERR_L[thL()] || {})[c]) || TH_ERR[c] || '');
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
     if (hasAct('test_host_list') !== true) return '';
@@ -1773,7 +1773,7 @@
   function tickBar() {
     const T = S.tickEdit, s = T && seatById(T.seat); if (!T) return '';
     const has = S.ticks && S.ticks.get(T.seat);
-    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:${T.src === 'file' ? `<input class="tkin" type="text" maxlength="64" data-tickf="file" value="${esc(T.file || '')}" placeholder="檔名.txt(放在 AIB 的 ticks 資料夾)" aria-label="檔名" autocomplete="off" spellcheck="false">` : `<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off">`}<button type="button" class="k" data-ticksrc="1">${T.src === 'file' ? '改成直接打字' : '改成從檔案'}</button></div>${T.src === 'file' ? '<div class="tkn bad">從檔案來的那句現在還沒有簽章,AIB 設得了但一律不送(等簽章上線)</div>' : ''}${has && tickInfo(has) ? `<div class="tkn">${esc(tickInfo(has))}</div>` : ''}<div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
+    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:${T.src === 'file' ? `<input class="tkin" type="text" maxlength="64" data-tickf="file" value="${esc(T.file || '')}" placeholder="檔名.txt(放在 AIB 的 ticks 資料夾)" aria-label="檔名" autocomplete="off" spellcheck="false">` : `<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off">`}<button type="button" class="k" data-ticksrc="1">${T.src === 'file' ? '改成直接打字' : '改成從檔案'}</button></div>${T.src === 'file' ? '<div class="tkn bad">從檔案來的那句現在還沒有簽章,AIB 設得了但一律不送(等簽章上線)</div>' : ''}${has && tickInfo(has) ? `<div class="tkn">${esc(tickInfo(has))}</div>` : ''}<div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}${(typeof fpSay === 'function' ? fpSay : (t) => t)('設定或改要按一次本人指紋。')}</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
   }
   const tickStop = () => (S.tickOff || !S.ticks || (!S.ticks.size && !S.tickPaused) ? '' : S.tickPaused
     ? `<button type="button" class="ib tkstop on" data-tickpause="0" title="自動送全部暫停中(設定都留著);按這裡恢復">⏸ 自動送已暫停 · 恢復</button>`
@@ -2120,7 +2120,7 @@
       rv = (x.list ? `<div class="rvh"><span>勾選後按一次${np ? '(' + np + ' 條)' : ''}</span><button type="button" class="k g" data-seenpick="1" ${np && !(C && C.seenBusy) ? '' : 'disabled'}>看過</button></div><div class="rvl">${x.list.map((y) => `<label class="rvr${seen[y.id] ? ' ok' : ''}">${seen[y.id] ? '' : `<input type="checkbox" class="rvck" data-rvpick="${esc(y.id)}"${pick[y.id] ? ' checked' : ''}>`}<span class="rvt">${esc(String(y.text || ''))}${lineTag(y) ? `<span class="rvf">${esc(lineTag(y))}</span>` : ''}</span>${seen[y.id] ? `<span class="ideadone">${seen[y.id] === 'unv' ? '按過、未證實' : seen[y.id] === 'gone' ? '已不在清單' : '看過了'}</span>` : ''}</label>`).join('') || '<div class="empty">沒有等你看的</div>'}</div>`
         : `<div class="empty">${x.count != null ? x.count + ' 條;這一頁看不到內容,要在這台的內建頁打開' : '這一頁看不到內容'}</div>`) + (x.unread ? `<div class="pinmsg bad">後審帳另有 ${x.unread} 行讀不了,沒列在上面</div>` : '');
     }
-    if (C && C.actMsg) rv += `<div class="pinmsg${C.actBad ? ' bad' : ''}">${esc(C.actMsg)}</div>`;
+    if (C && C.actMsg) rv += `<div class="pinmsg${C.actBad ? ' bad' : ''}">${esc((typeof fpSay === 'function' ? fpSay : (t) => t)(C.actMsg))}</div>`;
     const k = x.card || 'local:' + (x.seat || '');
     const free = x.answer && (x.card || x.seat) ? `<div class="ans"><input class="ansi" data-ansfor="${esc(k)}" maxlength="2000" placeholder="${opts.length || x.rec ? '或自己寫' : '回答'}" value="${esc(S.ansDraft[k] || '')}"><button type="button" class="k g" data-answer="${esc(k)}" data-aseat="${esc(x.seat || '')}">回答</button></div>` : '';
     return `<div class="eb">${lines.join('')}${rv}${free}${b.length ? `<div class="ea">${b.join('')}</div>` : ''}</div>`;
@@ -2411,10 +2411,10 @@
     const st = DRV.st, rows = drvRows(), andy = dqItems().length;
     if (!st && !rows.length) return '';
     const cur = drvState(st);
-    const on = st ? (cur ? `<b class="${DRV_TO[cur][2]}">${DRV_TO[cur][1]}</b>` : '') + (st.unapproved === true ? '<b class="drvbad">未經指紋的開啟</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
+    const on = st ? (cur ? `<b class="${DRV_TO[cur][2]}">${DRV_TO[cur][1]}</b>` : '') + (st.unapproved === true ? '<b class="drvbad">' + (typeof fpSay === 'function' ? fpSay : (t) => t)('未經指紋的開啟') + '</b>' : '') : '<span class="drvq">開關狀態 AIB 還沒給</span>';
     const who = st && st.by ? `<span class="drvby" title="${esc(st.why || '')}">${esc(String(st.by))} ${esc(hhmm(st.at))}</span>` : '';
     const tog = ['on', 'off', 'paused'].filter((to) => drvCan(st, to)).map((to) => `<button type="button" class="k" data-drvtog="${to}">${DRV_TO[to][0]}</button>`).join('');
-    const form = DRV.open && drvCan(st, DRV.open) ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${DRV_TO[DRV.open][0]}(必填;會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">確定${DRV_TO[DRV.open][0]}</button><button type="button" class="k" data-drvx="1">取消</button>${DRV.open === 'on' ? '<span class="drvq">打開要 Andy 在這台按指紋</span>' : ''}</div>` : '';
+    const form = DRV.open && drvCan(st, DRV.open) ? `<div class="drvf"><input class="drvwhy" data-drvwhy="1" maxlength="200" placeholder="為什麼${DRV_TO[DRV.open][0]}(必填;會記下誰、何時、這句)" value="${esc(DRV.why)}"><button type="button" class="go" data-drvgo="1">確定${DRV_TO[DRV.open][0]}</button><button type="button" class="k" data-drvx="1">取消</button>${DRV.open === 'on' ? '<span class="drvq">' + (typeof fpSay === 'function' ? fpSay : (t) => t)('打開要 Andy 在這台按指紋') + '</span>' : ''}</div>` : '';
     const dots = (r) => { const i = DRV_STAGES.findIndex((z) => z[0] === r.st); return DRV_STAGES.map((z, k) => { const known = r.real ? !r.partial : k === 0 || z[0] === 'started', on = r.real ? i >= 0 && k <= i && known : k === 0 || (z[0] === 'started' && r.st === 'started'); return `<i class="drvd ${on ? 'on' : known ? '' : 'unk'}" title="${esc(z[1] + (on ? '' : known ? ':還沒' : ':AIB 還沒給'))}"></i>`; }).join(''); };
     const list = rows.map((r) => { const x = seatByCode(r.to); return `<div class="drvr">${x ? logo(x, 'sm') : ''}<b class="drvto">@${esc(x ? seatShort(x) : r.to)}</b><span class="drvt">${esc(r.text.slice(0, 60))}</span><span class="drvdots">${dots(r)}</span>${r.real && r.partial ? `<small class="drvsw">${esc((Object.hasOwn(DRV_STAGE_WORD, r.raw) && DRV_STAGE_WORD[r.raw]) || '不明' + (r.raw ? '(' + r.raw.slice(0, 16) + ')' : ''))}</small>` : ''}<span class="tm">${esc(hhmm(r.at))}</span></div>`; }).join('') || '<div class="empty">還沒有派工</div>';
     const D = drvLists(st);
@@ -2433,7 +2433,7 @@
     try {
       await fingerAct('drive_toggle', { to, why }, (t, sec) => { DRV.note = FP_SEE; render(); });
       DRV.open = null; DRV.why = ''; DRV.note = ''; await driveLoad(true);
-    } catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); DRV.note = (rs === 'finger_timeout' || rs === 'finger_expired') && e.ticket ? '單號 ' + String(e.ticket).slice(0, 12) + ' 過期,可再按一次' : DRV_ERR[rs] || errText(e); }
+    } catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); DRV.note = (rs === 'finger_timeout' || rs === 'finger_expired') && e.ticket ? '單號 ' + String(e.ticket).slice(0, 12) + ' 過期,可再按一次' : (typeof fpSay === 'function' ? fpSay : (t) => t)(DRV_ERR[rs] || '') || errText(e); }
     render();
   }
 
@@ -3825,8 +3825,8 @@
     if (c === 'slot_built_in_page_only') return '這一頁不能按,要在這台的內建頁按';
     if (c === 'carried_pair_read_and_safe_only') return '帶過來的配對只能看,要在這台的內建頁按';
     // 遇事不決定稿 ideas-2 §2:同意 / 不同意 / 看過都要指紋;這版 aibd 還沒接指紋 ⇒ 503,卡留著
-    if (c === 'needs_fingerprint') return '請在這台按指紋;按完再點一次';
-    if (c === 'owner_check_unavailable') return '要先按指紋確認是你本人,這版 AIB 還沒接上指紋;這張卡留著,接好再按';
+    if (c === 'needs_fingerprint') return (typeof fpSay === 'function' ? fpSay : (t) => t)('請在這台按指紋;按完再點一次');
+    if (c === 'owner_check_unavailable') return (typeof fpSay === 'function' ? fpSay : (t) => t)('要先按指紋確認是你本人,這版 AIB 還沒接上指紋;這張卡留著,接好再按');
     if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) return '這版 AIB 還不能按,等新版';
     return '';
   }
@@ -4143,12 +4143,12 @@
     const wait = n.after || n.wait;
     const cnt = {}; for (const r of recs) for (const k of r.ks || [r.k]) cnt[k] = (cnt[k] || 0) + 1;
     if (S.card.tab !== 'all' && !cnt[S.card.tab]) S.card.tab = 'all';
-    const tabs = ['all'].concat(Object.keys(REC)).map((k) => `<button type="button" data-ctab="${k}" class="${S.card.tab === k ? 'on' : ''}" ${k !== 'all' && !cnt[k] ? 'disabled' : ''}>${k === 'all' ? '全部' : REC[k]} <i>${k === 'all' ? recs.length : cnt[k] || 0}</i></button>`).join('');
+    const tabs = ['all'].concat(Object.keys(REC)).map((k) => `<button type="button" data-ctab="${k}" class="${S.card.tab === k ? 'on' : ''}" ${k !== 'all' && !cnt[k] ? 'disabled' : ''}>${k === 'all' ? '全部' : (typeof fpSay === 'function' ? fpSay : (t) => t)(REC[k])} <i>${k === 'all' ? recs.length : cnt[k] || 0}</i></button>`).join('');
     const shownAll = recs.filter((r) => S.card.tab === 'all' || (r.ks || [r.k]).includes(S.card.tab));
     const REC_MAX = 6, shown = S.card.recAll ? shownAll : shownAll.slice(0, REC_MAX);
     const recMore = shownAll.length > REC_MAX ? `<button type="button" class="more" data-recall="1">${S.card.recAll ? '收起 ▴' : '再看 ' + (shownAll.length - REC_MAX) + ' 筆 ▾'}</button>` : '';
     const stepMs = shown.length ? Math.min(520, Math.round(7000 / shown.length)) : 0;
-    const tl = shown.length ? shown.map((r, i) => `<div class="te ${i === 0 ? 'new' : ''}" data-sty="--d:${(shown.length - 1 - i) * stepMs}ms;"><time>${esc(r.at || '沒有寫時間')}${(r.ks || [r.k]).filter((k) => k && k !== 'dev').map((k) => `<b class="kt kt-${k}">${esc(REC[k])}</b>`).join('')}</time><p>${r.by ? seatLogos(r.by) + ' ' : ''}${esc(r.t)}</p></div>`).join('') : '<div class="none">還沒有紀錄</div>';
+    const tl = shown.length ? shown.map((r, i) => `<div class="te ${i === 0 ? 'new' : ''}" data-sty="--d:${(shown.length - 1 - i) * stepMs}ms;"><time>${esc(r.at || '沒有寫時間')}${(r.ks || [r.k]).filter((k) => k && k !== 'dev').map((k) => `<b class="kt kt-${k}">${esc((typeof fpSay === 'function' ? fpSay : (t) => t)(REC[k]))}</b>`).join('')}</time><p>${r.by ? seatLogos(r.by) + ' ' : ''}${esc(r.t)}</p></div>`).join('') : '<div class="none">還沒有紀錄</div>';
     const kids = (Array.isArray(n.children) && n.children.length ? n.children : null) || (S.kids && S.kids.get(n.id)) || []; // 空陣列的 children 不蓋過樹裡的子項
     const chh = kids.length ? '<div class="ch">' + kids.map((c) => { const ci = stationIdx(c.status || c.station); return `<div class="cr" data-card="${esc(c.id)}" tabindex="0" role="button"><span class="stn ${ci != null ? 's' + (ci + 1) : ''}">${ci != null ? ci + 1 + ' ' + esc(STATIONS[ci]) : esc(c.status || c.station || '—')}</span><b>${esc(c.title || c.id)}</b><em>${c.owner ? seatLogos(c.owner) : ''}</em></div>`; }).join('') + '</div>' : '<div class="none">沒有再往下分的項目</div>';
     const html = `<div class="dw"><div class="dh u-${u}"><div class="dh1"><span class="pill u-${n.status === '實查不通過' || n.status === '卡住' ? 'bad' : vf ? (si === 6 ? 'ok' : si >= 2 ? 'run' : 'todo') : u}">${esc(n.status || '沒有狀態')}</span>${vf ? '<span class="pill u-bad">驗不通過</span>' : ''}<span class="kid">${esc(n.id)}</span><span>${si != null ? '第 ' + (si + 1) + ' 站 / 7' : '不在流程上'}</span><span class="uphd">${upTag(n.id)}${upBtn(n.id)}</span><button type="button" class="x" data-cclose="1" aria-label="關閉" autofocus>✕</button></div>
@@ -4461,7 +4461,7 @@
   }
   function rgDiffHtml(R) {
     const o = R.orig || {}, n = (t) => Array.from(String(t || '')).length;
-    return `<div class="rgdiff"><div class="apn"><b>送出前看一次</b>:指紋窗只列段名與字數,內容以這裡為準</div>${RG_CARD.filter(([k]) => rgChanged(R).includes(k)).map(([k, nm]) => `<div class="rgdh">${esc(nm)}(原 ${n(o[k])} 字 → ${n(R[k])} 字)</div>${rgDiffLines(o[k], R[k]).map(([m, l]) => `<div class="rgdl ${m === '+' ? 'add' : m === '-' ? 'del' : ''}">${m === ' ' ? '  ' : m + ' '}${esc(rgShow(l))}</div>`).join('')}`).join('')}<div class="ptact"><button type="button" class="go" data-rgok="1" ${R.busy ? 'disabled' : ''}>確定,去驗證</button><button type="button" class="k" data-rgback="1">回去改</button></div></div>`;
+    return `<div class="rgdiff"><div class="apn"><b>送出前看一次</b>:${(typeof fpSay === 'function' ? fpSay : (t) => t)('指紋窗只列段名與字數')},內容以這裡為準</div>${RG_CARD.filter(([k]) => rgChanged(R).includes(k)).map(([k, nm]) => `<div class="rgdh">${esc(nm)}(原 ${n(o[k])} 字 → ${n(R[k])} 字)</div>${rgDiffLines(o[k], R[k]).map(([m, l]) => `<div class="rgdl ${m === '+' ? 'add' : m === '-' ? 'del' : ''}">${m === ' ' ? '  ' : m + ' '}${esc(rgShow(l))}</div>`).join('')}`).join('')}<div class="ptact"><button type="button" class="go" data-rgok="1" ${R.busy ? 'disabled' : ''}>確定,去驗證</button><button type="button" class="k" data-rgback="1">回去改</button></div></div>`;
   }
   async function rgSave() {
     const R = S.rg; if (!R || R.busy) return;
@@ -4726,7 +4726,7 @@
     else if (S.prF && S.prF.seat === s.seat_id) h += `<div class="sbw" data-prwait>開 PR(草稿):基底 <b>main</b> ← <b>${esc(O.branch)}</b> · 「${esc(S.prF.title)}」<div class="sbf">${FP_SEE}</div></div>`;
     else if (S.ghTok && S.ghTok.seat === s.seat_id) h += ghTokBox(S.ghTok);
     else if (A) h += `<div class="rcpq" data-prform>開 PR(草稿):<input class="apq" data-prtitle value="${esc(A.title)}" maxlength="200" aria-label="PR 標題"><textarea class="apq" data-prbody rows="2" maxlength="16000" placeholder="說明(可空)" aria-label="PR 說明">${esc(A.body || '')}</textarea> 基底 <b>main</b> ← <b>${esc(O.branch)}</b><button type="button" class="k g" data-prgo="${esc(s.seat_id)}">開</button><button type="button" class="k" data-prno="1">不要</button></div>`;
-    else h += (S.pushOff ? `<span class="trs">${esc(S.pushOff)}</span>` : `<button type="button" class="k" data-push="${esc(s.seat_id)}" title="把 ${esc(O.branch)} 推到遠端;要按這台的指紋">推上去</button>`) + (S.prOff ? `<span class="trs">${esc(S.prOff)}</span>` : `<button type="button" class="k" data-pr="${esc(s.seat_id)}" title="從 ${esc(O.branch)} 對 main 開 PR">開 PR</button>`);
+    else h += (S.pushOff ? `<span class="trs">${esc(S.pushOff)}</span>` : `<button type="button" class="k" data-push="${esc(s.seat_id)}" title="把 ${esc(O.branch)} 推到遠端;${(typeof fpSay === 'function' ? fpSay : (t) => t)('要按這台的指紋')}">推上去</button>`) + (S.prOff ? `<span class="trs">${esc(S.prOff)}</span>` : `<button type="button" class="k" data-pr="${esc(s.seat_id)}" title="從 ${esc(O.branch)} 對 main 開 PR">開 PR</button>`);
     if (M) h += `<div class="trm${M.bad ? ' bad' : ''}" data-pushmsg>${esc(M.text)}${M.url ? ' <a href="' + esc(M.url) + '" target="_blank" rel="noopener">' + esc(M.url) + '</a>' : ''}</div>`;
     return h + '</div>';
   }
@@ -4750,7 +4750,7 @@
   function ghTokBox(G) {
     const n = String(G.slug).split('/')[1] || '';
     if (G.left != null) return `<div class="sbw" data-ghtokwait>把 GitHub 權杖存進這台,給 <b>${esc(G.slug)}</b> 推分支與開 PR 用<div class="sbf">${FP_SEE}</div></div>`;
-    return `<div class="rcpq" data-ghtok>推分支 / 開 PR 要 GitHub 權杖:<b>${esc(G.slug)}</b><div class="apn">① 到 GitHub 建一把細粒度權杖(名字、權限、90 天都帶好了);「Repository access」請選 Only select repositories → <b>${esc(n)}</b>(這一格 GitHub 不能預先幫你選)</div><a class="k" href="${esc(ghTokUrl(G.slug))}" target="_blank" rel="noopener noreferrer">① 到 GitHub 建權杖</a> <input class="apq" type="password" data-ghtokin autocomplete="off" spellcheck="false" placeholder="② 貼上權杖(github_pat_…)" aria-label="GitHub 權杖"><button type="button" class="k g" data-ghtokgo="${esc(G.seat)}">② 存進這台(按指紋)</button><button type="button" class="k" data-ghtokno="1">不要</button>${G.msg ? `<div class="apn bad">${esc(G.msg)}</div>` : ''}</div>`;
+    return `<div class="rcpq" data-ghtok>推分支 / 開 PR 要 GitHub 權杖:<b>${esc(G.slug)}</b><div class="apn">① 到 GitHub 建一把細粒度權杖(名字、權限、90 天都帶好了);「Repository access」請選 Only select repositories → <b>${esc(n)}</b>(這一格 GitHub 不能預先幫你選)</div><a class="k" href="${esc(ghTokUrl(G.slug))}" target="_blank" rel="noopener noreferrer">① 到 GitHub 建權杖</a> <input class="apq" type="password" data-ghtokin autocomplete="off" spellcheck="false" placeholder="② 貼上權杖(github_pat_…)" aria-label="GitHub 權杖"><button type="button" class="k g" data-ghtokgo="${esc(G.seat)}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('② 存進這台(按指紋)')}</button><button type="button" class="k" data-ghtokno="1">不要</button>${G.msg ? `<div class="apn bad">${esc(G.msg)}</div>` : ''}</div>`;
   }
   async function ghTokGo(id) {
     const G = S.ghTok, O = S.sbOk; if (!G || G.seat !== id || !O || S.sending) return;
@@ -4818,7 +4818,7 @@
     if (F) return `<span class="trs" data-trustwait>${FP_SEE}</span>`;
     const u = trustUntil(s);
     if (u) return `<span class="trs on">受信任到 ${hhmm(u * 1000)}</span><button type="button" class="k" data-untrust="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''}>收回</button>`;
-    return `<button type="button" class="k" data-trust="${esc(s.seat_id)}" title="按這台的指紋,把這一席升成受信任 12 小時" ${S.sending || S.trustF ? 'disabled' : ''}>升成受信任</button>`;
+    return `<button type="button" class="k" data-trust="${esc(s.seat_id)}" title="${(typeof fpSay === 'function' ? fpSay : (t) => t)('按這台的指紋,把這一席升成受信任 12 小時')}" ${S.sending || S.trustF ? 'disabled' : ''}>升成受信任</button>`;
   }
   // 重新登入 AI(a9136 DESIGN-relogin-card r2,Andy 11-21 09:1x「為什麼不直接彈窗」):按 ⇒ 指紋 ⇒ aibd 起登入程式、回登入頁網址
   // (只回給按的這一頁,不進事件)⇒ 開新分頁登入 ⇒ claude 把頁面給的碼貼回來 / codex 在登入頁輸入這裡顯示的碼 ⇒ 每 3 秒問結果
@@ -5156,9 +5156,9 @@
     const id = s.seat_id, F = S.moveF && S.moveF.seat === id ? S.moveF : null;
     if (F) return `<span class="trs" data-movewait>搬 @${esc(F.code)}:${FP_SEE}</span>`;
     const m = S.moved[id];
-    if (m) return `<span class="trs on">收 @${esc(m)} 的信</span><button type="button" class="k" data-unmove="${esc(id)}" ${S.sending ? 'disabled' : ''} title="不用指紋;搬回後舊席收信要用 1.x 指令重開">搬回</button>`;
-    if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>按指紋搬</button><button type="button" class="k" data-moveno>取消</button>`;
-    return `<button type="button" class="k" data-move="${esc(id)}" title="把一個舊式席的信改送到這一席(要按這台的指紋)" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
+    if (m) return `<span class="trs on">收 @${esc(m)} 的信</span><button type="button" class="k" data-unmove="${esc(id)}" ${S.sending ? 'disabled' : ''} title="${(typeof fpSay === 'function' ? fpSay : (t) => t)('不用指紋;搬回後舊席收信要用 1.x 指令重開')}">搬回</button>`;
+    if (S.moveAsk === id) return `<input class="mvc" data-movecode maxlength="5" placeholder="舊席碼" autocomplete="off" spellcheck="false" value="${esc(S.moveCode || '')}"><button type="button" class="k" data-movego="${esc(id)}" ${S.moveF ? 'disabled' : ''}>${(typeof fpSay === 'function' ? fpSay : (t) => t)('按指紋搬')}</button><button type="button" class="k" data-moveno>取消</button>`;
+    return `<button type="button" class="k" data-move="${esc(id)}" title="${(typeof fpSay === 'function' ? fpSay : (t) => t)('把一個舊式席的信改送到這一席(要按這台的指紋)')}" ${S.moveF ? 'disabled' : ''}>搬進舊席</button>`;
   }
   const moveWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return MOVE_WHY[rs] || errText(e); };
   // 0eed7 VERIFY-integ3 r1 M4:搬進成功那句列出這席帶著的開著的派工信(第一行「派工:」),寫「這些是你的」,別席的不列。
@@ -5308,7 +5308,7 @@
     const rows = o.lines.filter((x) => x[1]).map(([k, v, up]) => `<span class="k">${esc(k)}</span><span${up ? ' class="up"' : ''}>${esc(v)}</span>`).join('');
     const foot = o.st === 'ok' ? '<div class="fph">已執行。</div>'
       : o.st === 'no' ? `<div class="fph">${esc(o.why || '取消或逾時')} = 不執行,什麼都沒改。要做再按一次。</div><div class="fpa"><button type="button" class="k" data-fpcok="1">好</button></div>`
-      : `<div class="fph">請在這台電腦跳出的<b>系統視窗</b>按指紋;沒有指紋就輸入電腦登入密碼(Windows 用 Hello PIN)。視窗可能在其他視窗後面。</div><div class="fpcode">對照碼 <b data-fpcode>${o.code ? esc(o.code) : o.codeWait ? '…' : '算不出來'}</b></div><div class="fph dim">${o.code || o.codeWait ? '系統視窗上的<b>對照碼</b>跟這張卡一樣才按;動作、對象以系統視窗為準。對照碼不一樣就按取消。' : '這台算不出對照碼:動作、對象以系統視窗為準,看不懂就按取消。'}</div><div class="fpa"><button type="button" class="k" data-fpcx="1">取消這次</button></div>`;
+      : `<div class="fph">${(typeof fpWin === 'function' && fpWin()) ? '請在這台電腦跳出的 <b>Windows Hello</b> 視窗確認(輸入 PIN 就可以)。' : '請在這台電腦跳出的<b>系統視窗</b>按指紋;沒有指紋就輸入電腦登入密碼。'}視窗可能在其他視窗後面。</div><div class="fpcode">對照碼 <b data-fpcode>${o.code ? esc(o.code) : o.codeWait ? '…' : '算不出來'}</b></div><div class="fph dim">${o.code || o.codeWait ? '系統視窗上的<b>對照碼</b>跟這張卡一樣才按;動作、對象以系統視窗為準。對照碼不一樣就按取消。' : '這台算不出對照碼:動作、對象以系統視窗為準,看不懂就按取消。'}</div><div class="fpa"><button type="button" class="k" data-fpcx="1">取消這次</button></div>`;
     return `<div class="fpc ${o.st} ${!o.st && left <= 30 ? 'late' : ''} ${!o.st && left <= 10 ? 'urg' : ''}" role="status" aria-live="polite"><div class="fpl"><svg viewBox="0 0 56 56" class="ring" aria-hidden="true"><circle cx="28" cy="28" r="25" class="bg"/><circle cx="28" cy="28" r="25" class="fg" data-sty="stroke-dashoffset:${off.toFixed(1)}"/></svg><span class="fpi">${icon}</span>${o.st ? '' : `<span class="sec">還有 ${left} 秒</span>`}</div><div class="fpm"><b>${head}${esc(o.what)}</b>${rows ? `<div class="fpt">${rows}</div>` : ''}${foot}</div></div>`;
   }
   function fpcPaint() {
@@ -5698,7 +5698,7 @@
   const AP_LEVEL = { host: { chat: 1, own: 1, net: 1, host: 1, persona: 'p', brain: 't' }, safe: { chat: 1, persona: 'p', net: 'n' }, work: { chat: 1, code: 1, own: 1, cmd: 1, persona: 'p', brain: 't', net: 'n' }, dgrs: { chat: 1, code: 1, own: 1, cmd: 1, persona: 'p', brain: 1, any: 1, anycmd: 1, net: 1, push: 1 } };
   const ICO_SRV = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="3" y="13" width="18" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
   // 管理主機那一顆:能開(之後 S2 接上)才亮;這一版 AIB 還沒有 ⇒ 灰、寫原因,不消失
-  function apHostCard(A, pv) { return `<button type="button" class="amd off" data-addm="host" disabled aria-disabled="true"><span class="amh">${ICO_SRV}<b>${AP_HOST_NAME}</b></span><i>只管你選的主機,每台按一次指紋 · 這一版還沒有</i><em class="adang d3">危險程度:高</em></button>`; }
+  function apHostCard(A, pv) { return `<button type="button" class="amd off" data-addm="host" disabled aria-disabled="true"><span class="amh">${ICO_SRV}<b>${AP_HOST_NAME}</b></span><i>只管你選的主機,${(typeof fpSay === 'function' ? fpSay : (t) => t)('每台按一次指紋')} · 這一版還沒有</i><em class="adang d3">危險程度:高</em></button>`; }
   const AP_HOST_NAME = '管理主機';
   // 格子小註與上標(示意 CELL_NOTE / cell):¹ 帶倉免 ² 提案 ³ 這一版還沒有 ⁴ 另開
   const AP_NOTE = { 'work:code': '自己那份', 'dgrs:code': '任何地方', 'host:host': '你選的那幾台', 'host:own': '放腳本、紀錄', 'dgrs:brain': '直接寫檔' };
@@ -5720,7 +5720,7 @@
   const pwAt = (s) => new Date(Number(s) * 1000).toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   function pwText(p) {
     if (p.swapped === true) return { bad: true, text: '密語紀錄被換過,請到設定窗重設;重設前不收密語' };
-    if (p.available !== true) return { text: '這台用系統本人驗證(指紋 / 登入密碼 / Hello),不用密語' };
+    if (p.available !== true) return { text: (typeof fpWin === 'function' && fpWin()) ? '這台用 Windows Hello 確認是你本人,不用密語' : '這台用系統本人驗證(指紋或登入密碼),不用密語' };
     if (p.set !== true) return { text: '密語備援還沒設定;要設定請到系統的設定窗(網頁不收密語)' };
     const at = Number(p.set_at) > 0 ? '密語已於 ' + pwAt(p.set_at) + ' 設定' : '密語已設定';
     if (p.locked === true) { const u = Number(p.locked_until), m = Math.ceil((u * 1000 - Date.now()) / 60000); return { bad: true, text: at + ' · 鎖住了' + (u > 0 ? ',到 ' + pwAt(u) + (m > 0 ? '(約 ' + m + ' 分)' : '') : '') + ',鎖住時不收密語' }; }
@@ -6120,7 +6120,7 @@
     // 3e53b:aibd 給了 capabilities.net,「自己連外網」那格就照它(enforced / hint / off),不再寫 🚧
     const cell = (m, k) => { const v = AP_LEVEL[m][k], nt = AP_NOTE[m + ':' + k], nv = k === 'net' && ok && ok.net ? apNet(ok.net, m) : ''; if (nv) return `<i class="${nv === 'hint' ? 'w' : nv === 'enforced' ? 'y' : 'n'}${s(m)}" title="${esc(NET_WORDS[nv])}">${NET_CELL[nv]}</i>`; if (k === 'host' && !v) return `<i class="p${s(m)}">另開⁴</i>`; return v === 'p' ? `<i class="p${s(m)}">提案²</i>` : v === 't' ? `<i class="y${s(m)}">✓<small>🚧³</small></i>` : v === 'n' ? `<i class="y${s(m)}">✓<small>🚧⁷</small></i>` : v ? `<i class="y${s(m)}">✓${nt ? `<small>${nt}</small>` : ''}</i>` : `<i class="n${s(m)}">—</i>`; };
     // 表頭可以點來選;那一顆開不了(預覽區完全權限、這一版還沒有管理主機)就只是字,不能選
-    return `<div class="apcmp" role="table" aria-label="模式對照"><span></span>${M.map(([m, n]) => (can(m) ? `<button type="button" class="ch${s(m)}" data-addm="${m}">${esc(n)}</button>` : `<b class="ch off${s(m)}">${esc(n)}</b>`)).join('')}${AP_PERMS.map(([k, n]) => `<span>${n}</span>${M.map(([m]) => cell(m, k)).join('')}`).join('')}<span>開的時候</span><i class="${s('safe').trim()}">免</i><i class="${s('work').trim()}">免¹</i><i class="w${s('host')}">逐台按指紋</i><i class="w${s('dgrs')}">按指紋⁵</i></div><div class="apn apfn">¹ 帶倉時也免:倉登記時已按過;沙盒是系統層擋的,不是靠 AI 自己守規矩<br>² 提案 = 它寫好改動,浮出卡片請你看過、按指紋才寫進人格卡<br>³ 🚧 這一版 AIB 還不能寫第二大腦:沙盒擋資料夾外的檔,要由 AIB 代寫進它綁的那一個<br>⁴ 管理主機模式自帶這一項;其他模式要在「可管的主機」另外開,逐台選、每台按一次指紋<br>⁵ 沒有指紋的電腦改成電腦本身的解鎖:Mac 跳登入密碼、Windows 用 Hello PIN<br>⁶ 連外網:外網可以,本機(127.0.0.1)與內網一律擋;某一位要連時彈出卡片給你選<br>⁷ 🚧 這一版還沒有,沙盒連外網做好才有(現在討論研究 / 沙盒開發連不出去)</div>`;
+    return `<div class="apcmp" role="table" aria-label="模式對照"><span></span>${M.map(([m, n]) => (can(m) ? `<button type="button" class="ch${s(m)}" data-addm="${m}">${esc(n)}</button>` : `<b class="ch off${s(m)}">${esc(n)}</b>`)).join('')}${AP_PERMS.map(([k, n]) => `<span>${n}</span>${M.map(([m]) => cell(m, k)).join('')}`).join('')}<span>開的時候</span><i class="${s('safe').trim()}">免</i><i class="${s('work').trim()}">免¹</i><i class="w${s('host')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('逐台按指紋')}</i><i class="w${s('dgrs')}">${(typeof fpSay === 'function' ? fpSay : (t) => t)('按指紋')}⁵</i></div><div class="apn apfn">¹ 帶倉時也免:倉登記時已按過;沙盒是系統層擋的,不是靠 AI 自己守規矩<br>² 提案 = 它寫好改動,浮出卡片請你看過、按指紋才寫進人格卡<br>³ 🚧 這一版 AIB 還不能寫第二大腦:沙盒擋資料夾外的檔,要由 AIB 代寫進它綁的那一個<br>⁴ 管理主機模式自帶這一項;其他模式要在「可管的主機」另外開,逐台選、每台按一次指紋<br>⁵ 沒有指紋的電腦改成電腦本身的解鎖:Mac 跳登入密碼、Windows 用 Hello PIN<br>⁶ 連外網:外網可以,本機(127.0.0.1)與內網一律擋;某一位要連時彈出卡片給你選<br>⁷ 🚧 這一版還沒有,沙盒連外網做好才有(現在討論研究 / 沙盒開發連不出去)</div>`;
   }
   // S1b A:底部摘要(示意 #sum):品牌 · 模式 · 人格 · 現在幾位在工作
   function apSum(A, pv) {

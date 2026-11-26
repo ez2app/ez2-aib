@@ -388,6 +388,13 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   }
   box.S.version = { os: 'macos' }; ok(W('開之前要按一次指紋') === '開之前要按一次指紋', 'reason: fp_say_changed_mac');
   box.S.version = null; box.S.thermal = { os: 'windows' }; ok(W('按指紋') === '用 Windows Hello 確認', 'reason: fp_say_no_thermal_fallback');
+  // ebab8 13:3x 第三包:靜態畫面的本人確認字也跟平台走(LIST-fingerword 36 處;雜湊 / 主機金鑰的「指紋」不算)
+  { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)(";
+    const PH = ['設定或改要按一次本人指紋。', '未經指紋的開啟', '打開要 Andy 在這台按指紋', '指紋窗只列段名與字數', '要按這台的指紋', '② 存進這台(按指紋)', '按這台的指紋,把這一席升成受信任 12 小時', '不用指紋;搬回後舊席收信要用 1.x 指令重開', '按指紋搬', '把一個舊式席的信改送到這一席(要按這台的指紋)', '每台按一次指紋', '逐台按指紋', '按指紋', '請在這台按指紋;按完再點一次', '要先按指紋確認是你本人,這版 AIB 還沒接上指紋;這張卡留著,接好再按'];
+    const miss = PH.filter((p) => !ws.includes(G + "'" + p + "')")); ok(!miss.length, 'reason: fp_win_static_wrapped ' + miss.join(' | '));
+    ok(PH.every((p) => !W(p).includes('指紋')), 'reason: fp_win_static_words ' + PH.map(W).filter((x) => x.includes('指紋')).join(' | '));
+    ok(ws.includes('const thErr = (c) => ' + G + '(') && ws.includes(G + "DRV_ERR[rs] || '') || errText(e)") && ws.includes('${esc(' + G + 'C.actMsg))}') && ws.includes(G + 'REC[k])} <i>') && ws.includes('${esc(' + G + 'REC[k]))}</b>'), 'reason: fp_win_maps_wrapped');
+    ok(ws.includes("return { text: (typeof fpWin === 'function' && fpWin()) ? '這台用 Windows Hello 確認是你本人,不用密語'") && ws.includes("${(typeof fpWin === 'function' && fpWin()) ? '請在這台電腦跳出的 <b>Windows Hello</b>"), 'reason: fp_win_pw_fpc_branch'); }
   ok(/function errText\(e\) \{ return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(errText0\(e\)\); \}/.test(ws), 'reason: err_text_not_platform_words');
   ok(/const rgWhy = \(e\) => \{ const c = rgCode\(e\); return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(RG_WHY\[c\]/.test(ws) && /const repoWhy = \(e\) => \{ const rs = [^\n]*return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(gateWhy\(e\)/.test(ws) && /return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(\(typeof rs === 'string' && Object\.prototype\.hasOwnProperty\.call\(RELOG_WHY, rs\)/.test(ws), 'reason: why_helpers_not_platform_words');
   const c = ws.indexOf('  const REG_ADD_OPEN = '), d = ws.indexOf('  async function regAdd() {');
@@ -1244,7 +1251,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(T({ wrong: 2, tries_left: 1 }).text.endsWith(' · 連錯 2 次,還能錯 1 次') && !T({ wrong: 2, tries_left: 1 }).bad, 'reason: pw_wrong_from_aibd');
     const lk = T({ locked: true, wrong: 5, tries_left: 0, locked_until: Math.floor(Date.now() / 1000) + 600 }); ok(lk.bad && /鎖住了,到 .+\(約 1[01] 分\),鎖住時不收密語$/.test(lk.text), 'reason: pw_locked_until ' + lk.text);
     ok(T({ swapped: true }).bad && T({ swapped: true }).text === '密語紀錄被換過,請到設定窗重設;重設前不收密語' && T({ swapped: true, available: false }).bad, 'reason: pw_swapped_red_first');
-    ok(T({ available: false }).text === '這台用系統本人驗證(指紋 / 登入密碼 / Hello),不用密語' && !T({ available: false }).bad, 'reason: pw_system_check_used');
+    ok(T({ available: false }).text === '這台用系統本人驗證(指紋或登入密碼),不用密語' && !T({ available: false }).bad, 'reason: pw_system_check_used');
     ok(T({ set: false, set_at: null }).text === '密語備援還沒設定;要設定請到系統的設定窗(網頁不收密語)', 'reason: pw_not_set');
     reply = Object.assign({}, reply, { swapped: true }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語紀錄被換過,請到設定窗重設;重設前不收密語</div>', 'reason: pw_swapped_drawn_red');
     fail = Object.assign(new Error('x'), { status: 403, code: 'passphrase_built_in_page_only', reason: '' }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語狀態讀不到:只有這台電腦內建的頁面看得到</div>', 'reason: pw_err_words');
@@ -1496,7 +1503,7 @@ const fpcChecks = (async () => {
   ctx.fpcOpen('x', {}, { code: 'C0DE', words: 'aibd 的字', shown: [{ k: '倉', v: '/Users/a/<b>', up: true }] }, Date.now() + 60000);
   let h = ctx.fpcHtml(ctx.FPC.cur);
   ok(/等你驗證:aibd 的字/.test(h) && /\/Users\/a\/&lt;b&gt;/.test(h) && /class="up"/.test(h), 'reason: fpc_not_aibd_words_or_unescaped');
-  ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼\(Windows 用 Hello PIN\)/.test(h) && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
+  ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼。/.test(h) && !/Windows/.test(h.split('fph')[1] || '') && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
   ok(!/late|urg/.test(h.split('"')[1]), 'reason: fpc_late_too_early');
   { const w = ctx.FP_WHAT.managed_host_add({ from: 'trusted', name: 'test-a' }); ok(w[0] === '把測試機「test-a」交給夥伴管' && w[1].some(([k, v, up]) => k === '收據' && v === '收據不算' && up) && w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_test_host_card'); }
   { const w = ctx.FP_WHAT.managed_host_add({ name: 'h1', addr: '192.0.2.1', port: 22, user: 'u', key_path: '~/.ssh/k' }); ok(w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_manual_host_fp_line'); }
