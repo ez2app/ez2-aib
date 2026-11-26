@@ -78,6 +78,28 @@ pub fn signed_by_maker(provider: &str, path: &Path, file: &File) -> Result<(), &
     }
 }
 
+/// The macOS Team ID each program a session policy may name is signed with (the values `aibd
+/// ctl policy init` has always checked; claude's is also [`MAKERS`]'). 3e53b PLAN-mac-firstrun
+/// r1 f: one table for the terminal and the page.
+pub const POLICY_TEAMS: [(&str, &str); 2] = [("claude", "Q6L2SF6YDW"), ("codex", "2DC432GLL2")];
+
+/// `name`'s Team ID in [`POLICY_TEAMS`].
+pub fn policy_team(name: &str) -> Option<&'static str> {
+    POLICY_TEAMS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, t)| *t)
+}
+
+/// Whether the file at `path` (its real path: a link is resolved by the caller) is signed
+/// through Apple's root with a Developer ID leaf of `team`, in one codesign call with the
+/// requirement (3e53b r1 f g: not `--verify` then reading `-dv`, which a self-signed file
+/// passes). `Err("not_trusted")` otherwise.
+#[cfg(target_os = "macos")]
+pub fn mac_signed_by_team(path: &Path, team: &str) -> Result<(), &'static str> {
+    mac_codesign(path, &mac_requirement(team))
+}
+
 /// `/usr/bin/codesign --verify --strict -R=<requirement> <path>`, empty environment, nothing
 /// read back but the exit. (macOS has no read-only lock: the hash before and after is the
 /// narrowing, IFACE §3.3, said as is.)
@@ -174,6 +196,20 @@ mod tests {
             r.ends_with("certificate leaf[subject.OU] = \"Q6L2SF6YDW\""),
             "{r}"
         );
+    }
+
+    /// 3e53b PLAN-mac-firstrun r1 f: the terminal and the page check the same Team IDs, each
+    /// one a Team ID the requirement may carry (r2 h4); nothing else has one.
+    #[test]
+    fn a_policy_program_has_its_makers_team_id() {
+        assert_eq!(policy_team("claude"), Some("Q6L2SF6YDW"));
+        assert_eq!(policy_team("codex"), Some("2DC432GLL2"));
+        for other in ["sh", "grok", "Claude", ""] {
+            assert_eq!(policy_team(other), None, "{other}");
+        }
+        for (_, t) in POLICY_TEAMS {
+            assert!(crate::allowlist::team_id_ok(t), "{t}");
+        }
     }
 
     /// The production path refuses a file whose hash is measured but which the maker did not

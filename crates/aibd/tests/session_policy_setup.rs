@@ -73,6 +73,10 @@ async fn the_page_writes_the_policy_once_after_a_fresh_owner_check() {
     std::fs::write(bin.join("claude"), b"\x7fELF\x02\x01\x01\0").unwrap();
     std::fs::write(bin.join("codex.cmd"), b"@node codex.js %*").unwrap();
     aibd::session_policy_setup::test_search_dirs(Some(vec![bin.clone()]));
+    // codesign stands in: a fake ELF is no maker's; macOS answers a made-up Team ID
+    aibd::session_policy_setup::test_signed(Some(|_, _| {
+        Ok(cfg!(target_os = "macos").then(|| "TESTTEAM00".to_owned()))
+    }));
 
     let mut d = Daemon::start(dir.path()).await;
     let page = d.page(true).await;
