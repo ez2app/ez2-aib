@@ -329,7 +329,9 @@ pub async fn version(State(st): State<AppState>) -> Response {
 /// uids of seats already open). The name only: never where the card text is, nor its hash.
 /// Cards that cannot be read: 503 `persona_source_unavailable`, as when a seat is opened.
 /// §7-4: each also says `usual_brain`, the uid of the second brain its seats are usually
-/// opened with ([`crate::registry::usual_brains`]), or null.
+/// opened with ([`crate::registry::usual_brains`]), or null. `builtin`: the one persona of a
+/// machine with no cards file (08de5 11-26, [`crate::personas::builtin_card`]); the page shows
+/// it in its own language and marks it built-in.
 pub async fn personas(State(st): State<AppState>) -> Response {
     let (src, data, store, db) = (
         st.personas.clone(),
@@ -396,6 +398,7 @@ pub fn personas_body<'a>(
     json!({
         "personas": cards
             .map(|(uid, name)| json!({"uid": uid, "display_name": name,
+                "builtin": uid == crate::personas::BUILTIN_UID && name == crate::personas::BUILTIN_NAME,
                 "usual_brain": usual.get(uid).map(|u| u.brain.as_str())}))
             .collect::<Vec<_>>(),
     })

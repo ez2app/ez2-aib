@@ -187,11 +187,12 @@ fn load_live_items(st: &AppState, kind: &str) -> Result<Vec<Item>, Box<Response>
                     }
                 }
                 let u = used.get(&c.uid).copied().unwrap_or(0);
+                let builtin = crate::personas::is_builtin(&c);
                 items.push(Item {
                     uid: c.uid,
                     name: c.name,
                     used: u,
-                    builtin: false,
+                    builtin,
                 });
             }
             Ok(items)
@@ -401,6 +402,12 @@ fn normalize_preview(st: &AppState, body: &Value) -> Result<NormalizedPreview, B
         let Some(keep_item) = by_uid.get(keep) else {
             return Err(Box::new(bad("keep", "找不到要留下的項目")));
         };
+        if kind == "persona" && keep_item.builtin {
+            return Err(Box::new(bad(
+                crate::personas::BUILTIN_READ_ONLY,
+                "內建人格不能當合併後留下的那張",
+            )));
+        }
         if !seen_uids.insert(keep.to_string()) {
             return Err(Box::new(bad("groups", "同一個項目不能出現在多組")));
         }

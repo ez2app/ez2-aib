@@ -111,3 +111,53 @@ async fn archived_ones_leave_the_picker_and_open_nothing_until_restored() {
     );
     d.shutdown().await;
 }
+
+/// The built-in persona (a machine with no cards file, 08de5 11-26) is listed as built-in and
+/// is never changed: persona_set and persona_archive are refused before any owner window
+/// (3e53b DECISION-builtin-persona-bounds 1-4).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_built_in_persona_is_listed_and_never_changed() {
+    let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let listed = d.call("GET", "/api/v1/personas", None, None).await.json;
+    assert_eq!(listed["personas"][0]["builtin"], false, "{listed}");
+    std::fs::remove_file(dir.path().join("cards.json")).unwrap();
+    let listed = d.call("GET", "/api/v1/personas", None, None).await.json;
+    assert_eq!(
+        (
+            listed["personas"].as_array().map(Vec::len),
+            listed["personas"][0]["uid"].as_str(),
+            listed["personas"][0]["builtin"].as_bool(),
+        ),
+        (Some(1), Some("aib000"), Some(true)),
+        "{listed}"
+    );
+    let sha = "f63539efbf94ab4e4f706a80c034bd4f4654b96301f5b4eb8601938da52e7cee";
+    for (b, what) in [
+        (
+            json!({"type": "persona_set", "persona_uid": "aib000", "base_sha": sha,
+                "duty": "不用問本人。", "idem_key": "bi-1"}),
+            "set",
+        ),
+        (
+            json!({"type": "persona_archive", "uid": "aib000", "idem_key": "bi-2"}),
+            "archive",
+        ),
+    ] {
+        let r = d
+            .call("POST", "/api/v1/act", Some(&cred), Some(&b.to_string()))
+            .await;
+        assert_eq!(
+            (r.code, r.json["reason"].as_str()),
+            (400, Some("builtin_persona_read_only")),
+            "reason: builtin_persona_changed {what} {}",
+            r.body
+        );
+    }
+    assert!(
+        !dir.path().join("cards.json").exists(),
+        "reason: builtin_made_cards"
+    );
+    d.shutdown().await;
+}
