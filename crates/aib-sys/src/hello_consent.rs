@@ -66,10 +66,14 @@ unsafe extern "system" fn owner_proc(
 impl OwnerWindow {
     /// The window, or none when it could not be made (the ask then goes without one).
     fn raise() -> Option<OwnerWindow> {
-        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        // a rendezvous: the thread's send goes through only while this waits for it, so a window
+        // made after the wait gave up is never left behind (3e53b REVIEW-pack2 L2)
+        let (tx, rx) = std::sync::mpsc::sync_channel::<isize>(0);
         let thread = std::thread::Builder::new()
             .name("aib-hello-owner".into())
-            .spawn(move || owner_thread(&tx))
+            .spawn(move || {
+                owner_thread(&tx);
+            })
             .ok()?;
         // named exception (ADR 0005): a bounded wait for the window's own thread to say it made
         // the window, inside the one Hello ask, as run_limited waits for the answer
@@ -80,10 +84,14 @@ impl OwnerWindow {
                 hwnd: h,
                 thread: Some(thread),
             }),
-            _ => {
+            // it made no window and returns right after saying so
+            Ok(_) => {
                 let _ = thread.join();
                 None
             }
+            // no answer in time: never wait on that thread; once the receiver is gone its send
+            // fails and it closes its own window (the ask goes without one)
+            Err(_) => None,
         }
     }
 }
@@ -100,14 +108,15 @@ impl Drop for OwnerWindow {
 }
 
 /// [`OwnerWindow`]'s thread: make the window, send its handle (0 when it failed), pump its
-/// messages until it is destroyed.
-fn owner_thread(tx: &std::sync::mpsc::Sender<isize>) {
+/// messages until it is destroyed. Nobody to take the handle (the wait gave up): destroy the
+/// window and return. Returns the handle it made (tests).
+fn owner_thread(tx: &std::sync::mpsc::SyncSender<isize>) -> isize {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics, RegisterClassW,
-        SetForegroundWindow, TranslateMessage, MSG, SM_CXSCREEN, WNDCLASSW, WS_CAPTION,
-        WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, GetSystemMetrics,
+        RegisterClassW, SetForegroundWindow, TranslateMessage, MSG, SM_CXSCREEN, WNDCLASSW,
+        WS_CAPTION, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
     };
     let wide = |s: &str| {
         s.encode_utf16()
@@ -146,9 +155,14 @@ fn owner_thread(tx: &std::sync::mpsc::Sender<isize>) {
             null(),
         )
     };
-    let _ = tx.send(hwnd as isize);
+    let sent = tx.send(hwnd as isize);
     if hwnd.is_null() {
-        return;
+        return 0;
+    }
+    if sent.is_err() {
+        // SAFETY: the window this thread just made
+        unsafe { DestroyWindow(hwnd) };
+        return hwnd as isize;
     }
     // SAFETY: our own window; Windows may refuse a background process the foreground
     unsafe { SetForegroundWindow(hwnd) };
@@ -161,6 +175,7 @@ fn owner_thread(tx: &std::sync::mpsc::Sender<isize>) {
         // SAFETY: the same message
         unsafe { DispatchMessageW(&msg) };
     }
+    hwnd as isize
 }
 
 /// Ask the owner now; blocks until Windows Hello answers. `Ok` only for a verified gesture.
@@ -222,6 +237,21 @@ mod tests {
         let still = unsafe { IsWindow(h as _) };
         assert_eq!(still, 0, "reason: owner_window_left_open");
         assert!(!OWNER_WINDOW_TITLE.is_empty());
+    }
+
+    /// 3e53b REVIEW-pack2 L2: when nobody waits for the handle any more (the 5 s wait gave
+    /// up), the window thread closes its window and ends, instead of keeping it up forever.
+    #[test]
+    fn a_window_nobody_waits_for_is_closed_by_its_thread() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<isize>(0);
+        drop(rx);
+        // runs here, not on a thread: it must return by itself
+        let h = owner_thread(&tx);
+        assert_ne!(h, 0, "reason: no_window_made");
+        // SAFETY: a handle this thread made (IsWindow only reads)
+        let still = unsafe { IsWindow(h as _) };
+        assert_eq!(still, 0, "reason: window_left_behind");
     }
 }
 

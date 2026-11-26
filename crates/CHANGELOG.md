@@ -9,7 +9,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`): aibd never has the foreground window, so every ask
   went without one. Each ask now raises a small always-on-top window (「AIB 正在請你確認本人 · 請看 Windows 安全性視窗」) on
   a thread of its own, asks for that window, and closes it when Windows answers; when it cannot be made the ask goes
-  as before. Knives FW1–FW2 (`crates/aib-sys/knives/knives-hello-forwindow-c2f0b.sh`, Windows). Front-of-screen on the
+  as before; a window made after the 5 s wait gave up is closed by its own thread, never waited on (3e53b REVIEW-pack2
+  L2). Knives FW1–FW3 (`crates/aib-sys/knives/knives-hello-forwindow-c2f0b.sh`, Windows). Front-of-screen on the
   laptop: W0, owner present.
 - Owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126; the laptop's session policy was approved and written with
   nothing in the event journal): every answer to an owner window is journaled as `owner.answer` {ticket, operation,
