@@ -5082,6 +5082,7 @@
   const OWNER_WHY = {
     owner_check_too_weak: '這台的本人驗證方式不夠強,這個動作不開放。',
     owner_check_unmeasured: 'Windows Hello 還沒在這台電腦上實測過,高風險動作先不開放。',
+    owner_batch_one_at_a_time: '這台每件要分開確認(每件跳一次 Windows Hello),請一件一件按。',  // c2f0b B2 L3 8ea92b569e;頁面不送 owner_batch,收到就照字(ebab8 10:43)
     unavailable: 'AIB 現在不在你登入的桌面上執行(例如從遠端連線啟動),沒辦法跳出確認視窗。請在這台電腦前登入後再按。',
     no_biometry: '這台沒有設定 Windows Hello。',
     cancel: '你按了取消,沒有動任何東西。',
@@ -5114,6 +5115,7 @@
     en: {
       owner_check_too_weak: "This computer's owner verification is not strong enough, so this action is not available.",
       owner_check_unmeasured: 'Windows Hello has not had an on-device check on this computer yet, so high-risk actions are not available for now.',
+      owner_batch_one_at_a_time: 'On this computer each item has to be confirmed separately (Windows Hello asks once per item); please do them one at a time.',
       unavailable: 'AIB is not running on the desktop you signed in to (for example, it was started from a remote connection), so it cannot show the confirmation window. Sign in at this computer and press again.',
       no_biometry: 'Windows Hello is not set up on this computer.',
       cancel: 'You pressed Cancel. Nothing was changed.',
@@ -5139,6 +5141,7 @@
     ja: {
       owner_check_too_weak: 'このパソコンの本人確認の方式が十分に強くないため、この操作は使えません。',
       owner_check_unmeasured: 'Windows Hello はまだこのパソコンで実測していないため、高リスクの操作は今は使えません。',
+      owner_batch_one_at_a_time: 'このパソコンでは 1 件ずつ確認が必要です(1 件ごとに Windows Hello が表示されます)。1 件ずつ押してください。',
       no_biometry: 'このパソコンには Windows Hello が設定されていません。',
       cancel: 'キャンセルを押しました。何も変更していません。',
       pair_touch_timeout: '確認ウィンドウが長いあいだ応答しませんでした。何も変更していません。もう一度押せます。',
@@ -5161,6 +5164,7 @@
     ko: {
       owner_check_too_weak: '이 컴퓨터의 본인 확인 방식이 충분히 강하지 않아 이 작업은 사용할 수 없습니다.',
       owner_check_unmeasured: 'Windows Hello를 아직 이 컴퓨터에서 실측하지 않아 고위험 작업은 지금 사용할 수 없습니다.',
+      owner_batch_one_at_a_time: '이 컴퓨터에서는 항목마다 따로 확인해야 합니다(항목마다 Windows Hello가 한 번씩 뜹니다). 하나씩 눌러 주세요.',
       no_biometry: '이 컴퓨터에는 Windows Hello가 설정되어 있지 않습니다.',
       cancel: '취소를 눌렀습니다. 아무것도 바꾸지 않았습니다.',
       pair_touch_timeout: '확인 창이 너무 오래 응답하지 않았습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
