@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# 本人確認方式設定(fc7f9 11-27;c2f0b df67611099;PLAN-owner-method-c2f0b r2 §2 / §5 / §9;Andy 21:1x 改方式放設定頁、不顯眼):照實寫目前方式、改成密碼先看說明按兩次、Windows 不出選項。
+# Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs, om_* block) red.
+set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+k() { python3 -I scripts/knife.py apps/web/dist/ws.js "$1" "$2" \
+  --expect-fail the_page_is_checked_without_a_browser \
+  -- cargo test -p aibd --locked --test page_static the_page_is_checked_without_a_browser; }
+# OM1 改成密碼不用先看說明
+k "    if (to === 'password' && !O.ask) return; // 沒先看過說明不送" "    // 沒先看過說明不送"
+# OM2 指紋時直接出改成密碼的送出鈕(不經說明)
+k 'body += `<button type="button" class="k" data-omask="1">' 'body += `<button type="button" class="k" data-omset="password">'
+# OM3 說明字拿掉降級那句
+k "用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後" "之後"
+# OM4 Windows 不寫去哪改(Windows 不出選項是結構:windows_hello 分支排在按鈕分支前,om_windows_never_choice 核)
+k "    if (m === 'windows_hello') body += esc(W.winHow);" "    if (m === 'windows_hello') body += '';"
+# OM5 金鑰跟配對時不同還出改鈕
+k "    else if (m === 'unknown') body += esc(W.repair);" "    else if (m === 'unknown' && !set) body += esc(W.repair);"
+# OM6 不看 can_change
+k "const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;" "const m = d.method, set = hasAct(OM_SET) === true;"
+# OM7 多送欄位
+k "try { await act(OM_SET, { to });" "try { await act(OM_SET, { to, by: 'page' });"
+# OM8 重新配對的錯誤碼沒照表
+k "owner_key_not_as_paired: 'repair', " ""
+# OM9 取消的錯誤碼沒照表
+k "user_cancel: 'cancel', " ""
+# OM10 舊 aibd 也出設定鈕
+k "const setBtn = () => (hasAct(OM_ST) === true ? " "const setBtn = () => (true ? "
+# OM11 設定鈕沒接上
+k "\${typeof setBtn === 'function' ? setBtn() : ''}<a class=\"ib\"" "<a class=\"ib\""
+# OM12 打開設定不重讀狀態
+k "if (S.setOpen) { S.om = null; omLoad(); }" "if (S.setOpen) { }"
+# OM13 一次一個
+k "if (!O || O.busy || !O.d ||" "if (!O || !O.d ||"
+# OM14 改回指紋要先問(變成兩段)
+k "    else if (set && m === 'password') body +=" "    else if (set && m === 'password' && O.ask) body +="
+# OM15 讀不到狀態不照實寫
+k "O.d = null; O.bad = true; }" "O.d = null; }"

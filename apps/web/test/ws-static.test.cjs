@@ -409,6 +409,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   // ebab8 13:4x 總刀:畫面上任何字面「指紋」都要經 fpSay;例外只有下面三種(新加的字不在表上 ⇒ 紅,要先分類)
   { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
     const SELF = ['FP_WIN_SAY', 'fpSay']; // 換字表本身
+    const BYAIBD = ['OM_L']; // 本人確認方式:哪一句由 aibd 回的 method 決定(Windows 一律 windows_hello,那句的「指紋」是 Windows Hello 的選項之一),不能再經 fpSay 換字;om_windows_no_choice 核
     const KEEP = [['FP_WHAT', '機器與金鑰指紋'], ['pvDialog', '預覽的指紋不對'], ['pvDialog', '這一份的指紋(sha256'], ['hsRow', '驗證窗列出指紋、真的 IP'], ['upConsent', '清單指紋'], ['hsLine', '指紋 '], // 雜湊 / 主機金鑰,不是本人確認
       ['OWNER_WHY', 'Touch ID 現在讀不到'], ['pwText', '這台用系統本人驗證(指紋或登入密碼)'], ['fpcHtml', '跳出的<b>系統視窗</b>按指紋'], // Mac 分支
       ['OWNER_PIN_HOW', '不用指紋或臉部辨識的硬體'], ['OC_W', '不需要指紋或臉部辨識的硬體'], ['OC_W', '指紋や顔認証']]; // Windows 說明「不需要指紋硬體」
@@ -420,7 +421,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
       for (let j = l.indexOf('指紋'); j >= 0; j = l.indexOf('指紋', j + 1)) { if (ci >= 0 && j > ci) break;
         let q = j - 1; while (q >= 0 && l[q] !== "'" && l[q] !== '`') q--; const pre = l.slice(0, Math.max(q, 0));
         if (q >= 0 && /fpSay : \(t\) => t\)\($/.test(pre)) continue;
-        if (SINK.includes(owner) || SELF.includes(owner)) continue;
+        if (SINK.includes(owner) || SELF.includes(owner) || BYAIBD.includes(owner)) continue;
         if (KEEP.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 30), j + 30).includes(t))) continue;
         if (COND.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 80), j + 60).includes(t.slice(t.indexOf("'") + 1)))) continue;
         bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
@@ -2540,4 +2541,36 @@ const lcChecks = (async () => {
 // 接線:開席視窗兩處 + 開席設定卡 + 開視窗就讀 + 點擊先給 lcClick;登入卡共用品牌標
 ok(ws.includes("${PV.filter((p) => !p.open && lcNeeds(p.key)).map((p) => `<div class=\"apn anl\">${lcCard(p.key)}</div>`).join('')}") && ws.includes(": lcNeeds(p.key) ? '。' + `<span class=\"anlc\">${lcCard(p.key)}</span>` : FIX[p.why] ?") && ws.includes('      ${spInstallHtml()}${msg}') && ws.includes('      lcLoad(); // L3') && ws.includes("    if (lcClick(x)) return;\n    const rlb = x.closest('[data-relogin]');") && ws.includes('<div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">共 ${steps.length} 步</span>'), 'reason: lc_wired');
 { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.lc \.lcpg::-webkit-progress-value\{background:var\(--rlb\)/.test(css) && /\.lc \.rlcrow \.k\{font-size:17px[^}]*min-height:52px\}/.test(css), 'reason: lc_card_css_brand_progress_big_buttons'); }
+// 本人確認方式設定(c2f0b df67611099;PLAN-owner-method r2 §2 / §5 / §9):照實寫目前方式;改成密碼要先看說明、按兩次;改回指紋一次;Windows 不出選項;錯誤碼照表
+lateChecks.push((async () => {
+  const a = ws.indexOf('  // 本人確認方式(c2f0b'), b = ws.indexOf('  // 新增視窗裡的重新登入', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: {}, esc: E, render: () => {}, acts: ['owner_method_status', 'owner_method_set'], st: null, fail: null, lang: 'zh-TW', errText: (e) => 'ET:' + (e && e.reason),
+    hasAct: (t) => c.acts.includes(t), askLang: () => c.lang, rgCode: (e) => String((e && e.reason) || ''),
+    act: async (t, bd) => { sent.push(t + ' ' + JSON.stringify(bd)); if (t === 'owner_method_status') { if (c.stFail) throw c.stFail; return c.st; } if (c.fail) throw c.fail; return { done: true }; } });
+  vm.runInContext(src + '\nthis.F = { omLoad, omHtml, omSet, setBtn, setHtml, OM_L };', c);
+  const F = c.F; ok(src.length > 3000, 'reason: om_block_found');
+  c.st = { method: 'biometry', can_change: true, why: null }; await F.omLoad(); ok(sent.join('|') === 'owner_method_status {}' && c.S.om.d === c.st, 'reason: om_status_read');
+  let h = F.omHtml(); ok(h.includes('目前用指紋。') && h.includes('data-omask="1"') && h.includes('>改用登入密碼</button>') && !h.includes('data-omset'), 'reason: om_bio_offers_password_behind_ask ' + h);
+  sent.length = 0; await F.omSet('password'); ok(sent.length === 0, 'reason: om_password_needs_ask_first');
+  c.S.om.ask = true; h = F.omHtml(); ok(h.includes('知道這台電腦登入密碼的人,都能核准 AIB 的動作。') && h.includes('data-omset="password"') && h.includes('data-omno="1"'), 'reason: om_ask_shows_downgrade_words ' + h);
+  await F.omSet('password'); ok(sent[0] === 'owner_method_set {"to":"password"}' && c.S.om.msg.text === '已改成登入密碼。' && !c.S.om.ask, 'reason: om_set_password_only_to ' + sent.join('|'));
+  c.S.om.d = { method: 'password', can_change: true }; h = F.omHtml(); ok(h.includes('目前用登入密碼。') && h.includes('data-omset="biometry"') && !h.includes('data-omask'), 'reason: om_password_back_one_click ' + h);
+  sent.length = 0; c.S.om.d = { method: 'password', can_change: true }; await F.omSet('biometry'); ok(sent[0] === 'owner_method_set {"to":"biometry"}' && c.S.om.msg.text === '已改回指紋。', 'reason: om_set_biometry');
+  c.S.om.d = { method: 'windows_hello', can_change: false }; h = F.omHtml(); ok(h.includes('Windows Hello(PIN、指紋或臉,由 Windows 設定決定)') && h.includes('Windows 設定 › 帳戶 › 登入選項') && !/data-om(ask|set)/.test(h), 'reason: om_windows_no_choice ' + h);
+  c.S.om.d = { method: 'windows_hello', can_change: true }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_windows_never_choice');
+  c.S.om.d = { method: 'unknown', can_change: true }; h = F.omHtml(); ok(h.includes('目前用指紋(金鑰跟配對時不同)。') && h.includes('先重新配對一次再改。') && !/data-om(ask|set)/.test(h), 'reason: om_unknown_says_repair ' + h);
+  c.S.om.d = { method: 'biometry', can_change: false }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_no_button_without_can_change');
+  c.acts = ['owner_method_status']; c.S.om.d = { method: 'biometry', can_change: true }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_no_button_without_set_act'); c.acts = ['owner_method_status', 'owner_method_set'];
+  const tryErr = async (r) => { c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st, ask: true }; c.fail = { reason: r }; await F.omSet('password'); c.fail = null; return c.S.om.msg.text; };
+  ok(await tryErr('owner_key_not_as_paired') === '先重新配對一次再改。' && await tryErr('user_cancel') === '你按了取消,沒有改。' && await tryErr('owner_method_not_here') === '這台不能改本人確認方式。' && await tryErr('page_only') === '只有這台 AIB 的內建頁能改。' && await tryErr('pair_touch_busy') === '沒有改:ET:pair_touch_busy', 'reason: om_error_words');
+  c.S.om = { d: { method: 'biometry', can_change: true }, ask: true, busy: true }; sent.length = 0; await F.omSet('password'); ok(sent.length === 0 && F.omHtml().includes('disabled'), 'reason: om_one_at_a_time');
+  c.S.om = null; c.stFail = { reason: 'x' }; await F.omLoad(); ok(c.S.om.d === null && F.omHtml().includes('讀不到目前的方式。'), 'reason: om_status_fail_says_so'); c.stFail = null;
+  c.lang = 'en'; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.omHtml().includes('Use login password instead'), 'reason: om_en'); c.lang = 'zh-TW';
+  ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OM_L[l]).join() === Object.keys(F.OM_L['zh-TW']).join()), 'reason: om_four_langs_same_keys');
+  c.acts = []; c.S.om = { d: c.st }; await F.omLoad(); ok(c.S.om === null && F.setBtn() === '' && F.setHtml() === '', 'reason: om_old_aibd_nothing'); c.acts = ['owner_method_status', 'owner_method_set'];
+  c.S.setOpen = false; ok(F.setBtn().includes('data-setopen="1"') && F.setHtml() === '', 'reason: om_settings_closed_by_default');
+  c.S.setOpen = true; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.setHtml().includes('本人確認方式') && F.setHtml().includes('data-setopen="0"'), 'reason: om_settings_panel');
+  ok(ws.includes("${typeof setBtn === 'function' ? setBtn() : ''}<a class=\"ib\" href=\"contacts.html\"") && ws.includes("${decideHtml()}${typeof setHtml === 'function' ? setHtml() : ''}<div class=\"upper\">") && ws.includes("if (S.setOpen) { S.om = null; omLoad(); }") && ws.includes("if (os && S.om) { omSet(os.dataset.omset); return; }") && ws.includes("if (x.closest('[data-omask]') && S.om) { S.om.ask = true;"), 'reason: om_wired');
+})());
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks, relogChecks, lcChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });

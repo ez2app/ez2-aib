@@ -6390,6 +6390,48 @@
     } catch (e) { const c = rgCode(e); D.msg = { bad: true, text: c === 'owner_check_unavailable' ? DG_NOOC : (on === true ? '沒有打開:' : '沒有關掉:') + errText(e) }; }
     D.busy = false; await dgLoad();
   }
+  // 本人確認方式(c2f0b df67611099;PLAN-owner-method-c2f0b r2 §2 / §5 / §9;Andy 21:1x:不做卡頂常駐、不放顯眼鈕,改方式放設定頁;3e53b 21:19:設定頁照實寫目前方式)
+  // 讀 owner_method_status {method, can_change, why};改 owner_method_set {to} 會直接跳本人確認窗(用現在的鑰),不走 ticket,請求等到窗按完(最多約 2 分)
+  // 兩平台同一塊、同位置、同句型(Andy 22:0x);不一樣只在做不到的地方:Windows 不能在 AIB 裡選(can_change=false),只照實寫 Windows Hello 與去哪改
+  const OM_ST = 'owner_method_status', OM_SET = 'owner_method_set';
+  const OM_L = {
+    'zh-TW': { title: '本人確認方式', biometry: '目前用指紋。', password: '目前用登入密碼。', unknown: '目前用指紋(金鑰跟配對時不同)。', windows_hello: '目前用 Windows Hello(PIN、指紋或臉,由 Windows 設定決定)。', winHow: '要改請到 Windows 設定 › 帳戶 › 登入選項。', toPw: '改用登入密碼', toBio: '改回指紋', warn: '用指紋:只有你的手指能核准 AIB 的動作。用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後可以在設定裡改回來。', sure: '確定改用登入密碼', no: '不要', wait: '等你在本人確認視窗按…', donePw: '已改成登入密碼。', doneBio: '已改回指紋。', fail: '沒有改:', repair: '先重新配對一次再改。', notHere: '這台不能改本人確認方式。', cancel: '你按了取消,沒有改。', pageOnly: '只有這台 AIB 的內建頁能改。', read: '讀不到目前的方式。' },
+    en: { title: 'How you confirm', biometry: 'You confirm with your fingerprint.', password: 'You confirm with your login password.', unknown: 'You confirm with your fingerprint (the key differs from when you paired).', windows_hello: 'You confirm with Windows Hello (PIN, fingerprint or face, as set in Windows).', winHow: 'To change it, open Windows Settings › Accounts › Sign-in options.', toPw: 'Use login password instead', toBio: 'Go back to fingerprint', warn: 'With fingerprint: only your finger can approve AIB actions. With login password: anyone who knows this computer\'s login password can approve AIB actions. You can switch back in settings later.', sure: 'Yes, use login password', no: 'Cancel', wait: 'Waiting for you in the confirmation window…', donePw: 'Changed to login password.', doneBio: 'Back to fingerprint.', fail: 'Not changed: ', repair: 'Pair again first, then change it.', notHere: 'This computer cannot change how you confirm.', cancel: 'You cancelled; nothing changed.', pageOnly: 'Only this computer\'s built-in AIB page can change it.', read: 'Could not read the current method.' },
+    ja: { title: '本人確認の方法', biometry: '今は指紋で確認しています。', password: '今はログインパスワードで確認しています。', unknown: '今は指紋で確認しています(鍵がペアリング時と違います)。', windows_hello: '今は Windows Hello(PIN・指紋・顔、Windows の設定しだい)で確認しています。', winHow: '変更は Windows の設定 › アカウント › サインイン オプションで。', toPw: 'ログインパスワードに変える', toBio: '指紋に戻す', warn: '指紋なら、AIB の操作を承認できるのはあなたの指だけです。ログインパスワードなら、このパソコンのログインパスワードを知っている人は誰でも AIB の操作を承認できます。あとで設定から戻せます。', sure: 'ログインパスワードに変える', no: 'やめる', wait: '本人確認の画面で押してください…', donePw: 'ログインパスワードに変えました。', doneBio: '指紋に戻しました。', fail: '変更されていません:', repair: '先にもう一度ペアリングしてから変えてください。', notHere: 'このパソコンでは本人確認の方法を変えられません。', cancel: 'キャンセルしたので、変わっていません。', pageOnly: '変えられるのはこのパソコンの AIB 内蔵ページだけです。', read: '今の方法を読めませんでした。' },
+    ko: { title: '본인 확인 방법', biometry: '지금은 지문으로 확인합니다.', password: '지금은 로그인 암호로 확인합니다.', unknown: '지금은 지문으로 확인합니다(키가 페어링 때와 다릅니다).', windows_hello: '지금은 Windows Hello(PIN, 지문 또는 얼굴, Windows 설정에 따름)로 확인합니다.', winHow: '바꾸려면 Windows 설정 › 계정 › 로그인 옵션에서 하세요.', toPw: '로그인 암호로 바꾸기', toBio: '지문으로 되돌리기', warn: '지문을 쓰면 AIB 작업은 당신의 손가락으로만 승인할 수 있습니다. 로그인 암호를 쓰면 이 컴퓨터의 로그인 암호를 아는 사람은 누구나 AIB 작업을 승인할 수 있습니다. 나중에 설정에서 되돌릴 수 있습니다.', sure: '로그인 암호로 바꾸기', no: '취소', wait: '본인 확인 창에서 눌러 주세요…', donePw: '로그인 암호로 바꿨습니다.', doneBio: '지문으로 되돌렸습니다.', fail: '바뀌지 않았습니다: ', repair: '먼저 다시 페어링한 뒤 바꾸세요.', notHere: '이 컴퓨터에서는 본인 확인 방법을 바꿀 수 없습니다.', cancel: '취소해서 바뀌지 않았습니다.', pageOnly: '이 컴퓨터의 AIB 기본 페이지에서만 바꿀 수 있습니다.', read: '지금 방법을 읽지 못했습니다.' },
+  };
+  const OM_WHY = { owner_key_not_as_paired: 'repair', owner_method_not_here: 'notHere', user_cancel: 'cancel', page_only: 'pageOnly' };
+  const omW = () => OM_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OM_L['zh-TW'];
+  async function omLoad() {
+    if (hasAct(OM_ST) !== true) { S.om = null; return; }
+    const O = S.om = S.om || {};
+    try { const r = await act(OM_ST, {}); O.d = r && typeof r === 'object' && !Array.isArray(r) && typeof r.method === 'string' ? r : null; O.bad = !O.d; } catch (e) { O.d = null; O.bad = true; }
+    render();
+  }
+  function omHtml() {
+    const O = S.om; if (!O) return '';
+    const W = omW(), d = O.d, msg = O.msg ? `<div class="${O.msg.bad ? 'aerr' : 'aok'}" role="${O.msg.bad ? 'alert' : 'status'}">${esc(O.msg.text)}</div>` : '';
+    if (!d) return `<div class="occ"><b>${esc(W.title)}</b>${O.bad ? esc(W.read) : ''}</div>${msg}`;
+    const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;
+    let body = esc(Object.prototype.hasOwnProperty.call(W, m) && /^(biometry|password|unknown|windows_hello)$/.test(m) ? W[m] : W.read);
+    if (m === 'windows_hello') body += esc(W.winHow); // Windows 不能在 AIB 裡選:做不到,照實寫去哪改
+    else if (m === 'unknown') body += esc(W.repair); // 金鑰跟配對時不同:只用指紋,改不了,先重新配對
+    else if (O.busy) body += `<button type="button" class="k" disabled>${esc(W.wait)}</button>`;
+    else if (set && m === 'biometry' && O.ask) body = `${body}<span class="omw">${esc(W.warn)}</span><button type="button" class="k" data-omno="1">${esc(W.no)}</button><button type="button" class="k" data-omset="password">${esc(W.sure)}</button>`; // 換成較弱的要按兩次(只防誤按;真正的證明是本人確認窗)
+    else if (set && m === 'biometry') body += `<button type="button" class="k" data-omask="1">${esc(W.toPw)}</button>`;
+    else if (set && m === 'password') body += `<button type="button" class="k" data-omset="biometry">${esc(W.toBio)}</button>`; // 改回較嚴的不用先問
+    return `<div class="occ"><b>${esc(W.title)}</b>${body}</div>${msg}`;
+  }
+  async function omSet(to) {
+    const O = S.om; if (!O || O.busy || !O.d || (to !== 'password' && to !== 'biometry') || hasAct(OM_SET) !== true || O.d.can_change !== true) return;
+    if (to === 'password' && !O.ask) return; // 沒先看過說明不送
+    const W = omW(); O.busy = true; O.ask = false; O.msg = null; render();
+    try { await act(OM_SET, { to }); O.msg = { bad: false, text: to === 'password' ? W.donePw : W.doneBio }; } catch (e) { const k = OM_WHY[rgCode(e)]; O.msg = { bad: true, text: k ? W[k] : W.fail + errText(e) }; }
+    O.busy = false; await omLoad();
+  }
+  // 設定面板(⚙️ 設定):目前只有本人確認方式;aibd 沒有 owner_method_status 就不出這顆鈕
+  const setBtn = () => (hasAct(OM_ST) === true ? `<button type="button" class="ib${S.setOpen ? ' on' : ''}" data-setopen="1" aria-expanded="${S.setOpen ? 'true' : 'false'}" title="設定">⚙️ 設定</button>` : '');
+  const setHtml = () => (S.setOpen && hasAct(OM_ST) === true ? `<div class="box setp" role="region" aria-label="設定">${omHtml()}<button type="button" class="k" data-setopen="0">收起設定</button></div>` : '');
   // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
   const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
   const addSnap = (b) => JSON.stringify(Object.assign({}, b, { idem_key: '' })); // 開席 body 快照(idem_key 每次新的,不算)
@@ -7132,9 +7174,9 @@
     const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span><button type="button" class="k g startc" data-startclaude="1" title="用預設(Claude · 討論研究 · 內建人格)開一席">開始用 Claude</button>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴${netDot()}</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
-    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
+    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}${typeof setBtn === 'function' ? setBtn() : ''}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">AIB 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
-      ${decideHtml()}<div class="upper">
+      ${decideHtml()}${typeof setHtml === 'function' ? setHtml() : ''}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
         ${S.add ? guideDim(addHtml()) : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
         <div class="box">${slotsHtml()}</div>
@@ -7641,6 +7683,10 @@
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     { const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }
+    { const so = x.closest('[data-setopen]'); if (so) { S.setOpen = so.dataset.setopen === '1' ? !S.setOpen : false; if (S.setOpen) { S.om = null; omLoad(); } render(); return; } }
+    if (x.closest('[data-omask]') && S.om) { S.om.ask = true; S.om.msg = null; render(); return; }
+    if (x.closest('[data-omno]') && S.om) { S.om.ask = false; render(); return; }
+    { const os = x.closest('[data-omset]'); if (os && S.om) { omSet(os.dataset.omset); return; } }
     if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }
     if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }
     if (S.add) {
