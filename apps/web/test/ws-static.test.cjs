@@ -1690,6 +1690,9 @@ lateChecks.push((async () => {
   h = await load({ platform: 'windows', class: 'unknown' }); ok(h.includes('還不知道這台有沒有設 Windows Hello') && h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_unknown_pin_steps');
   h = await load({ platform: 'windows', class: 'not_at_desk' }); ok(h.includes('不在你登入的桌面上') && !h.includes('ocsteps') && h.includes('data-ocre'), 'reason: oc_not_at_desk_recheck');
   h = await load({ platform: 'windows', class: 'hello_hardware' }); ok(h === '<div class="occ" role="status"><b>這台用 Windows Hello 確認是你本人(金鑰存在電腦的安全晶片裡)。</b></div>', 'reason: oc_hello_hardware_plain ' + h);
+  // Andy 10:1x B2(c2f0b 10:17):Hello 設好 = hello_key_unknown,每次要本人當下跳 Hello;不提配對金鑰、不出三步與重新檢查
+  h = await load({ platform: 'windows', class: 'hello_key_unknown' }); ok(h === '<div class="occ" role="status"><b>這台用 Windows Hello 確認是你本人:每次要你本人時,當下跳一次 Hello。</b></div>', 'reason: oc_b2_hello_key_unknown ' + h);
+  ok(!/配對金鑰|pairing key|ペアリング鍵|페어링 키/.test(src), 'reason: oc_b2_no_pairing_key_words');
   h = await load({ platform: 'windows', class: 'hello_software' }); ok(h.includes('沒有安全晶片(TPM)') && !h.includes('高風險') && !h.includes('data-ocre'), 'reason: oc_hello_software');
   for (const r of [{ platform: 'macos', class: null }, { platform: 'macos', class: 'no_hello' }, { platform: 'windows', class: 'constructor' }, { platform: 'windows', class: 'zz' }, null]) { const x = await load(r); ok(x === '', 'reason: oc_nothing_when_not_windows_class ' + JSON.stringify(r)); }
   h = await load(Object.assign(new Error('nf'), { status: 404 })); ok(h === '', 'reason: oc_old_aibd_nothing');
