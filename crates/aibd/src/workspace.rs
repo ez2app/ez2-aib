@@ -245,8 +245,11 @@ pub fn net_caps(os: &str, proxy: bool) -> Value {
 /// A14 (f163c REVIEW-a14code L2): whether a work seat's network is blocked in this build, the
 /// one answer the page ([`mode_net`]) and a seat's open line ([`aib_seatopen::mode_note`]) both
 /// take. Today: claude's sandbox keeps commands off the network, codex's profile has
-/// `network.enabled=false`. When egress (3e53b, `capabilities.net`) comes in, this reads its
-/// `net_state(…) == "enforced"` and nothing else changes.
+/// `network.enabled=false`. When egress (3e53b, `capabilities.net`) is wired in, this is not
+/// read as `net_state(…) == "enforced"`: enforced means "through the proxy, a card asks the
+/// owner, a yes connects", not "no network". The answer then has three words (blocked /
+/// through the proxy, asks the owner / a hint only), not a yes-no (f163c REVIEW-a14code
+/// d5a42b9d N1).
 pub fn work_net_blocked() -> bool {
     true
 }
