@@ -30,15 +30,13 @@ pub fn make(link: &Path, exe: &Path, args: &str) -> Result<(), String> {
     let _com = Com::init();
     let l = shell_link()?;
     let dir = exe.parent().unwrap_or(exe);
-    // SAFETY: `l` is a live IShellLinkW; every string is an owned HSTRING that outlives the call.
-    unsafe {
-        l.SetPath(&HSTRING::from(exe))
-            .map_err(|e| format!("path: {e}"))?;
-        l.SetArguments(&HSTRING::from(args))
-            .map_err(|e| format!("arguments: {e}"))?;
-        l.SetWorkingDirectory(&HSTRING::from(dir))
-            .map_err(|e| format!("folder: {e}"))?;
-    }
+    // SAFETY (each call below): `l` is a live IShellLinkW; the string is an owned HSTRING that
+    // outlives the call.
+    unsafe { l.SetPath(&HSTRING::from(exe)) }.map_err(|e| format!("path: {e}"))?;
+    // SAFETY: as above.
+    unsafe { l.SetArguments(&HSTRING::from(args)) }.map_err(|e| format!("arguments: {e}"))?;
+    // SAFETY: as above.
+    unsafe { l.SetWorkingDirectory(&HSTRING::from(dir)) }.map_err(|e| format!("folder: {e}"))?;
     let f: IPersistFile = l.cast().map_err(|e| format!("save: {e}"))?;
     // SAFETY: `f` is the same object's IPersistFile; the file name is an owned HSTRING.
     unsafe { f.Save(&HSTRING::from(link), true) }.map_err(|e| format!("save: {e}"))
@@ -56,14 +54,11 @@ pub fn read(link: &Path) -> Result<(PathBuf, String), String> {
     unsafe { f.Load(&HSTRING::from(link), STGM_READ) }.map_err(|e| format!("load: {e}"))?;
     let mut path = vec![0u16; 32768];
     let mut args = vec![0u16; 32768];
-    // SAFETY: both buffers are writable for their whole length; no find data is asked for.
+    // SAFETY: `path` is writable for its whole length; no find data is asked for.
     // 4 = SLGP_RAWPATH: the path as written, environment variables not expanded.
-    unsafe {
-        l.GetPath(&mut path, std::ptr::null_mut(), 4)
-            .map_err(|e| format!("target: {e}"))?;
-        l.GetArguments(&mut args)
-            .map_err(|e| format!("arguments: {e}"))?;
-    }
+    unsafe { l.GetPath(&mut path, std::ptr::null_mut(), 4) }.map_err(|e| format!("target: {e}"))?;
+    // SAFETY: `args` is writable for its whole length.
+    unsafe { l.GetArguments(&mut args) }.map_err(|e| format!("arguments: {e}"))?;
     Ok((PathBuf::from(wide(&path)), wide(&args)))
 }
 
