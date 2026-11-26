@@ -5,6 +5,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Pairing window words (3e53b TRIAGE-nohello-confirmed-3e53b-1126 r5; on the laptop the customer typed the PIN
+  into two Hello windows a remote script had raised): the first line asks 「你剛在 AIB 頁面按了配對嗎?沒有就按取消」,
+  the second asks to compare the code with your page (「不一樣就按取消」), then what a yes does and for whom, then the
+  true source (「由終端機 / 程式要求」 / 「由瀏覽器頁要求」); Windows no longer says 「本機鑰」 (B2 has no key).
+  Knives W1–W4 (`crates/aibd/knives/knives-pairwords-c2f0b.sh`); TK12 re-aimed.
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
   restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and
