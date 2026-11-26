@@ -14,14 +14,14 @@ k 'body += `<button type="button" class="k" data-omask="1">' 'body += `<button t
 k "用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後" "之後"
 # OM4 Windows 不寫去哪改(Windows 不出選項是結構:windows_hello 分支排在按鈕分支前,om_windows_never_choice 核)
 k "    if (m === 'windows_hello') body += esc(W.winHow);" "    if (m === 'windows_hello') body += '';"
-# OM5 金鑰跟配對時不同還出改鈕
-k "    else if (m === 'unknown') body += esc(W.repair);" "    else if (m === 'unknown' && !set) body += esc(W.repair);"
+# OM5 沒讀到金鑰時(can_change 也 true)不寫原因
+k "    else if (m === 'unknown') body += esc(W.nokey);" "    else if (m === 'unknown' && !set) body += esc(W.nokey);"
 # OM6 不看 can_change
 k "const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;" "const m = d.method, set = hasAct(OM_SET) === true;"
 # OM7 多送欄位
 k "try { await act(OM_SET, { to });" "try { await act(OM_SET, { to, by: 'page' });"
-# OM8 重新配對的錯誤碼沒照表
-k "owner_key_not_as_paired: 'repair', " ""
+# OM8 金鑰跟配對時不同的錯誤碼沒照表(3e53b L1:用重設出路)
+k "const OM_WHY = { owner_key_not_as_paired: 'reset', " "const OM_WHY = { "
 # OM9 取消的錯誤碼沒照表
 k "user_cancel: 'cancel', " ""
 # OM10 舊 aibd 也出設定鈕
@@ -55,3 +55,7 @@ k "<div class=\"occ omcard\" role=\"alertdialog\"" "<div class=\"occ omcard\" ro
 # OM24 選擇卡沒接進指引
 k 'return `<div class="gbox">${typeof omCard ' 'return `<div class="gbox">${typeof omCardGone '
 
+# OM25 沒讀到金鑰也寫成要重設 / 重新配對(f163c 04019a58 L1)
+k "    else if (m === 'unknown') body += esc(W.nokey);" "    else if (m === 'unknown') body += esc(W.reset);"
+# OM26 收起設定寫死中文(f163c N1)
+k '>${esc(omW().setClose)}</button>' '>收起設定</button>'
