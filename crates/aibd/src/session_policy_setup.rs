@@ -257,6 +257,45 @@ fn no_link_below(data: &Path, dir: &Path, provider: &str) -> bool {
         .any(|f| link(&dir.join(f)))
 }
 
+/// c2f0b 11-26 12:27: at `session_policy_init`, before the owner is asked, a program found in
+/// aibd's placed folder is exactly the measured one (L1 `verify_placed`: the whole file's
+/// SHA-256 and size) or it counts as not found: the window asks the owner to approve that very
+/// program. L2 checks it again at each open. Not on `GET` (a full hash on every read).
+pub fn placed_verified(looks: Vec<Look>, data: &Path, platform: Option<&str>) -> Vec<Look> {
+    looks
+        .into_iter()
+        .map(|l| {
+            let Some(path) = l.path.clone().filter(|_| l.kind == LookKind::Native) else {
+                return l;
+            };
+            let row = aib_seatopen::MEASURED
+                .iter()
+                .filter(|m| m.provider == l.name && Some(m.platform) == platform)
+                .map(crate::provider_fetch::FetchRow::from)
+                .find(|r| {
+                    path.parent() == Some(crate::provider_fetch::placed_dir(data, r).as_path())
+                });
+            let Some(row) = row else {
+                return l;
+            };
+            if crate::provider_fetch::verify_placed(&row, &path).is_err() {
+                return Look {
+                    name: l.name,
+                    kind: LookKind::NotFound,
+                    path: None,
+                    why: format!(
+                        "{}: not the measured {} {}",
+                        path.display(),
+                        row.provider,
+                        row.version
+                    ),
+                };
+            }
+            l
+        })
+        .collect()
+}
+
 fn user_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
@@ -563,6 +602,7 @@ pub async fn init(st: &AppState, body: Value, by: String) -> Response {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound);
         let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
+        let found = placed_verified(found, &data, aib_seatopen::this_platform());
         (
             exists,
             policy_text(&found, |k| std::env::var_os(k).is_some()),
@@ -765,6 +805,49 @@ mod tests {
             v["programs"][0]["path"].as_str(),
             placed.join("claude.exe").to_str(),
             "reason: placed_path_literal"
+        );
+    }
+
+    /// c2f0b 11-26 12:27: at init a placed program that is not the measured file is not
+    /// found (the owner is never asked about it); a program in the user's own folder is left
+    /// as the look found it.
+    #[test]
+    fn at_init_a_placed_program_must_be_the_measured_file() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data");
+        let m = aib_seatopen::measured_for("claude", "win32-x64").unwrap();
+        let placed =
+            crate::provider_fetch::placed_dir(&data, &crate::provider_fetch::FetchRow::from(m));
+        std::fs::create_dir_all(&placed).unwrap();
+        file(&placed, "claude.exe", b"MZ\x90\x00");
+        let dirs = with_placed(Vec::new(), &data, Some("win32-x64"));
+        let found = vec![look_in("claude", &dirs, true)];
+        assert_eq!(found[0].kind, LookKind::Native);
+        let v = placed_verified(found, &data, Some("win32-x64"));
+        assert_eq!(
+            v[0].kind,
+            LookKind::NotFound,
+            "reason: placed_unverified {v:?}"
+        );
+        assert_eq!(v[0].path, None, "{v:?}");
+        assert!(
+            v[0].why.contains("not the measured claude 2.1.326"),
+            "{v:?}"
+        );
+        assert_eq!(
+            policy_text(&v, |_| false),
+            None,
+            "reason: placed_unverified"
+        );
+        let user = d.path().join("user");
+        std::fs::create_dir_all(&user).unwrap();
+        file(&user, "claude.exe", b"MZ\x90\x00");
+        let found = vec![look_in("claude", &[user.clone()], true)];
+        let v = placed_verified(found, &data, Some("win32-x64"));
+        assert_eq!(
+            v[0].path,
+            Some(user.join("claude.exe")),
+            "reason: user_checked {v:?}"
         );
     }
 
