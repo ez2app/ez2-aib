@@ -74,7 +74,7 @@ k 'if (!(guideNew(G) || (S.gTourHere && cur.proj === '\''hosts'\''))) return nul
 # GD32 有本人確認 / 錯誤時仍畫路線
 k 'if (!gOwn(GUIDE_GO, na) || guideBlocked(document)) return null;' 'if (!gOwn(GUIDE_GO, na)) return null;'
 # GD33 Esc 不能略過
-k 'if (e.key === '\''Escape'\'' && document.getElementById('\''gtour'\'')) guideSkip(true);' 'if (false) guideSkip(true);'
+k 'if (e.key === '\''Escape'\'' && document.getElementById('\''gtour'\'') && !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' 'if (false) guideSkip(true);'
 # GD34 Windows 不寫 Windows Hello
 k 'gW('\''hello'\'')[typeof fpWin === '\''function'\'' && fpWin() ? 0 : 1]' 'gW('\''hello'\'')[1]'
 # GD35 不是 Windows 也出設 PIN 說明
@@ -133,3 +133,11 @@ k 'return pairSay(`<form class="pairbox" id="pairf"' 'return (`<form class="pair
 kc '.thh{flex-wrap:wrap}' '.thh{}'
 # GD55 Windows 等確認頁又說「AIB 的視窗按確定」,沒說在 Hello 對碼(3e53b 1a7f49dea0 L1)
 k 'Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。' 'AIB 的視窗會顯示同一組短碼,一樣就在那裡按確定。'
+# GD60 第 5 步蓋層只挖 #inp、送出鈕被吞(客戶 11-26)
+k '    focus_chat: { to: ['\''#inp'\''], hole: '\''.send'\'' },' '    focus_chat: { to: ['\''#inp'\''] },'
+# GD61 路線的洞不用整個輸入列
+k 'const tr = (R.ring || R.to).getBoundingClientRect()' 'const tr = R.to.getBoundingClientRect()'
+# GD62 關指引沒把輸入框的字存回草稿(客戶 11-26)
+k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.drafts[S.mode] = i.value;'
+# GD63 組字中按 Esc 也關指引(連組字一起丟)
+k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
