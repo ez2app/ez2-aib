@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # B1dm-header knives DH1–DH5 (b4297 11-18, 519d0 07:34): the dm header translated from
 # dm_header.py builds and reads the same lines. Each rule, broken, turns its own test red.
 # Run from the repo root.

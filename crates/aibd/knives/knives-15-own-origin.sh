@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # H1 knives OO1–OO2 (b4297 11-18, 519d0 09:3x on 0eed7 VERIFY-workspace-0eed7-2436023c): the
 # pages aibd serves post from its own origin and pass the guard on every path; any other
 # origin is still refused. Each rule, broken, turns its own test red. Run from the repo root.

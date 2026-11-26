@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # OTE1–OTE5 (3e53b 11-23; 9918e 派工, FINDING-reporeg-ownercheck-ebab8-1123): aibd install never
 # writes AIBD_OWNER_TOUCH=1 beside a pairing other than touchid (owner_ok.rs needs both), keeps
 # the old plist's AIBD_* keys, and says when the fingerprint key is still to be made.

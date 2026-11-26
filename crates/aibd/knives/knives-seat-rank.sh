@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # RS1-RS3 who may mark urgent is set by the owner only (OPINION-role-rank-a9136-1121 r2, 5d33a PREREAD-inboxaibd F r2)
 set -euo pipefail
 rs() { python3 -I scripts/knife.py crates/aibd/src/seat_rank.rs "$1" "$2" --expect-fail "seat_rank::tests::$3" \

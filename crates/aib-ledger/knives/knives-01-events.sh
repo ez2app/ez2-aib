@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S107-product slice 1 (a9136 11-17; IFACE-s107-product-a9136-1117 r1 §1 §8): action events. Each rule,
 # broken, turns its own test red. Run on macOS (the header default) by the shared crate-knives step
 # (crates/aib-knife/run-knives.sh rust, main 454ccd67 #836); no step of its own. Run from the repo root.

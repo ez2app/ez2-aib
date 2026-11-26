@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # N-workspace knives TQ1–TQ5 (b4297 11-18, ORDER-workspace-519d0-1118): a message one seat sends
 # another waits while that seat is in a turn and is written when the provider ends the turn;
 # a result line ends a turn, even one cut at the reader's cap.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # persona_write (c2f0b PWR1-4 + 08de5 shared write: list, provenance, 1.x text, hand edit, refusals, pending, copies)
 set -euo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

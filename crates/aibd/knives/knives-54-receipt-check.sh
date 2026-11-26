@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-webonly 第 4 件 knives RCK1–RCK19 (7ebca 11-20): aibd reads a receipt's .out key by key
 # (seal, head, every step's rc, tests total, knives sent = expected = bit, no red line).
 # Each rule, broken, turns its own test red. Run from the repo root.

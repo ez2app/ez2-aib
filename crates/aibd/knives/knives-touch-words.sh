@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TW1–TW7: the fingerprint window says in plain words what is done, to what and until when, above what it always said; no object and no parameter can say it instead (DESIGN-touch-words-7b81e-1121 r1; Andy 11-21 01:23, 01:44; 5d33a PREREAD-touchwords L1)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
@@ -13,8 +14,8 @@ tw '            kept[i] = '"'"'·'"'"';' \
    '            kept[i] = '"'"':'"'"';' \
    the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead
 # TW3 an object says the window's own 請在
-tw '    let text = kept.iter().collect::<String>().replace("請在", "請·在");' \
-   '    let text = kept.iter().collect::<String>().replace("請在", "請在");' \
+tw '    ("請在", "請·在"),' \
+   '    ("請在", "請在"), // knife' \
    the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead
 # TW4 an operation with no sentence and no name shows nothing on top
 tw '        .map_or(operation, |(_, words)| *words)' \

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-cireuse reasons knives (macOS)" step of aibd.yml's rust job, moved here word for word (11-16 裁定:
 # 新刀放 crates/<套件>/knives/;IFACE-drive-shadow-519d0-1117 §5). The "aib-cireuse knives (macOS)" step
 # (#823) runs every crates/aib-cireuse/knives/*.sh in name order; aib-xtask knife-anchors reads them.
@@ -35,4 +36,10 @@ rk main.rs 'reasons_summary(&ledger_lines(dir), now(), a.days)' \
    the_reasons_command_reads_the_ledger_folder
 # RS8 pull does not take a knife cell's ledger (S66-4)
 rk main.rs '"cireuse-ledger-knives-rust",' '// "cireuse-ledger-knives-rust",' \
+   pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
+# RS9 pull does not take a Linux crate knife cell's ledger (f163c a5f760d2af N3)
+rk main.rs '"cireuse-ledger-crate-knives-3",' '// "cireuse-ledger-crate-knives-3",' \
+   pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
+# RS10 pull does not take a macOS crate knife cell's ledger (f163c a5f760d2af N3)
+rk main.rs '"cireuse-ledger-crate-knives-macos-2",' '// "cireuse-ledger-crate-knives-macos-2",' \
    pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers

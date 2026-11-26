@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-web-worktree wiring knives RP1–RP4 (b4297 11-19; DESIGN-web-worktree-b4297-1119 §1.1 §1.2
 # r3): a repo is registered by its real top outside aibd's folder with the settings a seat would
 # load in the fingerprint window, and a seat's tree opens only while those settings are what was

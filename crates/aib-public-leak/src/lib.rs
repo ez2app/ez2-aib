@@ -171,10 +171,17 @@ impl Denylist {
     }
 }
 
+/// Fixed public addresses that are no host of ours, allowed one by one (never a range): a
+/// test needs a real public address because aibd's classifier refuses the documentation
+/// ranges as reserved (ebab8 #891, c2f0b 11-25). The first two are the Google and Cloudflare
+/// public DNS resolvers, the third the usual placeholder. Their neighbours stay public.
+pub const WELL_KNOWN_IPV4: [[u8; 4]; 3] = [[8, 8, 8, 8], [1, 1, 1, 1], [1, 2, 3, 4]];
+
 /// Whether an IPv4 address may appear in public text.
 pub fn allowed_ipv4(o: [u8; 4]) -> bool {
     let [a, b, c, _] = o;
-    a == 0
+    WELL_KNOWN_IPV4.contains(&o)
+        || a == 0
         || a == 10
         || a == 127
         || a >= 224
@@ -531,7 +538,7 @@ mod tests {
 
     /// A public address built at run time, so no literal one is in this file (RULES §16).
     fn public() -> String {
-        format!("{}.{}.{}.{}", 1, 2, 3, 4)
+        format!("{}.{}.{}.{}", 1, 2, 3, 5)
     }
 
     #[test]
@@ -577,7 +584,7 @@ mod tests {
             assert!(allowed_ipv4(ok), "{ok:?} should be allowed");
         }
         for bad in [
-            [1, 2, 3, 4],
+            [1, 2, 3, 5],
             [172, 32, 0, 1],
             [100, 128, 0, 1],
             [203, 0, 114, 1],
@@ -589,10 +596,36 @@ mod tests {
     }
 
     #[test]
+    fn well_known_public_addresses_pass_one_by_one_their_neighbours_do_not() {
+        for ok in [[8, 8, 8, 8], [1, 1, 1, 1], [1, 2, 3, 4]] {
+            assert!(allowed_ipv4(ok), "{ok:?} should be allowed");
+        }
+        for bad in [
+            [8, 8, 8, 9],
+            [8, 8, 4, 4],
+            [9, 8, 8, 8],
+            [1, 1, 1, 2],
+            [1, 0, 0, 1],
+            [1, 2, 3, 5],
+            [2, 2, 3, 4],
+        ] {
+            assert!(!allowed_ipv4(bad), "{bad:?} is public");
+        }
+        let one = format!("{}.{}.{}.{}", 8, 8, 8, 8);
+        let two = format!("{}.{}.{}.{}", 1, 1, 1, 1);
+        assert!(check(&format!("now {one} / {two}"), &Denylist::default()).is_empty());
+        let near = format!("{}.{}.{}.{}", 8, 8, 4, 4);
+        assert_eq!(
+            check(&format!("now {near}"), &Denylist::default()),
+            vec![Rule::PublicIpv4]
+        );
+    }
+
+    #[test]
     fn addresses_are_found_but_longer_dotted_runs_are_not() {
         let p = public();
-        assert_eq!(ipv4_in(&format!("ssh root@{p}:22")), vec![[1, 2, 3, 4]]);
-        assert_eq!(ipv4_in(&format!("({p})")), vec![[1, 2, 3, 4]]);
+        assert_eq!(ipv4_in(&format!("ssh root@{p}:22")), vec![[1, 2, 3, 5]]);
+        assert_eq!(ipv4_in(&format!("({p})")), vec![[1, 2, 3, 5]]);
         assert!(
             ipv4_in(&format!("v{p}.5")).is_empty(),
             "five parts is a version"

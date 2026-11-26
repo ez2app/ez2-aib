@@ -79,14 +79,12 @@ fn key_ok(s: &str) -> bool {
 }
 
 /// A path inside a brain: `/`-separated pieces, none empty, `.` or `..`, no `\`, `:`, NUL,
-/// trailing `.` / space, or Windows reserved device names (L6).
+/// `< > " | ? *`, trailing `.` / space, or Windows reserved device names (L6).
 pub fn rel_path_ok(p: &str) -> bool {
     !p.is_empty()
         && p.len() <= 400
         && !p.starts_with('/')
-        && !p.contains('\\')
-        && !p.contains(':')
-        && !p.contains('\0')
+        && !p.contains(['\\', ':', '\0', '<', '>', '"', '|', '?', '*'])
         && p.split('/').all(|s| {
             if s.is_empty() || s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ') {
                 return false;

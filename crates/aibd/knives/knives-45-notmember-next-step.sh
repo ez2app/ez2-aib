@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 5d33a PREREAD-codexfix-f36f26a1 N4 knife NM1 (7ebca 11-20): thread_send's to_not_a_member
 # refusal says how a non-member is brought in (the person @s it in this thread).
 set -eo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # which web seat a 1.x seat moved into (G5 信橋 DESIGN-g5-bridge-7ebca-1121 r1 §1; 5d33a PREREAD-g5-bridge M1)
 set -euo pipefail
 umask 022

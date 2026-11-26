@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # SC1-SC9 a seat moved in gets its handoff and memory pack in <its folder>/.aib/ (PREREAD-seat-carry-a9136-1121; 519d0 11-21 10:46)
 set -euo pipefail
 sc() { python3 -I scripts/knife.py crates/aibd/src/seat_carry.rs "$1" "$2" --expect-fail "seat_carry::tests::$3" \

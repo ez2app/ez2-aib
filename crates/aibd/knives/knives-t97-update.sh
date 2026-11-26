@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # T97-3m knives (043dd 11-17, IFACE-T97-3m-043dd-1117.md r2 §3): aibd update --file. Each rule, broken,
 # turns its own test red. Run by the shared crate-knives step (crates/aib-knife/run-knives.sh rust;
 # default header: macOS, job rust); aib-xtask knife-anchors reads it.

@@ -17,7 +17,13 @@ pub fn fixture() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
     let target_dir = profile_dir.parent().unwrap().to_path_buf();
+    // aib-wincheck runs these tests on a Windows laptop with no cargo; CI put a fresh
+    // aib-fixture-tree.exe next to them in the pack and aib-wincheck sets this (ebab8 11-25 19:04)
+    let prebuilt = std::env::var_os("AIB_FIXTURE_PREBUILT").is_some_and(|v| v == "1");
     BUILD.call_once(|| {
+        if prebuilt {
+            return;
+        }
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let mut c = std::process::Command::new(cargo);
         c.args([
@@ -37,7 +43,16 @@ pub fn fixture() -> PathBuf {
         assert!(st.success(), "building aib-fixture-tree failed: {st}");
     });
     let p = profile_dir.join(format!("aib-fixture-tree{}", std::env::consts::EXE_SUFFIX));
-    assert!(p.exists(), "{} missing after build", p.display());
+    assert!(
+        p.exists(),
+        "{} missing {}",
+        p.display(),
+        if prebuilt {
+            "(AIB_FIXTURE_PREBUILT=1: the pack should carry it)"
+        } else {
+            "after build"
+        }
+    );
     p
 }
 

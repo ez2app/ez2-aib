@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-dmq CLI knives (macOS)" step of aibd.yml's rust job (#756, aib-dmq-store B1 S3b), moved here
 # word for word (11-16 裁定:新刀放 crates/<套件>/knives/;519d0 IFACE-drive-shadow-519d0-1117 §5; the
 # shape of #804 / #823). aibd.yml runs every crates/aib-dmq-store/knives/*.sh in name order in one step;

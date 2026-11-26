@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # not_logged_in says whose HOME was looked in (519d0 N-pv-agree-drive, Andy at 47790)
 set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 lh() { python3 -I scripts/knife.py crates/aibd/src/workspace.rs "$1" "$2" --expect-fail "$3" \

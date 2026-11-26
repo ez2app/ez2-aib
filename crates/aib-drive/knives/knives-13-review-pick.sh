@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The S79 review-pick knives (043dd fe0f9e1a, 5d33a 驗收 r7; 519d0 11-16 10:35 review seats first, carried
 # heads get no review row). They sat in the "aib-drive next knives (macOS)" step; moved here word for word
 # (519d0 11-16 23:5x: aibd.yml is red past 450,000 bytes). aibd.yml runs every crates/aib-drive/knives/*.sh

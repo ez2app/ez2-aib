@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 3 knives SE1–SE5 (7b81e 11-18, ORDER-workspace §第三波 7b81e 3; SPEC §1.2 / §3): a seat on a
 # node above sees every node under it; an event wakes the seats above only when named or for level ① / ②; one
 # item (GET nodes/{id}) carries the rev node_set names and gives the person's words to the built-in page only.

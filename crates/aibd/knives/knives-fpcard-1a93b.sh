@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 刀名一律 PG 前綴(下面寫的是舊名):FC1–FC11(1a93b 11-23 驗證卡 57ce5d2425;fc7f9 照 pending KNIVES-fpcard-1a93b-57ce5d2425.tsv 轉寫進倉,FC7 / FC8 錨點跟著 page_csp 修法改成 data-sty)
 # Each, broken, turns the_page_is_checked_without_a_browser (apps/web/test/ws-static.test.cjs) red.
 set -eu
@@ -13,7 +14,7 @@ k '      if (card.abort) throw Object.assign(new Error('\''finger_cancel'\''), {
 # PGFC3
 k '    try { const out = await fingerWait(); fpcDone(card, true); return out; }' '    try { const out = await fingerWait(); return out; }'
 # PGFC4
-k '    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(card, false, FP_NO[rs] || (rs === '\''owner_check_not_approved'\'' ? '\''沒按到'\'' : '\''沒有完成'\'')); throw e; }' '    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(null, false, FP_NO[rs] || (rs === '\''owner_check_not_approved'\'' ? '\''沒按到'\'' : '\''沒有完成'\'')); throw e; }'
+k '    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(card, false, (e && e.pageMsg) || FP_NO[rs] || (rs === '\''owner_check_not_approved'\'' ? '\''沒按到'\'' : '\''沒有完成'\'')); throw e; }' '    catch (e) { const rs = e && (e.reason || e.code || (e.body && e.body.reason)); fpcDone(null, false, (e && e.pageMsg) || FP_NO[rs] || (rs === '\''owner_check_not_approved'\'' ? '\''沒按到'\'' : '\''沒有完成'\'')); throw e; }'
 # PGFC5
 k '    const W = Array.isArray(first && first.shown) ? [String(first.words || type), first.shown.map((x) => [String((x && x.k) || '\'''\''), String((x && x.v) || '\'''\''), !!(x && x.up)])] : (FP_WHAT[type] ? FP_WHAT[type](body || {}, first) : [type, []]);' '    const W = FP_WHAT[type] ? FP_WHAT[type](body || {}, first) : [type, []];'
 # PGFC6

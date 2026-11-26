@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-pending knives PK1–PK30 (S81 p-1a / p-1b / p-1c, b433b; redone on main by 7b81e 11-19 per f1fae
 # TRIAGE-pr815): the rules for what may never be moved out of pending, the index / list / show command, and
 # check / new. Moved word for word from #798's inline aibd.yml step (11-16 ruling, IFACE-1117 §5); the

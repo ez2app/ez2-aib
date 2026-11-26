@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PA1 (7b81e 11-20; c7): a preview page sends no preview_active (its own aibd always refused it,
 # preview_in_preview 403, once a minute while a person used the page). Broken, it turns
 # a_preview_page_sends_no_preview_active_its_own_aibd_refuses red.

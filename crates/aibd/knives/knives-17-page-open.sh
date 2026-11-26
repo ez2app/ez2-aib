@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 2 knives PO1–PO7 (b4297 11-18; 5d33a CHECKLIST-workspace-wave2 B): the
 # built-in page's "add a seat" (act seat_open). Built-in page only, a mode other than safe needs
 # this machine's switch, the page gives no folder / cabin / argv, brand and mode refused by

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # G4b / G8 (DESIGN-g4-7b81e-1121; 5d33a PREREAD-g4-7b81e-5d33a-1121). Run from the repo root.
 set -euo pipefail
 # G4B1 a web seat cannot switch branches in its own copy

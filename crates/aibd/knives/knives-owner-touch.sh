@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # Owner-touch knives (7b81e 11-20; a63 Andy 11-20, GAP-repo-register G1; 5d33a PREREAD-ownertouch
 # L1 L2 N1): a page's owner ask is a ticket in aibd's memory, approved only by the owner's
 # fingerprint, for one act of one page, once, in time; its windows pass pairing's one gate; a

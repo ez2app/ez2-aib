@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace-c1 knives EX1–EX2 (7b81e 11-18; CHECKLIST-workspace-wave3 H5): an aibd node write reaches the old page's
 # data.json through aib-plan's own writer, and a refusal gives back only aib-plan's code, never its message (paths).
 set -eo pipefail

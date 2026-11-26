@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-1 knives SS1–SS12 (b4297 11-18, DECISION-council-seat-talk-519d0-1118 §驗收刀): seat_send
 # never lets safe borrow dgrs, names the sender in aibd's own block, keeps the pace, stops a
 # pair after 20 rounds until a person types, and keeps an idempotency key to one text.

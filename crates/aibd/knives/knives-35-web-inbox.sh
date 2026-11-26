@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 網頁版待審框第 1 期 aibd 信線 (DESIGN-web-inbox-aibd-7ebca-1121 r1; DECISION-council-webinbox §4 §5)
 set -euo pipefail
 umask 022

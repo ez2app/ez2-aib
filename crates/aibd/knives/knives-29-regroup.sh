@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # 舊資料照卡分 (import_regroup.rs; 519d0 NOTE-import-regroup-519d0-1119 §1 §2 §4): each rule,
 # broken, turns its own test red. Every new text keeps the names it replaces used (-D warnings).
 set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)

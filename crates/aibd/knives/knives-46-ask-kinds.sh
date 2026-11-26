@@ -1,4 +1,5 @@
 #!/bin/bash
+# aib-knives: os=unix
 # 519d0 VERIFY-selftest-519d0-2a3e3cbc r2 L5 knives KD1-KD4 (7ebca 11-20): the person_vs_person
 # ask (two of the person's own requests disagree) keeps the posts' written order, takes only
 # the person's posts, and is answered only by its own two fixed answers.

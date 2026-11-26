@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # §17-3 import knives IM1–IM4 (a9136 11-18, DESIGN-thread-cat §3 / 5d33a CHECKLIST-doc-link D3 D5):
 # aibd import writes each kept file once, from the seat it names, never as a person, skipping a
 # secret kind. Each rule, broken, turns its own test red. Run from the repo root.

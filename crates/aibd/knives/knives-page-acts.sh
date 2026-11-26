@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PA1–PA3 (1a93b 11-20, 519d0 22:34 GAP-web-backend §8): GET /api/v1/version lists every act type a
 # confirmed page may send (capabilities.acts = seat_input::PAGE_ACTS), and that list is exactly the
 # page match's arms. Each rule, broken, turns its own test red. Run from the repo root.

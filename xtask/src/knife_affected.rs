@@ -89,6 +89,8 @@ pub const EXTRA_INPUTS: &[(&str, &str)] = &[
     ("aib-seatopen", "aib/src/cockpit/"),
     ("aib-seatops", "aib/src/cockpit/"),
     ("aib-store", "migrations/"),
+    // W-4 source guard (test_only_calls.rs) reads every crate's src for the test-only calls
+    ("aib-sys", "crates/"),
     ("aib-title", "aib/src/cockpit/"),
     ("aibd", "docs/perf/timers.md"),
 ];

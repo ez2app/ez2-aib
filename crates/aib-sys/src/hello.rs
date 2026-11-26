@@ -43,6 +43,13 @@ pub enum HelloError {
     BadKey,
     #[error("os error 0x{0:08x}")]
     Os(u32),
+    /// aibd's own limit passed before the owner answered (S10-3b-2; the Hello window may stay
+    /// up until Windows closes it, see [`run_limited`]).
+    #[error("the owner did not answer in time")]
+    TimedOut,
+    /// An earlier Hello window is still up: no second one (S10-3b-2).
+    #[error("an earlier Windows Hello window is still open")]
+    StillOpen,
 }
 
 impl HelloError {
@@ -58,6 +65,8 @@ impl HelloError {
             HelloError::KeyProbeFailed => "key_probe_failed",
             HelloError::BadKey => "corrupt",
             HelloError::Os(_) => "se_error",
+            HelloError::TimedOut => "timeout",
+            HelloError::StillOpen => "owner_window_still_open",
         }
     }
 }
@@ -113,6 +122,66 @@ pub fn probe_outcome(code: u32) -> Result<(), HelloError> {
         0 => Err(HelloError::WeakKey),
         _ => Err(HelloError::KeyProbeFailed),
     }
+}
+
+/// 3e53b REVIEW-winfirst M1: the pairing key's `NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY`
+/// must read 1 (every use asks for the gesture; no signing for a few seconds after the owner
+/// answered once). Anything else, or a value that could not be read, is a weak key.
+pub fn gesture_required(read: Result<u32, HelloError>) -> Result<(), HelloError> {
+    match read {
+        Ok(1) => Ok(()),
+        _ => Err(HelloError::WeakKey),
+    }
+}
+
+/// S10-3b-2: `NCRYPT_IMPL_HARDWARE_FLAG` in `NCRYPT_IMPL_TYPE_PROPERTY`.
+pub const IMPL_HARDWARE_FLAG: u32 = 1;
+
+/// Whether a key's implementation type says the key is held in hardware (a TPM). Without a
+/// TPM, Windows Hello still works with a PIN but the Passport key is a software one (3e53b
+/// READ-ap26-r2 L): that key is not hardware-bound. A type that could not be read is not
+/// hardware either.
+pub fn impl_is_hardware(impl_type: Result<u32, HelloError>) -> bool {
+    match impl_type {
+        Ok(t) => t & IMPL_HARDWARE_FLAG != 0,
+        Err(_) => false,
+    }
+}
+
+/// S10-3b-2 (3e53b READ-winhello-wiring W2): run `sign` (a blocking NCrypt call that shows the
+/// Hello window) in its own thread and give up after `limit` with [`HelloError::TimedOut`].
+/// Windows offers no way to close its Hello window from here, so the signing thread goes on
+/// until the owner answers or Windows ends it; while it runs, `open` stays set and every new
+/// call is [`HelloError::StillOpen`] at once, so the owner never sees two windows.
+pub fn run_limited<T: Send + 'static>(
+    open: &'static std::sync::atomic::AtomicBool,
+    limit: std::time::Duration,
+    sign: impl FnOnce() -> Result<T, HelloError> + Send + 'static,
+) -> Result<T, HelloError> {
+    use std::sync::atomic::Ordering;
+    if limit.is_zero() {
+        return Err(HelloError::TimedOut);
+    }
+    if open.swap(true, Ordering::SeqCst) {
+        return Err(HelloError::StillOpen);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("aib-hello-sign".into())
+        .spawn(move || {
+            let out = sign();
+            open.store(false, Ordering::SeqCst);
+            let _ = tx.send(out);
+        });
+    if spawned.is_err() {
+        open.store(false, Ordering::SeqCst);
+        return Err(HelloError::KeyProbeFailed);
+    }
+    // one wake-up: the answer or the limit; not a periodic timer (ADR 0005 named exception,
+    // as presence_macos::sign_until)
+    #[allow(clippy::disallowed_methods)]
+    let answered = rx.recv_timeout(limit);
+    answered.unwrap_or(Err(HelloError::TimedOut))
 }
 
 /// `WTSGetActiveConsoleSessionId` when no session is attached to the console.
@@ -264,9 +333,142 @@ pub fn interactive_session() -> Result<(), HelloError> {
     session_gate((ok != 0).then_some(own), console)
 }
 
+/// A fixed P-256 test vector (made once with openssl, 11-25): `PUBLIC` (X9.63) signed
+/// `MESSAGE` (SHA-256, ECDSA) as `SIGNATURE` (DER). The Windows BCrypt check and the macOS
+/// Security check must both take it and both refuse it changed, so a verifier that says yes to
+/// everything, or no to everything, is caught on each platform's test run. Only those two
+/// platforms' tests read it: on Linux it would be dead code, an error under the knife cells'
+/// `-D warnings` (#898 crate knives Linux 4/4, knives-01-hello WH1 rc 101 with no test run).
+#[cfg(all(test, any(windows, target_os = "macos")))]
+pub(crate) mod vector {
+    pub const MESSAGE: &[u8] = b"aibd/hello-verify/test-vector/v1";
+    pub const PUBLIC: [u8; 65] = [
+        0x04, 0xc5, 0x81, 0x94, 0xf1, 0xe8, 0xf1, 0xb9, 0xb0, 0x6e, 0xc9, 0x4d, 0xdc, 0xfe, 0xf7,
+        0x69, 0x62, 0x79, 0x90, 0x04, 0x49, 0xee, 0x7a, 0x2a, 0xe6, 0xa5, 0x6f, 0x36, 0x05, 0x4d,
+        0x6d, 0x88, 0x10, 0x2f, 0x3e, 0x25, 0xce, 0x09, 0x00, 0xb2, 0xb9, 0x16, 0x77, 0xc5, 0x36,
+        0xb7, 0xc2, 0xb0, 0xf1, 0x66, 0xb0, 0xda, 0xb1, 0x74, 0xa6, 0x55, 0xc2, 0x6d, 0x8e, 0xc5,
+        0x18, 0x75, 0x9f, 0xb6, 0x06,
+    ];
+    pub const SIGNATURE: [u8; 72] = [
+        0x30, 0x46, 0x02, 0x21, 0x00, 0xd8, 0x46, 0xd0, 0x12, 0x25, 0xb7, 0xf5, 0x3f, 0xb0, 0xa0,
+        0x75, 0x2b, 0xa2, 0x29, 0x46, 0x09, 0xcd, 0x39, 0x24, 0x68, 0x27, 0xa4, 0xaa, 0x33, 0xce,
+        0xf8, 0x4d, 0x37, 0x40, 0x4b, 0x68, 0xd7, 0x02, 0x21, 0x00, 0xce, 0x2d, 0xca, 0x56, 0x97,
+        0x10, 0x2a, 0x5c, 0xfa, 0x34, 0x2d, 0xfd, 0xa4, 0xe8, 0x0b, 0xee, 0x71, 0x2e, 0x58, 0x7d,
+        0xde, 0xca, 0xaa, 0x31, 0x5b, 0x7e, 0x41, 0x4c, 0xcd, 0x8a, 0x2d, 0x4f,
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// S10-3b-2 (3e53b READ-ap26-r2 L): only the hardware flag makes a key hardware-bound; a
+    /// software key or a type that could not be read is not.
+    #[test]
+    fn a_key_that_does_not_ask_every_time_is_weak() {
+        assert_eq!(gesture_required(Ok(1)), Ok(()));
+        assert_eq!(gesture_required(Ok(0)), Err(HelloError::WeakKey));
+        assert_eq!(gesture_required(Ok(2)), Err(HelloError::WeakKey));
+        assert_eq!(
+            gesture_required(Err(HelloError::Os(0x8009_0029))),
+            Err(HelloError::WeakKey)
+        );
+    }
+
+    /// The Windows code (compiled on Windows only) sets the gesture property before the key is
+    /// finalized and reads it back in the probe; read from the source so every receipt machine
+    /// checks it (3e53b REVIEW-winfirst M1).
+    #[test]
+    fn the_passport_key_is_made_and_probed_with_the_gesture_required() {
+        let src = include_str!("hello_ncrypt.rs");
+        let create = src.find("pub fn create(").unwrap_or(usize::MAX);
+        let set = src[create.min(src.len())..]
+            .find("NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY")
+            .map(|i| i + create);
+        let fin = src[create.min(src.len())..]
+            .find("NCryptFinalizeKey(k.0")
+            .map(|i| i + create);
+        assert!(
+            matches!((set, fin), (Some(s), Some(f)) if s < f),
+            "reason: gesture_set_before_finalize"
+        );
+        let probe = src.find("pub fn probe(").unwrap_or(usize::MAX);
+        let end = src[probe.min(src.len())..]
+            .find("\n}\n")
+            .map_or(src.len(), |i| i + probe);
+        assert!(
+            src[probe.min(src.len())..end].contains("gesture_required("),
+            "reason: probe_reads_gesture"
+        );
+        // 3e53b REVIEW fc543b4b L1: every signature reads it again, before the window
+        let sign = src.find("pub fn sign(").unwrap_or(usize::MAX);
+        let body = &src[sign.min(src.len())..];
+        let read = body.find("gesture_required(");
+        let ctx = body.find("NCRYPT_USE_CONTEXT_PROPERTY");
+        assert!(
+            matches!((read, ctx), (Some(r), Some(c)) if r < c),
+            "reason: sign_reads_gesture_first"
+        );
+    }
+
+    #[test]
+    fn only_the_hardware_flag_is_hardware() {
+        assert!(impl_is_hardware(Ok(IMPL_HARDWARE_FLAG)));
+        assert!(impl_is_hardware(Ok(IMPL_HARDWARE_FLAG | 2)));
+        assert!(!impl_is_hardware(Ok(2)), "reason: software_key");
+        assert!(!impl_is_hardware(Ok(0)), "reason: no_flags");
+        assert!(
+            !impl_is_hardware(Err(HelloError::Os(0x8009_0029))),
+            "reason: unreadable"
+        );
+    }
+
+    /// S10-3b-2: an answer in time comes back; a window nobody answers is TimedOut; while it is
+    /// still up a new call is StillOpen (never a second window); once it ends, calls work again.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // the test waits on its own channels, bounded
+    fn a_window_still_up_refuses_a_second_and_ends_cleanly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        static OPEN: AtomicBool = AtomicBool::new(false);
+        let quick = run_limited(&OPEN, Duration::from_secs(10), || Ok(7));
+        assert_eq!(quick, Ok(7), "reason: answered_in_time");
+        assert!(!OPEN.load(Ordering::SeqCst));
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let slow = run_limited(&OPEN, Duration::from_millis(50), move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            Ok(1)
+        });
+        assert_eq!(slow, Err(HelloError::TimedOut), "reason: nobody_answered");
+        let second = run_limited(&OPEN, Duration::from_secs(10), || Ok(2));
+        assert_eq!(
+            second,
+            Err(HelloError::StillOpen),
+            "reason: no_second_window"
+        );
+
+        release_tx.send(()).unwrap();
+        let mut cleared = false;
+        for _ in 0..300 {
+            if !OPEN.load(Ordering::SeqCst) {
+                cleared = true;
+                break;
+            }
+            let (_tx, rx) = std::sync::mpsc::channel::<()>();
+            let _ = rx.recv_timeout(Duration::from_millis(10));
+        }
+        assert!(cleared, "reason: window_ended_clears");
+        assert_eq!(
+            run_limited(&OPEN, Duration::from_secs(10), || Ok(3)),
+            Ok(3),
+            "reason: works_again"
+        );
+        assert_eq!(
+            run_limited(&OPEN, Duration::ZERO, || Ok(4)),
+            Err(HelloError::TimedOut),
+            "reason: zero_limit"
+        );
+    }
 
     /// WH1: cancel and time-out are `cancel`, never a success; unknown codes stay errors.
     #[test]

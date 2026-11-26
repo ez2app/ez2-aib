@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # NA1-NA8 a seat reads the other seats' status lines (DESIGN-seat-now-all-a9136-1121; 5d33a
 # PREREAD-seatnowall 0/0/1/1): trusted now and named in now_all_seats, the item alone as `said`,
 # cleaned, one ask every 10 s, journaled without words.

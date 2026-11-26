@@ -1027,3 +1027,56 @@ async fn the_start_up_token_cannot_type_to_a_seat() {
     assert_eq!(r.code, 403, "{}", r.json);
     assert_eq!(r.json["code"], "act_needs_a_paired_page", "{}", r.json);
 }
+
+/// §8 8b-2 (6770f): an old persona uid merged into another opens as that one; an archived
+/// persona does not open (400 persona_archived) and nothing is written.
+#[tokio::test(flavor = "multi_thread")]
+async fn mg20_an_old_uid_opens_as_the_kept_persona_and_an_archived_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let db = aib_store::MessageDb::open(&dir.path().join(aib_store::MESSAGES_FILE)).unwrap();
+    db.alias_set("zzzzz1", "un0eba", "mb_1", 1).unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("zzzzz1", r#","new":false,"dry_run":true"#)),
+            "",
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.json);
+    assert_eq!(
+        r.json["plan"]["persona"]["persona_sha"], SHA_B,
+        "the old uid opens as the kept one"
+    );
+    db.archive_add(aib_store::ArchivedItem {
+        kind: "persona".into(),
+        uid: "mnnftg".into(),
+        archived_at: 1,
+        keep_until: None,
+        reason: "merge".into(),
+        batch_id: Some("mb_1".into()),
+        copy_dir: None,
+        sha256: None,
+        restored_at: None,
+    })
+    .unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("arch"),
+        )
+        .await;
+    assert_eq!(
+        (r.code, r.json["code"].as_str(), r.json["reason"].as_str()),
+        (400, Some("invalid_request"), Some("persona_archived")),
+        "{}",
+        r.json
+    );
+    let all = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(all.json["seats"], serde_json::json!([]));
+    d.shutdown().await;
+}

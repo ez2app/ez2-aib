@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # WN1–WN3: a work seat may add a file by name, and a claude work seat's system prompt starts with
 # every command it may run (519d0 11-21 M6; 0eed7 VERIFY-pv8 r2 M6: Andy's seat had
 # `git add README.md` refused and stopped, not knowing what it may run)

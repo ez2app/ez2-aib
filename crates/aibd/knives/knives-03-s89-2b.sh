@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=macos   # 90856 11-25 E3 r2: a test its knives expect red already fails on ubuntu unmutated (false bite there)
 # S89-2b (B4-1b-2b) knives SO19–SO26, WD1–WD7: POST /seats/open starts the seat's provider over pipes, the seat's
 # own env names are set by aibd and never taken from a request. Written inline in aibd.yml on
 # feat/b4-1b-2b-pipe-wire-a9136-1114 (1638ef7d8); moved here word for word (RULES §21, new knives live in

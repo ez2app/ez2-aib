@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # aib-slice clean events CE1–CE11 (a9136 11-17, S107-product slice 2, IFACE-s107-product-a9136-1117 r1
 # §2.1 §8 item 1): every target gc deletes is one clean event. Each rule, broken, turns its own test red.
 # Run on macOS (the header default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust).

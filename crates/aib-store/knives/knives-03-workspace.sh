@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # N-workspace wave 2 knives WD1–WD4 (7b81e 11-18): the workspace library keeps one row per node, seat and
 # role and stops a node at its limit. Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail

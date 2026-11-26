@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # TC1–TC5 a fingerprint window closes with its ticket and an unanswered one is not a no (N-webonly-c45; 0eed7 VERIFY-ownertouch-andy M1, 5d33a PREREAD-touchclose)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

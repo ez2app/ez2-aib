@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # S89-talk-2b knives CT1–CT16 (7b81e 11-18; file renamed from 07, 5d33a N2, IFACE-S89-talk-2b-7b81e-1118 §5): the contacts file stays
 # private and is never overwritten when broken, every write names its revision, and nothing the person wrote
 # reaches the journal. Each rule, broken, turns its own test red. Run from the repo root.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # who may mark urgent: ranks only from the owner's grants (OPINION-role-rank-a9136-1121 r2; 5d33a PREREAD-inboxaibd F r2)
 set -euo pipefail
 umask 022

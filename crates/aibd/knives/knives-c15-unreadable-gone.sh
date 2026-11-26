@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # c15 (a9136 11-20): a stop held only by unreadable processes is taken up at the next start
 # when every one it listed is gone (519d0 self test: three restarts, three outcomes). Each
 # rule, broken, turns its own test red. Run from the repo root.

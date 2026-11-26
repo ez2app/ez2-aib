@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # SR1 / SR2 (a9136 11-20, ORDER-autodrive 4): the parent counts a preview's running seats from
 # the preview's store, read only; a waiting session counts, a session with no seat does not.
 # Run from the repo root.

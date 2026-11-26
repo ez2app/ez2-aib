@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # PC1–PC3 (7b81e 11-19; 519d0 12:09): in a preview, a carried pairing is sent back to the parent's 打開 (no code,
 # no finger), not told to pair again. Each, broken, turns in_a_preview_a_carried_pairing_is_sent_back_to_open red.
 set -eu
