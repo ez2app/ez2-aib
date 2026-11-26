@@ -2503,6 +2503,14 @@ impl aibd::winsetup::Ops for SetupOps {
         // B2: Windows Hello is a gesture asked at each owner action; nothing is made here
         #[cfg(windows)]
         {
+            // over ssh / remote desktop / a task the answer is not about this desktop's owner
+            aib_sys::hello::interactive_session().map_err(|e| {
+                format!(
+                    "{}: {}",
+                    aibd::winsetup::hello_error_line(&e),
+                    aibd::winsetup::DESKTOP_ONLY
+                )
+            })?;
             aib_sys::hello_consent::available().map_err(|e| aibd::winsetup::hello_error_line(&e))
         }
         #[cfg(not(windows))]
