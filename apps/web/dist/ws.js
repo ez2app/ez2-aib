@@ -137,6 +137,7 @@
     // 總收件匣第 1 期(DESIGN-web-inbox-page-1a93b r2 / 7ebca §4):只給內建頁本次配對;403 / 404 ⇒ null,頂列不顯示「📥 信」
     { const ib = await soft(get('/api/v1/inbox?scope=all')).catch(() => null); S.inbox = ib && Array.isArray(ib.rows || ib.items) ? { rows: ib.rows || ib.items, counts: ib.counts || {}, next: ib.next || null, bridge: ib.bridge } : null; S.inbPfx = S.inbox && Number(S.inbox.counts.urgent) > 0 ? '(急 ' + (Number(S.inbox.counts.urgent) | 0) + ') ' : ''; if (document.getElementById('inbdlg') && document.getElementById('inbdlg').open) inboxDlg(); }
     S.hosts = hosts && Array.isArray(hosts.hosts) ? hosts.hosts : null;
+    if (!S.gAt || Date.now() - S.gAt > 8000) await guideLoad(); // 新用戶指引:舊 aibd 404 ⇒ null,整塊不出
     // 7ebca 事件卡槽 + 用量(第二波);這版 aibd 沒有 ⇒ null,事件欄照頁面自己算
     if (S.version === undefined) S.version = await soft(get('/api/v1/version')).catch(() => null);
     S.aslots = slotsR && Array.isArray(slotsR.slots) ? slotsR.slots : null;
@@ -312,6 +313,196 @@
     } catch (e) { /* 沒有 tree.json ⇒ 左樹留空 */ }
   }
 
+  // ---------- 新用戶指引(內建專案鏈;SPEC-onboarding-projects-ebab8-1126 r6、IFACE-guide-6770f-1126 r4b、DECISION-onboarding-bounds-3e53b r4、f163c PREREAD 1–16)----------
+  // 勾全由 aibd 查(GET /api/v1/guide),頁面不存任何完成狀態;舊 aibd 404 ⇒ 整塊不出、面板全亮(頁面不自己猜)。
+  // 暗格 / 遮罩 / 路線只是畫面:不送 act、不改任何鈕的 disabled 與焦點、沒有閘讀它;按下去走的都是頁面上原本那顆鈕。
+  // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
+  const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
+  const GUIDE_W = {
+    'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
+      tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['要 Windows Hello', '要 Touch ID 或密碼'],
+      step: { health: 'AIB 已安裝並在執行', pair: '讓這個瀏覽器連上 AIB', claude: '找到 Claude 並已登入', allow: '允許 AIB 在這台開 Claude', first: '跟第一位 AI 夥伴說一句話', tour: '看看完整的選單', host_add: '加一台主機', host_reach: 'AIB 連得上那台', host_handoff: '交給一位夥伴管', site_first: '第一個網站' },
+      go: { provider_install: '安裝 Claude', provider_relogin: '重新登入 Claude', session_policy_init: '打開開席設定', start_claude: '開始用 Claude', focus_chat: '去說一句', open_partner_panel: '打開「+ AI 夥伴」', add_host: '打開測試機' },
+      why: { not_paired: '還沒配對', not_found: '這台找不到 Claude', npm_only: '這台的 Claude 是 npm 版,AIB 不能用', not_logged_in: 'Claude 還沒登入或已過期', login_unknown: '還不知道 Claude 登入了沒', no_policy: '還沒有開席設定', no_claude: '開席設定裡沒有 Claude', none_yet: '還沒跟夥伴說過話', not_yet: '還沒打開過完整選單', after_first: '先跟夥伴說一句話', none: '還沒有主機', source_error: 'AIB 這一項讀不到', unknown: '判不出來', write_failed: '沒記上,下次打開再試一次' } },
+    en: { start: 'Get started with AIB', hosts: 'Manage sites / hosts', hostsOff: ' (opens after the steps above)', builtin: 'Built-in', later: 'Next version', unsure: 'Can’t tell', skip: 'Skip the guide', again: 'Show again', dim: 'Opens after “Get started with AIB”', here: 'this page', pin: 'No Windows Hello? Set up a PIN first',
+      tourLine: 'Everything is open now: you can pick other plans, personas, second brains and roles, or open several partners at once.', hello: ['Needs Windows Hello', 'Needs Touch ID or password'],
+      step: { health: 'AIB is installed and running', pair: 'Connect this browser to AIB', claude: 'Claude is found and signed in', allow: 'Let AIB open Claude on this computer', first: 'Say one thing to your first AI partner', tour: 'See the full menu', host_add: 'Add a host', host_reach: 'AIB can reach it', host_handoff: 'Hand it to a partner', site_first: 'Your first site' },
+      go: { provider_install: 'Install Claude', provider_relogin: 'Sign in to Claude again', session_policy_init: 'Open seat settings', start_claude: 'Start with Claude', focus_chat: 'Say something', open_partner_panel: 'Open “+ AI partner”', add_host: 'Open test machines' },
+      why: { not_paired: 'Not paired yet', not_found: 'Claude isn’t on this computer', npm_only: 'This Claude is the npm version, which AIB can’t use', not_logged_in: 'Claude isn’t signed in, or the sign-in expired', login_unknown: 'Not known yet whether Claude is signed in', no_policy: 'No seat settings yet', no_claude: 'Seat settings don’t include Claude', none_yet: 'You haven’t talked to a partner yet', not_yet: 'You haven’t opened the full menu yet', after_first: 'Say one thing to a partner first', none: 'No hosts yet', source_error: 'AIB couldn’t read this', unknown: 'Can’t tell', write_failed: 'Not recorded; it will try again next time' } },
+    ja: { start: 'AIB をはじめる', hosts: 'サイト / ホストの管理', hostsOff: '（上の手順が終わると使えます）', builtin: '内蔵', later: '次のバージョン', unsure: '判定できません', skip: 'ガイドをスキップ', again: 'もう一度見る', dim: '「AIB をはじめる」が終わると使えます', here: 'このページ', pin: 'Windows Hello 未設定?先に PIN を設定',
+      tourLine: 'すべて使えるようになりました:ほかのプラン、人格、第二の脳、役割を選んだり、複数のパートナーを一度に開いたりできます。', hello: ['Windows Hello が必要', 'Touch ID またはパスワードが必要'],
+      step: { health: 'AIB がインストールされ動いている', pair: 'このブラウザを AIB につなぐ', claude: 'Claude が見つかりサインイン済み', allow: 'このパソコンで AIB が Claude を開くのを許可', first: '最初の AI パートナーにひとこと話す', tour: 'メニュー全体を見る', host_add: 'ホストを 1 台追加', host_reach: 'AIB がそのホストにつながる', host_handoff: 'パートナーに管理を任せる', site_first: '最初のサイト' },
+      go: { provider_install: 'Claude をインストール', provider_relogin: 'Claude に再サインイン', session_policy_init: '席の設定を開く', start_claude: 'Claude ではじめる', focus_chat: 'ひとこと話す', open_partner_panel: '「+ AI パートナー」を開く', add_host: 'テスト機を開く' },
+      why: { not_paired: 'まだペアリングしていません', not_found: 'このパソコンに Claude がありません', npm_only: 'この Claude は npm 版で、AIB では使えません', not_logged_in: 'Claude が未サインインか期限切れです', login_unknown: 'Claude のサインイン状態がまだ分かりません', no_policy: '席の設定がまだありません', no_claude: '席の設定に Claude がありません', none_yet: 'まだパートナーと話していません', not_yet: 'まだメニュー全体を開いていません', after_first: '先にパートナーにひとこと話してください', none: 'ホストがまだありません', source_error: 'AIB がこの項目を読めません', unknown: '判定できません', write_failed: '記録できませんでした。次に開いたとき再試行します' } },
+    ko: { start: 'AIB 시작하기', hosts: '사이트 / 호스트 관리', hostsOff: ' (위 단계를 마치면 열립니다)', builtin: '기본 제공', later: '다음 버전', unsure: '판단할 수 없음', skip: '안내 건너뛰기', again: '다시 보기', dim: '「AIB 시작하기」를 마치면 열립니다', here: '바로 이 페이지', pin: 'Windows Hello가 없나요? 먼저 PIN을 설정하세요',
+      tourLine: '이제 모두 열렸습니다: 다른 플랜, 인격, 제2의 뇌, 역할을 고르거나 여러 파트너를 한 번에 열 수 있습니다.', hello: ['Windows Hello 필요', 'Touch ID 또는 암호 필요'],
+      step: { health: 'AIB가 설치되어 실행 중', pair: '이 브라우저를 AIB에 연결', claude: 'Claude를 찾았고 로그인됨', allow: '이 컴퓨터에서 AIB가 Claude를 열도록 허용', first: '첫 AI 파트너에게 한마디 하기', tour: '전체 메뉴 보기', host_add: '호스트 한 대 추가', host_reach: 'AIB가 그 호스트에 연결됨', host_handoff: '파트너에게 관리 맡기기', site_first: '첫 사이트' },
+      go: { provider_install: 'Claude 설치', provider_relogin: 'Claude 다시 로그인', session_policy_init: '좌석 설정 열기', start_claude: 'Claude로 시작', focus_chat: '한마디 하기', open_partner_panel: '「+ AI 파트너」 열기', add_host: '테스트 머신 열기' },
+      why: { not_paired: '아직 페어링하지 않음', not_found: '이 컴퓨터에 Claude가 없음', npm_only: '이 Claude는 npm 버전이라 AIB에서 쓸 수 없음', not_logged_in: 'Claude가 로그인되지 않았거나 만료됨', login_unknown: 'Claude 로그인 여부를 아직 모름', no_policy: '좌석 설정이 아직 없음', no_claude: '좌석 설정에 Claude가 없음', none_yet: '아직 파트너와 대화하지 않음', not_yet: '아직 전체 메뉴를 열지 않음', after_first: '먼저 파트너에게 한마디 하세요', none: '아직 호스트가 없음', source_error: 'AIB가 이 항목을 읽지 못함', unknown: '판단할 수 없음', write_failed: '기록하지 못했습니다. 다음에 열 때 다시 시도합니다' } },
+  };
+  const gW = (k) => { const T = GUIDE_W[typeof askLang === 'function' ? askLang() : 'zh-TW'] || GUIDE_W['zh-TW']; return Object.prototype.hasOwnProperty.call(T, k) ? T[k] : GUIDE_W.en[k]; };
+  const gOwn = (o, k) => !!o && typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+  const gWord = (grp, k) => { const T = gW(grp); return gOwn(T, k) ? T[k] : ''; };
+  // 頁面寫死:next_act → 路線的候選終點(由前到後,取畫面上最後一個點得到的);表裡只有「開始」類入口
+  const GUIDE_GO = {
+    provider_install: { hello: true, to: ['[data-add="1"]'] },
+    provider_relogin: { hello: true, to: ['[data-add="1"]'] },
+    session_policy_init: { hello: true, to: ['[data-add="1"]'] },
+    start_claude: { hello: true, to: ['[data-add="1"]', '[data-startclaude="1"]', '.adlg.ap [data-apcat="life"]', '.adlg.ap [data-apsub="life:0"]', '.adlg.ap .afoot .go'] },
+    focus_chat: { to: ['#inp'] },
+    open_partner_panel: { to: ['[data-add="1"]'] },
+    add_host: { to: ['[data-thopen="1"]'] },
+  };
+  // 新手期「+ AI 夥伴」只亮這一條路:聊天陪伴(= 開始用 Claude 那組)與 AI 那一列
+  const GUIDE_LIT = { apcat: 'life', apsub: 'life:0', aprc: 'life:0', aprow: 'brand' };
+  const GUIDE_SKIP = 'aib.guide.skip';
+  const gProj = (G, id) => (G && Array.isArray(G.projects) ? G.projects.find((p) => p && p.id === id) : null) || null;
+  const gSteps = (P, id) => (P && Array.isArray(P.steps) ? P.steps.filter((s) => s && GUIDE_STEPS[id].includes(s.id)) : []);
+  // 新手期 = aibd 說面板還沒全亮(panel_lit 只由 aibd 算;頁面不看 1–5 自己推)
+  const guideNew = (G) => !!(G && gProj(G, 'start') && G.panel_lit === false);
+  // ok 打勾 / bad 未完成 / unsure 判不出(不勾、不擋後面) / lock 配對前鎖 / later 下一版
+  function gState(s) {
+    if (!s) return 'bad';
+    if (s.why === 'next_version') return 'later';
+    if (s.why === 'locked' || !Object.prototype.hasOwnProperty.call(s, 'done')) return 'lock';
+    return s.done === true ? 'ok' : s.done === null ? 'unsure' : 'bad';
+  }
+  // 現在那一步:專案一第一個沒完成的;專案一走完、專案二亮著 ⇒ 專案二第一個沒完成的
+  function guideCur(G) {
+    for (const id of ['start', 'hosts']) {
+      const P = gProj(G, id); if (!P || (id === 'hosts' && P.lit !== true)) continue;
+      const s = gSteps(P, id).find((x) => gState(x) === 'bad'); if (s) return { proj: id, step: s };
+    }
+    return null;
+  }
+  const gSkipped = () => { try { if (localStorage.getItem(GUIDE_SKIP) === '1') return true; } catch (e) { /* 本機偏好讀不到 ⇒ 看這一頁的 */ } return !!S.gSkip; };
+  function guideSkip(on) { S.gSkip = on !== false; try { if (S.gSkip) localStorage.setItem(GUIDE_SKIP, '1'); else localStorage.removeItem(GUIDE_SKIP); } catch (e) { /* 只存本機偏好,存不了就只記這一頁 */ } render(); }
+  async function guideLoad() {
+    S.gAt = Date.now();
+    const r = await soft(get('/api/v1/guide')).catch(() => null);
+    S.guide = r && typeof r === 'object' && Array.isArray(r.projects) ? r : null;
+  }
+  const gHello = (k) => (gOwn(GUIDE_GO, k) && GUIDE_GO[k].hello ? `<em class="ghello">${esc(gW('hello')[typeof fpWin === 'function' && fpWin() ? 0 : 1])}</em>` : '');
+  function gRows(P, id, cur, out) {
+    for (const s of gSteps(P, id)) {
+      const st = gState(s), on = !!cur && cur.proj === id && cur.step === s, na = typeof s.next_act === 'string' ? s.next_act : '';
+      const mark = on ? '▶' : st === 'ok' ? '✓' : st === 'lock' ? '🔒' : st === 'unsure' ? '?' : '·';
+      const why = st === 'unsure' ? gW('unsure') : gWord('why', s.why);
+      const right = on && gOwn(GUIDE_GO, na) ? `<span class="gact"><button type="button" class="k g gbtn" data-ggo="${esc(na)}">${esc(gWord('go', na))}</button>${gHello(na)}</span>`
+        : st === 'later' ? `<span class="stn">${esc(gW('later'))}</span>` : '<span></span>';
+      out.push(`<div class="row d1 gstep g${st}${on ? ' gcur' : ''}" data-gstep="${esc(s.id)}"><div class="nm"><span class="tw">${mark}</span><span class="tx" title="${esc(why)}">${esc(gWord('step', s.id))}${st === 'unsure' ? ' · ' + esc(gW('unsure')) : ''}</span></div>${right}<div class="seats"></div></div>${on && why ? `<div class="apn gwhy">${esc(why)}</div>` : ''}`);
+    }
+  }
+  // 左欄「專案」卡最上面:用現有專案列的畫法(.row / .nm / .tw / .lv / progress.mini),不加新版面
+  function guideHtml() {
+    const G = S.guide, P1 = gProj(G, 'start'); if (!P1) return '';
+    const cur = guideCur(G), out = [], O = S.gOpen || (S.gOpen = {});
+    for (const id of ['start', 'hosts']) {
+      const P = gProj(G, id); if (!P) continue;
+      if (id === 'hosts' && P.lit !== true) { out.push(`<div class="row d0 gproj goff" data-gproj="hosts" aria-disabled="true"><div class="nm"><span class="tw">🔒</span><span class="lv a">${esc(gW('builtin'))}</span><span class="tx">${esc(gW('hosts'))}${esc(gW('hostsOff'))}</span></div><span></span><div class="seats"></div></div>`); continue; }
+      const L = gSteps(P, id), tot = L.filter((s) => gState(s) !== 'later').length, okN = L.filter((s) => gState(s) === 'ok').length, all = tot > 0 && okN === tot;
+      const open = gOwn(O, id) ? O[id] : !all, again = gSkipped() && cur && cur.proj === id;
+      out.push(`<div class="row d0 gproj${all ? ' gok' : ''}" data-gproj="${id}"><div class="nm"><span class="tw" data-gtw="${id}">${L.length ? (open ? '▾' : '▸') : '·'}</span><span class="lv a">${esc(gW('builtin'))}</span><span class="tx">${esc(gW(id))}${all ? ` ✅ ${okN}/${tot}` : ''}</span></div>${tot ? `<progress class="mini" max="${tot}" value="${okN}" title="${okN} / ${tot}"></progress>` : '<span></span>'}<div class="seats">${again ? `<button type="button" class="k gagain" data-gagain="1">${esc(gW('again'))}</button>` : ''}</div></div>`);
+      if (open) gRows(P, id, cur, out);
+    }
+    return `<div class="gbox">${out.join('')}</div>`;
+  }
+  // 配對前(沒有頁面憑證):aibd 只回 health 與 pair,其他四步 locked;配對鈕旁照實寫要先設 PIN(配對前不探 Hello)
+  function guidePreHtml() {
+    const P = gProj(S.guide, 'start'); if (!P) return '';
+    const li = gSteps(P, 'start').map((s) => { const st = gState(s), on = s.id === 'pair' && st !== 'ok';
+      return `<li class="g${st}${on ? ' gcur' : ''}"><span class="tw">${on ? '▶' : st === 'ok' ? '✓' : st === 'lock' ? '🔒' : '·'}</span>${esc(gWord('step', s.id))}${on ? ' · ' + esc(gW('here')) : ''}</li>`; }).join('');
+    const win = typeof fpWin === 'function' && fpWin();
+    const pin = win && typeof ocW === 'function' ? `<details class="gpin"><summary class="gpins">${esc(gW('pin'))}</summary><ol class="ocsteps">${ocW('steps').slice(0, 2).map((x) => `<li>${esc(x)}</li>`).join('')}</ol><div class="apn">${esc(ocW('nopw'))}</div></details>` : '';
+    return `<div class="gpre"><b>${esc(gW('start'))}</b><ol>${li}</ol>${pin}</div>`;
+  }
+  // 新手期把「+ AI 夥伴」面板裡聊天陪伴以外的方案格與各列調暗加鎖:版面、順序、字都不動,只加 class / aria-disabled / 提示
+  function guideDim(h) {
+    if (!guideNew(S.guide)) return h;
+    const t = esc(gW('dim'));
+    return String(h).replace(/<button type="button" class="([^"]*)"([^>]*?) data-(apcat|apsub|aprc|aprow|apmine)="([^"]*)"/g, (m, c, mid, a, v) => (GUIDE_LIT[a] === v ? m : `<button type="button" class="${c} gdim" aria-disabled="true" title="${t}"${mid} data-${a}="${v}"`))
+      .replace(/(<div class="apsrc">[^<]*<\/div>)/, `$1<div class="apn gdimh">🔒 ${t}</div>`);
+  }
+  const guideTourLine = () => (S.gTourLine ? `<div class="aok gtourl">${esc(gW('tourLine'))}</div>` : '');
+  // 第 6 步「看看完整的選單」:打開「+ AI 夥伴」那一刻記一次(act guide_done,不帶任何值;409 guide_not_ready = 第 5 步還沒成立,不算錯)
+  async function guideOnPanel() {
+    const c = guideCur(S.guide);
+    if (!c || c.step.id !== 'tour') { S.gTourLine = false; return; }
+    if (S.gTourSent || hasAct('guide_done') !== true) return; // 6770f IFACE-guide r3b guide_done(還沒進主線);version.acts 有才送
+    S.gTourSent = true; S.gMsg = '';
+    try { const r = await act('guide_done'); if (r && r.ok) { S.gTourLine = true; S.gTourHere = true; } }
+    catch (e) { if (!(e && e.status === 409)) { S.gTourSent = false; S.gMsg = gWord('why', 'write_failed'); } }
+    await guideLoad(); render();
+  }
+  // 指引那顆鈕:按畫面上原本那顆入口(就是路線的終點),不另開捷徑
+  function guideGo(k) {
+    if (!gOwn(GUIDE_GO, k)) return false;
+    if (k === 'focus_chat') { const i = document.getElementById('inp'); if (i) i.focus(); return true; }
+    const sel = guidePick(GUIDE_GO[k].to.filter((s) => !/^\.adlg/.test(s)), gHas, false);
+    const e = sel && document.querySelector(sel); if (e) e.click();
+    return true;
+  }
+  // 候選終點由前到後,取最後一個「在畫面上、沒 disabled、(有對話框時)在對話框裡」的
+  function guidePick(list, has, dlg) {
+    let pick = null;
+    for (const s of list) { const h = has(s); if (h && h.ok && !h.disabled && (!dlg || h.inDlg)) pick = s; }
+    return pick;
+  }
+  function gHas(s) {
+    const e = document.querySelector(s); if (!e) return null;
+    const r = e.getBoundingClientRect(), d = document.querySelector('.dlgbg');
+    return { ok: r.width > 0 && r.height > 0, inDlg: !!(d && d.contains(e)), disabled: !!e.disabled || e.getAttribute('aria-disabled') === 'true' };
+  }
+  // 本人確認 / 配對碼 / 錯誤說明 / 別的對話框出現 ⇒ 整層拆掉(不靠疊層高低);只有「+ AI 夥伴」一個對話框時才畫
+  function guideBlocked(doc) {
+    if (doc.querySelector('.pgbg,.anndlg,[role="alertdialog"],[role="alert"]')) return true;
+    const D = Array.from(doc.querySelectorAll('.dlgbg'));
+    return D.length > 1 || (D.length === 1 && !D[0].querySelector('.adlg.ap'));
+  }
+  const gRect = (r, p) => ({ x: Math.round(r.left - p), y: Math.round(r.top - p), w: Math.round(r.width + 2 * p), h: Math.round(r.height + 2 * p) });
+  // 蓋暗的一層:整個畫面一個框,挖掉的洞(現在那一步 + 終點)用 evenodd 不畫 ⇒ 洞裡點得到底下原本的鈕
+  const guidePathD = (vw, vh, holes) => `M0 0H${vw}V${vh}H0Z` + holes.map((o) => `M${o.x} ${o.y}h${o.w}v${o.h}h${-o.w}Z`).join('');
+  function guideLineD(a, b) {
+    const ax = a.x + a.w, ay = a.y + a.h / 2, bx = b.x, by = b.y + b.h / 2, mx = (ax + bx) / 2;
+    return `M${ax} ${ay}C${mx} ${ay} ${mx} ${by} ${bx} ${by}`;
+  }
+  // f163c 15'(f):連不上 AIB / 讀取出錯(頂端紅色那條)⇒ 遮罩與路線拆掉,不讓人卡在全暗的畫面
+  const gDown = () => !!(S.banner && S.bannerKind === 'err');
+  function guideRouteOn() {
+    const G = S.guide; if (!G || S.pair || gSkipped() || gDown()) return null;
+    const cur = guideCur(G); if (!cur) return null;
+    if (!(guideNew(G) || (S.gTourHere && cur.proj === 'hosts'))) return null; // 走完、且不是專案二剛亮(這一頁剛記上「走完」)⇒ 不產生
+    const na = typeof cur.step.next_act === 'string' ? cur.step.next_act : '';
+    if (!gOwn(GUIDE_GO, na) || guideBlocked(document)) return null;
+    const dlg = !!document.querySelector('.dlgbg');
+    const sel = guidePick(GUIDE_GO[na].to, gHas, dlg); if (!sel) return null;
+    return { sel, to: document.querySelector(sel), from: dlg ? null : document.querySelector('[data-ggo]') };
+  }
+  let gRaf = 0;
+  function guidePaintSoon() { if (gRaf || typeof requestAnimationFrame !== 'function') return; gRaf = requestAnimationFrame(() => { gRaf = 0; guidePaint(); }); }
+  function guidePaint() {
+    const old = document.getElementById('gtour'), R = guideRouteOn();
+    if (!R || !R.to) { if (old) old.remove(); return; }
+    const tr = R.to.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    if ((tr.bottom < 0 || tr.top > vh || tr.right < 0 || tr.left > vw) && S.gScr !== R.sel) { S.gScr = R.sel; R.to.scrollIntoView({ block: 'center', inline: 'nearest' }); return guidePaintSoon(); }
+    const b = gRect(tr, 6), holes = [b];
+    const fr = R.from && R.from.getBoundingClientRect(), a = fr && fr.width ? gRect(fr, 4) : null;
+    if (a) holes.push(a);
+    const d = old || document.createElement('div');
+    d.id = 'gtour'; d.className = 'gtour';
+    d.innerHTML = `<svg class="gsvg" viewBox="0 0 ${vw} ${vh}" width="${vw}" height="${vh}" aria-hidden="true"><path class="gdimp" fill-rule="evenodd" d="${guidePathD(vw, vh, holes)}"/>${a ? `<path class="gline" d="${guideLineD(a, b)}"/>` : ''}<rect class="gring" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8"/></svg><button type="button" class="k gskip" data-gskip="1">${esc(gW('skip'))} · Esc</button>`;
+    if (!old) {
+      d.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (e.target.closest('[data-gskip]')) guideSkip(true); });
+      document.body.appendChild(d);
+    }
+  }
+  if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.addEventListener) {
+    window.addEventListener('resize', guidePaintSoon, { passive: true });
+    document.addEventListener('scroll', guidePaintSoon, { passive: true, capture: true });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('gtour')) guideSkip(true); });
+  }
+  // ---------- 新用戶指引 end ----------
+
   // ---------- 左:專案樹(唯讀) ----------
   const STATIONS = ['未開始', '已定未做', '開發中', '審過未推', '審過排隊', '未驗', '驗過'];
   // 跟流程表 stations.html 的 ST 同一張對照(0eed7 VERIFY-cardview-27df927e M1:實查不通過是第 3 站「開發中」,不是未驗)
@@ -341,10 +532,10 @@
     }
   }
   function treeHtml() {
-    if (!S.kids) return '<div class="bh"><b>專案</b></div>';
+    if (!S.kids) return '<div class="bh"><b>專案</b></div>' + guideHtml();
     const out = [];
     treeRows('', 0, out);
-    return `<div class="bh"><b>專案</b><small>唯讀</small></div><div class="treebox">${out.join('')}</div>`;
+    return `<div class="bh"><b>專案</b><small>唯讀</small></div>${guideHtml()}<div class="treebox">${out.join('')}</div>`;
   }
 
   // ---------- 搜尋(SPEC §18,Andy 19:5x「要有一個 搜尋框 搜尋出來 要分類」)----------
@@ -6210,7 +6401,7 @@
     </div>` : '<div class="apn apwait">先選要做什麼(或「接手舊席」),設定會自動帶出來</div>';
     return `<div class="dlgbg"><div class="adlg ap ${A.still ? 'still' : ''}" role="dialog" aria-label="新增 AI 夥伴">
       <div class="ah"><h3>新增 AI 夥伴<small>選要做的事,人格、權限、搭檔自動配好</small></h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
-      <div class="apsrc">${esc(apSrc())}</div>
+      <div class="apsrc">${esc(apSrc())}</div>${guideTourLine()}
       ${apTop(A)}${set}
       ${apMine(A)}
       ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
@@ -6788,13 +6979,15 @@
     return `<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`;
   }
   function render() {
+    guidePaintSoon(); // 新用戶指引路線層:畫完下一格重算(不產生就拆掉)
     try { askNotice(); } catch (e) { /* 標題提醒壞了不擋畫面 */ }
     if (imeHold(el)) return; // 組字中不換掉輸入框;組字結束後 imeWire 補畫
     if (S.pair) {
-      const k = JSON.stringify([S.pair, S.boot, !!S.pvZone]);
+      if (S.gPre === undefined) { S.gPre = 1; guideLoad().then(() => { if (S.guide) render(); }); }
+      const k = JSON.stringify([S.pair, S.boot, !!S.pvZone, !!S.guide]);
       if (k === pairShown) return;
       pairShown = k;
-      el.innerHTML = `${pvBar()}<div class="bar0"><div class="brandt">多席工作台</div><div class="grow"></div><a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>${pairHtml()}`;
+      el.innerHTML = `${pvBar()}<div class="bar0"><div class="brandt">多席工作台</div><div class="grow"></div><a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>${guidePreHtml()}${pairHtml()}`;
       const c = document.getElementById('pcode'); if (c) c.focus();
       return;
     }
@@ -6825,7 +7018,7 @@
       ${S.newVer ? `<div class="banner newver" role="status">AIB 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
-        ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
+        ${S.add ? guideDim(addHtml()) : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
         <div class="box">${slotsHtml()}</div>
       </div>`;
     const t = document.getElementById('tl');
@@ -7070,6 +7263,10 @@
   });
   async function onMainClick(e) {
     const x = e.target;
+    if (x.closest('.gdim')) return; // 新手期暗格:畫面上不能按(不是權限,也不報錯)
+    const gdo = x.closest('[data-ggo]'); if (gdo) return guideGo(gdo.dataset.ggo);
+    const gtw = x.closest('[data-gtw]'); if (gtw) { const O = S.gOpen || (S.gOpen = {}), k = gtw.dataset.gtw, P = gProj(S.guide, k); O[k] = !(gOwn(O, k) ? O[k] : !(P && gSteps(P, k).every((s) => ['ok', 'later'].includes(gState(s))))); return render(); }
+    if (x.closest('[data-gagain]')) return guideSkip(false);
     if (x.closest('[data-hspick],[data-hsnew],[data-hsno],[data-hsok],[data-hsdel],[data-hsdelno],[data-hsdelok]') && await hsClick(x)) return; // S2 管理主機
     if (x.closest('[data-rgedit],[data-rgdel],[data-rgno],[data-rgok],[data-rgback],[data-rgdelok],[data-rgundo],[data-rgao],[data-rgrs]') && await rgClick(x)) return; // S4 人格 / 大腦 / 角色
     if (x.closest('[data-ptnew],[data-ptfine],[data-ptedit],[data-ptdel],[data-ptdelno],[data-ptdelok],[data-ptbase],[data-ptit],[data-ptno],[data-ptok],[data-ptpick],[data-ptsa],[data-ptap],[data-ptrv]') && await ptClick(x)) return; // S3 權限模板
@@ -7303,6 +7500,7 @@
       S.add = { provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem(), autoGo: !!x.closest('[data-startclaude]') };
       if (S.netCards > 0) S.add.mine = true; // 有連線卡等你決定 ⇒ 直接展開「我的 AI 夥伴」
       S.rg = null; S.rgMsg = null;
+      guideOnPanel();
       render();
       loadRegistry();
       if (!S.pt.off) ptLoad(); // S3:每次開都重讀(別的分頁可能改過)

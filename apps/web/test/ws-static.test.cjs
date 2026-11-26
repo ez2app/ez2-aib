@@ -20,7 +20,7 @@ new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
 // dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'movewait', 'movemsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
+const MARK_ONLY = new Set(['gstep', 'gproj', 'pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'movewait', 'movemsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
@@ -69,6 +69,8 @@ for (const t of acts) {
   if (/^seat_perm_(log|revoke)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7b perm_apply.rs(0742adfab8)') && ws.includes("if (hasAct('seat_perm_log') !== true) return") && ws.includes("const canRv = hasAct('seat_perm_revoke') === true;"), 'branch-only act is marked: ' + t); continue; }
   // 6770f A8 merge_find / preview / run / log / undo(IFACE-merge r1,預定、還沒寫);頁面看 version.acts 才呼叫。合進來後拿掉這行
   if (/^merge_(find|preview|run|log|undo)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('6770f IFACE-merge r0 §1') && ws.includes("if (hasAct('merge_find') !== true) return mgFind(kind);"), 'branch-only act is marked: ' + t); continue; }
+  // 6770f IFACE-guide r3b 才有 guide_done(新用戶指引第 6 步);頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (t === 'guide_done' && !rust.includes('"' + t + '"')) { ok(ws.includes('6770f IFACE-guide r3b guide_done') && ws.includes("if (S.gTourSent || hasAct('guide_done') !== true) return;"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -905,6 +907,109 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(sb.soleTarget('你好', [two]) === null, 'reason: sole_target_overrides_at');
     sb.L = [one, { seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_ignores_1x_seat');
     sb.L = [{ seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_picks_1x_seat'); }
+  // 新用戶指引(fc7f9 11-26;SPEC-onboarding-projects-ebab8-1126 r6、IFACE-guide-6770f-1126 r4b、3e53b DECISION r4、f163c PREREAD 1–16):
+  // 勾只照 aibd 回的 done;404 整塊不出;新手期面板只亮聊天陪伴;路線終點只從頁面寫死表;別的對話框 / 錯誤出現就拆;走完且非專案二剛亮不建層
+  {
+    const g0 = ws.indexOf('  const GUIDE_STEPS = '), g1 = ws.indexOf('  // ---------- 新用戶指引 end ----------');
+    ok(g0 > 0 && g1 > g0, 'reason: guide_slice');
+    const mk = (lang, win) => {
+      const c = { S: {}, esc: (x) => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'), askLang: () => lang || 'zh-TW', fpWin: () => !!win,
+        ocW: (k) => (k === 'steps' ? ['打開設定', '設 PIN', '回來按重新檢查'] : '先設密碼'), hasAct: (t) => c.acts.includes(t), acts: ['guide_done'], sent: [], loads: 0, renders: 0, fail: null,
+        act: async (t, f) => { c.sent.push([t, f]); if (c.fail) throw c.fail; return { ok: true, at: '2026-11-26T05:00:00Z', source: 'opened' }; },
+        get: async () => { c.loads++; return c.next || null; }, soft: (p) => p, render: () => { c.renders++; }, localStorage: { m: {}, getItem(k) { return this.m[k] || null; }, setItem(k, v) { this.m[k] = v; }, removeItem(k) { delete this.m[k]; } } };
+      vm.createContext(c);
+      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown };', c);
+      return c;
+    };
+    const st = (id, done, why, na) => Object.assign({ id, why }, done === undefined ? {} : { done }, na ? { next_act: na } : {});
+    const G = (claude, allow, first, tour, lit) => ({ panel_lit: !!lit, projects: [{ id: 'start', lit: true, steps: [st('health', true, 'ok'), st('pair', true, 'paired', 'pair'), claude, allow, first, tour] },
+      { id: 'hosts', lit: !!lit, steps: [st('host_add', false, 'none', 'add_host'), st('host_reach', false, 'next_version'), st('host_handoff', false, 'next_version'), st('site_first', false, 'next_version')] }] });
+    const cOk = st('claude', true, 'ok'), aOk = st('allow', true, 'ok'), fOk = st('first', true, 'ok'), tOk = st('tour', true, 'ok');
+    const c = mk();
+    const X = c.X;
+    // 四語:每個步驟、鈕、原因短碼都有字
+    const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
+    ok(['zh-TW', 'en', 'ja', 'ko'].every((l) => W[l] && steps.every((s) => W[l].step[s]) && gos.every((k) => W[l].go[k]) && whys.every((k) => W[l].why[k]) && W[l].dim && W[l].skip && W[l].again && W[l].hello.length === 2), 'reason: guide_four_langs');
+    ok(!/指紋/.test(JSON.stringify(W)) && W['zh-TW'].hello[0] === '要 Windows Hello', 'reason: guide_windows_says_hello');
+    // 舊 aibd(404 ⇒ null):整塊不出、面板不動、配對頁不加
+    c.S.guide = null;
+    const panel = '<div class="apsrc">從這台 AIB 讀的</div><button type="button" class="apc on" data-apcat="life">生活</button><button type="button" class="apc" data-apcat="work">工作</button><button type="button" class="apc sub on" data-apsub="life:0">聊天陪伴</button><button type="button" class="apc sub" data-apsub="life:1">分身</button><button type="button" class="apc" data-aprc="design:0">設計</button><button type="button" class="aprh" data-aprow="brand" aria-expanded="false"><span>AI</span></button><button type="button" class="aprh" data-aprow="mode" aria-expanded="false"><span>模式與權限</span></button><button type="button" class="aprh" data-aprow="persona" aria-expanded="false"><span>人格</span></button><button type="button" class="apmh" data-apmine="1">我的 AI 夥伴</button><button type="button" class="go" data-addgo="1">開</button>';
+    ok(X.guideHtml() === '' && X.guidePreHtml() === '' && X.guideDim(panel) === panel, 'reason: guide_404_nothing');
+    // 第 3 步沒登入:兩個勾、只亮一顆鈕(重新登入 Claude)、標要 Windows Hello、寫原因
+    c.S.guide = G(st('claude', false, 'not_logged_in', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    let h = X.guideHtml();
+    ok((h.match(/data-ggo="/g) || []).length === 1 && /data-ggo="provider_relogin">重新登入 Claude</.test(h) && (h.match(/<span class="tw">✓<\/span>/g) || []).length === 2 && /Claude 還沒登入或已過期/.test(h) && /<em class="ghello">要 Touch ID 或密碼<\/em>/.test(h), 'reason: guide_one_button_at_a_time ' + h);
+    ok(/<progress class="mini" max="6" value="2"/.test(h) && /管理網站 \/ 主機（完成上面後開放）/.test(h) && !/data-gstep="host_add"/.test(h), 'reason: guide_hosts_grey_until_done ' + h);
+    ok(mk('zh-TW', true).X && /要 Windows Hello/.test((() => { const w = mk('zh-TW', true); w.S.guide = c.S.guide; return w.X.guideHtml(); })()), 'reason: guide_hello_word_on_windows');
+    // 判不出(done null)不打勾、不擋後面
+    c.S.guide = G(st('claude', null, 'login_unknown', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    h = X.guideHtml();
+    ok(/data-gstep="claude"><div class="nm"><span class="tw">\?<\/span>/.test(h) && /data-ggo="session_policy_init"/.test(h) && X.guideCur(c.S.guide).step.id === 'allow', 'reason: guide_unsure_not_ticked ' + h);
+    // 新手期面板:只有聊天陪伴那條路與 AI 那一列可按;字一個都沒少,多一行提示
+    const d = X.guideDim(panel), lit = [...d.matchAll(/<button type="button" class="([^"]*)"[^>]*? data-(ap[a-z]+)="([^"]*)"/g)].filter((m) => !/\bgdim\b/.test(m[1])).map((m) => m[2] + '=' + m[3]);
+    ok(JSON.stringify(lit) === JSON.stringify(['apcat=life', 'apsub=life:0', 'aprow=brand']) && /data-addgo="1">開</.test(d) && !/class="go gdim"/.test(d), 'reason: guide_panel_only_chat_lit ' + JSON.stringify(lit));
+    ok((d.match(/aria-disabled="true"/g) || []).length === 6 && (d.match(/🔒 完成「開始使用 AIB」後開放/g) || []).length === 1, 'reason: guide_dim_marks');
+    const txt = (s) => s.replace(/<[^>]*>/g, '');
+    ok(txt(d) === txt(panel).replace('從這台 AIB 讀的', '從這台 AIB 讀的🔒 完成「開始使用 AIB」後開放'), 'reason: guide_panel_words_kept');
+    // 走完以後某一步失效:只那一步展開帶修復鈕,面板不再變暗(f163c 12)
+    c.S.guide = G(cOk, st('allow', false, 'no_claude', 'session_policy_init'), fOk, tOk, true);
+    h = X.guideHtml();
+    ok(X.guideDim(panel) === panel && /data-ggo="session_policy_init"/.test(h) && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_broken_after_done_not_dim');
+    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機;下一版三步沒有鈕
+    c.S.guide = G(cOk, aOk, fOk, tOk, true);
+    h = X.guideHtml();
+    ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">打開測試機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
+    // 配對前:aibd 只回 health 與 pair,其他鎖著;Windows 才有設 PIN 說明
+    c.S.guide = { panel_lit: false, projects: [{ id: 'start', lit: true, steps: [st('health', true, 'ok'), st('pair', false, 'not_paired', 'pair'), st('claude', undefined, 'locked'), st('allow', undefined, 'locked'), st('first', undefined, 'locked'), st('tour', undefined, 'locked')] }] };
+    const pre = X.guidePreHtml();
+    ok((pre.match(/>✓</g) || []).length === 1 && (pre.match(/>▶</g) || []).length === 1 && (pre.match(/>🔒</g) || []).length === 4 && /就是這一頁/.test(pre) && !/gpin/.test(pre), 'reason: guide_pre_pair_only_two ' + pre);
+    { const w = mk('zh-TW', true); w.S.guide = c.S.guide; ok(/沒設 Windows Hello\?先設一個 PIN/.test(w.X.guidePreHtml()) && /設 PIN/.test(w.X.guidePreHtml()), 'reason: guide_pre_pair_pin_on_windows'); }
+    // 終點白名單:next_act 只當鍵;沒有放行 / 本人確認 / 加測試機 / dgrs / work 那幾顆
+    const GO = JSON.stringify(Object.values(X.GUIDE_GO).map((v) => v.to));
+    ok(!/spok|lcgo|relogin|thadd|hsok|dgrs|work|apmode|danger/.test(GO) && Object.keys(X.GUIDE_GO).every((k) => X.GUIDE_GO[k].to.every((s) => /^(\[data-(add|startclaude|thopen)="1"\]|\.adlg\.ap \[data-ap(cat|sub)="life(:0)?"\]|\.adlg\.ap \.afoot \.go|#inp)$/.test(s))), 'reason: guide_targets_whitelist ' + GO);
+    c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'constructor'), st('tour', false, 'after_first', 'open_partner_panel'));
+    ok(!/data-ggo/.test(X.guideHtml()), 'reason: guide_unknown_act_no_button');
+    c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
+    // 終點挑法:面板關著有「開始用 Claude」⇒ 它;沒有 ⇒ + AI 夥伴;面板開著只挑面板裡的;「開」沒 disabled 才挑
+    const L = X.GUIDE_GO.start_claude.to, hv = (m) => (s) => (s in m ? m[s] : null);
+    const o = { ok: true, inDlg: false, disabled: false }, i = { ok: true, inDlg: true, disabled: false };
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '[data-startclaude="1"]': o }), false) === '[data-startclaude="1"]', 'reason: guide_pick_start_claude');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o }), false) === '[data-add="1"]', 'reason: guide_pick_add');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '.adlg.ap [data-apcat="life"]': i, '.adlg.ap [data-apsub="life:0"]': i, '.adlg.ap .afoot .go': Object.assign({}, i, { disabled: true }) }), true) === '.adlg.ap [data-apsub="life:0"]', 'reason: guide_pick_in_panel');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '.adlg.ap .afoot .go': i }), true) === '.adlg.ap .afoot .go' && X.guidePick(['[data-add="1"]'], hv({ '[data-add="1"]': o }), true) === null, 'reason: guide_pick_dialog_only_inside');
+    // 別的對話框 / 本人確認 / 配對碼 / 錯誤說明 ⇒ 拆層;只有「+ AI 夥伴」一個對話框才畫
+    const fd = (sel, dl) => ({ querySelector: (s) => (sel.some((x) => s.split(',').includes(x)) ? {} : null), querySelectorAll: () => dl.map((ap) => ({ querySelector: () => (ap ? {} : null) })) });
+    ok(!X.guideBlocked(fd([], [])) && !X.guideBlocked(fd([], [true])) && X.guideBlocked(fd([], [false])) && X.guideBlocked(fd([], [true, false])) && X.guideBlocked(fd(['.pgbg'], [])) && X.guideBlocked(fd(['[role="alert"]'], [true])) && X.guideBlocked(fd(['.anndlg'], [])), 'reason: guide_blocked_by_other_dialogs');
+    c.S.banner = '連不上 AIB(重試中)'; c.S.bannerKind = 'err'; const dn = X.gDown(); c.S.bannerKind = 'ok'; const up = X.gDown(); c.S.banner = null;
+    ok(dn === true && up === false && X.gDown() === false && /const G = S\.guide; if \(!G \|\| S\.pair \|\| gSkipped\(\) \|\| gDown\(\)\) return null;/.test(ws), 'reason: guide_layer_down_when_aib_down');
+    ok(X.guidePathD(100, 80, [{ x: 10, y: 12, w: 20, h: 8 }]) === 'M0 0H100V80H0ZM10 12h20v8h-20Z', 'reason: guide_hole_path');
+    // 第 6 步:打開面板記一次(不帶任何值),同時按兩次也只送一次;409 不算錯;version.acts 沒有就不送
+    c.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel'));
+    c.next = G(cOk, aOk, fOk, tOk, true);
+    (async () => {
+      await Promise.all([X.guideOnPanel(), X.guideOnPanel()]);
+      ok(c.sent.length === 1 && c.sent[0][0] === 'guide_done' && c.sent[0][1] === undefined && c.S.gTourLine === true && c.S.gTourHere === true && c.S.guide.panel_lit === true, 'reason: guide_tour_once ' + JSON.stringify(c.sent));
+      const c2 = mk(); c2.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel')); c2.fail = Object.assign(new Error('x'), { status: 409 });
+      await c2.X.guideOnPanel(); ok(c2.sent.length === 1 && !c2.S.gMsg && c2.loads === 1, 'reason: guide_tour_409_quiet');
+      const c3 = mk(); c3.acts = []; c3.S.guide = c2.S.guide; await c3.X.guideOnPanel(); ok(c3.sent.length === 0, 'reason: guide_tour_needs_act');
+      const c4 = mk(); c4.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel')); await c4.X.guideOnPanel(); ok(c4.sent.length === 0, 'reason: guide_tour_only_on_step_6');
+    })().catch((e) => { console.error(e); process.exitCode = 1; });
+    // 略過:只存本機偏好、可以再看一次
+    c.S.guide = G(st('claude', false, 'not_logged_in', 'provider_relogin'), aOk, fOk, st('tour', false, 'after_first', 'open_partner_panel'));
+    X.guideSkip(true);
+    ok(X.gSkipped() && c.localStorage.m['aib.guide.skip'] === '1' && /data-gagain="1">再看一次</.test(X.guideHtml()), 'reason: guide_skip_local_again');
+    X.guideSkip(false); ok(!X.gSkipped() && !/data-gagain/.test(X.guideHtml()), 'reason: guide_unskip');
+    // 接線(靜態):暗格點了不動作、指引鈕走原本那顆、打開面板記第 6 步、畫完重算路線、讀 guide、面板套暗格、配對頁加清單
+    ok(/async function onMainClick\(e\) \{\n    const x = e\.target;\n    if \(x\.closest\('\.gdim'\)\) return;/.test(ws), 'reason: guide_dim_click_does_nothing');
+    ok(/S\.rg = null; S\.rgMsg = null;\n      guideOnPanel\(\);\n      render\(\);/.test(ws) && /function render\(\) \{\n    guidePaintSoon\(\);/.test(ws) && /if \(!S\.gAt \|\| Date\.now\(\) - S\.gAt > 8000\) await guideLoad\(\);/.test(ws), 'reason: guide_wired');
+    ok(/\$\{S\.add \? guideDim\(addHtml\(\)\) : ''\}/.test(ws) && /<div class="apsrc">\$\{esc\(apSrc\(\)\)\}<\/div>\$\{guideTourLine\(\)\}/.test(ws) && /\$\{guidePreHtml\(\)\}\$\{pairHtml\(\)\}/.test(ws) && /<b>專案<\/b><small>唯讀<\/small><\/div>\$\{guideHtml\(\)\}/.test(ws), 'reason: guide_placed_in_existing_screens');
+    ok(/if \(!R \|\| !R\.to\) \{ if \(old\) old\.remove\(\); return; \}/.test(ws) && /if \(!\(guideNew\(G\) \|\| \(S\.gTourHere && cur\.proj === 'hosts'\)\)\) return null;/.test(ws) && /if \(!gOwn\(GUIDE_GO, na\) \|\| guideBlocked\(document\)\) return null;/.test(ws), 'reason: guide_layer_not_built_when_done');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'dist', 'ws.css'), 'utf8');
+    ok(/\.gtour\{position:fixed;inset:0;z-index:60;pointer-events:none\}/.test(css) && /\.gtour \.gsvg\{[^}]*pointer-events:none\}/.test(css) && /\.gtour \.gline\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gring\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gdimp\{[^}]*pointer-events:visiblePainted\}/.test(css) && /\.gtour \.gskip\{[^}]*pointer-events:auto/.test(css), 'reason: guide_layer_clicks_fall_through');
+    ok(/@media \(prefers-reduced-motion:reduce\)\{\.gtour \.gline,\.gtour \.gring\{animation:none\}\}/.test(css), 'reason: guide_reduced_motion_static');
+    ok(/document\.addEventListener\('keydown', \(e\) => \{ if \(e\.key === 'Escape' && document\.getElementById\('gtour'\)\) guideSkip\(true\); \}\);/.test(ws) && /class="k gskip" data-gskip="1"/.test(ws), 'reason: guide_skip_esc_visible');
+  }
   ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isArch\(s\)\); return L\.length === 1 && !isLegacy\(L\[0\]\) \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
   ctx.apPick(A, 'design:0');
   ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
