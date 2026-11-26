@@ -15,8 +15,8 @@ wl '            match check(name, &exe) {' \
    '            match check(name, &exe).or(Ok::<Option<String>, (LookKind, String)>(None)) { // knife' \
    a_look_takes_only_a_native_executable
 # WP2 an npm launcher (or anything found but not native) is written
-wi '        .filter(|l| l.kind == LookKind::Native)' \
-   '        .filter(|l| l.path.is_some()) // knife' \
+wi '    for l in looks.iter().filter(|l| l.kind == LookKind::Native) {' \
+   '    for l in looks.iter().filter(|l| l.path.is_some()) { // knife' \
    the_page_writes_the_policy_once_after_a_fresh_owner_check
 # WP3 written without the owner's check
 wi '        None => return crate::repos::asked(&ask),' \

@@ -308,22 +308,23 @@ fn is_key(name: &str) -> bool {
 /// The policy file's text for what `looks` found native (paths that are not UTF-8 are left
 /// out), with the [`allowlist::PREFILL_ENV`] names that are set, but no [`KEY_ENV`]; `None` when no native one.
 /// Checked with aibd's own parser: what is written is what aibd will load.
+/// On macOS a written program without a signer writes nothing (r2 h3).
 pub fn policy_text(looks: &[Look], is_set: impl Fn(&str) -> bool) -> Option<String> {
-    let programs: Vec<Value> = looks
-        .iter()
-        .filter(|l| l.kind == LookKind::Native)
-        .filter_map(|l| {
-            let p = l.path.as_ref()?.to_str()?;
-            let mut o = json!({"name": l.name, "path": p});
-            if let Some(t) = &l.signer {
-                o["signer"] = json!(t);
-            } else if cfg!(target_os = "macos") {
-                // r2 h3: a Mac policy the page writes always names the signer
-                return None;
-            }
-            Some(o)
-        })
-        .collect();
+    let mut programs: Vec<Value> = Vec::new();
+    for l in looks.iter().filter(|l| l.kind == LookKind::Native) {
+        let Some(p) = l.path.as_ref().and_then(|p| p.to_str()) else {
+            continue;
+        };
+        let mut o = json!({"name": l.name, "path": p});
+        if let Some(t) = &l.signer {
+            o["signer"] = json!(t);
+        } else if cfg!(target_os = "macos") {
+            // r2 h3: a Mac policy the page writes always names the signer; one without it
+            // means the check did not run, so nothing is written at all
+            return None;
+        }
+        programs.push(o);
+    }
     if programs.is_empty() {
         return None;
     }
