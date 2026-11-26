@@ -508,8 +508,10 @@ fn verify_any(_: &[u8], _: &[u8], _: &[u8]) -> bool {
 /// One change of method (r2b / r3 order): a new key in `pair-key.new` made and checked → the
 /// current (pinned) key signs `{to, old_pub, new_pub_sha256, at}` → the record → the swap
 /// (`pair-key` to `pair-key.old.<at>`, `.new` to `pair-key`) → the key in use → the pin → the
-/// old folder gone. Any failure before the swap removes `.new` and keeps the old key and its
-/// records. Returns the method it was.
+/// old folder gone. Any failure before the swap removes `.new` and keeps the old key; a failed
+/// swap also puts the record that was there back (f163c REVIEW-ownermethod L1). A crash between
+/// the record and the swap leaves a [`stale`] record, cleared at the next start. Returns the
+/// method it was.
 /// Checks a signature: `(public key, message, signature)`.
 pub type VerifyFn<'f> = dyn Fn(&[u8], &[u8], &[u8]) -> bool + 'f;
 /// Makes a key for a method: its blob and public key.
@@ -579,11 +581,13 @@ pub fn change(c: &Change<'_>) -> Result<Method, &'static str> {
         at: c.at,
         sig,
     };
+    // the record there now, put back if the swap fails (f163c L1)
+    let before = std::fs::read(c.data.join(RECORD_FILE)).ok();
     if let Err(why) = write_json(&c.data.join(RECORD_FILE), &r.to_value()) {
         drop_new();
         return Err(why);
     }
-    swap_in(c, &new_dir, new, &pin, &r)?;
+    swap_in(c, &new_dir, new, &pin, &r, before.as_deref())?;
     Ok(from)
 }
 
@@ -593,12 +597,25 @@ fn swap_in(
     new: KeyFiles,
     pin: &Pin,
     r: &Record,
+    before: Option<&[u8]>,
 ) -> Result<(), &'static str> {
     let key = crate::touch::key_dir(c.data);
-    let old = c.data.join(format!("{OLD_PREFIX}{}", c.at));
+    // nanoseconds: two changes within one second never share a folder (f163c N1)
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let old = c.data.join(format!("{OLD_PREFIX}{nanos:020}"));
     // a rolled-back change takes its record away with it (L1)
     let drop_record = || {
-        let _ = std::fs::remove_file(c.data.join(RECORD_FILE));
+        let f = c.data.join(RECORD_FILE);
+        match before {
+            Some(b) => {
+                let _ = crate::platform::write_private_file(&f, b);
+            }
+            None => {
+                let _ = std::fs::remove_file(&f);
+            }
+        }
     };
     if std::fs::rename(&key, &old).is_err() {
         drop_record();
@@ -1041,7 +1058,12 @@ mod tests {
             vec![1; PUBLIC_KEY_LEN],
             "reason: not_signed_by_the_pinned_key"
         );
-        assert!(!d.join(NEW_DIR).exists() && !d.join(format!("{OLD_PREFIX}50")).exists());
+        let left: Vec<_> = std::fs::read_dir(d)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with(OLD_PREFIX) || n == NEW_DIR)
+            .collect();
+        assert!(left.is_empty(), "reason: folders_left {left:?}");
         // and back: signed by the password key this time (r2b 1)
         assert_eq!(
             run(d, Method::Biometry, &p, &made, true),
@@ -1056,6 +1078,58 @@ mod tests {
             Ok(Method::Biometry)
         );
         assert_eq!(made.get(), before, "reason: same_method_made_a_key");
+    }
+
+    #[test]
+    fn a_swap_that_fails_puts_the_record_there_back_and_can_be_tried_again() {
+        // f163c L1: password mode, then a change back whose key in use cannot be swapped
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        put_key(&crate::touch::key_dir(d), 1);
+        write_json(
+            &d.join(PIN_FILE),
+            &pin_at_pairing(&[1; PUBLIC_KEY_LEN], 1).to_value(),
+        )
+        .unwrap();
+        let swappable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let s2 = swappable.clone();
+        let p = crate::touch::SwapPresence::new(
+            Box::new(move || {
+                let ok = s2.load(std::sync::atomic::Ordering::SeqCst);
+                Box::new(Dev {
+                    sign_ok: true,
+                    probe_ok: ok,
+                }) as Box<dyn KeyDevice>
+            }),
+            KeyFiles {
+                blob: vec![1],
+                public: [1; PUBLIC_KEY_LEN],
+            },
+        )
+        .unwrap();
+        let made = std::cell::Cell::new(0);
+        assert_eq!(
+            run(d, Method::Password, &p, &made, true),
+            Ok(Method::Biometry)
+        );
+        let was = std::fs::read(d.join(RECORD_FILE)).unwrap();
+        swappable.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(run(d, Method::Biometry, &p, &made, true).is_err());
+        assert_eq!(
+            std::fs::read(d.join(RECORD_FILE)).unwrap(),
+            was,
+            "reason: record_not_put_back"
+        );
+        assert_eq!(reading_of(d), Reading::Password);
+        assert_eq!(p.public(), Some([2; PUBLIC_KEY_LEN]));
+        // and it can be tried again
+        swappable.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            run(d, Method::Biometry, &p, &made, true),
+            Ok(Method::Password),
+            "reason: stuck_after_a_failed_swap"
+        );
+        assert_eq!(reading_of(d), Reading::Biometry);
     }
 
     #[test]

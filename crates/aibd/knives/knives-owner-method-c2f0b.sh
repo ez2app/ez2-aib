@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# OM1–OM12 指紋或密碼 (ebab8 11-26 21:15, Andy 「要」; PLAN-owner-method-c2f0b-1126 r2 / r2b / r3, 3e53b pre-read): the
+# OM1–OM13 指紋或密碼 (ebab8 11-26 21:15, Andy 「要」; PLAN-owner-method-c2f0b-1126 r2 / r2b / r3, 3e53b pre-read): the
 # password window only for a record signed by its old key, naming the current key, with the pin moved by that record;
 # a pin written at a pairing never opens it; the pin moves only from the record's old key; a crash between the swap and
 # the pin is mended at start only when consistent; a change cut short never takes the new key; each signature compares
@@ -36,4 +36,6 @@ k touch.rs '        *g = (p, public);' '        *g = (p, if public == g.1 { publ
 k owner_ok.rs '            "method": crate::owner_method::method_word(),' '            "method_": crate::owner_method::method_word(),' owner_ok::tests::every_answer_and_every_used_ticket_is_journaled_once
 # OM12 a record no change completed stays, and every later change is refused (3e53b REVIEW-ownermethod L1)
 k owner_method.rs '    never_swapped || before_the_pairing' '    never_swapped && before_the_pairing' owner_method::tests::a_record_no_change_completed_is_cleared_and_the_owner_can_change_again
+# OM13 a failed swap leaves the new record, and the key in use no longer matches it (f163c REVIEW-ownermethod L1)
+k owner_method.rs '                let _ = crate::platform::write_private_file(&f, b);' '                let _ = crate::platform::write_private_file(&f, &b[..0]);' owner_method::tests::a_swap_that_fails_puts_the_record_there_back_and_can_be_tried_again
 exit "$fail"
