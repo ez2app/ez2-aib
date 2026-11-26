@@ -36,7 +36,7 @@ pub const RC_REFUSED: u8 = 3;
 pub const RC_RUNNING: u8 = 4;
 pub const RC_UNSUPPORTED: u8 = 5;
 
-pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]\n       aibd start | stop [--label L] [--plist-dir D]\n       aibd update --file F [--label L] [--plist-dir D]";
+pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--no-pair-key] [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]\n       aibd start | stop [--label L] [--plist-dir D]\n       aibd update --file F [--label L] [--plist-dir D]";
 
 /// plist ExitTimeOut: launchd sends SIGTERM, then SIGKILL after this many seconds (T97-2m §2).
 pub const EXIT_TIMEOUT_S: u64 = 20;
@@ -302,6 +302,10 @@ pub struct Opts {
     pub yes: bool,
     pub no_start: bool,
     pub adopt: bool,
+    /// `install --no-pair-key`: leave the pairing key alone (tests and builds without a Secure
+    /// Enclave). It only keeps the state before this step existed, no key, so the fingerprint
+    /// pairing stays unavailable; it never makes another kind of key.
+    pub no_pair_key: bool,
     pub fingerprint: bool,
     pub dir: Option<PathBuf>,
     /// `update --file`: the new build (T97-3m)
@@ -321,6 +325,7 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
         "install" => &[
             "--json",
             "--no-start",
+            "--no-pair-key",
             "--adopt",
             "--dir",
             "--label",
@@ -349,6 +354,7 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
             "--json" => o.json = true,
             "--yes" => o.yes = true,
             "--no-start" => o.no_start = true,
+            "--no-pair-key" => o.no_pair_key = true,
             "--adopt" => o.adopt = true,
             "--fingerprint" => o.fingerprint = true,
             "--dir" => o.dir = Some(PathBuf::from(value()?)),
@@ -1421,7 +1427,10 @@ fn install_steps(
     }
     // ebab8 11-26 第四包: a fingerprint pairing gets its key here, made or checked, before
     // anything is stopped, copied or written, so a failure changes nothing (3e53b r1 a–c)
-    if !o.adopt && env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID) {
+    let wants_key = !o.adopt && env.get(PAIRING_ENV).map(String::as_str) == Some(PAIRING_TOUCHID);
+    if wants_key && o.no_pair_key {
+        out.say("PAIR-KEY skipped (--no-pair-key): the fingerprint pairing stays unavailable until aibd install runs without it");
+    } else if wants_key {
         let data = data_dir_for(h, &env)?;
         match svc.key.ensure(&data) {
             Ok(crate::touch::PairKeyMade::Checked) => {
@@ -2407,6 +2416,22 @@ mod tests {
         assert!(!m.p("bin/aibd").exists(), "reason: copied_on_key_failure");
         assert_eq!(f.key_asked.borrow().len(), 1);
         assert!(f.calls().is_empty(), "{:?}", f.calls());
+        // --no-pair-key leaves the key alone (no key made, the pairing stays unavailable)
+        let o = m.run(
+            "install",
+            &["--no-start", "--no-pair-key", "--env", &ot],
+            &svc,
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            o.stdout.contains("PAIR-KEY skipped (--no-pair-key)"),
+            "{o:?}"
+        );
+        assert_eq!(
+            f.key_asked.borrow().len(),
+            1,
+            "reason: key_step_run_with_no_pair_key"
+        );
     }
 
     #[test]
