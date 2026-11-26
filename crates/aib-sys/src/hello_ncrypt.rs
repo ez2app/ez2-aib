@@ -449,16 +449,11 @@ mod w0 {
                             row += &format!(" length=0x{:08x}", l as u32);
                         }
                         if gesture {
-                            let one: u32 = 1;
+                            let (one, prop): (u32, _) =
+                                (1, NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY);
                             // SAFETY: key being made; 4-byte value
                             let g = unsafe {
-                                NCryptSetProperty(
-                                    k.0,
-                                    NCRYPT_PIN_CACHE_IS_GESTURE_REQUIRED_PROPERTY,
-                                    (&raw const one).cast(),
-                                    4,
-                                    0,
-                                )
+                                NCryptSetProperty(k.0, prop, (&raw const one).cast(), 4, 0)
                             };
                             row += &format!(" gesture=0x{:08x}", g as u32);
                         }
