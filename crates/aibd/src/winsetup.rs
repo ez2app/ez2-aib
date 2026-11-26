@@ -85,8 +85,9 @@ pub fn hello_error_line(e: &aib_sys::hello::HelloError) -> String {
     format!("{} ({e})", e.code())
 }
 
-/// What to do when the key there would be refused by aibd.
-const KEY_BAD_HOW: &str = "delete that folder, then double-click AIB-Setup again";
+/// B2 / B3: what to do when Windows Hello is not set up; AIB picks it up without a reinstall.
+const HELLO_LATER_HOW: &str =
+    "set up a Windows Hello PIN (Settings > Accounts > Sign-in options); no need to install again";
 /// How long the setup waits for the new aibd to answer.
 pub const HEALTH_WAIT: Duration = Duration::from_secs(20);
 /// One wait step.
@@ -157,10 +158,9 @@ pub trait Ops {
     fn remove(&self, p: &Path);
     /// Move `from` to `to`, replacing `to`.
     fn rename(&self, from: &Path, to: &Path) -> Result<(), String>;
-    /// The pairing key already there, checked the way aibd checks it at start.
-    fn pair_key(&self) -> PairKey;
-    /// `aibd ctl pair-key init`.
-    fn pair_key_init(&self) -> Result<(), String>;
+    /// B2 (Andy 11-26 10:1x): is Windows Hello set up for this user here (no window, no key)?
+    /// The error is the Hello error line ([`hello_error_line`]).
+    fn hello_ready(&self) -> Result<(), String>;
     /// The Run value `name`, if any.
     fn run_get(&self, name: &str) -> Result<Option<String>, String>;
     /// Write the Run value.
@@ -216,18 +216,6 @@ fn settings_entry(p: &Places, command: &str, ops: &dyn Ops) -> Result<(), String
         ops.settings_set(name, value)?;
     }
     Ok(())
-}
-
-/// The pairing key the setup finds (3e53b REVIEW-winsetup L1).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PairKey {
-    /// No key file at all: make one.
-    None,
-    /// Both files there and they pass aibd's own start-up check (load + Hello check): keep it.
-    Good,
-    /// Something is there but aibd would refuse it (a PIN reset voids the Hello key, one file
-    /// missing, …): the reason, naming the folder. The setup stops and does not delete it.
-    Bad(String),
 }
 
 /// How the setup ended, for the last lines it prints.
@@ -343,21 +331,15 @@ fn run_with(
         ));
         done.sha256 = Some(sha);
     }
-    // 2. the pairing key
-    match ops.pair_key() {
-        PairKey::Good => say("2/5 pairing key: the one already made is kept"),
-        PairKey::Bad(why) => {
-            return Err(format!("installer_pair_key_bad: {why}; {KEY_BAD_HOW}"));
-        }
-        PairKey::None => {
-            if let Err(e) = ops.pair_key_init() {
-                return Err(format!(
-                    "pairing key not made ({e}); {}",
-                    key_not_made_how(&e)
-                ));
-            }
-            say("2/5 pairing key made (Windows Hello)");
-        }
+    // 2. Windows Hello (B2, Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): no key is
+    //    made; AIB asks for Hello at each action that needs the owner. Not set up ⇒ the setup
+    //    goes on and those actions stay closed (B3) until a PIN is set; no reinstall needed.
+    match ops.hello_ready() {
+        Ok(()) => say("2/5 Windows Hello is set up: AIB asks for it each time it needs you"),
+        Err(e) => say(&format!(
+            "2/5 Windows Hello is not ready ({e}): AIB runs, but what needs you stays closed \
+             until you {HELLO_LATER_HOW}"
+        )),
     }
     // 3. start at sign-in
     sign_in_entry(command, ops)?;
@@ -528,8 +510,7 @@ mod tests {
         links: Vec<PathBuf>,
         files: RefCell<Vec<PathBuf>>,
         same: bool,
-        key: Option<PairKey>,
-        key_err: Option<String>,
+        hello_err: Option<String>,
         copy_sha: Option<String>,
         disk_sha: Option<String>,
         run: RefCell<BTreeMap<String, String>>,
@@ -594,12 +575,9 @@ mod tests {
             f.push(to.to_path_buf());
             Ok(())
         }
-        fn pair_key(&self) -> PairKey {
-            self.key.clone().unwrap_or(PairKey::None)
-        }
-        fn pair_key_init(&self) -> Result<(), String> {
-            self.log("pair".into());
-            self.key_err.clone().map_or(Ok(()), Err)
+        fn hello_ready(&self) -> Result<(), String> {
+            self.log("hello".into());
+            self.hello_err.clone().map_or(Ok(()), Err)
         }
         fn run_get(&self, name: &str) -> Result<Option<String>, String> {
             Ok(self.run.borrow().get(name).cloned())
@@ -695,7 +673,7 @@ mod tests {
             vec![
                 format!("copy dl/AIB-Setup.exe {}", p.new.display()),
                 format!("rename {} {}", p.new.display(), p.exe.display()),
-                "pair".to_string(),
+                "hello".to_string(),
                 format!("run AIB={CMD}"),
                 format!("start {}", p.exe.display()),
                 "open".to_string(),
@@ -781,7 +759,6 @@ mod tests {
     fn started_from_the_installed_copy_it_only_fills_in_and_does_not_start_twice() {
         let f = Fake {
             same: true,
-            key: Some(PairKey::Good),
             healthy_after: Some(0),
             ..Fake::default()
         };
@@ -795,7 +772,7 @@ mod tests {
             "reason: result"
         );
         assert!(
-            !f.has("copy") && !f.has("pair") && !f.has("start"),
+            !f.has("copy") && !f.has("start"),
             "reason: redid {:?}",
             f.calls.borrow()
         );
@@ -806,102 +783,58 @@ mod tests {
         );
     }
 
+    /// B2 / B3 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): no key is made;
+    /// Windows Hello not set up ⇒ the setup still installs, starts and opens, and the line
+    /// keeps the code and HRESULT and says to set a PIN, with no reinstall.
     #[test]
-    fn a_key_already_made_is_kept() {
+    fn without_hello_the_setup_still_installs_and_says_to_set_a_pin() {
+        let why = "no_biometry (Windows Hello is not set up or not available on this machine)";
         let f = Fake {
-            key: Some(PairKey::Good),
+            hello_err: Some(why.into()),
             healthy_after: Some(1),
             ..Fake::default()
         };
-        let (r, _) = go(&f);
-        assert!(r.is_ok(), "reason: {r:?}");
-        assert!(!f.has("pair"), "reason: remade {:?}", f.calls.borrow());
-    }
-
-    #[test]
-    fn a_key_aibd_would_refuse_stops_the_setup_without_deleting_it() {
-        let f = Fake {
-            key: Some(PairKey::Bad("pair_key_mismatch in C:\\x\\pair-key".into())),
-            healthy_after: Some(1),
-            ..Fake::default()
-        };
-        let (r, _) = go(&f);
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: stopped {r:?}");
         assert!(
-            r.as_ref()
-                .is_err_and(|e| e.starts_with("installer_pair_key_bad") && e.contains("pair-key")),
-            "reason: {r:?}"
-        );
-        assert!(
-            !f.has("pair") && !f.has("run ") && !f.has("start") && !f.has("open"),
-            "reason: went_on {:?}",
+            f.has("run AIB=") && f.has("start") && f.has("open"),
+            "reason: not_installed {:?}",
             f.calls.borrow()
         );
-    }
-
-    #[test]
-    fn no_pairing_key_means_no_run_value_and_nothing_started() {
+        let two = lines
+            .iter()
+            .find(|l| l.starts_with("2/5"))
+            .expect("reason: no_step_2");
+        assert!(
+            two.contains(why)
+                && two.contains("Windows Hello PIN")
+                && two.contains("no need to install"),
+            "reason: step_2_line {two}"
+        );
         let f = Fake {
-            key_err: Some("no PIN".into()),
             healthy_after: Some(1),
             ..Fake::default()
         };
-        let (r, _) = go(&f);
+        let (_, lines) = go(&f);
         assert!(
-            r.as_ref()
-                .is_err_and(|e| e.contains("no PIN") && e.contains("double-click")),
-            "reason: {r:?}"
-        );
-        assert!(
-            !f.has("run ") && !f.has("start") && !f.has("open"),
-            "reason: went_on {:?}",
-            f.calls.borrow()
+            lines
+                .iter()
+                .any(|l| l.starts_with("2/5 Windows Hello is set up")),
+            "reason: ready_line {lines:?}"
         );
     }
 
+    /// 90856 (ebab8 10:01): what a Hello error line asks the person to do, by its code.
     #[test]
     fn only_a_machine_without_hello_is_told_to_set_a_pin() {
-        let pin = "Windows Hello PIN";
-        for (why, want_pin) in [
-            (
-                "could not make the Windows Hello key: se_error (os error 0x80004005)",
-                false,
-            ),
-            (
-                "could not make the Windows Hello key: no_biometry (no Windows Hello)",
-                true,
-            ),
-            (
-                "could not make the Windows Hello key: unavailable (no Windows Hello here)",
-                true,
-            ),
-            (
-                format!("unavailable (not available): {DESKTOP_ONLY}").as_str(),
-                false,
-            ),
-            (
-                "could not make the Windows Hello key: cancel (cancelled)",
-                false,
-            ),
-            (
-                "could not make the Windows Hello key: auth_failed (refused)",
-                false,
-            ),
-        ] {
-            let f = Fake {
-                key_err: Some(why.into()),
-                ..Fake::default()
-            };
-            let (r, _) = go(&f);
-            let e = r.expect_err("reason: no_key_went_on");
-            assert_eq!(e.contains(pin), want_pin, "reason: pin_hint {why} => {e}");
-            assert!(e.contains(why), "reason: code_lost {e}");
-            if !want_pin {
-                assert!(
-                    e.contains("answer its window") || e.contains("Windows refused"),
-                    "reason: no_hint {e}"
-                );
-            }
-        }
+        assert!(key_not_made_how("no_biometry (x)").contains("Windows Hello PIN"));
+        assert!(key_not_made_how("unavailable (x)").contains("Windows Hello PIN"));
+        assert!(!key_not_made_how("se_error (os error 0x80090027)").contains("PIN"));
+        let desk = format!("unavailable (not available): {DESKTOP_ONLY}");
+        assert!(
+            !key_not_made_how(&desk).contains("PIN"),
+            "reason: desktop_told_pin"
+        );
         assert!(
             key_not_made_how("se_error").contains("Windows refused"),
             "reason: se_error_not_refused"

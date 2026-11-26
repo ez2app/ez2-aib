@@ -2499,36 +2499,16 @@ impl aibd::winsetup::Ops for SetupOps {
     fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
         std::fs::rename(from, to).map_err(|e| e.to_string())
     }
-    fn pair_key(&self) -> aibd::winsetup::PairKey {
-        use aibd::winsetup::PairKey;
-        let dir = match data_dir() {
-            Ok(d) => aibd::touch::key_dir(&d),
-            Err(e) => return PairKey::Bad(e),
-        };
-        let there = |n: &str| std::fs::symlink_metadata(dir.join(n)).is_ok();
-        if !there("key.blob") && !there("key.pub") {
-            return PairKey::None;
+    fn hello_ready(&self) -> Result<(), String> {
+        // B2: Windows Hello is a gesture asked at each owner action; nothing is made here
+        #[cfg(windows)]
+        {
+            aib_sys::hello_consent::available().map_err(|e| aibd::winsetup::hello_error_line(&e))
         }
-        // the same check aibd runs at start: both plain files of this account, then the
-        // Hello key behind them still answers with the same public key
-        let ok = aibd::touch::load(&dir).and_then(|k| {
-            #[cfg(windows)]
-            {
-                aibd::touch::check(&aibd::touch::WinHello, &k)
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = k;
-                Err("not_windows")
-            }
-        });
-        match ok {
-            Ok(()) => PairKey::Good,
-            Err(why) => PairKey::Bad(format!("{why} in {}", dir.display())),
+        #[cfg(not(windows))]
+        {
+            Err("not_windows".into())
         }
-    }
-    fn pair_key_init(&self) -> Result<(), String> {
-        pair_key_init()
     }
     fn run_get(&self, name: &str) -> Result<Option<String>, String> {
         aib_sys::winrun::run_get(name).map_err(|e| e.to_string())

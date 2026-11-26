@@ -184,6 +184,30 @@ pub fn run_limited<T: Send + 'static>(
     answered.unwrap_or(Err(HelloError::TimedOut))
 }
 
+/// B2 (Andy 11-26 10:1x, DECISION-win-hello-fallback-3e53b-1126): Windows Hello as a gesture
+/// only, no key. `UserConsentVerificationResult` (Windows.Security.Credentials.UI) → the
+/// outcome: only `Verified` (0) is a yes; cancel is [`HelloError::Cancel`]; no Hello on this
+/// machine / for this user / by policy is [`HelloError::NoHello`]; anything else refuses.
+pub fn consent_outcome(result: i32) -> Result<(), HelloError> {
+    match result {
+        0 => Ok(()),
+        1..=3 => Err(HelloError::NoHello),
+        4 => Err(HelloError::StillOpen),
+        5 => Err(HelloError::AuthFailed),
+        6 => Err(HelloError::Cancel),
+        other => Err(HelloError::Os(other as u32)),
+    }
+}
+
+/// `UserConsentVerifierAvailability` → whether the gesture can be asked for at all:
+/// `Available` (0) only. `DeviceBusy` (4) counts as there (a window is up now).
+pub fn consent_available(availability: i32) -> Result<(), HelloError> {
+    match availability {
+        0 | 4 => Ok(()),
+        _ => Err(HelloError::NoHello),
+    }
+}
+
 /// `WTSGetActiveConsoleSessionId` when no session is attached to the console.
 pub const NO_CONSOLE: u32 = 0xFFFF_FFFF;
 
@@ -486,6 +510,32 @@ mod tests {
         assert_eq!(classify(hr::NTE_PERM).code(), "auth_failed");
         assert_eq!(classify(0x8000_4005), HelloError::Os(0x8000_4005));
         assert_eq!(classify(0x8000_4005).code(), "se_error");
+    }
+
+    /// B2: only Verified is a yes; cancel, no Hello, retries used up and unknown values refuse.
+    #[test]
+    fn only_a_verified_gesture_is_a_yes() {
+        assert_eq!(consent_outcome(0), Ok(()));
+        for r in 1..=3 {
+            assert_eq!(consent_outcome(r).unwrap_err().code(), "no_biometry", "{r}");
+        }
+        assert_eq!(
+            consent_outcome(4).unwrap_err().code(),
+            "owner_window_still_open"
+        );
+        assert_eq!(consent_outcome(5).unwrap_err().code(), "auth_failed");
+        assert_eq!(consent_outcome(6).unwrap_err().code(), "cancel");
+        assert_eq!(consent_outcome(7).unwrap_err().code(), "se_error");
+        assert_eq!(consent_outcome(-1).unwrap_err().code(), "se_error");
+        assert_eq!(consent_available(0), Ok(()));
+        assert_eq!(consent_available(4), Ok(()));
+        for a in [1, 2, 3, 5, -1] {
+            assert_eq!(
+                consent_available(a).unwrap_err().code(),
+                "no_biometry",
+                "{a}"
+            );
+        }
     }
 
     /// WH5: only a key that refuses a silent signature is good.

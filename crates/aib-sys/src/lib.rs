@@ -65,6 +65,8 @@ pub mod fake;
 pub mod held;
 pub mod hello;
 #[cfg(windows)]
+pub mod hello_consent;
+#[cfg(windows)]
 pub mod hello_ncrypt;
 // AP26 W-4: owner-present measurements, compiled for tests only (the source guard in
 // test_only_calls checks this line)

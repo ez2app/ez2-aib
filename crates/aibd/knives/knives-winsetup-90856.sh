@@ -16,18 +16,19 @@ ws '    if got != want {' \
 ws '    if ops.exists(&p.exe) && ops.healthy() {' \
    '    if ops.exists(&p.exe) && ops.healthy() && false {' \
    a_running_installed_aibd_is_not_overwritten
-# WS3 (COND 12) no pairing key, and the Run value is written and aibd started anyway
-ws '            if let Err(e) = ops.pair_key_init() {' \
-   '            if let Err(e) = ops.pair_key_init().or(Ok::<(), String>(())) {' \
-   no_pairing_key_means_no_run_value_and_nothing_started
-# WS4 (COND 7) a pairing key already made is made again
-ws '    match ops.pair_key() {' \
-   '    match Some(ops.pair_key()).filter(|_| false).unwrap_or(PairKey::None) {' \
-   a_key_already_made_is_kept
-# WS13 (3e53b L1) a key aibd would refuse is kept and the setup goes on
-ws '            return Err(format!("installer_pair_key_bad: {why}; {KEY_BAD_HOW}"));' \
-   '            let _ = (&why, KEY_BAD_HOW);' \
-   a_key_aibd_would_refuse_stops_the_setup_without_deleting_it
+# WS3 (B3, c2f0b 11-26; replaces the key knives WS3 / WS4 / WS13: no key is made since B2)
+# Windows Hello not set up stops the setup instead of installing with owner actions closed
+ws '        Err(e) => say(&format!(' \
+   '        Err(e) => return Err(format!(' \
+   without_hello_the_setup_still_installs_and_says_to_set_a_pin
+# WS4 (B2) the setup never asks whether Windows Hello is set up
+ws '    match ops.hello_ready() {' \
+   '    match Ok::<(), String>(()) {' \
+   without_hello_the_setup_still_installs_and_says_to_set_a_pin
+# WS13 (B3) the step-2 line loses how to fix it (set a PIN, no reinstall)
+ws '    "set up a Windows Hello PIN (Settings > Accounts > Sign-in options); no need to install again";' \
+   '    "try again later";' \
+   without_hello_the_setup_still_installs_and_says_to_set_a_pin
 # WS5 (COND 5) an elevated setup goes on
 ws '    if ops.elevated()? {' \
    '    if ops.elevated()? && false {' \

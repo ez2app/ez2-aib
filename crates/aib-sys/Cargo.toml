@@ -70,6 +70,13 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_UI_Input_KeyboardAndMouse", # AP26 W-5 SetFocus (SendInput: test code only, source guard)
     "Win32_UI_WindowsAndMessaging", # AP26 W-5 passphrase window, WDA_EXCLUDEFROMCAPTURE
 ] }
+# B2 (Andy 11-26 10:1x, DECISION-win-hello-fallback-3e53b-1126): Windows Hello gesture only
+# (UserConsentVerifier + its window interop), no key. Already in Cargo.lock (sysinfo).
+windows = { version = "=0.62.2", features = [
+    "Security_Credentials_UI",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+] }
 
 # AP26 W-4 (PRE-READ-w4-winsys-features 3e53b condition 1): features only the owner-present
 # measurement tests use (the CredUI comparison window). Dev only, so product code calling them does not compile.

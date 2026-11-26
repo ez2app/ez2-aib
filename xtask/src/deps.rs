@@ -115,6 +115,18 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "=0.6.2",
         &["alloc"],
     ),
+    // B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): hello_consent, the Windows
+    // Hello gesture (UserConsentVerifier and IUserConsentVerifierInterop), no key
+    (
+        "windows",
+        Some("cfg(windows)"),
+        "=0.62.2",
+        &[
+            "Security_Credentials_UI",
+            "Win32_Foundation",
+            "Win32_System_WinRT",
+        ],
+    ),
 ];
 
 /// aib-sys's dev dependencies: Windows features only the W-4 owner-present measurement

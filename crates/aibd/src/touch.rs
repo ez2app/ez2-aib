@@ -513,6 +513,30 @@ impl WinHello {
     }
 }
 
+/// B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): the owner check on Windows
+/// is a Windows Hello gesture asked at that moment, no key (the Passport provider refused
+/// aibd's key on the laptop, 0x80090027). Every ask shows the window; nothing is cached or
+/// written; a yes is used by the same call that asked. No signature, so [`Presence::signs`]
+/// is false and an "always" is never offered (3e53b B2 condition).
+#[cfg(windows)]
+pub struct WinConsent;
+
+#[cfg(windows)]
+impl Presence for WinConsent {
+    fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str> {
+        self.ask_until(reason, msg, WIN_HELLO_LONGEST)
+    }
+    fn ask_until(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<(), &'static str> {
+        let _ = msg; // what the yes is for is in `reason`, composed by aibd
+        aib_sys::hello_consent::ask_until(reason, limit).map_err(hello_code)
+    }
+}
+
 #[cfg(windows)]
 impl KeyDevice for WinHello {
     fn probe(&self, blob: &[u8]) -> Result<(), &'static str> {
@@ -609,13 +633,13 @@ pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
         let _ = class_now();
         Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
     }
+    // B2: a gesture at the desktop, no key; no Hello for this user ⇒ refused (B3: every owner
+    // action stays closed, the page shows the set-a-PIN card)
     #[cfg(windows)]
     {
-        presence_after_session(
-            aib_sys::hello::interactive_session().map_err(|e| e.code()),
-            data,
-            Box::new(WinHello),
-        )
+        let _ = data;
+        aib_sys::hello_consent::available().map_err(|e| e.code())?;
+        Ok(Arc::new(WinConsent))
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
