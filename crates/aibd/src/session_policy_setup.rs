@@ -57,11 +57,13 @@ pub fn brands_of(v: &Value) -> Option<String> {
     (!names.is_empty()).then(|| names.join("、"))
 }
 
-/// Whether the page may write a policy on this computer: Windows (W-10). On macOS
-/// `aibd ctl policy init` also checks the code signature, which this act does not, so the page
-/// only reads there. Tests that set [`test_search_dirs`] write on any platform.
+/// Whether the page may write a policy on this computer: Windows (W-10) and macOS (ebab8 11-26
+/// 第四包: a Mac's first run needs no terminal), where every program found is first checked
+/// against its maker's signature ([`signed`]) and the policy names that signer. Tests that set
+/// [`test_search_dirs`] write on any platform.
 pub fn writes_here() -> bool {
     cfg!(windows)
+        || cfg!(target_os = "macos")
         || TEST_DIRS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -76,6 +78,8 @@ pub enum LookKind {
     Npm,
     Script,
     Interpreter,
+    /// macOS: a native executable not signed by its maker's Team ID ([`signed`]).
+    Unsigned,
     NotFound,
 }
 
@@ -86,6 +90,7 @@ impl LookKind {
             LookKind::Npm => "npm",
             LookKind::Script => "script",
             LookKind::Interpreter => "interpreter",
+            LookKind::Unsigned => "unsigned",
             LookKind::NotFound => "not_found",
         }
     }
@@ -100,6 +105,10 @@ pub struct Look {
     pub path: Option<PathBuf>,
     /// Why it is not usable ("" when native).
     pub why: String,
+    /// macOS: the Team ID its real file is signed with (checked, [`signed`]); written into the
+    /// policy, so the owner approves it with the name and path (3e53b r1 i), and checked again
+    /// at every seat open ([`crate::allowlist::resolve`], r2 乙).
+    pub signer: Option<String>,
 }
 
 const SHIMS: [&str; 3] = ["cmd", "bat", "ps1"];
@@ -123,13 +132,14 @@ pub fn look_in(name: &str, dirs: &[PathBuf], windows: bool) -> Look {
     for d in dirs.iter().filter(|d| d.is_absolute()) {
         let exe = d.join(&file);
         if exe.is_file() {
-            match check(&exe) {
-                Ok(()) => {
+            match check(name, &exe) {
+                Ok(signer) => {
                     return Look {
                         name: name.to_owned(),
                         kind: LookKind::Native,
                         path: Some(exe),
                         why: String::new(),
+                        signer,
                     }
                 }
                 Err((kind, why)) => {
@@ -139,6 +149,7 @@ pub fn look_in(name: &str, dirs: &[PathBuf], windows: bool) -> Look {
                             kind,
                             why: format!("{}: {why}", exe.display()),
                             path: Some(exe),
+                            signer: None,
                         });
                     }
                 }
@@ -155,6 +166,7 @@ pub fn look_in(name: &str, dirs: &[PathBuf], windows: bool) -> Look {
                         p.display()
                     ),
                     path: Some(p),
+                    signer: None,
                 });
             }
         }
@@ -164,10 +176,11 @@ pub fn look_in(name: &str, dirs: &[PathBuf], windows: bool) -> Look {
         kind: LookKind::NotFound,
         path: None,
         why: "not found".into(),
+        signer: None,
     })
 }
 
-fn check(exe: &Path) -> Result<(), (LookKind, String)> {
+fn check(name: &str, exe: &Path) -> Result<Option<String>, (LookKind, String)> {
     let real = std::fs::canonicalize(exe)
         .map_err(|e| (LookKind::NotFound, format!("cannot resolve: {e}")))?;
     if is_interpreter(&real) || is_interpreter(exe) {
@@ -178,7 +191,7 @@ fn check(exe: &Path) -> Result<(), (LookKind, String)> {
         .and_then(|f| f.take(512).read_to_end(&mut head))
         .map_err(|e| (LookKind::NotFound, format!("cannot read: {e}")))?;
     match kind_of(&real, &head) {
-        Kind::Native => Ok(()),
+        Kind::Native => signed(name, &real).map_err(|why| (LookKind::Unsigned, why)),
         Kind::Script => Err((
             LookKind::Script,
             "a script, not a native executable".to_string(),
@@ -188,6 +201,41 @@ fn check(exe: &Path) -> Result<(), (LookKind, String)> {
             "runs through node; install the native build".to_string(),
         )),
     }
+}
+
+/// The signature a native program must carry before the page may write it (3e53b
+/// PLAN-mac-firstrun r1 f g, r2 h3): on macOS its real file (`real`, links resolved) signed
+/// through Apple's root by `name`'s Team ID ([`crate::provider_maker::policy_team`]), checked in
+/// one codesign call with the requirement; a self-signed file or another team is refused, never
+/// written with a warning. `Ok(Some(team))` on macOS; `Ok(None)` elsewhere (Windows policies
+/// name no signer, as before).
+pub fn signed(name: &str, real: &Path) -> Result<Option<String>, String> {
+    if let Some(f) = *TEST_SIGNED.lock().unwrap_or_else(|e| e.into_inner()) {
+        return f(name, real);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let team = crate::provider_maker::policy_team(name)
+            .ok_or_else(|| "no maker known for this program".to_string())?;
+        crate::provider_maker::mac_signed_by_team(real, team)
+            .map(|()| Some(team.to_owned()))
+            .map_err(|_| format!("not signed by its maker (Team ID {team})"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, real);
+        Ok(None)
+    }
+}
+
+type SignedFn = fn(&str, &Path) -> Result<Option<String>, String>;
+static TEST_SIGNED: Mutex<Option<SignedFn>> = Mutex::new(None);
+
+/// Tests only: answer [`signed`] with `f` instead of codesign. Rust code sets it; no request,
+/// file or env var can.
+#[doc(hidden)]
+pub fn test_signed(f: Option<SignedFn>) {
+    *TEST_SIGNED.lock().unwrap_or_else(|e| e.into_inner()) = f;
 }
 
 static TEST_DIRS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
@@ -371,7 +419,14 @@ pub fn policy_text(looks: &[Look], is_set: impl Fn(&str) -> bool) -> Option<Stri
         .filter(|l| l.kind == LookKind::Native)
         .filter_map(|l| {
             let p = l.path.as_ref()?.to_str()?;
-            Some(json!({"name": l.name, "path": p}))
+            let mut o = json!({"name": l.name, "path": p});
+            if let Some(t) = &l.signer {
+                o["signer"] = json!(t);
+            } else if cfg!(target_os = "macos") {
+                // r2 h3: a Mac policy the page writes always names the signer
+                return None;
+            }
+            Some(o)
         })
         .collect();
     if programs.is_empty() {
@@ -605,7 +660,7 @@ pub async fn init(st: &AppState, body: Value, by: String) -> Response {
         return refuse(
             StatusCode::CONFLICT,
             InitRefused::NoNative.code(),
-            "this computer's policy is written by `aibd ctl policy init` (it checks the signature)",
+            "this computer's policy is written by `aibd ctl policy init`",
         );
     }
     let data = crate::registry::data_of(st);
@@ -676,10 +731,28 @@ mod tests {
         std::fs::write(d.join(name), body).unwrap();
     }
 
+    /// Stands in for codesign: a file with `UNSIGNED` in it is refused; otherwise signed by a
+    /// made-up Team ID on macOS, no signer elsewhere (as [`signed`] answers there).
+    fn fake_signed(_: &str, real: &Path) -> Result<Option<String>, String> {
+        if std::fs::read(real)
+            .unwrap_or_default()
+            .windows(8)
+            .any(|w| w == b"UNSIGNED")
+        {
+            return Err("not signed by its maker (Team ID TESTTEAM00)".into());
+        }
+        Ok(cfg!(target_os = "macos").then(|| "TESTTEAM00".to_owned()))
+    }
+
+    fn hook() {
+        test_signed(Some(fake_signed));
+    }
+
     /// WIN4-3 (moved from ctl.rs with the look): a launcher, a node script named `.exe`, a text
     /// file are never taken; a PE is.
     #[test]
     fn a_look_takes_only_a_native_executable() {
+        hook();
         let d = tempfile::tempdir().unwrap();
         let dirs = vec![d.path().to_path_buf()];
         assert_eq!(look_in("claude", &dirs, true).kind, LookKind::NotFound);
@@ -869,6 +942,7 @@ mod tests {
 
     #[test]
     fn a_relative_folder_is_never_looked_in() {
+        hook();
         let d = tempfile::tempdir().unwrap();
         file(d.path(), "claude", b"\x7fELF");
         let rel = vec![PathBuf::from("relative-dir")];
@@ -888,6 +962,7 @@ mod tests {
                 "/home/x/.local/bin/claude"
             })),
             why: String::new(),
+            signer: cfg!(target_os = "macos").then(|| "TESTTEAM00".to_owned()),
         };
         let npm = Look {
             name: "codex".into(),
@@ -898,6 +973,7 @@ mod tests {
                 "/npm/codex"
             })),
             why: "npm".into(),
+            signer: None,
         };
         let t = policy_text(&[native.clone(), npm.clone()], |_| false).unwrap();
         let p = allowlist::parse(&t).unwrap();
@@ -909,6 +985,44 @@ mod tests {
             "reason: nothing_native_written"
         );
         assert_eq!(object_words(&t), native.path.unwrap().to_str().unwrap());
+    }
+
+    /// 3e53b PLAN-mac-firstrun r1 f g / r2 h3: a native file its maker did not sign is reported
+    /// as unsigned and never written; a Mac policy names the signer the owner approves, and a
+    /// Mac look without one writes nothing.
+    #[test]
+    fn an_unsigned_program_is_never_written_and_a_mac_policy_names_its_signer() {
+        hook();
+        let d = tempfile::tempdir().unwrap();
+        let dirs = vec![d.path().to_path_buf()];
+        file(d.path(), "claude", b"\x7fELF UNSIGNED");
+        let l = look_in("claude", &dirs, false);
+        assert_eq!(l.kind, LookKind::Unsigned, "reason: unsigned_taken {l:?}");
+        assert_eq!(l.kind.word(), "unsigned");
+        assert!(l.why.contains("TESTTEAM00"), "{l:?}");
+        assert_eq!(l.signer, None);
+        assert_eq!(
+            policy_text(&[l], |_| false),
+            None,
+            "reason: unsigned_written"
+        );
+
+        file(d.path(), "claude", b"\x7fELF");
+        let l = look_in("claude", &dirs, false);
+        assert_eq!(l.kind, LookKind::Native, "{l:?}");
+        let t = policy_text(std::slice::from_ref(&l), |_| false).unwrap();
+        let p = allowlist::parse(&t).unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(p.programs[0].signer.as_deref(), Some("TESTTEAM00"), "{t}");
+            let bare = Look { signer: None, ..l };
+            assert_eq!(
+                policy_text(&[bare], |_| false),
+                None,
+                "reason: mac_policy_without_signer"
+            );
+        } else {
+            assert_eq!(p.programs[0].signer, None, "{t}");
+        }
     }
 
     #[test]
@@ -957,6 +1071,7 @@ mod tests {
             kind: LookKind::Native,
             path: Some(std::env::temp_dir().join("claude")),
             why: String::new(),
+            signer: cfg!(target_os = "macos").then(|| "TESTTEAM00".to_owned()),
         };
         let t = policy_text(&[l], |_| true).unwrap();
         let p = allowlist::parse(&t).unwrap();

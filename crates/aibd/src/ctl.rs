@@ -3364,7 +3364,6 @@ fn seat_rows(v: &Value, sessions: &Value) -> Result<Vec<String>, String> {
 /// another process running as the same user; aibd's policy is read at startup.
 #[cfg(target_os = "macos")]
 fn policy_init() -> Result<(), String> {
-    use std::process::Command;
     let path = match std::env::var_os("AIBD_SESSION_POLICY") {
         Some(path) => std::path::PathBuf::from(path),
         None => data_dir()?.join(aibd::allowlist::DEFAULT_POLICY_FILE),
@@ -3412,42 +3411,19 @@ fn policy_init() -> Result<(), String> {
             eprintln!("{name}: script or unreadable; standalone signed executable required");
             continue;
         }
-        let verify = Command::new("/usr/bin/codesign")
-            .args(["--verify", "--strict"])
-            .arg(&real)
-            .output()
-            .map_err(|e| format!("codesign unavailable: {e}"))?;
-        if !verify.status.success() {
-            eprintln!("{name}: signature verification failed");
-            continue;
-        }
-        let details = Command::new("/usr/bin/codesign")
-            .args(["-dv", "--verbose=4"])
-            .arg(&real)
-            .output()
-            .map_err(|e| format!("codesign unavailable: {e}"))?;
-        if !details.status.success() {
-            eprintln!("{name}: signature details unavailable");
-            continue;
-        }
-        let text = String::from_utf8_lossy(&details.stderr);
-        let team = text.lines().find_map(|l| l.strip_prefix("TeamIdentifier="));
-        let Some(team) = team.filter(|s| {
-            s.len() == 10
-                && s.bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        }) else {
-            eprintln!("{name}: Team ID unavailable");
-            continue;
+        // the page's check (3e53b PLAN-mac-firstrun r1 f): one codesign call with Apple's root
+        // and the maker's Team ID; a self-signed file or another team is refused, not warned
+        let team = match aibd::session_policy_setup::signed(name, &real) {
+            Ok(Some(team)) => team,
+            Ok(None) => {
+                eprintln!("{name}: no signer to check; policy not written for it");
+                continue;
+            }
+            Err(why) => {
+                eprintln!("{name}: {why}; reinstall it from its maker");
+                continue;
+            }
         };
-        let expected = if name == "claude" {
-            "Q6L2SF6YDW"
-        } else {
-            "2DC432GLL2"
-        };
-        if team != expected {
-            eprintln!("{name}: observed Team ID {team} differs from previously observed {expected}; verify the executable before using it");
-        }
         programs.push(json!({"name": name, "path": candidate.to_string_lossy(), "signer": team}));
     }
     if programs.is_empty() {
