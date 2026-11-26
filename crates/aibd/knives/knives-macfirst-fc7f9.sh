@@ -26,3 +26,7 @@ k 'if (sf) { spFix(sf.dataset.spfix); return; } }' 'if (sf) { return; } }'
 k 'SP.fixErr[k] = lcWhy(rgCode(e), lcName(k)); }' 'SP.fixErr[k] = '\'''\''; }'
 # MF10 policy_exists 回舊字
 k 'policy_exists: '\''這台的開席安全設定已經設好了,AIB 不會改掉它。'\'',' 'policy_exists: '\''這台已經有開席設定,AIB 不會蓋掉它。'\'','
+# MF11 按下重新安裝後鈕不停用(f163c 3798e7b4 N1)
+k '${busy ? '\''disabled'\'' : '\'''\''}>${busy ? '\''安裝中…'\'' : '\''重新安裝'\''}</button>' '${'\'''\''}>${busy ? '\''安裝中…'\'' : '\''重新安裝'\''}</button>'
+# MF12 按下重新安裝後字不換
+k '${busy ? '\''disabled'\'' : '\'''\''}>${busy ? '\''安裝中…'\'' : '\''重新安裝'\''}</button>' '${busy ? '\''disabled'\'' : '\'''\''}>${'\''重新安裝'\''}</button>'
