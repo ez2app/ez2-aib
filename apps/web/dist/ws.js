@@ -6989,7 +6989,7 @@
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
   const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
-  const PAIR_WAIT_MAC = '<h2>在 Touch ID 視窗確認</h2><p>Touch ID 視窗會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。</p>';
+  const PAIR_WAIT_MAC = '<h2>在系統確認視窗確認</h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列
   const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
