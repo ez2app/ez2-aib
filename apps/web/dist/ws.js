@@ -6244,6 +6244,8 @@
     H.busy = false; render();
   }
   function hsTestChips() {
+    // f163c 897efdc8cd L1:「+ AI 夥伴」面板一打開也會讀 ssh 設定 ⇒ 跟設定頁同一個開關,沒按過只出一行 + 同一顆鈕
+    if ((hsHas('cand') || hasAct('test_host_list') === true) && !thWant()) return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thW().none)} <button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
     if (hsHas('cand')) {
       const H = S.hs; if (!H.cand) { if (!H.candBusy) setTimeout(hsCandLoad, 0); return '<div class="aplab apgold">測試機</div><div class="apn">讀取中…</div>'; }
       if (!H.cand.length) return H.candErr ? '<div class="aplab apgold">測試機</div><div class="apn">' + esc(H.candErr) + '</div>' : '';
@@ -6251,8 +6253,9 @@
     }
     if (hasAct('test_host_list') !== true) return '';
     const T = S.th; if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return '<div class="aplab apgold">測試機</div><div class="apn">讀取中…</div>'; }
-    if (T.err || !T.list.length) return '';
-    return `<div class="aplab apgold">測試機</div><div class="apl hsoff">${T.list.slice(0, 20).map((m) => `<button type="button" class="apr" data-hstest="${esc(String(m.name || ''))}"><b>${esc(String(m.name || ''))}</b><i>點一下開</i></button>`).join('')}</div>`;
+    const ok = T.err ? [] : T.list.filter((m) => m.usable || m.pinned); // 只列能用的(不能用的不出名字)
+    if (!ok.length) return '';
+    return `<div class="aplab apgold">測試機</div><div class="apl hsoff">${ok.slice(0, 20).map((m) => `<button type="button" class="apr" data-hstest="${esc(String(m.name || ''))}"><b>${esc(String(m.name || ''))}</b><i>點一下開</i></button>`).join('')}</div>`;
   }
   const HS_OTHER_NO = '這一版還沒有:別的模式還不能另外開主機;要管主機,模式選「管理主機」';
   function hsRowOff(A) {

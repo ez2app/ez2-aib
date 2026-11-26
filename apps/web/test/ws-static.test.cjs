@@ -1516,6 +1516,7 @@ const rgChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
   vm.runInContext('// x' + blk + '\nthis.F = { rgWrap, rgBox, rgClick, rgNote, rgHas, RG_ACTS };', ctx);
   const F = ctx.F;
   const mk = (sel, ds) => ({ closest: (q) => (q === sel ? { dataset: ds || {} } : null) });
@@ -1620,6 +1621,8 @@ const hsChecks = (async () => {
     act: async (type, b) => { store.acts.push([type, b]); const r = store.reply[type]; if (r instanceof Error) throw r; return r || {}; },
   });
   ctx.fingerAct = ctx.act;
+  ctx.thWant = () => true; ctx.thX = () => ({ title: '測試機' }); ctx.thW = () => ({ none: '開發用的功能,按了才讀這台的 ssh 設定', open: '從這台的 ssh 設定加' });
+  const tloads = []; ctx.setTimeout = (f) => { tloads.push(f); }; ctx.thLoad = () => {};
   vm.runInContext('// x' + blk + '\nthis.F = { hsModeBtn, hsCan, hsLoad, hsRow, hsRowOff, hsCheck, hsClick, HS_SHELL, hsWinWait, HS_WIN_NET, hsWhy, hsLogLoad, hsLogHtml, HS_WHY, hsTestChips, hsTestAdd, hsCandLoad, TH_EVID };', ctx);
   const F = ctx.F;
   ok(ctx.AP_MODE.host[0] === '管理主機' && ctx.AP_MODE.host[1] === '高', 'reason: hs_mode_words');
@@ -1638,6 +1641,13 @@ const hsChecks = (async () => {
     const keep = { has: { ...store.has }, reply: { ...store.reply }, hs: { ...S.hs }, hosts: S.add.hosts };
     store.has.managed_host_candidates = true; store.has.managed_host_list = true; store.has.managed_host_add = true; store.acts.length = 0;
     store.reply.managed_host_candidates = { hosts: [{ name: 'test-a', os: 'macos' }, { name: 'test-b', already: true }, { name: 'test-c', refused: 'test_host_busy' }, { name: '' }] };
+    // f163c 897efdc8cd L1:沒按過「從這台的 ssh 設定加」⇒ 打開新增面板不讀(兩條路都不呼叫、不排讀取)
+    ctx.thWant = () => false; S.hs.cand = null; tloads.length = 0; store.acts.length = 0;
+    { const h0 = F.hsTestChips(); ok(tloads.length === 0 && store.acts.length === 0 && /data-thopen="1"/.test(h0) && !/test-a/.test(h0), 'reason: hs_test_chips_read_before_asked ' + tloads.length + ' ' + h0);
+      store.has.managed_host_candidates = false; store.has.test_host_list = true; const h1 = F.hsTestChips(); ok(tloads.length === 0 && /data-thopen="1"/.test(h1), 'reason: hs_test_chips_th_read_before_asked ' + tloads.length);
+      ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
+      const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
+      delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
     const h = F.hsTestChips();
     ok(store.acts.some(([t, b]) => t === 'managed_host_candidates' && JSON.stringify(b) === '{\"kind\":\"test\"}') && S.hs.cand.length === 3 && h.includes(F.TH_EVID) && h.includes('data-hstadd=\"test-a\"') && h.includes('<b>test-b</b><i>已交給夥伴管</i>') && h.includes('<b>test-c</b><i>這台測試機正在跑收據,跑完才能交給夥伴</i>') && !h.includes('data-hstadd=\"test-b\"'), 'reason: th_candidates_drawn ' + h);

@@ -38,3 +38,9 @@ k 'esc(thX().recv + T.pinned' 'esc('\''收據可用 '\'' + T.pinned'
 k '${esc(m.pinned || half ? X.rm : X.add)}' '${m.pinned || half ? '\''收回這台'\'' : '\''加'\''}'
 # CU16 英文字表缺(f163c 5d00 N1)
 k '    en: {"title": "Test machines"' '    en0: {"title": "Test machines"'
+# CU17 + AI 夥伴面板沒按也讀 ssh 設定(f163c 897efdc8cd L1)
+k 'if ((hsHas('\''cand'\'') || hasAct('\''test_host_list'\'') === true) && !thWant()) return' 'if (false && (hsHas('\''cand'\'') || hasAct('\''test_host_list'\'') === true) && !thWant()) return'
+# CU18 面板只看候選那條、舊版 test_host_list 那條漏擋(f163c 897efdc8cd L1)
+k 'if ((hsHas('\''cand'\'') || hasAct('\''test_host_list'\'') === true) && !thWant())' 'if ((hsHas('\''cand'\'')) && !thWant())'
+# CU19 面板列出不能用的名字(f163c 897efdc8cd L1)
+k 'T.list.filter((m) => m.usable || m.pinned);' 'T.list.filter((m) => true);'
