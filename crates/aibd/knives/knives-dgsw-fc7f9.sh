@@ -36,3 +36,5 @@ k 'msg: thErr(c) || (c === '\''internal'\'' && m && m !== c ? m : errText(e)), b
 k '${d.source === '\''env'\'' ? '\''這是用 AIB 的環境設定打開的,網頁關不掉。'\'' : '\'''\''}' '${'\'''\''}'
 # DG15 Windows 測試機回 mac_only 仍只寫碼
 k '    en: {"mac_only": "Test machines work only on a Mac for now", ' '    en: {'
+# DG16 兩平台開關鈕字不同句型(Andy 22:0x 同字同位置、只換平台名詞)
+k ''\''按這裡打開(會跳出 '\'' + w + '\'' 確認)'\''' '(w === '\''Windows Hello'\'' ? '\''按這裡打開(要 '\'' + w + '\'')'\'' : '\''打開'\'')'

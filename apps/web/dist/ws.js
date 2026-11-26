@@ -319,8 +319,8 @@
   // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
   // ebab8 21:51(客戶 Windows 實用回報):測試機 = 收據用、只收 Mac 的開發功能;Windows 客戶當成「加主機」按了回 internal ⇒ Windows 整塊不出,指引的「加一台主機」標下一版
-  // c2f0b 48f0342806:GET version 多 dev(AIBD_DEV=1 才 true,預設 false)⇒ 有 dev 欄就照它(Mac 一般用戶也藏,ebab8 21:55);舊 aibd 沒這欄才退回只藏 Windows
-  const thDev = () => { const v = typeof S !== 'undefined' && S && S.version; return v && typeof v.dev === 'boolean' ? v.dev : !(typeof fpWin === 'function' && fpWin()); };
+  // c2f0b 48f0342806:GET version 多 dev(AIBD_DEV=1 才 true,預設 false)⇒ 照它;Andy 22:0x「mac 與 win 能一致就一致」⇒ 沒 dev 欄(舊 aibd)兩平台一起藏,不再只藏 Windows
+  const thDev = () => { const v = typeof S !== 'undefined' && S && S.version; return !!(v && v.dev === true); };
   const GUIDE_W = {
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
       tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
@@ -6375,8 +6375,8 @@
     }
     if (!A.dgNeed) return msg;
     if (d.can_on === true && hasAct(DG_SET) === true) { // D7:紅字後接按這裡打開
-      const w = typeof fpWin === 'function' && fpWin() ? 'Windows Hello' : '本人確認';
-      return `<div class="occ warn">${esc(DG_WHAT)}<button type="button" class="go" data-dgon="1" ${D.busy ? 'disabled' : ''}>${D.busy ? '等你確認…' : '按這裡打開(要 ' + w + ')'}</button></div>${msg}`;
+      const w = typeof fpWin === 'function' && fpWin() ? 'Windows Hello' : '本人確認視窗'; // Andy 22:0x 兩平台同字同位置,只換平台名詞
+      return `<div class="occ warn">${esc(DG_WHAT)}<button type="button" class="go" data-dgon="1" ${D.busy ? 'disabled' : ''}>${D.busy ? '等你確認…' : '按這裡打開(會跳出 ' + w + ' 確認)'}</button></div>${msg}`;
     }
     return (d.owner_check === false ? `<div class="occ warn">${esc(DG_NOOC)}</div>` : '') + msg;
   }
@@ -7042,7 +7042,7 @@
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
   const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
-  const PAIR_WAIT_MAC = '<h2>在系統確認視窗確認</h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列
+  const PAIR_WAIT_MAC = '<h2>在本人確認視窗確認</h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列;Andy 22:0x 句型同 Windows(Windows Hello ↔ 本人確認視窗);跟 Windows 差在「輸入 PIN」⇒「確認」:Mac 判不出這台是指紋還是密碼
   const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {

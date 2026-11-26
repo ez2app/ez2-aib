@@ -293,9 +293,9 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ok(!!dl, 'reason: th_dev_line_found');
       vm.runInContext(dl.trim().replace('const thDev', 'this.thDev') , box); box.win = false; box.fpWin = () => box.win;
       box.S.th = null; box.S.thWant = false; const hm = box.testHostHtml(); box.win = true; const hw = box.testHostHtml(); box.S.thWant = true; const hw2 = box.testHostHtml(); box.S.thWant = false;
-      ok(/data-thopen="1"/.test(hm) && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hw + hw2);
-      box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); delete box.S.version;
-      ok(hd0 === '' && /data-thopen="1"/.test(hd1), 'reason: th_follows_dev_flag ' + hd0);
+      ok(hm === '' && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hm + hw + hw2); // Andy 22:0x 兩平台一致:沒 dev 欄兩邊都藏
+      box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); box.win = false; const hd2 = box.testHostHtml(); box.S.version = { dev: 'yes' }; const hd3 = box.testHostHtml(); delete box.S.version;
+      ok(hd0 === '' && /data-thopen="1"/.test(hd1) && /data-thopen="1"/.test(hd2) && hd3 === '', 'reason: th_follows_dev_flag ' + hd0 + hd3);
       ok(ws.includes("    mac_only: '測試機目前只支援 Mac', no_receipt_gate:"), 'reason: th_mac_only_words'); box.navigator.languages = ['en-US']; ok(box.thErr('mac_only') === 'Test machines work only on a Mac for now', 'reason: th_mac_only_en'); box.navigator.languages = ['zh-TW'];
       delete box.thDev; delete box.fpWin; }
     box.S.thWant = null;
@@ -984,12 +984,12 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     // ebab8 21:51:Windows 的「加一台主機」接的是開發用測試機 ⇒ 標下一版、不出鈕、不是現在那一步;Mac 照舊
     { const all = G(cOk, aOk, fOk, tOk, true), w = mk('zh-TW', true), m = mk('zh-TW', false); w.S.guide = all; m.S.guide = all;
       const ha = all.projects[1].steps[0];
-      ok(w.X.gState(ha) === 'later' && m.X.gState(ha) === 'bad' && w.X.guideCur(all) === null && m.X.guideCur(all).step.id === 'host_add', 'reason: guide_host_add_later_on_windows');
-      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && /data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300));
-      // c2f0b 48f0342806:version 有 dev 欄就照它(Mac 一般用戶也藏;開發機 Windows 也看得到);aibd 說 host_add 做完就打勾(f163c b036cb0a N1)
-      m.S.version = { dev: false }; w.S.version = { dev: true };
-      ok(m.X.gState(ha) === 'later' && w.X.gState(ha) === 'bad', 'reason: guide_host_add_follows_dev_flag');
-      m.S.version = { os: 'macos' }; ok(m.X.gState(ha) === 'bad', 'reason: guide_host_add_old_aibd_falls_back');
+      // Andy 22:0x 兩平台一致:沒 dev 欄 ⇒ Windows / Mac 都標下一版、不出鈕、不是現在那一步;dev=true(我們的開發機)兩平台都照舊出鈕
+      ok(w.X.gState(ha) === 'later' && m.X.gState(ha) === 'later' && w.X.guideCur(all) === null && m.X.guideCur(all) === null, 'reason: guide_host_add_later_on_windows');
+      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && !/data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300));
+      m.S.version = { dev: false }; w.S.version = { dev: true }; const md = mk('zh-TW', false); md.S.guide = all; md.S.version = { dev: true };
+      ok(m.X.gState(ha) === 'later' && w.X.gState(ha) === 'bad' && md.X.gState(ha) === 'bad' && md.X.guideCur(all).step.id === 'host_add' && /data-ggo="add_host"/.test(md.X.guideHtml()), 'reason: guide_host_add_follows_dev_flag');
+      m.S.version = { os: 'macos' }; ok(m.X.gState(ha) === 'later', 'reason: guide_host_add_old_aibd_falls_back');
       w.S.version = { dev: false }; ok(w.X.gState(st('host_add', true, 'ok', 'add_host')) === 'ok', 'reason: guide_host_add_done_shows_done'); }
     const X = c.X;
     // 四語:每個步驟、鈕、原因短碼都有字
@@ -1020,8 +1020,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     c.S.guide = G(cOk, st('allow', false, 'no_claude', 'session_policy_init'), fOk, tOk, true);
     h = X.guideHtml();
     ok(X.guideDim(panel) === panel && /data-ggo="session_policy_init"/.test(h) && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_broken_after_done_not_dim');
-    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機;下一版三步沒有鈕
-    c.S.guide = G(cOk, aOk, fOk, tOk, true);
+    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機(開發機 dev=true;一般用戶兩平台都標下一版,見 guide_host_add_*);下一版三步沒有鈕
+    c.S.guide = G(cOk, aOk, fOk, tOk, true); c.S.version = { dev: true };
     h = X.guideHtml();
     ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">加一台主機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
     // 配對前:aibd 只回 health 與 pair,其他鎖著;Windows 才有設 PIN 說明
@@ -1058,7 +1058,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         vm.runInContext('this.pairWaitSay = pairWaitSay; this.W0 = PAIR_WAIT_TERM;', box); // 這段已在上面 PAIR_WIN_SAY 那段一起載入
         const W0 = '<div class="pairbox">' + box.W0 + '<div class="short">123456</div></div>', pick = (chan, win) => { box.win = win; return box.pairWaitSay(chan)(W0); };
         ok(pick('terminal-unverified', true) === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('', true)) && /Windows Hello/.test(pick(undefined, true)), 'reason: pair_wait_terminal_channel_keeps_y');
-        const mac = pick('', false); ok(/<h2>在系統確認視窗確認<\/h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        const mac = pick('', false); ok(/<h2>在本人確認視窗確認<\/h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
         ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
         ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
@@ -1969,9 +1969,9 @@ const hsChecks = (async () => {
       store.has.managed_host_candidates = false; store.has.test_host_list = true; const h1 = F.hsTestChips(); ok(tloads.length === 0 && /data-thopen="1"/.test(h1), 'reason: hs_test_chips_th_read_before_asked ' + tloads.length);
       ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
       const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
-      { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ctx.fpWin = () => true; vm.runInContext(dl.trim().replace('const thDev', 'this.thDev'), ctx);
-        const hw = F.hsTestChips(); ctx.fpWin = () => false; const hm = F.hsTestChips(); delete ctx.thDev; delete ctx.fpWin;
-        ok(hw === '' && /goodbox/.test(hm), 'reason: hs_test_chips_hidden_on_windows ' + hw); } // ebab8 21:51
+      { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); vm.runInContext(dl.trim().replace('const thDev', 'this.thDev'), ctx); const sv = ctx.S.version;
+        ctx.S.version = { dev: false }; const hw = F.hsTestChips(); ctx.S.version = undefined; const hn = F.hsTestChips(); ctx.S.version = { dev: true }; const hm = F.hsTestChips(); ctx.S.version = sv; delete ctx.thDev;
+        ok(hw === '' && hn === '' && /goodbox/.test(hm), 'reason: hs_test_chips_hidden_on_windows ' + hw + hn); } // ebab8 21:51 + Andy 22:0x 兩平台一致
       { const kx = ctx.thX; ctx.thX = () => ({ title: 'Test machines', loading: 'Loading…' }); const h3 = F.hsTestChips(); ctx.thX = kx; ok(/>Test machines</.test(h3) && !/測試機/.test(h3), 'reason: hs_test_chips_title_not_english ' + h3); }
       delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
@@ -2281,8 +2281,8 @@ lateChecks.push((async () => {
   const off = { on: false, source: '', can_on: true, can_off: false, owner_check: true };
   c.st = off; await F.dgLoad(); ok(sent.length === 1 && sent[0][1] === 'dgrs_switch_status' && c.S.dg.d === off, 'reason: dg_status_read');
   const need = { mode: 'dgrs', dgNeed: true };
-  let h = F.dgHtml(need); ok(h.includes('打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。') && h.includes('data-dgon="1"') && h.includes('>按這裡打開(要 Windows Hello)</button>'), 'reason: dg_off_button_after_red ' + h);
-  c.win = false; ok(F.dgHtml(need).includes('>按這裡打開(要 本人確認)</button>') && !/指紋|Touch ID/.test(F.dgHtml(need)), 'reason: dg_off_button_mac_words'); c.win = true;
+  let h = F.dgHtml(need); ok(h.includes('打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。') && h.includes('data-dgon="1"') && h.includes('>按這裡打開(會跳出 Windows Hello 確認)</button>'), 'reason: dg_off_button_after_red ' + h);
+  c.win = false; ok(F.dgHtml(need).includes('>按這裡打開(會跳出 本人確認視窗 確認)</button>') && !/指紋|Touch ID/.test(F.dgHtml(need)), 'reason: dg_off_button_mac_words'); c.win = true;
   ok(F.dgHtml({ mode: 'dgrs' }) === '' && F.dgHtml({ mode: 'safe', dgNeed: false }) === '', 'reason: dg_nothing_without_refusal');
   c.acts = ['dgrs_switch_status']; ok(!F.dgHtml(need).includes('data-dgon'), 'reason: dg_no_button_without_set_act'); c.acts = ['dgrs_switch_status', 'dgrs_switch_set'];
   c.S.dg.d = { on: false, can_on: false, owner_check: false }; h = F.dgHtml(need); ok(h.includes('這台沒有本人確認,不能從網頁打開。') && !h.includes('data-dgon'), 'reason: dg_no_owner_check_says_so ' + h);

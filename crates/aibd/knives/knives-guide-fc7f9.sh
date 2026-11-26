@@ -153,8 +153,8 @@ k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) 
 k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
 # GD67 Mac 等確認框並列 Touch ID 與登入密碼(3e53b 203a4beb32 L1)
 k '會寫同一組碼,一樣才確認;不一樣按取消。</p>'\'';' '會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。</p>'\'';'
-# GD68 Windows 也出測試機(客戶當成加主機,回 internal;ebab8 21:51)
-k 'return v && typeof v.dev === '\''boolean'\'' ? v.dev : !(typeof fpWin === '\''function'\'' && fpWin()); };' 'return v && typeof v.dev === '\''boolean'\'' ? v.dev : true; };'
+# GD68 沒 dev 欄也出測試機(客戶當成加主機;ebab8 21:51 + Andy 22:0x 兩平台都藏)
+k 'return !!(v && v.dev === true); };' 'return true; };'
 # GD69 測試機卡不看 thDev
 k 'if (hasAct('\''test_host_list'\'') !== true || (typeof thDev === '\''function'\'' && !thDev())) return '\'''\'';' 'if (hasAct('\''test_host_list'\'') !== true) return '\'''\'';'
 # GD70 開席視窗的測試機候選不看 thDev
@@ -162,6 +162,8 @@ k '    if (typeof thDev === '\''function'\'' && !thDev()) return '\'''\''; // �
 # GD71 Windows 指引「加一台主機」仍是現在那一步、出鈕
 k 'if (s.id === '\''host_add'\'' && s.done !== true && typeof thDev === '\''function'\'' && !thDev()) return '\''later'\'';' 'if (false) return '\''later'\'';'
 # GD72 不照 version 的 dev 欄(Mac 一般用戶看得到測試機;c2f0b 48f0342806 / ebab8 21:55)
-k 'return v && typeof v.dev === '\''boolean'\'' ? v.dev : !(typeof fpWin' 'return false && v ? v.dev : !(typeof fpWin'
+k 'return !!(v && v.dev === true); };' 'return !!(v && v.dev); };'
 # GD73 aibd 說加主機做完仍寫下一版(f163c b036cb0a N1)
 k 'if (s.id === '\''host_add'\'' && s.done !== true && typeof thDev' 'if (s.id === '\''host_add'\'' && typeof thDev'
+# GD74 Mac 沒 dev 欄仍出測試機(Andy 22:0x 兩平台一致)
+k 'return !!(v && v.dev === true); };' 'return !!(v ? v.dev === true : !(typeof fpWin === '\''function'\'' && fpWin())); };'
