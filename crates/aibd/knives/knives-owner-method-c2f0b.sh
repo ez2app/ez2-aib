@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# OM1–OM11 指紋或密碼 (ebab8 11-26 21:15, Andy 「要」; PLAN-owner-method-c2f0b-1126 r2 / r2b / r3, 3e53b pre-read): the
+# OM1–OM12 指紋或密碼 (ebab8 11-26 21:15, Andy 「要」; PLAN-owner-method-c2f0b-1126 r2 / r2b / r3, 3e53b pre-read): the
 # password window only for a record signed by its old key, naming the current key, with the pin moved by that record;
 # a pin written at a pairing never opens it; the pin moves only from the record's old key; a crash between the swap and
 # the pin is mended at start only when consistent; a change cut short never takes the new key; each signature compares
@@ -34,4 +34,6 @@ k touch.rs '    if password_chosen && now == crate::owner_probe::Class::Fingerpr
 k touch.rs '        *g = (p, public);' '        *g = (p, if public == g.1 { public } else { g.1 });' touch::tests::a_swapped_key_signs_from_the_next_signature_on
 # OM11 owner.answer does not say how a yes was given
 k owner_ok.rs '            "method": crate::owner_method::method_word(),' '            "method_": crate::owner_method::method_word(),' owner_ok::tests::every_answer_and_every_used_ticket_is_journaled_once
+# OM12 a record no change completed stays, and every later change is refused (3e53b REVIEW-ownermethod L1)
+k owner_method.rs '    never_swapped || before_the_pairing' '    never_swapped && before_the_pairing' owner_method::tests::a_record_no_change_completed_is_cleared_and_the_owner_can_change_again
 exit "$fail"

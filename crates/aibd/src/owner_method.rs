@@ -264,6 +264,35 @@ pub fn pin_at_pairing(current_pub: &[u8], at: u64) -> Pin {
     }
 }
 
+/// A record no change completed (3e53b REVIEW-ownermethod L1): written before the swap and
+/// then cut short or rolled back (its old key is the pin and the current key, its new key is
+/// not the current one), or left from before a pin written at a pairing. It can never open
+/// the password window, and left there it makes every later change refuse; so it is removed,
+/// which loosens nothing.
+pub fn stale(pin: &Pin, r: &Record, current_pub: &[u8]) -> bool {
+    let current = sha256_hex(current_pub);
+    let never_swapped = sha256_hex(&r.old_pub) == current
+        && pin.pub_sha256 == current
+        && r.new_pub_sha256 != current;
+    let before_the_pairing = pin.record_sha256.is_none() && pin.pub_sha256 == current;
+    never_swapped || before_the_pairing
+}
+
+/// What selfcheck and the settings page say for a reading that is not as paired, and the way
+/// out (3e53b REVIEW-ownermethod N1).
+pub fn why_words(why: &str) -> &'static str {
+    match why {
+        "owner_key_not_as_paired"
+        | "owner_method_no_pin"
+        | "owner_method_record_not_as_paired"
+        | "owner_method_pin_not_moved" => {
+            "本人確認的金鑰或方式紀錄跟配對時不同，現在只用指紋。要重設：關掉 aibd,刪掉資料夾裡的 \
+             pair-key-pin.json 和 pair-key-method.json,再開 aibd 重新配對一次(回到只用指紋)。"
+        }
+        _ => "本人確認現在只用指紋。",
+    }
+}
+
 /// `owner_method_set` body: `{type, to}` only.
 pub fn parse_set(body: &Value) -> Option<Method> {
     let o = body.as_object()?;
@@ -295,6 +324,7 @@ static OWNER: std::sync::OnceLock<(SharedPresence, std::sync::Arc<crate::pairing
 
 fn remember(reading: Reading, pin: Option<&Pin>) {
     if let Reading::BiometryBecause(why) = reading {
+        tracing::warn!(way_out = why_words(why), "owner check (selfcheck)");
         tracing::warn!(
             why,
             "owner check: the fingerprint only (the key or its records are not as paired)"
@@ -368,6 +398,17 @@ pub fn read_record(data: &Path) -> Option<Record> {
     Record::from_value(&read_json(&data.join(RECORD_FILE))?)
 }
 
+/// The record, or none when it is [`stale`] (then its file is removed).
+fn live_record(data: &Path, pin: Option<&Pin>, current_pub: &[u8]) -> Option<Record> {
+    let r = read_record(data)?;
+    if pin.is_some_and(|p| stale(p, &r, current_pub)) {
+        let _ = std::fs::remove_file(data.join(RECORD_FILE));
+        tracing::warn!("owner check: a change of method that never completed was cleared");
+        return None;
+    }
+    Some(r)
+}
+
 fn write_json(p: &Path, v: &Value) -> Result<(), &'static str> {
     crate::platform::write_private_file(p, v.to_string().as_bytes())
         .map_err(|_| "owner_method_store")
@@ -415,7 +456,7 @@ pub fn read_at_start(
 ) {
     let _ = DATA.set(data.to_path_buf());
     let mut pin = read_pin(data);
-    let record = read_record(data);
+    let record = live_record(data, pin.as_ref(), current_pub);
     if let (Some(p), Some(r)) = (pin.as_ref(), record.as_ref()) {
         if let Some(moved) =
             repin_at_start(p, r, current_pub, crate::pair_carry::now_unix(), &verify)
@@ -445,7 +486,7 @@ pub fn after_pairing(current_pub: &[u8]) {
     }
     let pin = pin_at_pairing(current_pub, crate::pair_carry::now_unix());
     if write_json(&data.join(PIN_FILE), &pin.to_value()).is_ok() {
-        let record = read_record(data);
+        let record = live_record(data, Some(&pin), current_pub);
         let verify = |k: &[u8], m: &[u8], s: &[u8]| verify_any(k, m, s);
         remember(
             read(Some(&pin), record.as_ref(), current_pub, verify),
@@ -492,7 +533,7 @@ pub fn change(c: &Change<'_>) -> Result<Method, &'static str> {
     if pin.pub_sha256 != sha256_hex(&current) {
         return Err("owner_key_not_as_paired");
     }
-    let record = read_record(c.data);
+    let record = live_record(c.data, Some(&pin), &current);
     let from = match read(Some(&pin), record.as_ref(), &current, c.verify) {
         Reading::Password => Method::Password,
         Reading::Biometry => Method::Biometry,
@@ -555,10 +596,19 @@ fn swap_in(
 ) -> Result<(), &'static str> {
     let key = crate::touch::key_dir(c.data);
     let old = c.data.join(format!("{OLD_PREFIX}{}", c.at));
-    std::fs::rename(&key, &old).map_err(|_| "owner_method_swap")?;
+    // a rolled-back change takes its record away with it (L1)
+    let drop_record = || {
+        let _ = std::fs::remove_file(c.data.join(RECORD_FILE));
+    };
+    if std::fs::rename(&key, &old).is_err() {
+        drop_record();
+        let _ = std::fs::remove_dir_all(new_dir);
+        return Err("owner_method_swap");
+    }
     if std::fs::rename(new_dir, &key).is_err() {
         let _ = std::fs::rename(&old, &key);
         let _ = std::fs::remove_dir_all(new_dir);
+        drop_record();
         return Err("owner_method_swap");
     }
     let public = new.public;
@@ -567,6 +617,7 @@ fn swap_in(
         let _ = std::fs::rename(&key, new_dir);
         let _ = std::fs::rename(&old, &key);
         let _ = std::fs::remove_dir_all(new_dir);
+        drop_record();
         return Err(why);
     }
     // a crash here leaves pin = old key: mended at the next start (repin_at_start)
@@ -602,14 +653,15 @@ pub async fn status() -> Response {
         return Json(json!({"method": "windows_hello", "can_change": false})).into_response();
     }
     let r = reading_now();
-    let why = match &r {
-        Some(Reading::BiometryBecause(w)) => json!(w),
-        _ => Value::Null,
+    let (why, words) = match &r {
+        Some(Reading::BiometryBecause(w)) => (json!(w), json!(why_words(w))),
+        _ => (Value::Null, Value::Null),
     };
     Json(json!({
         "method": r.as_ref().map_or("unknown", Reading::word),
         "can_change": cfg!(target_os = "macos") && OWNER.get().is_some() && why.is_null() && r.is_some(),
         "why": why,
+        "words": words,
     }))
     .into_response()
 }
@@ -1057,6 +1109,36 @@ mod tests {
             run(t.path(), Method::Password, &p, &made, true),
             Err("owner_key_not_as_paired")
         );
+    }
+
+    #[test]
+    fn a_record_no_change_completed_is_cleared_and_the_owner_can_change_again() {
+        // L1: the record was written, then the change was cut short before the swap
+        let (t, p) = machine(true);
+        let d = t.path();
+        let left = record(Method::Password, &[1; PUBLIC_KEY_LEN], &[2; PUBLIC_KEY_LEN]);
+        write_json(&d.join(RECORD_FILE), &left.to_value()).unwrap();
+        let pin = read_pin(d).unwrap();
+        assert!(stale(&pin, &left, &[1; PUBLIC_KEY_LEN]));
+        let made = std::cell::Cell::new(0);
+        assert_eq!(
+            run(d, Method::Password, &p, &made, true),
+            Ok(Method::Biometry),
+            "reason: stuck_after_a_cut_short_change"
+        );
+        assert_eq!(reading_of(d), Reading::Password);
+        // a pin written at a pairing with an old record still there: cleared too
+        let paired = pin_at_pairing(&[2; PUBLIC_KEY_LEN], 1);
+        assert!(stale(
+            &paired,
+            &read_record(d).unwrap(),
+            &[2; PUBLIC_KEY_LEN]
+        ));
+        // the crash between the swap and the pin is not stale: it is mended instead
+        let r = record(Method::Password, OLD, NEW);
+        assert!(!stale(&pin_at_pairing(OLD, 1), &r, NEW));
+        // nor is a completed change
+        assert!(!stale(&moved(&r, NEW), &r, NEW));
     }
 
     #[test]
