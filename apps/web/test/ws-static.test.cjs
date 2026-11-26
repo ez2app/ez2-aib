@@ -2270,6 +2270,8 @@ lateChecks.push((async () => {
     c.lcHas = (t) => t === 'provider_install'; c.lcNeeds = (k) => k === 'codex';
     const u1 = c.card({ d: uf });
     ok(u1.includes('⚠️ 找到的 Claude 不是官方簽章的版本,可能被換過,為了安全不會用它。按「重新安裝」,AIB 會改裝官方版。') && u1.includes('<button type="button" class="go" data-spfix="claude" >重新安裝</button>'), 'reason: sp_unsigned_row_reinstall_button ' + u1);
+    c.S.sp = { fix: 'claude' }; const ub = c.card({ d: uf }); c.S.sp = null; // f163c 3798e7b4 N1:按下後鈕停用、寫安裝中
+    ok(ub.includes('<button type="button" class="go" data-spfix="claude" disabled>安裝中…</button>') && !ub.includes('>重新安裝</button>'), 'reason: sp_unsigned_button_busy ' + ub);
     ok(u1.includes('這台電腦還沒裝 Codex。按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。'), 'reason: sp_not_found_points_to_install_card');
     c.lcNeeds = () => false; ok(c.card({ d: uf }).includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_not_found_no_card_falls_back');
     ok(!/Team ID|signer|簽章者/.test(u1), 'reason: sp_unsigned_hides_signer');
