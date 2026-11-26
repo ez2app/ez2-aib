@@ -2148,7 +2148,7 @@ lateChecks.push((async () => {
       passphrase_locked: "The passphrase was wrong too many times, so it is locked for now.",
       owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
       policy_no_native: "No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).",
-      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_exists: "This computer's seat-opening security setting is already set, and AIB won't change it.",
       policy_write_failed: "AIB could not write the seat-opening setup file. Nothing was changed. You can press again.",
       policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
       pin: "If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.",
@@ -2172,7 +2172,7 @@ lateChecks.push((async () => {
       pair_touch_not_on_this_system: "このパソコンのシステムはまだ本人確認に対応していません。",
       passphrase_locked: "パスフレーズを何度も間違えたため、一時的にロックされています。",
       policy_no_native: "このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」(再検索)を押してください。",
-      policy_exists: "このパソコンにはすでに AI の席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」(再検索)を押してください。",
+      policy_exists: 'このパソコンの席を開く安全設定はすでに設定済みで、AIB は変更しません。',
       policy_write_failed: "AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。",
       policy_bad_request: "ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。",
       class_na: "このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。",
@@ -2195,7 +2195,7 @@ lateChecks.push((async () => {
       pair_touch_not_on_this_system: "이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.",
       passphrase_locked: "암호 문구를 너무 많이 틀려 잠시 잠겼습니다.",
       policy_no_native: "이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」(다시 찾기)를 누르세요.",
-      policy_exists: "이 컴퓨터에는 이미 AI 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」(다시 찾기)를 누르세요.",
+      policy_exists: '이 컴퓨터의 좌석 열기 보안 설정은 이미 되어 있으며, AIB는 바꾸지 않습니다.',
       policy_write_failed: "AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
       policy_bad_request: "페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
       class_na: "이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.",
@@ -2231,6 +2231,21 @@ lateChecks.push((async () => {
   ok(mk('Win32', 'zh-TW').f('cancel') === '你按了取消,沒有動任何東西。' && mk('MacIntel').f('pair_key_missing') === '這台還沒有配對金鑰。請先建配對金鑰。', 'reason: ap26_4lang_zh_stays_zh');
   ok(ws.includes("const L = typeof askLang === 'function' ? askLang() : 'zh-TW'"), 'reason: ap26_4lang_same_lang_as_ask');
 }
+// c2f0b dc4e963b56:unsigned 那列「重新安裝」只送 provider_install {provider},一次一個,只認 found 裡真的是 unsigned 的名字,錯了照 lcWhy 寫在那列,完後重讀
+lateChecks.push((async () => {
+  const a = ws.indexOf('  async function spFix(k) {'), b = ws.indexOf('  async function spInit() {', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const sent = [], c = vm.createContext({ S: { sp: { d: { found: [{ name: 'claude', kind: 'unsigned', path: '/x' }, { name: 'codex', kind: 'native', path: '/y' }] } } }, render: () => {}, has: true, fail: false, loads: 0,
+    lcHas: (t) => c.has && t === 'provider_install', spFound: (d) => d.found, lcWhy: (code, n) => 'LW:' + code + ':' + n, lcName: (k) => 'N:' + k, rgCode: (e) => e.reason, lcLoad: async () => { c.loads++; }, spLoad: async () => { c.loads++; },
+    fingerAct: async (t, body) => { sent.push(t + ' ' + JSON.stringify(body)); if (c.fail) throw { reason: 'lifecycle_offline' }; return { ok: true }; } });
+  vm.runInContext(src + '\nthis.spFix = spFix;', c);
+  ok(src.length > 200, 'reason: sp_fix_found');
+  await c.spFix('codex'); await c.spFix('nope'); await c.spFix(''); c.has = false; await c.spFix('claude'); c.has = true;
+  ok(sent.length === 0, 'reason: sp_fix_only_unsigned_with_act ' + sent.join('|'));
+  await c.spFix('claude'); ok(sent.join('|') === 'provider_install {"provider":"claude"}' && c.S.sp.fix === '' && c.loads === 2, 'reason: sp_fix_sends_install_then_reloads ' + sent.join('|'));
+  c.fail = true; await c.spFix('claude'); ok(c.S.sp.fixErr.claude === 'LW:lifecycle_offline:N:claude', 'reason: sp_fix_error_on_row');
+  c.S.sp.fix = 'claude'; c.fail = false; const n = sent.length; await c.spFix('claude'); ok(sent.length === n, 'reason: sp_fix_one_at_a_time');
+  ok(ws.includes("{ const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }"), 'reason: sp_fix_click_wired');
+})());
 // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
 {
   const a = ws.indexOf('  const SP_INIT = '), b = ws.indexOf('  async function spLoad() {', a);
@@ -2247,7 +2262,18 @@ lateChecks.push((async () => {
   const h = src ? c.card({ d }) : '';
   ok(/✅ Claude:找到了\(<span class="sppath" title="C:\\Users\\x\\\.local\\bin\\claude\.exe">/.test(h), 'reason: w10_native_row_found_with_path');
   ok(h.includes('⚠️ Codex:這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 Codex。請改用官方安裝程式(下面的連結),裝好後按「重新找」。'), 'reason: w10_npm_row_says_why_and_what_to_do');
-  ok(h.includes('<li>gemini:沒找到</li>') && h.includes('⚠️ sh:找到的不是程式本體(<span class="sppath" title="/bin/sh">/bin/sh</span>),請用官方安裝程式重裝'), 'reason: w10_not_found_and_not_the_program_rows');
+  ok(h.includes('<li>這台電腦還沒裝 gemini。照官方步驟裝好後,回來再按一次。</li>') && h.includes('⚠️ sh:找到的不是程式本體(<span class="sppath" title="/bin/sh">/bin/sh</span>),請用官方安裝程式重裝'), 'reason: w10_not_found_and_not_the_program_rows');
+  // c2f0b dc4e963b56 + 20:01 定字:Mac 找到但不是官方簽章(unsigned);沒裝 / 不是官方版 ⇒ 有 provider_install 才給 AIB 自己裝
+  { const uf = { policy: 'missing', programs: [], can_write: true, found: [{ name: 'claude', kind: 'unsigned', path: '/Users/x/.local/bin/claude' }, { name: 'codex', kind: 'not_found', path: '' }] };
+    const u0 = c.card({ d: uf });
+    ok(u0.includes('⚠️ 找到的 Claude 不是官方簽章的版本,可能被換過,為了安全不會用它。請從官方重新安裝。') && !u0.includes('data-spfix') && !u0.includes('data-spok') && u0.includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_unsigned_row_no_install_act ' + u0);
+    c.lcHas = (t) => t === 'provider_install'; c.lcNeeds = (k) => k === 'codex';
+    const u1 = c.card({ d: uf });
+    ok(u1.includes('⚠️ 找到的 Claude 不是官方簽章的版本,可能被換過,為了安全不會用它。按「重新安裝」,AIB 會改裝官方版。') && u1.includes('<button type="button" class="go" data-spfix="claude" >重新安裝</button>'), 'reason: sp_unsigned_row_reinstall_button ' + u1);
+    ok(u1.includes('這台電腦還沒裝 Codex。按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。'), 'reason: sp_not_found_points_to_install_card');
+    c.lcNeeds = () => false; ok(c.card({ d: uf }).includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_not_found_no_card_falls_back');
+    ok(!/Team ID|signer|簽章者/.test(u1), 'reason: sp_unsigned_hides_signer');
+    delete c.lcHas; delete c.lcNeeds; }
   ok(h.indexOf('<h4>還沒設定這台能開哪些 AI</h4>') >= 0 && h.indexOf('AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。') > h.indexOf('<h4>'), 'reason: w10_card_title_then_what_aib_opens');
   ok(h.includes('data-spok="1"') && h.includes('>核准並啟用</button>') && h.includes('data-spre="1"'), 'reason: w10_approve_shown_with_a_native');
   const h2 = src ? c.card({ d: Object.assign({}, d, { can_write: false }) }) : 'data-spok';
@@ -2281,7 +2307,7 @@ lateChecks.push((async () => {
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
   ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
-  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
+  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
 // 登入卡(08de5 SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126;Andy 01:04 網址已帶碼就不顯示貼碼):大字碼框、按了才複製、共幾步、有效時間照實寫
 const relogChecks = (async () => {

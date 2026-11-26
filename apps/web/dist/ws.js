@@ -5366,7 +5366,7 @@
     owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
     // W-10(c2f0b IFACE r3 核字;11-26 後半句照用字第 11 列改成「沒有動任何東西」,待 c2f0b 再核):寫開席設定的拒絕原因
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
-    policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。',
+    policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。',
     policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。',
     policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。',
   };
@@ -5397,7 +5397,7 @@
       passphrase_locked: 'The passphrase was wrong too many times, so it is locked for now.',
       owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
       policy_no_native: 'No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).',
-      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_exists: "This computer's seat-opening security setting is already set, and AIB won't change it.",
       policy_write_failed: 'AIB could not write the seat-opening setup file. Nothing was changed. You can press again.',
       policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
       pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
@@ -5421,7 +5421,7 @@
       pair_touch_not_on_this_system: 'このパソコンのシステムはまだ本人確認に対応していません。',
       passphrase_locked: 'パスフレーズを何度も間違えたため、一時的にロックされています。',
       policy_no_native: 'このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」(再検索)を押してください。',
-      policy_exists: 'このパソコンにはすでに AI の席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」(再検索)を押してください。',
+      policy_exists: 'このパソコンの席を開く安全設定はすでに設定済みで、AIB は変更しません。',
       policy_write_failed: 'AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
       policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
       class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
@@ -5444,7 +5444,7 @@
       pair_touch_not_on_this_system: '이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.',
       passphrase_locked: '암호 문구를 너무 많이 틀려 잠시 잠겼습니다.',
       policy_no_native: '이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」(다시 찾기)를 누르세요.',
-      policy_exists: '이 컴퓨터에는 이미 AI 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」(다시 찾기)를 누르세요.',
+      policy_exists: '이 컴퓨터의 좌석 열기 보안 설정은 이미 되어 있으며, AIB는 바꾸지 않습니다.',
       policy_write_failed: 'AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
       policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
       class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
@@ -6256,7 +6256,7 @@
   // 讀 GET /api/v1/session-policy(不跳窗,每次讀 aibd 都重找);頁面不送任何名字或路徑,寫哪些由 aibd 自己從 found 挑 kind = native
   // 寫設定走既有 act 流程(c2f0b IFACE r2:type = session_policy_init,202 + ticket;body 只有 type,多帶欄位 aibd 回 400)— 舊 aibd 沒有 GET ⇒ 不出卡,照舊那一句
   const SP_INIT = 'session_policy_init';
-  const SP_KINDS = ['native', 'npm', 'script', 'interpreter', 'not_found'];
+  const SP_KINDS = ['native', 'npm', 'script', 'interpreter', 'not_found', 'unsigned']; // c2f0b dc4e963b56:Mac 找到但不是官方簽章 = unsigned
   const SP_NAME = { claude: 'Claude', codex: 'Codex' };
   const SP_INSTALL_NA = '官方安裝說明的連結:這一版 AIB 還沒有';
   const SP_NPM_WHY = (n) => `這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 ${n}。請改用官方安裝程式(下面的連結),裝好後按「重新找」。`;
@@ -6277,7 +6277,10 @@
     const n = esc(spName(f.name)), pt = f.path ? `<span class="sppath" title="${esc(f.path)}">${esc(spPath(f.path))}</span>` : '';
     if (f.kind === 'native') return `<li class="spok">✅ ${n}:找到了${pt ? '(' + pt + ')' : ''}</li>`;
     if (f.kind === 'npm') return `<li class="spwarn">⚠️ ${n}:${esc(SP_NPM_WHY(spName(f.name)))}${pt ? '<br>' + pt : ''}</li>`;
-    if (f.kind === 'not_found') return `<li>${n}:沒找到</li>`;
+    // c2f0b 20:01 定字(fc7f9 版):缺什麼 AIB 自己裝,只在有 provider_install 時給鈕;沒有才叫人照官方步驟
+    const inst = typeof lcHas === 'function' && lcHas('provider_install'), busy = S.sp && S.sp.fix === f.name;
+    if (f.kind === 'not_found') return `<li>這台電腦還沒裝 ${n}。${inst && typeof lcNeeds === 'function' && lcNeeds(f.name) ? '按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。' : '照官方步驟裝好後,回來再按一次。'}</li>`;
+    if (f.kind === 'unsigned') return `<li class="spwarn">⚠️ 找到的 ${n} 不是官方簽章的版本,可能被換過,為了安全不會用它。${inst ? `按「重新安裝」,AIB 會改裝官方版。${pt ? '<br>' + pt : ''}<div class="afoot"><button type="button" class="go" data-spfix="${esc(f.name)}" ${busy ? 'disabled' : ''}>${busy ? '安裝中…' : '重新安裝'}</button></div>` : `請從官方重新安裝。${pt ? '<br>' + pt : ''}`}${S.sp && S.sp.fixErr && S.sp.fixErr[f.name] ? `<div class="aerr" role="alert">${esc(S.sp.fixErr[f.name])}</div>` : ''}</li>`;
     return `<li class="spwarn">⚠️ ${n}:找到的不是程式本體${pt ? '(' + pt + ')' : ''},請用官方安裝程式重裝</li>`;
   }
   function spCard(SP) {
@@ -6327,6 +6330,14 @@
     SP.busy = true; render();
     const r = await soft(get('/api/v1/session-policy')).catch(() => null);
     SP.busy = false; SP.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
+  }
+  // unsigned 那列的「重新安裝」:同 rfFix,只送 provider;完後重讀 lifecycle 與開席設定
+  async function spFix(k) {
+    const SP = S.sp; if (!SP || SP.fix || typeof k !== 'string' || !k || !(typeof lcHas === 'function' && lcHas('provider_install'))) return;
+    if (!spFound(SP.d).some((f) => f.name === k && f.kind === 'unsigned')) return;
+    SP.fix = k; SP.fixErr = SP.fixErr || {}; delete SP.fixErr[k]; render();
+    const body = { provider: k }; try { await fingerAct('provider_install', body); } catch (e) { SP.fixErr[k] = lcWhy(rgCode(e), lcName(k)); }
+    SP.fix = ''; if (typeof lcLoad === 'function') await lcLoad().catch(() => null); await spLoad();
   }
   async function spInit() {
     const SP = S.sp; if (!SP || !SP.d || SP.busy) return;
@@ -7587,6 +7598,7 @@
     if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
+    { const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列
       const bk = x.closest('[data-apback]'); if (bk) { const A = S.add, code = bk.dataset.apback, sx = S.seats.find((y) => apCode(y) === code); A.plan = 'back:' + code; A.from = code; A.cat = 'handoff'; A.noRepoAsk = false; if (sx && sx.persona_uid) { A.persona = sx.persona_uid; A.personaTried = true; A.brainTouched = false; brainPreselect(A); } if (sx && AP_MODE[sx.mode]) A.mode = sx.mode; if (!A.ho || /HANDOFF-[0-9a-f]{5}-$/.test(A.ho)) A.ho = '~/.ez2-aib/pending/HANDOFF-' + code + '-'; A.rowOpen = 'ho'; A.key = idem(); render(); hlLoad(A, code); const i = document.querySelector('[data-addho]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } return; }

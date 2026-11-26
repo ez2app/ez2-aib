@@ -23,7 +23,7 @@ k '${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `' '${false ? spCard(S.sp
 # W10K8
 k '      S.sp = null; spLoad(); // W-10' '      S.sp = null; // W-10'
 # W10K9
-k 'policy_exists: '\''這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'\'',' 'policy_exists: '\''已有設定。'\'','
+k 'policy_exists: '\''這台的開席安全設定已經設好了,AIB 不會改掉它。'\'',' 'policy_exists: '\''已有設定。'\'','
 # W10K10
 k 'const n = esc(spName(f.name)), pt =' 'const n = spName(f.name), pt ='
 # W10K11
