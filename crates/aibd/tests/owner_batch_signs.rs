@@ -24,6 +24,12 @@ impl aibd::touch::Presence for Yes {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+    // the keyed owner check (macOS), the one a list may go to in one window: since B2
+    // (8ea92b569e, 3e53b REVIEW-b2consent L3) a presence with no key answers
+    // owner_batch_one_at_a_time before any gate (90856 RECEIPT-andymini-90856-wsa-8a3d40da2)
+    fn signs(&self) -> bool {
+        true
+    }
 }
 
 /// Windows open only while `OPEN`; the page is still paired only while `PAIRED`.
