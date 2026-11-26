@@ -9,10 +9,10 @@
 //!    hashes match move it in place (the older copy is kept as `aibd.exe.prev`). A running
 //!    installed aibd is never overwritten: the setup stops and says so. Started from the
 //!    installed copy itself, this step is skipped;
-//! 2. the pairing key, with the same code as `aibd ctl pair-key init` (Windows Hello once); a key
-//!    already there is kept (a reinstall is not a way to change keys). No key ⇒ stop here: no
-//!    Run value, nothing started; the line keeps the code and the HRESULT, and only a machine
-//!    without Windows Hello is told to set a PIN ([`key_not_made_how`]);
+//! 2. Windows Hello (B2, Andy 11-26 10:1x): only asked whether it can be used here — no window,
+//!    no key made, nothing kept, the pair-key folder not read. Not usable ⇒ the setup goes on
+//!    (B3) and what needs the owner stays closed; the line keeps the code and the HRESULT, and
+//!    only a machine without Windows Hello is told to set a PIN ([`hello_not_ready_how`]);
 //! 3. the sign-in entry: current user's Run value `AIB` = the quoted path, nothing else (no
 //!    flags, no environment: the Windows defaults are aibd's own). A value of that name that is
 //!    not ours is left alone and the setup stops; what was written is read back and compared;
@@ -40,42 +40,35 @@ pub const EXE_NAME: &str = "aibd.exe";
 /// A program whose file name starts with this (any case) runs the setup when started with no
 /// arguments: `AIB-Setup.exe`, and what a browser makes of a second download, `AIB-Setup (1).exe`.
 pub const SETUP_STEM: &str = "aib-setup";
-/// What to do when the pairing key could not be made (no PIN, cancelled).
-const NO_KEY_HOW: &str = "set up a Windows Hello PIN (Settings > Accounts > Sign-in options), \
-     then double-click AIB-Setup again";
-/// What to do when Windows Hello was not answered (cancel, time-out).
-const KEY_UNANSWERED_HOW: &str =
-    "Windows Hello was not answered; double-click AIB-Setup again and answer its window";
-/// What to do when Windows refused to make the key for any other reason: the code and the
-/// HRESULT in the line say why; a PIN is not the answer there (ebab8 11-26 10:01, the laptop's
-/// `se_error` was read as "set a PIN" on a machine that has one).
-const KEY_REFUSED_HOW: &str = "Windows refused to make the key (the code above says why); \
-     double-click AIB-Setup again, and if the same line comes back, send it to support";
+/// What to do when Windows did not answer the Hello check for any other reason: the code and
+/// the HRESULT in the line say why; a PIN is not the answer there (ebab8 11-26 10:01, the
+/// laptop's `se_error` was read as "set a PIN" on a machine that has one).
+const HELLO_REFUSED_HOW: &str = "Windows did not answer the Windows Hello check (the code above \
+     says why); if this line stays after a restart, send it to support";
 
-/// What the key maker says when it is not running in the desktop session (ssh, remote
-/// desktop, a service); also how [`key_not_made_how`] tells that `unavailable` from a machine
+/// What the Hello check says when it is not running in the desktop session (ssh, remote
+/// desktop, a task); also how [`hello_not_ready_how`] tells that `unavailable` from a machine
 /// without Windows Hello.
 pub const DESKTOP_ONLY: &str =
     "run this at the computer, signed in at its desktop (not over ssh or remote desktop)";
 /// What to do then.
-const KEY_DESKTOP_HOW: &str =
-    "double-click AIB-Setup at this computer's desktop (not over ssh, remote desktop or a task)";
+const HELLO_DESKTOP_HOW: &str = "double-click AIB-Setup at this computer's desktop (not over \
+     ssh, remote desktop or a task) to check Windows Hello again";
 
-/// The hint after "pairing key not made (...)", by the 1.x code in it: only a machine without
-/// Windows Hello (`no_biometry`, `unavailable` not about the session) is told to set up a PIN.
-pub fn key_not_made_how(why: &str) -> &'static str {
+/// The hint after "2/5 Windows Hello is not ready (...)", by the 1.x code in it: only a machine
+/// without Windows Hello (`no_biometry`, `unavailable` not about the session) is told to set up
+/// a PIN; the laptop's `se_error` (0x80090027) is not.
+pub fn hello_not_ready_how(why: &str) -> &'static str {
     let has = |code: &str| {
         why.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .any(|w| w == code)
     };
     if why.contains(DESKTOP_ONLY) {
-        KEY_DESKTOP_HOW
+        HELLO_DESKTOP_HOW
     } else if has("no_biometry") || has("unavailable") {
-        NO_KEY_HOW
-    } else if has("cancel") || has("timeout") {
-        KEY_UNANSWERED_HOW
+        HELLO_LATER_HOW
     } else {
-        KEY_REFUSED_HOW
+        HELLO_REFUSED_HOW
     }
 }
 
@@ -337,8 +330,8 @@ fn run_with(
     match ops.hello_ready() {
         Ok(()) => say("2/5 Windows Hello is set up: AIB asks for it each time it needs you"),
         Err(e) => say(&format!(
-            "2/5 Windows Hello is not ready ({e}): AIB runs, but what needs you stays closed \
-             until you {HELLO_LATER_HOW}"
+            "2/5 Windows Hello is not ready ({e}): AIB runs, but what needs you stays closed; {}",
+            hello_not_ready_how(&e)
         )),
     }
     // 3. start at sign-in
@@ -824,25 +817,40 @@ mod tests {
         );
     }
 
-    /// 90856 (ebab8 10:01): what a Hello error line asks the person to do, by its code.
+    /// 90856 (ebab8 10:01 / 10:17): the step-2 line asks for a PIN only on a machine without
+    /// Windows Hello; the laptop's se_error and a session that is not the desktop are not.
     #[test]
     fn only_a_machine_without_hello_is_told_to_set_a_pin() {
-        assert!(key_not_made_how("no_biometry (x)").contains("Windows Hello PIN"));
-        assert!(key_not_made_how("unavailable (x)").contains("Windows Hello PIN"));
-        assert!(!key_not_made_how("se_error (os error 0x80090027)").contains("PIN"));
         let desk = format!("unavailable (not available): {DESKTOP_ONLY}");
-        assert!(
-            !key_not_made_how(&desk).contains("PIN"),
-            "reason: desktop_told_pin"
-        );
-        assert!(
-            key_not_made_how("se_error").contains("Windows refused"),
-            "reason: se_error_not_refused"
-        );
-        assert!(
-            key_not_made_how("timeout").contains("not answered"),
-            "reason: timeout_not_unanswered"
-        );
+        for (why, want_pin, want) in [
+            ("se_error (os error 0x80090027)", false, "did not answer"),
+            ("no_biometry (no Windows Hello)", true, "no need to install"),
+            ("unavailable (not set up)", true, "no need to install"),
+            (desk.as_str(), false, "at this computer's desktop"),
+            ("auth_failed (refused)", false, "did not answer"),
+        ] {
+            let f = Fake {
+                hello_err: Some(why.into()),
+                healthy_after: Some(1),
+                ..Fake::default()
+            };
+            let (r, lines) = go(&f);
+            assert!(r.is_ok(), "reason: stopped {why} {r:?}");
+            let two = lines
+                .iter()
+                .find(|l| l.starts_with("2/5"))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                two.contains("PIN"),
+                want_pin,
+                "reason: pin_hint {why} => {two}"
+            );
+            assert!(
+                two.contains(why) && two.contains(want) && two.contains("stays closed"),
+                "reason: step_2_line {why} => {two}"
+            );
+        }
     }
 
     #[test]
