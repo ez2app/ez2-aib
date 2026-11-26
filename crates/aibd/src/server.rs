@@ -492,6 +492,8 @@ pub async fn run(
             tracing::info!(seats = n, "rejoin after start");
         });
     }
+    // 6770f IFACE-guide r3: someone who used AIB before the guide is not walked through it
+    crate::guide::at_start(state.clone());
     let app = api::router(state, guard_cfg);
     tracing::info!(%addr, "aibd listening");
     on_started(Started {
