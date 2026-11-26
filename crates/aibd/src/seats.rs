@@ -1767,6 +1767,17 @@ pub async fn page_open(
     {
         return not_logged_in(&req.provider);
     }
+    // 08de5 11-26 (3e53b 15:29, ebab8 15:31): a brand aibd cannot start over pipes is refused
+    // here, before repo_tree or any ask, so the page never shows a fingerprint window (nor
+    // leaves a tree) for an open check_open refuses anyway; check_open still says it for the
+    // token path and an unknown brand keeps its own answer there
+    if aib_seatopen::PROVIDERS.contains(&req.provider.as_str()) && !pipe_supported(&req.provider) {
+        return Refusal(
+            "provider_unsupported",
+            "this provider cannot be opened as a 2.0 seat yet; no seat was made",
+        )
+        .into_response();
+    }
     let brain_route = match req.brain.as_deref() {
         None => None,
         Some(uid) => match crate::registry::brain_route(&crate::registry::data_of(&st), uid) {
