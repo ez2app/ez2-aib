@@ -26,7 +26,7 @@ sc '            say(&format!("3/5 no AIB shortcut: {e}"));' \
    no_shortcut_does_not_stop_the_setup
 # SC5 `ctl web` from another program starts the installed aibd.exe
 sc '    if !resident || !ops.same_file(current, &p.exe) {' \
-   '    if !resident {' \
+   '    if !resident || (false && !ops.same_file(current, &p.exe)) {' \
    web_from_elsewhere_starts_nothing
 # SC6 `ctl web` naming another aibd (test / preview) starts the resident one
 sc '    if !resident || !ops.same_file(current, &p.exe) {' \
