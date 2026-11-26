@@ -293,13 +293,17 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ok(!!dl, 'reason: th_dev_line_found');
       vm.runInContext(dl.trim().replace('const thDev', 'this.thDev') , box); box.win = false; box.fpWin = () => box.win;
       box.S.th = null; box.S.thWant = false; const hm = box.testHostHtml(); box.win = true; const hw = box.testHostHtml(); box.S.thWant = true; const hw2 = box.testHostHtml(); box.S.thWant = false;
-      ok(/data-thopen="1"/.test(hm) && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hw + hw2); delete box.thDev; delete box.fpWin; }
+      ok(/data-thopen="1"/.test(hm) && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hw + hw2);
+      box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); delete box.S.version;
+      ok(hd0 === '' && /data-thopen="1"/.test(hd1), 'reason: th_follows_dev_flag ' + hd0);
+      ok(ws.includes("    mac_only: '測試機目前只支援 Mac', no_receipt_gate:"), 'reason: th_mac_only_words'); box.navigator.languages = ['en-US']; ok(box.thErr('mac_only') === 'Test machines work only on a Mac for now', 'reason: th_mac_only_en'); box.navigator.languages = ['zh-TW'];
+      delete box.thDev; delete box.fpWin; }
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
     { const keysOf = (name) => { const m = ws.match(new RegExp('const ' + name + ' = \\{([\\s\\S]*?)\\n  \\};')); return m ? [...m[1].matchAll(/\b([a-z_]+): '/g)].map((x) => x[1]) : []; };
       const kw = keysOf('TH_WHY'), ke = keysOf('TH_ERR');
-      ok(kw.length === 7 && ke.length === 11, 'reason: th_zh_tables_moved ' + kw.length + ' ' + ke.length);
+      ok(kw.length === 7 && ke.length === 12, 'reason: th_zh_tables_moved ' + kw.length + ' ' + ke.length);
       for (const l of ['en', 'ja', 'ko']) { ok(kw.every((k) => box.TH_WHY_L[l] && box.TH_WHY_L[l][k]), 'reason: th_why_missing ' + l); ok(ke.every((k) => box.TH_ERR_L[l] && box.TH_ERR_L[l][k]), 'reason: th_err_missing ' + l); }
       box.navigator.languages = ['en-US'];
       ok(box.thWhy('port') === "This machine's ssh settings can't be understood" && box.thErr('not_a_mac') === "That machine isn't a Mac, so it can't run receipts yet", 'reason: th_why_err_not_english ' + box.thWhy('port'));
@@ -981,7 +985,12 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     { const all = G(cOk, aOk, fOk, tOk, true), w = mk('zh-TW', true), m = mk('zh-TW', false); w.S.guide = all; m.S.guide = all;
       const ha = all.projects[1].steps[0];
       ok(w.X.gState(ha) === 'later' && m.X.gState(ha) === 'bad' && w.X.guideCur(all) === null && m.X.guideCur(all).step.id === 'host_add', 'reason: guide_host_add_later_on_windows');
-      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && /data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300)); }
+      const hw = w.X.guideHtml(); ok(!/data-ggo="add_host"/.test(hw) && /data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_no_button_on_windows ' + hw.slice(0, 300));
+      // c2f0b 48f0342806:version 有 dev 欄就照它(Mac 一般用戶也藏;開發機 Windows 也看得到);aibd 說 host_add 做完就打勾(f163c b036cb0a N1)
+      m.S.version = { dev: false }; w.S.version = { dev: true };
+      ok(m.X.gState(ha) === 'later' && w.X.gState(ha) === 'bad', 'reason: guide_host_add_follows_dev_flag');
+      m.S.version = { os: 'macos' }; ok(m.X.gState(ha) === 'bad', 'reason: guide_host_add_old_aibd_falls_back');
+      w.S.version = { dev: false }; ok(w.X.gState(st('host_add', true, 'ok', 'add_host')) === 'ok', 'reason: guide_host_add_done_shows_done'); }
     const X = c.X;
     // 四語:每個步驟、鈕、原因短碼都有字
     const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
@@ -2279,6 +2288,7 @@ lateChecks.push((async () => {
   c.S.dg.d = { on: false, can_on: false, owner_check: false }; h = F.dgHtml(need); ok(h.includes('這台沒有本人確認,不能從網頁打開。') && !h.includes('data-dgon'), 'reason: dg_no_owner_check_says_so ' + h);
   c.S.dg.d = { on: true, source: 'page', can_off: true }; h = F.dgHtml({ mode: 'dgrs' }); ok(h.includes('這台已開「能改程式」。') && h.includes('data-dgoff="1"') && F.dgHtml({ mode: 'safe' }) === '', 'reason: dg_on_says_so_with_off ' + h);
   c.S.dg.d = { on: true, source: 'env', can_off: true }; ok(F.dgHtml({ mode: 'dgrs' }).includes('這台已開「能改程式」。') && !F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_env_on_no_off_button');
+  ok(F.dgHtml({ mode: 'dgrs' }).includes('這是用 AIB 的環境設定打開的,網頁關不掉。'), 'reason: dg_env_says_page_cannot_turn_off'); c.S.dg.d = { on: true, source: 'page', can_off: true }; ok(!F.dgHtml({ mode: 'dgrs' }).includes('網頁關不掉'), 'reason: dg_page_on_no_env_words');
   c.S.dg.d = { on: true, source: 'page', can_off: false }; ok(!F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_off_only_when_can_off');
   // 開走本人確認、只送 on;成功清掉開席紅字;關不走本人確認
   sent.length = 0; c.S.dg = { d: off }; c.S.add = { dgNeed: true, msg: '這台還沒開「能改程式」的開關', err: true };

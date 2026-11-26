@@ -319,7 +319,8 @@
   // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
   // ebab8 21:51(客戶 Windows 實用回報):測試機 = 收據用、只收 Mac 的開發功能;Windows 客戶當成「加主機」按了回 internal ⇒ Windows 整塊不出,指引的「加一台主機」標下一版
-  const thDev = () => !(typeof fpWin === 'function' && fpWin());
+  // c2f0b 48f0342806:GET version 多 dev(AIBD_DEV=1 才 true,預設 false)⇒ 有 dev 欄就照它(Mac 一般用戶也藏,ebab8 21:55);舊 aibd 沒這欄才退回只藏 Windows
+  const thDev = () => { const v = typeof S !== 'undefined' && S && S.version; return v && typeof v.dev === 'boolean' ? v.dev : !(typeof fpWin === 'function' && fpWin()); };
   const GUIDE_W = {
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
       tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
@@ -367,7 +368,7 @@
   function gState(s) {
     if (!s) return 'bad';
     if (s.why === 'next_version') return 'later';
-    if (s.id === 'host_add' && typeof thDev === 'function' && !thDev()) return 'later'; // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
+    if (s.id === 'host_add' && s.done !== true && typeof thDev === 'function' && !thDev()) return 'later'; // f163c b036cb0a N1:aibd 說做完就照打勾 // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
     if (s.why === 'locked' || !Object.prototype.hasOwnProperty.call(s, 'done')) return 'lock';
     return s.done === true ? 'ok' : s.done === null ? 'unsure' : 'bad';
   }
@@ -1197,7 +1198,7 @@
     aibd_own_key: '這台設定用的是 AIB 自己的鑰匙',
   };
   const TH_ERR = {
-    no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
+    mac_only: '測試機目前只支援 Mac', no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
     write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
     page_only: '只有這台 AIB 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
   };
@@ -1471,9 +1472,9 @@
     ko: {"reached_through_something_else": "점프 호스트를 거쳐야 해서 지원하지 않음", "config_has_match_or_include": "ssh 설정에 Match / Include가 있어 정확히 읽을 수 없어 지원하지 않음", "no_identity_file": "이 기기의 ssh 설정을 이해할 수 없음", "identity_file_not_absolute": "이 기기의 ssh 설정을 이해할 수 없음", "value_with_a_token": "이 기기의 ssh 설정을 이해할 수 없음", "port": "이 기기의 ssh 설정을 이해할 수 없음", "aibd_own_key": "이 설정은 AIB 자체 키를 사용합니다"},
   };
   const TH_ERR_L = {
-    en: {"no_receipt_gate": "That machine has no receipt gate yet; install it first, then add it", "not_a_mac": "That machine isn't a Mac, so it can't run receipts yet", "owner_login_failed": "Your own ssh can't reach that machine", "write_failed": "Couldn't write that machine's settings", "remove_failed": "Couldn't take it back: that machine's settings can't be changed", "owner_check_not_approved": "The owner check wasn't confirmed", "owner_check_unavailable": "This computer can't show the owner-check window right now", "page_only": "Only this computer's built-in AIB page can change test machines", "finger_denied": "The owner check was refused", "finger_expired": "The owner-check window timed out", "finger_timeout": "Timed out waiting for the owner check"},
-    ja: {"no_receipt_gate": "そのマシンにはまだレシートゲートがありません。先に入れてから追加してください", "not_a_mac": "そのマシンは Mac ではないため、まだレシートを回せません", "owner_login_failed": "あなた自身の ssh でそのマシンにつながりません", "write_failed": "そのマシンの設定に書き込めません", "remove_failed": "外せません:そのマシンの設定を変更できません", "owner_check_not_approved": "本人確認が通りませんでした", "owner_check_unavailable": "このパソコンは今、本人確認の画面を出せません", "page_only": "テスト機を変更できるのはこのパソコンの AIB 内蔵ページだけです", "finger_denied": "本人確認が拒否されました", "finger_expired": "本人確認の画面が時間切れになりました", "finger_timeout": "本人確認の待ち時間が切れました"},
-    ko: {"no_receipt_gate": "그 기기에는 아직 영수증 게이트가 없습니다. 먼저 설치한 뒤 추가하세요", "not_a_mac": "그 기기는 Mac이 아니어서 아직 영수증을 돌릴 수 없습니다", "owner_login_failed": "본인 ssh로 그 기기에 연결되지 않습니다", "write_failed": "그 기기의 설정에 쓸 수 없습니다", "remove_failed": "뺄 수 없습니다: 그 기기의 설정을 바꿀 수 없습니다", "owner_check_not_approved": "본인 확인이 되지 않았습니다", "owner_check_unavailable": "이 컴퓨터는 지금 본인 확인 창을 띄울 수 없습니다", "page_only": "테스트 기기는 이 컴퓨터의 AIB 내장 페이지에서만 바꿀 수 있습니다", "finger_denied": "본인 확인이 거부되었습니다", "finger_expired": "본인 확인 창 시간이 지났습니다", "finger_timeout": "본인 확인을 기다리다 시간이 지났습니다"},
+    en: {"mac_only": "Test machines work only on a Mac for now", "no_receipt_gate": "That machine has no receipt gate yet; install it first, then add it", "not_a_mac": "That machine isn't a Mac, so it can't run receipts yet", "owner_login_failed": "Your own ssh can't reach that machine", "write_failed": "Couldn't write that machine's settings", "remove_failed": "Couldn't take it back: that machine's settings can't be changed", "owner_check_not_approved": "The owner check wasn't confirmed", "owner_check_unavailable": "This computer can't show the owner-check window right now", "page_only": "Only this computer's built-in AIB page can change test machines", "finger_denied": "The owner check was refused", "finger_expired": "The owner-check window timed out", "finger_timeout": "Timed out waiting for the owner check"},
+    ja: {"mac_only": "テストマシンは今のところ Mac でのみ使えます", "no_receipt_gate": "そのマシンにはまだレシートゲートがありません。先に入れてから追加してください", "not_a_mac": "そのマシンは Mac ではないため、まだレシートを回せません", "owner_login_failed": "あなた自身の ssh でそのマシンにつながりません", "write_failed": "そのマシンの設定に書き込めません", "remove_failed": "外せません:そのマシンの設定を変更できません", "owner_check_not_approved": "本人確認が通りませんでした", "owner_check_unavailable": "このパソコンは今、本人確認の画面を出せません", "page_only": "テスト機を変更できるのはこのパソコンの AIB 内蔵ページだけです", "finger_denied": "本人確認が拒否されました", "finger_expired": "本人確認の画面が時間切れになりました", "finger_timeout": "本人確認の待ち時間が切れました"},
+    ko: {"mac_only": "테스트 기기는 지금은 Mac에서만 쓸 수 있습니다", "no_receipt_gate": "그 기기에는 아직 영수증 게이트가 없습니다. 먼저 설치한 뒤 추가하세요", "not_a_mac": "그 기기는 Mac이 아니어서 아직 영수증을 돌릴 수 없습니다", "owner_login_failed": "본인 ssh로 그 기기에 연결되지 않습니다", "write_failed": "그 기기의 설정에 쓸 수 없습니다", "remove_failed": "뺄 수 없습니다: 그 기기의 설정을 바꿀 수 없습니다", "owner_check_not_approved": "본인 확인이 되지 않았습니다", "owner_check_unavailable": "이 컴퓨터는 지금 본인 확인 창을 띄울 수 없습니다", "page_only": "테스트 기기는 이 컴퓨터의 AIB 내장 페이지에서만 바꿀 수 있습니다", "finger_denied": "본인 확인이 거부되었습니다", "finger_expired": "본인 확인 창 시간이 지났습니다", "finger_timeout": "본인 확인을 기다리다 시간이 지났습니다"},
   };
   const thL = () => (typeof askLang === 'function' ? askLang() : 'zh-TW');
   const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c]) || TH_WHY[c] || '';
@@ -6370,7 +6371,7 @@
     if (d.on === true) { // D6:開著照實寫;source=env(環境變數開的)頁面關不掉,不出關鈕
       if (A.mode !== 'dgrs' && !A.dgNeed) return msg;
       const off = d.can_off === true && d.source !== 'env' && hasAct(DG_SET) === true;
-      return `<div class="occ" role="status">這台已開「能改程式」。${off ? `<button type="button" class="k" data-dgoff="1" ${D.busy ? 'disabled' : ''}>關掉</button>` : ''}</div>${msg}`;
+      return `<div class="occ" role="status">這台已開「能改程式」。${d.source === 'env' ? '這是用 AIB 的環境設定打開的,網頁關不掉。' : ''}${off ? `<button type="button" class="k" data-dgoff="1" ${D.busy ? 'disabled' : ''}>關掉</button>` : ''}</div>${msg}`;
     }
     if (!A.dgNeed) return msg;
     if (d.can_on === true && hasAct(DG_SET) === true) { // D7:紅字後接按這裡打開

@@ -32,3 +32,7 @@ k 'A.dgNeed = rgCode(e) === '\''dgrs_needs_switch'\'';' 'A.dgNeed = false;'
 k 'D.msg = { bad: true, text: c === '\''owner_check_unavailable'\'' ? DG_NOOC :' 'D.msg = { bad: true, text: false ? DG_NOOC :'
 # DG13 測試機 internal 仍只寫 internal
 k 'msg: thErr(c) || (c === '\''internal'\'' && m && m !== c ? m : errText(e)), bad: true };' 'msg: thErr(c) || errText(e), bad: true };'
+# DG14 環境設定開的不說網頁關不掉
+k '${d.source === '\''env'\'' ? '\''這是用 AIB 的環境設定打開的,網頁關不掉。'\'' : '\'''\''}' '${'\'''\''}'
+# DG15 Windows 測試機回 mac_only 仍只寫碼
+k '    en: {"mac_only": "Test machines work only on a Mac for now", ' '    en: {'
