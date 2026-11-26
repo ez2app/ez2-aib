@@ -1064,7 +1064,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       ok(c.sent.length === 1 && c.sent[0][0] === 'guide_done' && c.sent[0][1] === undefined && c.S.gTourLine === true && c.S.gTourHere === true && c.S.guide.panel_lit === true, 'reason: guide_tour_once ' + JSON.stringify(c.sent));
       const c2 = mk(); c2.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel')); c2.fail = Object.assign(new Error('x'), { status: 409 });
       await c2.X.guideOnPanel(); ok(c2.sent.length === 1 && !c2.S.gMsg && c2.loads === 1, 'reason: guide_tour_409_quiet');
-      const c3 = mk(); c3.acts = []; c3.S.guide = c2.S.guide; await c3.X.guideOnPanel(); ok(c3.sent.length === 0, 'reason: guide_tour_needs_act');
+      const c3 = mk(); c3.acts = []; c3.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel')); await c3.X.guideOnPanel(); ok(c3.sent.length === 0 && c3.S.gTourSent !== true, 'reason: guide_tour_needs_act'); // 90856 GD18 假咬:原本借 c2 的 guide(guideLoad 後已是 null)⇒ 第一行就 return,這條永遠綠;改用自己的第 6 步
       const c4 = mk(); c4.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel')); await c4.X.guideOnPanel(); ok(c4.sent.length === 0, 'reason: guide_tour_only_on_step_6');
     })().catch((e) => { console.error(e); process.exitCode = 1; });
     // 略過:只存本機偏好、可以再看一次
