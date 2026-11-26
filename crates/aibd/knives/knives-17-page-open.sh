@@ -33,9 +33,9 @@ pi '            let opens_safe = mode == Some("safe")' \
 po '    let req: PageOpen = match serde_json::from_value(body) {' \
    '    let req: PageOpen = match serde_json::from_value({ let mut b = body; for k in ["cwd", "cabin", "argv"] { if let Some(o) = b.as_object_mut() { o.remove(k); } } b }) { // knife' \
    a_page_cannot_open_what_it_may_not
-# PO4 a brand aibd cannot start is not refused before a seat is written
+# PO4 a brand aibd cannot start (agy; grok starts since 08de5 11-25) is not refused before a seat is written
 po '    if let Err(e) = check_open(&req) {' \
-   '    if let (false, Err(e)) = (req.provider == "grok", check_open(&req)) { // knife' \
+   '    if let (false, Err(e)) = (req.provider == "agy", check_open(&req)) { // knife' \
    a_page_cannot_open_what_it_may_not
 # PO5 the page opens with a key outside the key rule
 po '    if !key_ok {' \
