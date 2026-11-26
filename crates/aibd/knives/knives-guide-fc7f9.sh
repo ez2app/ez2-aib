@@ -141,3 +141,7 @@ k 'const tr = (R.ring || R.to).getBoundingClientRect()' 'const tr = R.to.getBoun
 k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.drafts[S.mode] = i.value;'
 # GD63 組字中按 Esc 也關指引(連組字一起丟)
 k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
+# GD56 終端機確認通道也換成 Windows Hello 字(f163c 1a7f49de N1)
+k 'return (P.chan === '\''terminal-unverified'\'' ? (t) => t : pairSay)(`' 'return (pairSay)(`'
+# GD57 等確認狀態沒記 channel
+k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: '\'''\'' }'
