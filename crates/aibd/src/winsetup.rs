@@ -87,7 +87,7 @@ const HELLO_LATER_HOW: &str =
 pub fn quit_how(then: &str) -> String {
     format!(
         "to update it: 1. open Task Manager (Ctrl+Shift+Esc) > Details, select aibd.exe, End task \
-         (seats that are running stop too); 2. {then}"
+         (AI seats that are open stop too; your data stays); 2. {then}"
     )
 }
 /// How long the setup waits for the new aibd to answer.
@@ -756,7 +756,10 @@ mod tests {
         // value undoes at sign-in
         let e = r.unwrap_err();
         assert!(
-            e.contains("Task Manager") && e.contains("aibd.exe") && e.contains("double-click"),
+            e.contains("Task Manager")
+                && e.contains("aibd.exe")
+                && e.contains("double-click")
+                && e.contains("your data stays"),
             "reason: no_way_out {e}"
         );
         assert!(!e.contains("sign"), "reason: sign_out_said {e}");
