@@ -1039,7 +1039,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         vm.runInContext('this.pairWaitSay = pairWaitSay; this.W0 = PAIR_WAIT_TERM;', box); // 這段已在上面 PAIR_WIN_SAY 那段一起載入
         const W0 = '<div class="pairbox">' + box.W0 + '<div class="short">123456</div></div>', pick = (chan, win) => { box.win = win; return box.pairWaitSay(chan)(W0); };
         ok(pick('terminal-unverified', true) === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('', true)) && /Windows Hello/.test(pick(undefined, true)), 'reason: pair_wait_terminal_channel_keeps_y');
-        const mac = pick('', false); ok(/<h2>在 Touch ID 視窗確認<\/h2><p>Touch ID 視窗會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        const mac = pick('', false); ok(/<h2>在系統確認視窗確認<\/h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
         ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
       // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀

@@ -151,3 +151,5 @@ k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) 
 k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
 # GD66 imeBusy 不認 keyCode 229(組字中 Esc 會關指引;f163c aa7164f7ed N1 行為測試)
 k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
+# GD67 Mac 等確認框並列 Touch ID 與登入密碼(3e53b 203a4beb32 L1)
+k '會寫同一組碼,一樣才確認;不一樣按取消。</p>'\'';' '會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。</p>'\'';'
