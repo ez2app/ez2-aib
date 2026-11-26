@@ -14,10 +14,11 @@
 //! - Asking ([`KeyPresence::ask`]): sign the binding (pair id, short code, who it goes to, the
 //!   page's nonce digest) with the reason [`reason`] composed here, then verify the signature
 //!   with the stored public key. Only then is the pairing confirmed.
-//! - The window says what and who (5d33a §6-3): the short code, built-in page / your folder's
-//!   page, who asked (the terminal's `aibd ctl web`, or the page re-confirming an action), and
-//!   「本機鑰(未登記)」 (§6-1: Presence level until the T135-b registry, then HardwareSigned).
-//!   Nothing in it comes from a request.
+//! - The window says what and who (5d33a §6-3): first whether you started it and to cancel if not,
+//!   then the code your page must also show (3e53b TRIAGE-nohello-confirmed r5), built-in page /
+//!   your folder's page, who asked (a terminal or a program, or the page re-confirming an action),
+//!   and [`OWNER_CHECK_WORD`] (§6-1: 「本機鑰(未登記)」 on macOS until the T135-b registry; the
+//!   Hello gesture on Windows). Nothing in it comes from a request.
 //! - Default: off (`AIBD_PAIRING=touchid` turns it on) until 0eed7 has pressed it on a real Mac
 //!   with aibd under launchd (5d33a L1).
 
@@ -48,14 +49,34 @@ pub fn reason(who: &Who, short_code: &str, user_page: bool) -> String {
     } else {
         "內建頁"
     };
+    // 3e53b TRIAGE-nohello-confirmed r5 c: the source only as aibd knows it — a code made by a
+    // terminal or a program (`POST /api/v1/pair/codes` with the start-up token), or the page
     match who {
         Who::Terminal => format!(
-            "aibd 配對網頁:短碼 {short_code};給 {to};由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            "aibd 配對網頁:短碼 {short_code};給 {to};由終端機 / 程式要求。{OWNER_CHECK_WORD}"
         ),
         // a carried pairing has no short code (it was made before the update)
         Who::Reconfirm { act, until } => format!(
-            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to}。本機鑰(未登記)"
+            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}"
         ),
+    }
+}
+
+/// What confirms here, as the window's last words (§6-1): the stored key on macOS; on Windows
+/// the Hello gesture, no key (B2, Andy 11-26).
+#[cfg(not(windows))]
+pub const OWNER_CHECK_WORD: &str = "本機鑰(未登記)";
+/// What confirms here, as the window's last words: on Windows the Hello gesture, no key (B2).
+#[cfg(windows)]
+pub const OWNER_CHECK_WORD: &str = "Windows Hello 確認(不留金鑰)";
+
+/// The window's first line (3e53b TRIAGE-nohello-confirmed r5 a, 11-26: the customer typed the
+/// PIN twice into windows a remote script raised): ask whether this person started it, and
+/// say to cancel when not.
+pub fn ask_first(who: &Who) -> &'static str {
+    match who {
+        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
+        Who::Reconfirm { .. } => "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
     }
 }
 
@@ -89,14 +110,17 @@ pub fn object(who: &Who, user_page: bool) -> String {
     }
 }
 
-/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2):
-/// what a yes does ([`plain`], the same words the countdown and the page card show), for whom
-/// ([`object`]), the code the countdown beside it shows and until when, then [`reason`] as it
-/// always said (Andy 11-21 01:42 every window counts down; 519d0 05:49). The words are only
-/// shown; the key signs [`binding`], not these.
+/// The whole pairing window, four lines as an approval's (ebab8 11-23 05:47; ORDER-touchhud 2),
+/// reordered by 3e53b TRIAGE-nohello-confirmed r5 (11-26) so the stop rule comes first and the
+/// code to compare sits where Hello does not cut it: [`ask_first`] (did you start this? if not,
+/// cancel), the code the page and the countdown show and until when (differs ⇒ cancel), what a
+/// yes does ([`plain`], the same words the countdown and the page card show) and for whom
+/// ([`object`]), then [`reason`] with the true source. The words are only shown; the key signs
+/// [`binding`], not these.
 pub fn window(who: &Who, short_code: &str, user_page: bool, until: &str, code: &str) -> String {
     format!(
-        "{}\n對象:{}\n對照碼 {code} · {until},過了這張就作廢\n{}",
+        "{}\n你的頁面也要顯示 {code},不一樣就按取消 · {until},過了這張就作廢\n{}(對象:{})\n{}",
+        ask_first(who),
         plain(who, user_page),
         object(who, user_page),
         reason(who, short_code, user_page)
@@ -913,7 +937,7 @@ pub mod tests {
         let r = reason(&Who::Terminal, "123456", false);
         assert_eq!(
             r,
-            "aibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            format!("aibd 配對網頁:短碼 123456;給 內建頁;由終端機 / 程式要求。{OWNER_CHECK_WORD}")
         );
         let r = reason(
             &Who::Reconfirm {
@@ -925,12 +949,17 @@ pub mod tests {
         );
         assert_eq!(
             r,
-            "aibd 網頁重新確認:升級這頁到本輪完整權限,到 23:59;起因:開席;換版前延續的配對,給 你資料夾的頁(只能打給 safe 席)。本機鑰(未登記)"
+            format!("aibd 網頁重新確認:升級這頁到本輪完整權限,到 23:59;起因:開席;換版前延續的配對,給 你資料夾的頁(只能打給 safe 席);由瀏覽器頁要求。{OWNER_CHECK_WORD}")
         );
+        #[cfg(windows)]
+        assert!(!r.contains("本機鑰"), "reason: windows_has_no_key");
     }
 
+    /// 3e53b TRIAGE-nohello-confirmed r5 (11-26: the customer typed the PIN into windows a
+    /// remote script raised): the window first asks whether this person started it and says to
+    /// cancel when not, then asks to compare the code with the page's, then what a yes does.
     #[test]
-    fn a_pairing_window_says_it_plainly_first_and_then_what_it_always_said() {
+    fn a_pairing_window_asks_first_whether_you_started_it() {
         let w = window(
             &Who::Terminal,
             "123456",
@@ -940,7 +969,7 @@ pub mod tests {
         );
         assert_eq!(
             w,
-            "讓這個瀏覽器分頁配對成 AIB 的內建頁\n對象:這個瀏覽器分頁 → 內建頁\n對照碼 123456 · 請在 01:23:44 前按,過了這張就作廢\naibd 配對網頁:短碼 123456;給 內建頁;由 終端機 aibd ctl web 叫出。本機鑰(未登記)"
+            format!("你剛在 AIB 頁面按了配對嗎?沒有就按取消\n你的頁面也要顯示 123456,不一樣就按取消 · 請在 01:23:44 前按,過了這張就作廢\n讓這個瀏覽器分頁配對成 AIB 的內建頁(對象:這個瀏覽器分頁 → 內建頁)\naibd 配對網頁:短碼 123456;給 內建頁;由終端機 / 程式要求。{OWNER_CHECK_WORD}")
         );
         assert_eq!(w.lines().count(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
@@ -956,13 +985,22 @@ pub mod tests {
         let l: Vec<&str> = w.lines().collect();
         assert_eq!(l.len(), WINDOW_LINES, "reason: four_lines");
         assert_eq!(
-            l[0], "讓這一頁繼續用完整權限到 23:59(起因:開席)",
-            "reason: plain_first"
+            l[0], "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
+            "reason: ask_first"
         );
-        assert_eq!(l[0], plain(&who, true), "reason: same_words_as_countdown");
-        assert_eq!(l[1], "對象:這一頁 → 你資料夾的頁(只能打給 safe 席)");
-        assert_eq!(l[2], "對照碼 AB12 · 請在 120 秒內按,過了這張就作廢");
-        assert_eq!(l[3], reason(&who, "", true), "reason: original_kept");
+        assert_eq!(
+            l[1],
+            "你的頁面也要顯示 AB12,不一樣就按取消 · 請在 120 秒內按,過了這張就作廢"
+        );
+        assert!(
+            l[2].starts_with(&plain(&who, true)),
+            "reason: same_words_as_countdown"
+        );
+        assert!(l[2].ends_with("(對象:這一頁 → 你資料夾的頁(只能打給 safe 席))"));
+        assert_eq!(l[3], reason(&who, "", true), "reason: reason_last");
+        for w in [&Who::Terminal, &who] {
+            assert!(ask_first(w).ends_with("沒有就按取消"), "reason: stop_rule");
+        }
     }
 
     #[cfg(unix)]

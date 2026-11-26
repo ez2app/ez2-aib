@@ -20,6 +20,23 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `windows-sys` `Win32_Globalization`) with the pairing code kept, and after a failure waits for
   Enter so the reason can be read; a terminal is unchanged. Knives SC1–SC12, WL1.
 
+- Windows Hello window belongs to a window of aibd's own (ebab8 11-26 11:56; Microsoft: desktop programs use
+  `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`): aibd never has the foreground window, so every ask
+  went without one. Each ask now raises a small always-on-top window (「AIB 正在請你確認本人 · 請看 Windows 安全性視窗」) on
+  a thread of its own, asks for that window, and closes it when Windows answers; when it cannot be made the ask goes
+  as before; a window made after the 5 s wait gave up is closed by its own thread, never waited on (3e53b REVIEW-pack2
+  L2). Knives FW1–FW3 (`crates/aib-sys/knives/knives-hello-forwindow-c2f0b.sh`, Windows). Front-of-screen on the
+  laptop: W0, owner present.
+- Owner check audit (3e53b READ-spinit-owner-audit-3e53b-1126; the laptop's session policy was approved and written with
+  nothing in the event journal): every answer to an owner window is journaled as `owner.answer` {ticket, operation,
+  resource (first 80 chars, never the params), outcome approved / refused:<code> / expired, secs, by}, and an approved
+  ticket used up by the very act it was approved for as `owner.used` {ticket, operation, by}, once, where it is used up
+  (3e53b REVIEW-pack2 L1: not after any act that names a ticket). Knives OA1–OA8 (`crates/aibd/knives/knives-owner-audit-c2f0b.sh`); a list ticket taken is journaled the same way.
+- Pairing window words (3e53b TRIAGE-nohello-confirmed-3e53b-1126 r5; on the laptop the customer typed the PIN
+  into two Hello windows a remote script had raised): the first line asks 「你剛在 AIB 頁面按了配對嗎?沒有就按取消」,
+  the second asks to compare the code with your page (「不一樣就按取消」), then what a yes does and for whom, then the
+  true source (「由終端機 / 程式要求」 / 「由瀏覽器頁要求」); Windows no longer says 「本機鑰」 (B2 has no key).
+  Knives W1–W4 (`crates/aibd/knives/knives-pairwords-c2f0b.sh`); TK12 re-aimed.
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
   restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and

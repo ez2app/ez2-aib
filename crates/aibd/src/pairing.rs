@@ -1506,7 +1506,13 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_words"
         );
-        let (top, rest) = (lines[0], lines[3]);
+        // the first line is exactly aibd's question, nothing from the request before it
+        assert_eq!(
+            lines[0],
+            crate::touch::ask_first(&Who::Terminal),
+            "reason: window_first_line"
+        );
+        let (top, rest) = (lines[2], lines[3]);
         assert!(
             top.starts_with(&crate::touch::plain(&Who::Terminal, false)),
             "reason: window_words {top}"
@@ -1865,7 +1871,7 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_four_lines"
         );
-        let (top, w) = (lines[0], lines[3]);
+        let (top, w) = (lines[2], lines[3]);
         assert!(
             top.starts_with("讓這一頁繼續用完整權限到 ") && top.contains("(起因:開席)"),
             "reason: window_top {top}"
@@ -1875,7 +1881,10 @@ mod tests {
             "reason: window_hides_full_upgrade {w}"
         );
         assert!(
-            w.ends_with(";起因:開席;換版前延續的配對,給 內建頁。本機鑰(未登記)"),
+            w.ends_with(&format!(
+                ";起因:開席;換版前延續的配對,給 內建頁;由瀏覽器頁要求。{}",
+                crate::touch::OWNER_CHECK_WORD
+            )),
             "{w}"
         );
         let b = p.access(&cred).unwrap();
@@ -1992,10 +2001,10 @@ mod tests {
             crate::touch::WINDOW_LINES,
             "reason: window_four_lines"
         );
-        let (top, rest) = (lines[0], lines[3]);
+        let (top, rest) = (lines[2], lines[3]);
         assert!(
             top.starts_with("讓這個瀏覽器分頁配對成 AIB 的")
-                && lines[2].ends_with(",過了這張就作廢"),
+                && lines[1].ends_with(",過了這張就作廢"),
             "reason: window_top {top}"
         );
         let code: String = rest
@@ -2003,7 +2012,7 @@ mod tests {
             .map(|(_, r)| r.chars().take_while(char::is_ascii_digit).collect())
             .unwrap_or_default();
         assert!(
-            !code.is_empty() && lines[2].starts_with(&format!("對照碼 {code} · ")),
+            !code.is_empty() && lines[1].starts_with(&format!("你的頁面也要顯示 {code},")),
             "reason: window_code {said}"
         );
         advance(&o, TOUCH_COOL);
