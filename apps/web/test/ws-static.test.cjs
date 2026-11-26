@@ -888,11 +888,24 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ctx.S.personaList = [['p9', '別的']]; ok(ctx.apFirstDefaults({ node: '' }) === false, 'reason: first_open_defaults_without_builtin');
     ctx.personas = keep; ctx.S.personaList = []; }
   ok(/if \(x\.closest\('\[data-add\],\[data-startclaude\]'\)\) \{\n      S\.add = \{ provider: '', mode: 'safe', persona: '', role: '', brain: '', key: idem\(\), autoGo: !!x\.closest\('\[data-startclaude\]'\) \};/.test(ws), 'reason: start_claude_not_wired');
-  ok(/\{ const A = S\.add; if \(A && apFirstDefaults\(A\)\) render\(\); if \(A && A\.autoGo && A\.plan && A\.persona && !A\.busy\) \{ A\.autoGo = false; doAdd\(\); \} \}/.test(ws), 'reason: start_claude_not_auto_open');
+  ok(/if \(A && A\.autoGo && A\.plan && A\.persona && !A\.busy && A\.provider === 'claude'\) \{ A\.autoGo = false; doAdd\(\); \} \}/.test(ws) && /\{ const A = S\.add; if \(A && apFirstDefaults\(A\)\) render\(\);/.test(ws), 'reason: start_claude_not_auto_open');
   ok(/<span class="none">沒有在跑的 2\.0 席<\/span><button type="button" class="k g startc" data-startclaude="1"[^>]*>開始用 Claude<\/button>/.test(ws), 'reason: start_claude_button_missing');
   // 只有一席在跑、沒 @ ⇒ 交給那一席;空狀態照實說
-  ok(/let T = targets\(text\);\n    if \(!T\.length && !\(targets\.amb \|\| \[\]\)\.length && soleSeat\(\)\) T = \[soleSeat\(\)\];/.test(ws), 'reason: sole_seat_not_default_target');
-  ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isLegacy\(s\) && !isArch\(s\)\); return L\.length === 1 \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
+  ok(/let T = targets\(text\);\n    \{ const one = soleTarget\(text, T\); if \(one\) T = \[one\]; \}/.test(ws), 'reason: sole_seat_not_default_target');
+  // 3e53b L1:實跑 soleTarget —— 沒 @ ⇒ 交給唯一那席;@ 對不上 / 同名歧義 / 兩席 ⇒ 不送
+  { const a = ws.indexOf('  const soleSeat = () =>'), b = ws.indexOf('  async function sendShared(text) {');
+    const one = { seat_id: 's1', state: 'active' }, two = { seat_id: 's2', state: 'active' };
+    const sb = { L: [one], present: () => sb.L, isLegacy: (x) => !!x.legacy, isArch: (x) => x.state === 'archived', targets: { amb: [] } }; vm.createContext(sb);
+    vm.runInContext(ws.slice(a, b) + '\nthis.soleTarget = soleTarget;', sb);
+    ok(sb.soleTarget('幫我查一下', []) === one, 'reason: sole_target_plain_not_sent');
+    ok(sb.soleTarget('@不存在 幫我查', []) === null && sb.soleTarget('@封存的席 你好', []) === null, 'reason: sole_target_wrong_at_still_sent');
+    sb.targets.amb = ['同名']; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_ambiguous_sent'); sb.targets.amb = [];
+    sb.L = [one, two]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_two_seats_sent');
+    sb.L = [one, { seat_id: 's3', state: 'archived' }]; ok(sb.soleTarget('你好', []) === one, 'reason: sole_target_archived_counted');
+    ok(sb.soleTarget('你好', [two]) === null, 'reason: sole_target_overrides_at');
+    sb.L = [one, { seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_ignores_1x_seat');
+    sb.L = [{ seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_picks_1x_seat'); }
+  ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isArch\(s\)\); return L\.length === 1 && !isLegacy\(L\[0\]\) \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
   ctx.apPick(A, 'design:0');
   ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
   ctx.apRecentSave('tech:0'); ctx.apRecentSave('writing:1'); ctx.apRecentSave('tech:0'); ctx.apRecentSave('custom:0'); ctx.apRecentSave('life:0'); ctx.apRecentSave('learn:0');

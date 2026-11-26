@@ -57,4 +57,10 @@ k '{ A.autoGo = false; doAdd(); }' '{ A.autoGo = false; }'
 # CW25 空狀態沒有開始用 Claude 鈕
 k '<button type="button" class="k g startc" data-startclaude="1"' '<button type="button" class="k g startc" data-startclaudeX="1"'
 # CW26 只有一席時沒 @ 仍送不出
-k 'if (!T.length && !(targets.amb || []).length && soleSeat()) T = [soleSeat()];' 'if (false) T = [soleSeat()];'
+k '{ const one = soleTarget(text, T); if (one) T = [one]; }' '{ const one = null; if (one) T = [one]; }'
+# CW27 打了 @ 但對不上也送給唯一那席(3e53b 5a8d46f5eb L1)
+k '&& !String(text).includes('\''@'\'') ? soleSeat() : null);' '? soleSeat() : null);'
+# CW28 活著的 1.x 席不算一席(f163c 5a8d46f5eb L1)
+k 'const L = present().filter((s) => !isArch(s)); return L.length === 1 && !isLegacy(L[0])' 'const L = present().filter((s) => !isLegacy(s) && !isArch(s)); return L.length === 1 && !isLegacy(L[0])'
+# CW29 Claude 開不了時開始用 Claude 退到別家(f163c N1)
+k '&& !A.busy && A.provider === '\''claude'\'') {' '&& !A.busy) {'
