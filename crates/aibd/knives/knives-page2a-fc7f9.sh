@@ -94,7 +94,7 @@ k '    if (card && !chg.length) { R.msg = { text: '\''沒有改動,不用送'\''
 # PGAN3 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '    if (card && !R.review) { R.review = true; R.msg = null; return render(); }' ' '
 # PGAN4 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
-k '<div class="apn"><b>送出前看一次</b>:指紋窗只列段名與字數,內容以這裡為準</div>' ''
+k '<div class="apn"><b>送出前看一次</b>:${(typeof fpSay === '\''function'\'' ? fpSay : (t) => t)('\''指紋窗只列段名與字數'\'')},內容以這裡為準</div>' ''
 # PGAN5 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)
 k '.replace(new RegExp(AIB_UNSEEN, '\''gu'\''), (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\''' '.replace(/[\u00ad]/g, (c) => c === '\''\u3000'\'' ? c : '\''⟦U+'\'''
 # PGAN6 (08de5 A1 + f163c REVIEW-page2r10 L1/L2:人格不送 name、只送改的段、送前看差異)

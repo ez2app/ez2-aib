@@ -20,7 +20,7 @@ new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
 // dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'movewait', 'movemsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
+const MARK_ONLY = new Set(['gstep', 'gproj', 'pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'movewait', 'movemsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
@@ -69,6 +69,8 @@ for (const t of acts) {
   if (/^seat_perm_(log|revoke)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('08de5 7b perm_apply.rs(0742adfab8)') && ws.includes("if (hasAct('seat_perm_log') !== true) return") && ws.includes("const canRv = hasAct('seat_perm_revoke') === true;"), 'branch-only act is marked: ' + t); continue; }
   // 6770f A8 merge_find / preview / run / log / undo(IFACE-merge r1,預定、還沒寫);頁面看 version.acts 才呼叫。合進來後拿掉這行
   if (/^merge_(find|preview|run|log|undo)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('6770f IFACE-merge r0 §1') && ws.includes("if (hasAct('merge_find') !== true) return mgFind(kind);"), 'branch-only act is marked: ' + t); continue; }
+  // 6770f IFACE-guide r3b 才有 guide_done(新用戶指引第 6 步);頁面看 version.acts 才呼叫。合進來後拿掉這行
+  if (t === 'guide_done' && !rust.includes('"' + t + '"')) { ok(ws.includes('6770f IFACE-guide r3b guide_done') && ws.includes("if (S.gTourSent || hasAct('guide_done') !== true) return;"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -386,6 +388,52 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   }
   box.S.version = { os: 'macos' }; ok(W('開之前要按一次指紋') === '開之前要按一次指紋', 'reason: fp_say_changed_mac');
   box.S.version = null; box.S.thermal = { os: 'windows' }; ok(W('按指紋') === '用 Windows Hello 確認', 'reason: fp_say_no_thermal_fallback');
+  // ebab8 13:3x 第三包:靜態畫面的本人確認字也跟平台走(LIST-fingerword 36 處;雜湊 / 主機金鑰的「指紋」不算)
+  { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)(";
+    const PH = ['設定或改要按一次本人指紋。', '未經指紋的開啟', '打開要 Andy 在這台按指紋', '指紋窗只列段名與字數', '要按這台的指紋', '② 存進這台(按指紋)', '按這台的指紋,把這一席升成受信任 12 小時', '不用指紋;搬回後舊席收信要用 1.x 指令重開', '按指紋搬', '把一個舊式席的信改送到這一席(要按這台的指紋)', '每台按一次指紋', '逐台按指紋', '按指紋', '請在這台按指紋;按完再點一次', '要先按指紋確認是你本人,這版 AIB 還沒接上指紋;這張卡留著,接好再按'];
+    const miss = PH.filter((p) => !ws.includes(G + "'" + p + "')")); ok(!miss.length, 'reason: fp_win_static_wrapped ' + miss.join(' | '));
+    ok(PH.every((p) => !W(p).includes('指紋')), 'reason: fp_win_static_words ' + PH.map(W).filter((x) => x.includes('指紋')).join(' | '));
+    ok(ws.includes('const thErr = (c) => ' + G + '(') && ws.includes(G + "DRV_ERR[rs] || '') || errText(e)") && ws.includes('${esc(' + G + 'C.actMsg))}') && ws.includes(G + 'REC[k])} <i>') && ws.includes('${esc(' + G + 'REC[k]))}</b>'), 'reason: fp_win_maps_wrapped');
+    ok(ws.includes("return { text: (typeof fpWin === 'function' && fpWin()) ? '這台用 Windows Hello 確認是你本人,不用密語'") && ws.includes("${(typeof fpWin === 'function' && fpWin()) ? '請在這台電腦跳出的 <b>Windows Hello</b>"), 'reason: fp_win_pw_fpc_branch'); }
+  ok(W('主機金鑰指紋不對,這台可能被換過') === '主機金鑰指紋不對,這台可能被換過' && W('按指紋;主機金鑰指紋 ab') === '用 Windows Hello 確認;主機金鑰指紋 ab', 'reason: fp_say_keeps_hostkey_hash ' + W('按指紋;主機金鑰指紋 ab'));
+  { const G = "(typeof fpSay === 'function' ? fpSay : (t) => t)("; const miss = ["S.hint = " + G + "msg)", "return " + G + "TICK_WHY[k]", "const tickOkWhy = (t) => " + G, "return " + G + "RCP_WHY[rs]", "return " + G + "T[rs] || errText(e))", "return " + G + "TRUST_WHY[rs]", "return " + G + "MOVE_WHY[rs]", "'沒有交回:' + " + G + "SB_WHY[k] || errText(e))", "G.msg = " + G + "GHTOK_WHY[rs]", "S.pushOff = " + G + "PUSH_WHY[rs])", "? " + G + "GHTOK_WHY[rs])", "S.prOff = " + G + "PR_WHY[rs])", "const ppWhy = (e) => " + G + "PP_WHY[", "const netWhy = (e) => " + G + "NET_WHY[", "return " + G + "HS_WHY[c] || REPO_WHY[c]", "return " + G + "PT_WHY[c] || REPO_WHY[c]", ": gateWhy(e) ? " + G + "gateWhy(e))", '<div class="apn apfn">${' + G + '`¹ '].filter((x) => !ws.includes(x)); ok(!miss.length, 'reason: fp_win_why_wrapped ' + miss.join(' | ')); }
+  // ebab8 13:4x 總刀:畫面上任何字面「指紋」都要經 fpSay;例外只有下面三種(新加的字不在表上 ⇒ 紅,要先分類)
+  { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
+    const SELF = ['FP_WIN_SAY', 'fpSay']; // 換字表本身
+    const KEEP = [['FP_WHAT', '機器與金鑰指紋'], ['pvDialog', '預覽的指紋不對'], ['pvDialog', '這一份的指紋(sha256'], ['hsRow', '驗證窗列出指紋、真的 IP'], ['upConsent', '清單指紋'], ['hsLine', '指紋 '], // 雜湊 / 主機金鑰,不是本人確認
+      ['OWNER_WHY', 'Touch ID 現在讀不到'], ['pwText', '這台用系統本人驗證(指紋或登入密碼)'], ['fpcHtml', '跳出的<b>系統視窗</b>按指紋'], // Mac 分支
+      ['OWNER_PIN_HOW', '不用指紋或臉部辨識的硬體'], ['OC_W', '不需要指紋或臉部辨識的硬體'], ['OC_W', '指紋や顔認証']]; // Windows 說明「不需要指紋硬體」
+    const COND = [['repoSec', "A.mode === 'work' ? '開的時候不用按指紋"]]; // 包在 fpSay(條件式) 裡,最近的引號前不是 fpSay(:這裡核整句真的在 fpSay( 裡
+    COND.forEach(([o, t]) => ok(ws.includes("(typeof fpSay === 'function' ? fpSay : (t) => t)(" + t), 'reason: fp_win_cond_wrapped ' + o));
+    const bad = []; let owner = '';
+    ws.split('\n').forEach((l, i) => { const m = /^  (?:const|let|function|async function) ([A-Za-z_$][\w$]*)/.exec(l); if (m) owner = m[1];
+      if (/^\s*\/\//.test(l)) return; const ci = l.search(/\s\/\/\s/);
+      for (let j = l.indexOf('指紋'); j >= 0; j = l.indexOf('指紋', j + 1)) { if (ci >= 0 && j > ci) break;
+        let q = j - 1; while (q >= 0 && l[q] !== "'" && l[q] !== '`') q--; const pre = l.slice(0, Math.max(q, 0));
+        if (q >= 0 && /fpSay : \(t\) => t\)\($/.test(pre)) continue;
+        if (SINK.includes(owner) || SELF.includes(owner)) continue;
+        if (KEEP.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 30), j + 30).includes(t))) continue;
+        if (COND.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 80), j + 60).includes(t.slice(t.indexOf("'") + 1)))) continue;
+        bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
+    ok(!bad.length, 'reason: fp_win_every_shown_word ' + bad.join(' | '));
+    // 3e53b r2 / f163c 7e874c13 N1:SINK 表整表放行 ⇒ 再核每個表的每個用處:同句已在 fpSay( 裡、點名的固定欄位值不含指紋、只拿來判斷有沒有這個鍵、或在 errText0 / gateWhy 裡(呼叫端已包)
+    // 3e53b r3 / f163c 36317e8b N1:要真的還在 fpSay( 的括號裡(fpSay(a) + T.x 不算)
+    const inG = (pre) => { const K = 'fpSay : (t) => t)('; for (let i = pre.indexOf(K); i >= 0; i = pre.indexOf(K, i + 1)) { let d = 0, open = true; for (const ch of pre.slice(i + K.length)) { if (ch === '(') d++; else if (ch === ')' && --d < 0) { open = false; break; } } if (open) return true; } return false; };
+    const use = []; let own = '';
+    const lines = ws.split('\n');
+    SINK.filter((n) => /^[A-Z]/.test(n)).forEach((n) => { const d = ws.indexOf('  const ' + n + ' = '), e = ws.indexOf('\n  const ', d + 5), def = ws.slice(d, e); own = '';
+      lines.forEach((l, i) => { const m0 = /^  (?:const|let|function|async function) ([A-Za-z_$][\w$]*)/.exec(l); if (m0) own = m0[1];
+        if (/^\s*\/\//.test(l) || l.startsWith('  const ' + n + ' = ')) return;
+        const re = new RegExp('\\b' + n + '\\b(?:\\.(\\w+)|\\[[^\\]]*\\](\\s*\\?)?)?', 'g'); let m;
+        while ((m = re.exec(l))) { const pre = l.slice(0, m.index);
+          if (inG(pre) || own === 'errText0') continue;
+          if (/pushWhy\($/.test(pre)) continue; // 表當參數交給 pushWhy,它回傳處自己包(fp_win_why_wrapped 核)
+          if (m[1]) { const v = new RegExp('\\b' + m[1] + ":\\s*(['`])((?:(?!\\1).)*)\\1").exec(def); if (v && !v[2].includes('指紋')) continue; }
+          if (m[2] || /filter\(\(k\) => REC\[k\]\)$/.test(l.slice(0, m.index + m[0].length) + ')') || /Object\.keys\($/.test(pre)) continue;
+          use.push((i + 1) + ' ' + m[0]); } }); });
+    ok(!use.length, 'reason: fp_win_sink_every_use ' + use.join(' | '));
+  }
+
   ok(/function errText\(e\) \{ return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(errText0\(e\)\); \}/.test(ws), 'reason: err_text_not_platform_words');
   ok(/const rgWhy = \(e\) => \{ const c = rgCode\(e\); return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(RG_WHY\[c\]/.test(ws) && /const repoWhy = \(e\) => \{ const rs = [^\n]*return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(gateWhy\(e\)/.test(ws) && /return \(typeof fpSay === 'function' \? fpSay : \(t\) => t\)\(\(typeof rs === 'string' && Object\.prototype\.hasOwnProperty\.call\(RELOG_WHY, rs\)/.test(ws), 'reason: why_helpers_not_platform_words');
   const c = ws.indexOf('  const REG_ADD_OPEN = '), d = ws.indexOf('  async function regAdd() {');
@@ -905,6 +953,137 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(sb.soleTarget('你好', [two]) === null, 'reason: sole_target_overrides_at');
     sb.L = [one, { seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_ignores_1x_seat');
     sb.L = [{ seat_id: 'old', legacy: true }]; ok(sb.soleTarget('你好', []) === null, 'reason: sole_target_picks_1x_seat'); }
+  // 新用戶指引(fc7f9 11-26;SPEC-onboarding-projects-ebab8-1126 r6、IFACE-guide-6770f-1126 r4b、3e53b DECISION r4、f163c PREREAD 1–16):
+  // 勾只照 aibd 回的 done;404 整塊不出;新手期面板只亮聊天陪伴;路線終點只從頁面寫死表;別的對話框 / 錯誤出現就拆;走完且非專案二剛亮不建層
+  {
+    const g0 = ws.indexOf('  const GUIDE_STEPS = '), g1 = ws.indexOf('  // ---------- 新用戶指引 end ----------');
+    ok(g0 > 0 && g1 > g0, 'reason: guide_slice');
+    const mk = (lang, win) => {
+      const c = { S: {}, esc: (x) => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'), askLang: () => lang || 'zh-TW', fpWin: () => !!win,
+        ocW: (k) => (k === 'steps' ? ['打開設定', '設 PIN', '回來按重新檢查'] : '先設密碼'), hasAct: (t) => c.acts.includes(t), acts: ['guide_done'], sent: [], loads: 0, renders: 0, fail: null,
+        act: async (t, f) => { c.sent.push([t, f]); if (c.fail) throw c.fail; return { ok: true, at: '2026-11-26T05:00:00Z', source: 'opened' }; },
+        get: async () => { c.loads++; return c.next || null; }, soft: (p) => p, render: () => { c.renders++; }, localStorage: { m: {}, getItem(k) { return this.m[k] || null; }, setItem(k, v) { this.m[k] = v; }, removeItem(k) { delete this.m[k]; } } };
+      vm.createContext(c);
+      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown, guideLoad };', c);
+      return c;
+    };
+    const st = (id, done, why, na) => Object.assign({ id, why }, done === undefined ? {} : { done }, na ? { next_act: na } : {});
+    const G = (claude, allow, first, tour, lit) => ({ panel_lit: !!lit, projects: [{ id: 'start', lit: true, steps: [st('health', true, 'ok'), st('pair', true, 'paired', 'pair'), claude, allow, first, tour] },
+      { id: 'hosts', lit: !!lit, steps: [st('host_add', false, 'none', 'add_host'), st('host_reach', false, 'next_version'), st('host_handoff', false, 'next_version'), st('site_first', false, 'next_version')] }] });
+    const cOk = st('claude', true, 'ok'), aOk = st('allow', true, 'ok'), fOk = st('first', true, 'ok'), tOk = st('tour', true, 'ok');
+    const c = mk();
+    const X = c.X;
+    // 四語:每個步驟、鈕、原因短碼都有字
+    const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
+    ok(['zh-TW', 'en', 'ja', 'ko'].every((l) => W[l] && steps.every((s) => W[l].step[s]) && gos.every((k) => W[l].go[k]) && whys.every((k) => W[l].why[k]) && W[l].dim && W[l].skip && W[l].again && W[l].hello.length === 2), 'reason: guide_four_langs');
+    ok(!/指紋/.test(JSON.stringify(W)) && W['zh-TW'].hello[0] === '可能要 Windows Hello', 'reason: guide_windows_says_hello');
+    // 舊 aibd(404 ⇒ null):整塊不出、面板不動、配對頁不加
+    c.S.guide = null;
+    const panel = '<div class="apsrc">從這台 AIB 讀的</div><button type="button" class="apc on" data-apcat="life">生活</button><button type="button" class="apc" data-apcat="work">工作</button><button type="button" class="apc sub on" data-apsub="life:0">聊天陪伴</button><button type="button" class="apc sub" data-apsub="life:1">分身</button><button type="button" class="apc" data-aprc="design:0">設計</button><button type="button" class="aprh" data-aprow="brand" aria-expanded="false"><span>AI</span></button><button type="button" class="aprh" data-aprow="mode" aria-expanded="false"><span>模式與權限</span></button><button type="button" class="aprh" data-aprow="persona" aria-expanded="false"><span>人格</span></button><button type="button" class="apmh" data-apmine="1">我的 AI 夥伴</button><button type="button" class="go" data-addgo="1">開</button>';
+    ok(X.guideHtml() === '' && X.guidePreHtml() === '' && X.guideDim(panel) === panel, 'reason: guide_404_nothing');
+    // 第 3 步沒登入:兩個勾、只亮一顆鈕(重新登入 Claude)、標要 Windows Hello、寫原因
+    c.S.guide = G(st('claude', false, 'not_logged_in', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    let h = X.guideHtml();
+    ok((h.match(/data-ggo="/g) || []).length === 1 && /data-ggo="provider_relogin">重新登入 Claude</.test(h) && (h.match(/<span class="tw">✓<\/span>/g) || []).length === 2 && /Claude 還沒登入或已過期/.test(h) && /<em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(h), 'reason: guide_one_button_at_a_time ' + h);
+    ok(/<progress class="mini" max="6" value="2"/.test(h) && /管理網站 \/ 主機（完成上面後開放）/.test(h) && !/data-gstep="host_add"/.test(h), 'reason: guide_hosts_grey_until_done ' + h);
+    ok(mk('zh-TW', true).X && /可能要 Windows Hello/.test((() => { const w = mk('zh-TW', true); w.S.guide = c.S.guide; return w.X.guideHtml(); })()), 'reason: guide_hello_word_on_windows');
+    // 判不出(done null)不打勾、不擋後面
+    c.S.guide = G(st('claude', null, 'login_unknown', 'provider_relogin'), st('allow', false, 'no_policy', 'session_policy_init'), st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    h = X.guideHtml();
+    ok(/data-gstep="claude"><div class="nm"><span class="tw">\?<\/span>/.test(h) && /data-ggo="session_policy_init"/.test(h) && X.guideCur(c.S.guide).step.id === 'allow', 'reason: guide_unsure_not_ticked ' + h);
+    // 新手期面板:只有聊天陪伴那條路與 AI 那一列可按;字一個都沒少,多一行提示
+    const d = X.guideDim(panel), lit = [...d.matchAll(/<button type="button" class="([^"]*)"[^>]*? data-(ap[a-z]+)="([^"]*)"/g)].filter((m) => !/\bgdim\b/.test(m[1])).map((m) => m[2] + '=' + m[3]);
+    ok(JSON.stringify(lit) === JSON.stringify(['apcat=life', 'apsub=life:0', 'aprow=brand']) && /data-addgo="1">開</.test(d) && !/class="go gdim"/.test(d), 'reason: guide_panel_only_chat_lit ' + JSON.stringify(lit));
+    ok((d.match(/aria-disabled="true"/g) || []).length === 6 && (d.match(/🔒 完成「開始使用 AIB」後開放/g) || []).length === 1, 'reason: guide_dim_marks');
+    const txt = (s) => s.replace(/<[^>]*>/g, '');
+    ok(txt(d) === txt(panel).replace('從這台 AIB 讀的', '從這台 AIB 讀的🔒 完成「開始使用 AIB」後開放'), 'reason: guide_panel_words_kept');
+    // 走完以後某一步失效:只那一步展開帶修復鈕,面板不再變暗(f163c 12)
+    c.S.guide = G(cOk, st('allow', false, 'no_claude', 'session_policy_init'), fOk, tOk, true);
+    h = X.guideHtml();
+    ok(X.guideDim(panel) === panel && /data-ggo="session_policy_init"/.test(h) && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_broken_after_done_not_dim');
+    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機;下一版三步沒有鈕
+    c.S.guide = G(cOk, aOk, fOk, tOk, true);
+    h = X.guideHtml();
+    ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">加一台主機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
+    // 配對前:aibd 只回 health 與 pair,其他鎖著;Windows 才有設 PIN 說明
+    c.S.guide = { panel_lit: false, projects: [{ id: 'start', lit: true, steps: [st('health', true, 'ok'), st('pair', false, 'not_paired', 'pair'), st('claude', undefined, 'locked'), st('allow', undefined, 'locked'), st('first', undefined, 'locked'), st('tour', undefined, 'locked')] }] };
+    const pre = X.guidePreHtml();
+    ok((pre.match(/>✓</g) || []).length === 1 && (pre.match(/>▶</g) || []).length === 1 && (pre.match(/>🔒</g) || []).length === 4 && /就是這一頁/.test(pre) && !/gpin/.test(pre), 'reason: guide_pre_pair_only_two ' + pre);
+    { const w = mk('zh-TW', true); w.S.guide = c.S.guide; ok(/沒設 Windows Hello\?先設一個 PIN/.test(w.X.guidePreHtml()) && /設 PIN/.test(w.X.guidePreHtml()), 'reason: guide_pre_pair_pin_on_windows'); }
+    { const u = mk(); u.S.pair = { view: 'code' }; u.get = async () => { throw Object.assign(new Error('401'), { status: 401 }); }; vm.runInContext('get = this.get', u);
+      const w = mk(); w.get = u.get; vm.runInContext('get = this.get', w);
+      (async () => { await u.X.guideLoad(); await w.X.guideLoad(); const ph = u.X.guidePreHtml();
+        ok((ph.match(/>✓</g) || []).length === 1 && (ph.match(/>▶</g) || []).length === 1 && (ph.match(/>🔒</g) || []).length === 4 && w.S.guide === null, 'reason: guide_unpaired_401_draws_two ' + ph); })().catch((e) => { console.error(e); process.exitCode = 1; }); }
+    // 終點白名單:next_act 只當鍵;沒有放行 / 本人確認 / 加測試機 / dgrs / work 那幾顆
+    const GO = JSON.stringify(Object.values(X.GUIDE_GO).map((v) => v.to));
+    ok(!/spok|lcgo|relogin|thadd|hsok|dgrs|work|apmode|danger/.test(GO) && Object.keys(X.GUIDE_GO).every((k) => X.GUIDE_GO[k].to.every((s) => /^(\[data-(add|startclaude|thopen)="1"\]|\.adlg\.ap \[data-ap(cat|sub)="life(:0)?"\]|\.adlg\.ap \.afoot \.go|#inp)$/.test(s))), 'reason: guide_targets_whitelist ' + GO);
+    c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'constructor'), st('tour', false, 'after_first', 'open_partner_panel'));
+    ok(!/data-ggo/.test(X.guideHtml()), 'reason: guide_unknown_act_no_button');
+    c.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel'));
+    ok(/data-ggo="start_claude">開始用 Claude<\/button><em class="ghello">可能要 Touch ID 或密碼<\/em>/.test(X.guideHtml()) && ['provider_install', 'provider_relogin', 'session_policy_init', 'start_claude'].every((k) => X.GUIDE_GO[k].hello === true) && !X.GUIDE_GO.focus_chat.hello && !X.GUIDE_GO.open_partner_panel.hello, 'reason: guide_hello_marked_before_press');
+    // ebab8 14:00 B5:客戶走「加一台主機」時,測試機那一行用客戶字、開發說明進鈕的提示;沒走指引時照舊
+    { const i0 = ws.indexOf('  const TH_G = '), i1 = ws.indexOf('  const thW = () => TH_L['); ok(i0 > 0 && i1 > i0, 'reason: b5_block_found');
+      const box = { S: {}, esc: c.esc, askLang: () => 'zh-TW', thX: () => ({ title: '測試機' }), gSkipped: () => false, guideCur: (G) => G.cur };
+      vm.createContext(box); vm.runInContext(ws.slice(i0, i1) + '\nthis.thClosed = thClosed;', box);
+      box.S.guide = { cur: { proj: 'hosts', step: { id: 'host_add' } } }; const g = box.thClosed('開發用的功能', '從這台的 ssh 設定加');
+      box.S.guide = null; const d = box.thClosed('開發用的功能', '從這台的 ssh 設定加');
+      ok(/<b>主機<\/b><button type="button" class="k" data-thopen="1" title="開發用的功能">加一台主機<\/button>/.test(g) && !/class="hv"/.test(g) && /<b>測試機<\/b><span class="hv">開發用的功能<\/span>/.test(d), 'reason: guide_b5_host_words ' + g);
+      const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.thh\{flex-wrap:wrap\}/.test(css) && /\.thh \.k\{white-space:nowrap\}/.test(css), 'reason: guide_b5_button_not_clipped'); }
+    // ebab8 14:00 B6:Windows 配對頁不叫人開終端機、不出 aibd;Mac 原字
+    { const i0 = ws.indexOf('  const PAIR_WIN_SAY = '), i1 = ws.indexOf('  function cdLeft() {'); ok(i0 > 0 && i1 > i0, 'reason: b6_block_found');
+      const box = { win: true }; vm.createContext(box); vm.runInContext('const fpWin = () => this.win;\n' + ws.slice(i0, i1) + '\nthis.PAIR_WIN_SAY = PAIR_WIN_SAY; this.pairSay = pairSay;', box);
+      const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
+      const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
+      { const w = box.pairSay('<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'); ok(/Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消/.test(w) && !/AIB 的視窗/.test(w), 'reason: b6_wait_says_hello_compare_code ' + w); }
+      box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
+      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairSay(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
+    // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
+    c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
+    c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
+    // 6770f 14:00:後端有開著的 2.0 席、還沒說話 ⇒ why=seat_open、next_act=focus_chat;四語都要有字(沒有字那行會空白)
+    ok(['zh-TW', 'en', 'ja', 'ko'].every((L) => { const T = X.GUIDE_W[L] && X.GUIDE_W[L].why; return T && typeof T.seat_open === 'string' && T.seat_open.length > 4; }), 'reason: guide_why_seat_open_words');
+    { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.gstep\.gcur \.gact\{grid-column:1\/-1;/.test(css) && /\.gstep\.gcur \.ghello\{flex-basis:100%\}/.test(css) && /\.gskip\{position:absolute;bottom:16px;right:16px;/.test(css), 'reason: guide_layout_real_aib_b2_b4'); }
+    // 終點挑法:面板關著有「開始用 Claude」⇒ 它;沒有 ⇒ + AI 夥伴;面板開著只挑面板裡的;「開」沒 disabled 才挑
+    const L = X.GUIDE_GO.start_claude.to, hv = (m) => (s) => (s in m ? m[s] : null);
+    const o = { ok: true, inDlg: false, disabled: false }, i = { ok: true, inDlg: true, disabled: false };
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '[data-startclaude="1"]': o }), false) === '[data-startclaude="1"]', 'reason: guide_pick_start_claude');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o }), false) === '[data-add="1"]', 'reason: guide_pick_add');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '.adlg.ap [data-apcat="life"]': i, '.adlg.ap [data-apsub="life:0"]': i, '.adlg.ap .afoot .go': Object.assign({}, i, { disabled: true }) }), true) === '.adlg.ap [data-apsub="life:0"]', 'reason: guide_pick_in_panel');
+    ok(X.guidePick(L, hv({ '[data-add="1"]': o, '.adlg.ap .afoot .go': i }), true) === '.adlg.ap .afoot .go' && X.guidePick(['[data-add="1"]'], hv({ '[data-add="1"]': o }), true) === null, 'reason: guide_pick_dialog_only_inside');
+    // 別的對話框 / 本人確認 / 配對碼 / 錯誤說明 ⇒ 拆層;只有「+ AI 夥伴」一個對話框才畫
+    const fd = (sel, dl) => ({ querySelector: (s) => (sel.some((x) => s.split(',').includes(x)) ? {} : null), querySelectorAll: () => dl.map((ap) => ({ querySelector: () => (ap ? {} : null) })) });
+    ok(!X.guideBlocked(fd([], [])) && !X.guideBlocked(fd([], [true])) && X.guideBlocked(fd([], [false])) && X.guideBlocked(fd([], [true, false])) && X.guideBlocked(fd(['.pgbg'], [])) && X.guideBlocked(fd(['[role="alert"]'], [true])) && X.guideBlocked(fd(['.anndlg'], [])), 'reason: guide_blocked_by_other_dialogs');
+    c.S.banner = '連不上 AIB(重試中)'; c.S.bannerKind = 'err'; const dn = X.gDown(); c.S.bannerKind = 'ok'; const up = X.gDown(); c.S.banner = null;
+    ok(dn === true && up === false && X.gDown() === false && /const G = S\.guide; if \(!G \|\| S\.pair \|\| gSkipped\(\) \|\| gDown\(\)\) return null;/.test(ws), 'reason: guide_layer_down_when_aib_down');
+    ok(X.guidePathD(100, 80, [{ x: 10, y: 12, w: 20, h: 8 }]) === 'M0 0H100V80H0ZM10 12h20v8h-20Z', 'reason: guide_hole_path');
+    // 第 6 步:打開面板記一次(不帶任何值),同時按兩次也只送一次;409 不算錯;version.acts 沒有就不送
+    c.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel'));
+    c.next = G(cOk, aOk, fOk, tOk, true);
+    (async () => {
+      await Promise.all([X.guideOnPanel(), X.guideOnPanel()]);
+      ok(c.sent.length === 1 && c.sent[0][0] === 'guide_done' && c.sent[0][1] === undefined && c.S.gTourLine === true && c.S.gTourHere === true && c.S.guide.panel_lit === true, 'reason: guide_tour_once ' + JSON.stringify(c.sent));
+      const c2 = mk(); c2.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel')); c2.fail = Object.assign(new Error('x'), { status: 409 });
+      await c2.X.guideOnPanel(); ok(c2.sent.length === 1 && !c2.S.gMsg && c2.loads === 1, 'reason: guide_tour_409_quiet');
+      const c3 = mk(); c3.acts = []; c3.S.guide = G(cOk, aOk, fOk, st('tour', false, 'not_yet', 'open_partner_panel')); await c3.X.guideOnPanel(); ok(c3.sent.length === 0 && c3.S.gTourSent !== true, 'reason: guide_tour_needs_act'); // 90856 GD18 假咬:原本借 c2 的 guide(guideLoad 後已是 null)⇒ 第一行就 return,這條永遠綠;改用自己的第 6 步
+      const c4 = mk(); c4.S.guide = G(cOk, aOk, st('first', false, 'none_yet', 'start_claude'), st('tour', false, 'after_first', 'open_partner_panel')); await c4.X.guideOnPanel(); ok(c4.sent.length === 0, 'reason: guide_tour_only_on_step_6');
+    })().catch((e) => { console.error(e); process.exitCode = 1; });
+    // 略過:只存本機偏好、可以再看一次
+    c.S.guide = G(st('claude', false, 'not_logged_in', 'provider_relogin'), aOk, fOk, st('tour', false, 'after_first', 'open_partner_panel'));
+    X.guideSkip(true);
+    ok(X.gSkipped() && c.localStorage.m['aib.guide.skip'] === '1' && /data-gagain="1">再看一次</.test(X.guideHtml()), 'reason: guide_skip_local_again');
+    X.guideSkip(false); ok(!X.gSkipped() && !/data-gagain/.test(X.guideHtml()), 'reason: guide_unskip');
+    // 接線(靜態):暗格點了不動作、指引鈕走原本那顆、打開面板記第 6 步、畫完重算路線、讀 guide、面板套暗格、配對頁加清單
+    ok(/async function onMainClick\(e\) \{\n    const x = e\.target;\n    if \(x\.closest\('\.gdim'\)\) return;/.test(ws), 'reason: guide_dim_click_does_nothing');
+    ok(/S\.rg = null; S\.rgMsg = null;\n      guideOnPanel\(\);\n      render\(\);/.test(ws) && /function render\(\) \{\n    guidePaintSoon\(\);/.test(ws) && /if \(!S\.gAt \|\| Date\.now\(\) - S\.gAt > 8000\) await guideLoad\(\);/.test(ws), 'reason: guide_wired');
+    ok(/\$\{S\.add \? guideDim\(addHtml\(\)\) : ''\}/.test(ws) && /<div class="apsrc">\$\{esc\(apSrc\(\)\)\}<\/div>\$\{guideTourLine\(\)\}/.test(ws) && /\$\{guidePreHtml\(\)\}\$\{pairHtml\(\)\}/.test(ws) && /<b>專案<\/b><small>唯讀<\/small><\/div>\$\{guideHtml\(\)\}/.test(ws), 'reason: guide_placed_in_existing_screens');
+    ok(/if \(!R \|\| !R\.to\) \{ if \(old\) old\.remove\(\); return; \}/.test(ws) && /if \(!\(guideNew\(G\) \|\| \(S\.gTourHere && cur\.proj === 'hosts'\)\)\) return null;/.test(ws) && /if \(!gOwn\(GUIDE_GO, na\) \|\| guideBlocked\(document\)\) return null;/.test(ws), 'reason: guide_layer_not_built_when_done');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'dist', 'ws.css'), 'utf8');
+    ok(/\.gtour\{position:fixed;inset:0;z-index:60;pointer-events:none\}/.test(css) && /\.gtour \.gsvg\{[^}]*pointer-events:none\}/.test(css) && /\.gtour \.gline\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gring\{[^}]*pointer-events:none;/.test(css) && /\.gtour \.gdimp\{[^}]*pointer-events:visiblePainted\}/.test(css) && /\.gtour \.gskip\{[^}]*pointer-events:auto/.test(css), 'reason: guide_layer_clicks_fall_through');
+    ok(/@media \(prefers-reduced-motion:reduce\)\{\.gtour \.gline,\.gtour \.gring\{animation:none\}\}/.test(css), 'reason: guide_reduced_motion_static');
+    ok(/for \(const x of guideExits\(document\)\) \{ const r = x\.getBoundingClientRect\(\); if \(r\.width\) holes\.push\(gRect\(r, 3\)\); \}/.test(ws) && /const guideExits = \(doc\) => Array\.from\(doc\.querySelectorAll\('\.adlg\.ap \[data-addx\]'\)\);/.test(ws), 'reason: guide_panel_close_stays_clickable');
+    ok(/if \(e\.target\.closest\('\[data-gskip\]'\)\) return guideSkip\(true\); if \(guideBlocked\(document\)\) d\.remove\(\); \}\);/.test(ws) && /new MutationObserver\(\(ms\) => \{ if \(document\.getElementById\('gtour'\) && ms\.some\(\(m\) => !\(m\.target\.closest && m\.target\.closest\('#gtour'\)\)\)\) guidePaintSoon\(\); \}\)\.observe\(document\.body \|\| document\.documentElement, \{ childList: true, subtree: true \}\);/.test(ws) && !/dispatchEvent|\.click\(\)/.test(ws.slice(ws.indexOf('  function guidePaint() {'), ws.indexOf('  // ---------- 新用戶指引 end'))), 'reason: guide_layer_rechecks_without_render');
+    ok(/document\.addEventListener\('keydown', \(e\) => \{ if \(e\.key === 'Escape' && document\.getElementById\('gtour'\)\) guideSkip\(true\); \}\);/.test(ws) && /class="k gskip" data-gskip="1"/.test(ws), 'reason: guide_skip_esc_visible');
+  }
   ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isArch\(s\)\); return L\.length === 1 && !isLegacy\(L\[0\]\) \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
   ctx.apPick(A, 'design:0');
   ok(A.mode === 'dgrs' && A.role === 'author' && A.persona === 'u2', 'reason: s1_pick_mode_role');
@@ -1133,7 +1312,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(T({ wrong: 2, tries_left: 1 }).text.endsWith(' · 連錯 2 次,還能錯 1 次') && !T({ wrong: 2, tries_left: 1 }).bad, 'reason: pw_wrong_from_aibd');
     const lk = T({ locked: true, wrong: 5, tries_left: 0, locked_until: Math.floor(Date.now() / 1000) + 600 }); ok(lk.bad && /鎖住了,到 .+\(約 1[01] 分\),鎖住時不收密語$/.test(lk.text), 'reason: pw_locked_until ' + lk.text);
     ok(T({ swapped: true }).bad && T({ swapped: true }).text === '密語紀錄被換過,請到設定窗重設;重設前不收密語' && T({ swapped: true, available: false }).bad, 'reason: pw_swapped_red_first');
-    ok(T({ available: false }).text === '這台用系統本人驗證(指紋 / 登入密碼 / Hello),不用密語' && !T({ available: false }).bad, 'reason: pw_system_check_used');
+    ok(T({ available: false }).text === '這台用系統本人驗證(指紋或登入密碼),不用密語' && !T({ available: false }).bad, 'reason: pw_system_check_used');
     ok(T({ set: false, set_at: null }).text === '密語備援還沒設定;要設定請到系統的設定窗(網頁不收密語)', 'reason: pw_not_set');
     reply = Object.assign({}, reply, { swapped: true }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語紀錄被換過,請到設定窗重設;重設前不收密語</div>', 'reason: pw_swapped_drawn_red');
     fail = Object.assign(new Error('x'), { status: 403, code: 'passphrase_built_in_page_only', reason: '' }); S.pw.at = 0; await cw.F.pwLoad(); ok(cw.F.pwHtml() === '<div class="trm bad">密語狀態讀不到:只有這台電腦內建的頁面看得到</div>', 'reason: pw_err_words');
@@ -1385,7 +1564,7 @@ const fpcChecks = (async () => {
   ctx.fpcOpen('x', {}, { code: 'C0DE', words: 'aibd 的字', shown: [{ k: '倉', v: '/Users/a/<b>', up: true }] }, Date.now() + 60000);
   let h = ctx.fpcHtml(ctx.FPC.cur);
   ok(/等你驗證:aibd 的字/.test(h) && /\/Users\/a\/&lt;b&gt;/.test(h) && /class="up"/.test(h), 'reason: fpc_not_aibd_words_or_unescaped');
-  ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼\(Windows 用 Hello PIN\)/.test(h) && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
+  ok(/系統視窗上的<b>對照碼<\/b>跟這張卡一樣才按;動作、對象以系統視窗為準/.test(h) && /沒有指紋就輸入電腦登入密碼。/.test(h) && !/Windows/.test(h.split('fph')[1] || '') && /data-fpcx="1">取消這次/.test(h) && /還有 60 秒|還有 59 秒/.test(h), 'reason: fpc_wait_words');
   ok(!/late|urg/.test(h.split('"')[1]), 'reason: fpc_late_too_early');
   { const w = ctx.FP_WHAT.managed_host_add({ from: 'trusted', name: 'test-a' }); ok(w[0] === '把測試機「test-a」交給夥伴管' && w[1].some(([k, v, up]) => k === '收據' && v === '收據不算' && up) && w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_test_host_card'); }
   { const w = ctx.FP_WHAT.managed_host_add({ name: 'h1', addr: '192.0.2.1', port: 22, user: 'u', key_path: '~/.ssh/k' }); ok(w[1].some(([k, v]) => k === '指紋' && v === '機器與金鑰指紋以系統視窗為準'), 'reason: fpc_manual_host_fp_line'); }

@@ -33,6 +33,8 @@ pub const MAX_LINE: usize = 256 * 1024;
 pub const MAX_TOTAL: u64 = 32 * 1024 * 1024;
 /// The aggregate type of output events.
 pub const AGGREGATE: &str = "session_output";
+/// The event type of one stored line (the new-user guide asks only whether there is one).
+pub const LINE: &str = "session.output";
 
 /// The output aggregate of a session.
 pub fn aggregate_id(session_id: &str) -> String {
@@ -116,7 +118,7 @@ impl Sink {
         let text = crate::secret_mask::mask(&String::from_utf8_lossy(b)).into_owned();
         self.write(
             &mut st,
-            "session.output",
+            LINE,
             serde_json::json!({"stream": stream, "line": text, "cut": cut}),
         );
     }

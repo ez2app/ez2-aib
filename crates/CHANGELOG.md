@@ -37,6 +37,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   the second asks to compare the code with your page (「不一樣就按取消」), then what a yes does and for whom, then the
   true source (「由終端機 / 程式要求」 / 「由瀏覽器頁要求」); Windows no longer says 「本機鑰」 (B2 has no key).
   Knives W1–W4 (`crates/aibd/knives/knives-pairwords-c2f0b.sh`); TK12 re-aimed.
+- Knives (90856 TRIAGE-890 on #890 run 45757604748): OTE3's mutant keeps `os` used (it no longer fails to build under
+  `-D warnings`, a false miss); PM1 moves to `knives-provider-maker-sign-c2f0b.sh` (macOS), since on Linux AIB offers
+  no download and its test returns before the signature check, so it could never bite there.
+
 - Windows owner check is the Windows Hello gesture, no key (B2, Andy 11-26; DECISION-win-hello-fallback-3e53b-1126):
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
   restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and

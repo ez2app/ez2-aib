@@ -1599,3 +1599,40 @@ label.rvr{cursor:pointer}
 .lcq .lcqv{background:none!important}.lcq .old .lcqg i.on{opacity:.45}
 .lcq .lcqx{color:var(--dim);font-size:15px}.lcq .lcqf{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.lcq .lcqrb{min-height:48px;font-size:17px;font-weight:700;padding:10px 22px;border-radius:12px}
 .lc .rlcrow .k{font-size:17px;font-weight:700;padding:14px 22px;border-radius:14px;min-height:52px}.rlccp,.rlcgo{flex:1 1 200px;min-height:56px;border-radius:14px;font-size:19px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}.rlccp{border:0;background:var(--rlb);color:var(--rli)}.rlcgo{background:transparent;color:var(--text);border:2px solid var(--line)}.rlcs{margin:24px 0 0;padding-left:1.3em;font-size:18px;line-height:1.7}.rlcs li::marker{color:var(--rlb);font-weight:800}.rlcfoot{display:flex;align-items:center;padding:14px 28px;border-top:1px solid var(--line);background:var(--panel2);font-size:15px}.rlcfoot{gap:10px;color:var(--dim)}.rlct{margin-left:auto;font-weight:700;color:var(--gold)}
+/* 新用戶指引(fc7f9 11-26,SPEC-onboarding-projects-ebab8-1126 r6):左欄用現有專案列畫法;新手期暗格;聚光燈 + 路線一層,不擋底下那個洞 */
+.gbox{margin:2px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.row.gproj.goff .tx,.row.gstep.glock .tx,.row.gstep.glater .tx{opacity:.5}
+.row.gstep.gok .tw{color:#7fd18b}
+.row.gstep.gcur{border-color:var(--gold);background:#1c1a12}
+.row.gstep.gcur .tw{color:var(--gold)}
+.row.gstep .tx{font-weight:400}
+.gact{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.gbtn{font-size:13px;padding:4px 12px;font-weight:700;white-space:nowrap}
+.ghello{font-style:normal;font-size:11px;opacity:.8}
+.gwhy{margin:-2px 6px 4px 30px}
+.gagain{font-size:12px;padding:2px 8px}
+.gdim{opacity:.4;cursor:not-allowed;filter:saturate(.25)}
+.gdim::after{content:" 🔒";font-size:11px}
+.gdimh{margin:2px 0 6px}
+.gpre{max-width:420px;margin:24px auto -32px;padding:12px 16px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.gpre ol{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
+.gpre li .tw{display:inline-block;width:1.6em;text-align:center}
+.gpre li.gcur{color:var(--gold);font-weight:700}
+.gpre li.glock{opacity:.5}
+.gpin{margin-top:8px;font-size:13px}
+.gpins{cursor:pointer}
+.gtour{position:fixed;inset:0;z-index:60;pointer-events:none}
+.gtour .gsvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.gtour .gdimp{fill:rgba(0,0,0,.55);pointer-events:visiblePainted}
+.gtour .gline{fill:none;stroke:var(--gold);stroke-width:2.5;stroke-dasharray:8 7;pointer-events:none;animation:gflow 1s linear infinite}
+.gtour .gring{fill:none;stroke:var(--gold);stroke-width:2.5;pointer-events:none;transform-box:fill-box;transform-origin:center;animation:gpulse 1.4s ease-out infinite}
+.gtour .gskip{position:absolute;bottom:16px;right:16px;pointer-events:auto;font-size:14px}
+@keyframes gflow{to{stroke-dashoffset:-15}}
+@keyframes gpulse{0%{opacity:1;transform:scale(1)}100%{opacity:.15;transform:scale(1.12)}}
+@media (prefers-reduced-motion:reduce){.gtour .gline,.gtour .gring{animation:none}}
+/* 真 AIB 實看 B2 B3:現在這一步的鈕換到第二行整列,步驟名不被擠成「跟…」;「可能要 …」放鈕下面,路線不穿過字 */
+.gstep.gcur .gact{grid-column:1/-1;justify-content:flex-start;padding-left:22px}
+.gstep.gcur .ghello{flex-basis:100%}
+/* B5:窄卡時鈕換到下一行,不切邊 */
+.thh{flex-wrap:wrap}
+.thh .k{white-space:nowrap}

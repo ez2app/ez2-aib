@@ -31,8 +31,8 @@ ko crates/aibd/src/seats.rs \
   '    if !pipe_supported(&r.provider) {' \
   '    if false && !pipe_supported(&r.provider) { // knife' \
   a_provider_that_cannot_start_is_refused_and_leaves_no_seat
-# LP2 the check asks a fixed list instead of pipe_argv, and codex slips through
+# LP2 the check asks a fixed list instead of pipe_argv, and agy (a brand aibd cannot start) slips through
 ko crates/aibd/src/seats.rs \
   '        Err(aib_seatopen::PipeRefused::Provider(_))' \
-  '        Err(aib_seatopen::PipeRefused::Provider(_))) || provider == "grok" || (false // knife' \
+  '        Err(aib_seatopen::PipeRefused::Provider(_))) || provider == "agy" || (false // knife' \
   a_provider_that_cannot_start_is_refused_and_leaves_no_seat
