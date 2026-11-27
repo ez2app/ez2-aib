@@ -297,7 +297,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
       box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); box.win = false; const hd2 = box.testHostHtml(); box.S.version = { dev: 'yes' }; const hd3 = box.testHostHtml(); delete box.S.version;
       ok(hd0 === '' && /data-thopen="1"/.test(hd1) && /data-thopen="1"/.test(hd2) && hd3 === '', 'reason: th_follows_dev_flag ' + hd0 + hd3);
       ok(ws.includes("    mac_only: '測試機目前只支援 Mac', no_receipt_gate:"), 'reason: th_mac_only_words'); box.navigator.languages = ['en-US']; ok(box.thErr('mac_only') === 'Test machines work only on a Mac for now', 'reason: th_mac_only_en'); box.navigator.languages = ['zh-TW'];
-      delete box.thDev; delete box.fpWin; }
+      box.thDev = undefined; delete box.fpWin; }
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
@@ -2040,7 +2040,7 @@ const hsChecks = (async () => {
       ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
       const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
       { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); vm.runInContext(dl.trim().replace('const thDev', 'this.thDev'), ctx); const sv = ctx.S.version;
-        ctx.S.version = { dev: false }; const hw = F.hsTestChips(); ctx.S.version = undefined; const hn = F.hsTestChips(); ctx.S.version = { dev: true }; const hm = F.hsTestChips(); ctx.S.version = sv; delete ctx.thDev;
+        ctx.S.version = { dev: false }; const hw = F.hsTestChips(); ctx.S.version = undefined; const hn = F.hsTestChips(); ctx.S.version = { dev: true }; const hm = F.hsTestChips(); ctx.S.version = sv; ctx.thDev = undefined;
         ok(hw === '' && hn === '' && /goodbox/.test(hm), 'reason: hs_test_chips_hidden_on_windows ' + hw + hn); } // ebab8 21:51 + Andy 22:0x 兩平台一致
       { const kx = ctx.thX; ctx.thX = () => ({ title: 'Test machines', loading: 'Loading…' }); const h3 = F.hsTestChips(); ctx.thX = kx; ok(/>Test machines</.test(h3) && !/測試機/.test(h3), 'reason: hs_test_chips_title_not_english ' + h3); }
       delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
