@@ -20,7 +20,7 @@ you; the steps below check the file against `SHA256SUMS` before you run it.
 ## macOS
 
 ```sh
-V=0.2.0-preview.8
+V=0.2.0-preview.9
 F=aibd-$V-aarch64-apple-darwin
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads \
@@ -39,7 +39,7 @@ with `xattr -d com.apple.quarantine ~/.local/bin/aibd`.
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$V = "0.2.0-preview.8"
+$V = "0.2.0-preview.9"
 $F = "aibd-$V-x86_64-pc-windows-msvc.exe"
 $B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
 $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
@@ -82,7 +82,7 @@ Run the aibd block above first, then:
 ```sh
 (
   set -e
-  V=0.2.0-preview.8
+  V=0.2.0-preview.9
   B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
   cd ~/Downloads && curl -fLO "$B/SHA256SUMS"
   for p in aib-drive aib-slice; do

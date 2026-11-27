@@ -5,6 +5,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+## 0.2.0-preview.9 — 2026-11-27
+
 - Windows setup: an **AIB** shortcut on the desktop and in the Start menu (ebab8 11-26 12:20, Andy
   「要最快讓用戶一鍵可用」: after installing, the only way back to the workbench was typing
   `aibd.exe ctl web` into cmd). It runs the installed `aibd.exe ctl web`, working folder = the AIB
