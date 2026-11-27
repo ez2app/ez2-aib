@@ -89,3 +89,12 @@ k "owner_key_not_as_paired: 'omReset'" "owner_key_not_as_paired: 'reset'"
 k '按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li><li>AIB' '按 Enter</li><li>AIB'
 # PH7 第 2 步沒說還要確認本人(f163c 45d289a4 N1)
 k ';按「配對」,再照畫面確認是你本人</li>' ',按「配對」就好</li>'
+
+# CL1 清過紀錄不說(c2f0b 11-27 10:18 §2)
+k "if (d.cleared === 'owner_method_record_cleared' && m === 'biometry') body = " "if (false) body = "
+# CL2 不能改也叫人重新選
+k "esc(W.cleared) + (set ? esc(W.clearedPick) : '')" "esc(W.cleared) + esc(W.clearedPick)"
+# CL3 非指紋也說清過
+k "d.cleared === 'owner_method_record_cleared' && m === 'biometry'" "d.cleared === 'owner_method_record_cleared'"
+# CL4 什麼值都算清過
+k "if (d.cleared === 'owner_method_record_cleared' && m" "if (d.cleared && m"

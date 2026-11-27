@@ -2595,6 +2595,16 @@ lateChecks.push((async () => {
   // c2f0b eb6c979c71:status why 四個碼 ⇒ 同一句重設出路,不出改鈕
   for (const w of ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved']) { c.S.om = { d: { method: 'biometry', can_change: true, why: w } }; const hh = F.omHtml(); ok(hh.includes('目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。') && !/data-om(ask|set)/.test(hh), 'reason: om_reset_words ' + w); }
   c.S.om = { d: { method: 'biometry', can_change: true, why: 'something_else' } }; ok(!F.omHtml().includes('要重設') && F.omHtml().includes('data-omask'), 'reason: om_reset_only_those_codes');
+  // c2f0b 10:18 §2:status.cleared = owner_method_record_cleared ⇒ 照實說清過一筆紀錄、現在只用指紋;改鈕照 can_change;別的值 / 非指紋不出
+  { const CL = 'AIB 啟動時清掉了一筆跟這次配對對不上的確認方式紀錄(可能是手動刪過檔,或有人動過)。現在只用指紋。', PK = '要改用登入密碼,在這裡重新選一次。';
+    c.S.om = { d: { method: 'biometry', can_change: true, why: null, cleared: 'owner_method_record_cleared' } }; let hh = F.omHtml();
+    ok(hh.includes(CL + PK) && hh.includes('data-omask') && !hh.includes('目前用指紋。'), 'reason: om_cleared_says_so_and_keeps_button ' + hh);
+    c.S.om = { d: { method: 'biometry', can_change: false, why: null, cleared: 'owner_method_record_cleared' } }; hh = F.omHtml();
+    ok(hh.includes(CL) && !hh.includes(PK) && !hh.includes('data-omask'), 'reason: om_cleared_no_pick_when_cannot_change ' + hh);
+    c.S.om = { d: { method: 'biometry', can_change: true, why: null, cleared: 'something_else' } }; ok(!F.omHtml().includes('清掉了'), 'reason: om_cleared_only_that_code');
+    c.S.om = { d: { method: 'password', can_change: true, why: null, cleared: 'owner_method_record_cleared' } }; ok(!F.omHtml().includes('清掉了') && F.omHtml().includes('data-omset="biometry"'), 'reason: om_cleared_only_with_fingerprint');
+    c.S.om = { d: { method: 'biometry', can_change: true, why: 'owner_method_no_pin', cleared: 'owner_method_record_cleared' } }; ok(!F.omHtml().includes('清掉了') && F.omHtml().includes('要重設'), 'reason: om_reset_wins_over_cleared');
+    ok(['en', 'ja', 'ko'].every((l) => F.OM_L[l].cleared && F.OM_L[l].clearedPick && F.OM_L[l].cleared !== CL), 'reason: om_cleared_four_languages'); }
   // 3e53b 11-27 10:10 §1:後端測試照字面讀這幾處(OM_RESET 一行陣列、OM_WHY 對到 omReset、四語 omReset 都含兩個檔名);改了形狀後端會紅,這裡先擋
   { const rs = [...ws.matchAll(/ omReset: '([^']*)'/g)].map((m) => m[1]);
     ok(rs.length === 4 && rs.every((r) => r.includes('pair-key-pin.json') && r.includes('pair-key-method.json')), 'reason: om_reset_four_languages_both_files');
