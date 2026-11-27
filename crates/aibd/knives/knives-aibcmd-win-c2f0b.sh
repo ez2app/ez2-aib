@@ -17,7 +17,7 @@ a() { python3 -I scripts/knife.py crates/aibd/src/aib_cmd.rs "$1" "$2" --expect-
 s() { python3 -I scripts/knife.py crates/aib-sys/src/winrun.rs "$1" "$2" --expect-fail "winrun::tests::$3" \
         -- cargo test -p aib-sys --locked --lib "winrun::tests::$3" || fail=1; }
 # P1 the setup writes the PATH back as REG_SZ whatever it was
-w '        match ops.user_path_write(&new, kind, before) {' '        match ops.user_path_write(&new, PathKind::Sz, before) {' the_setup_puts_aib_beside_aibd_and_its_folder_at_the_end_of_the_path
+w '        match ops.user_path_write(&new, kind, before) {' '        match ops.user_path_write(&new, { let _ = kind; PathKind::Sz }, before) {' the_setup_puts_aib_beside_aibd_and_its_folder_at_the_end_of_the_path
 # P1u uninstall writes it back as REG_SZ
 w '        match ops.user_path_write(&new, before.1, Some((before.0.as_str(), before.1))) {' '        match ops.user_path_write(&new, PathKind::Sz, Some((before.0.as_str(), before.1))) {' uninstall_takes_out_only_our_path_entry_and_our_aib
 # P1s the registry write turns REG_EXPAND_SZ into REG_SZ
