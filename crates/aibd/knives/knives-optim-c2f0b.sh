@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# IN1–IN4 / KK1–KK2 / MA1–MA4 / AC1–AC4 / OR1–OR4 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
+# IN1–IN4 / KK1–KK2 / MA1–MA4 / AC1–AC5 / OR1–OR5 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
 # set the install record is read there only, and the real aibd's plist is still refused from another folder; the AIB app
 # in Applications is the default aibd's only; the page's waiting box gets the one window a signature opens (touch_id or
 # login_password, never both); the app's click is `ctl web` only for its own executable with nothing after it, and an
@@ -30,8 +30,8 @@ k macapp.rs '    id.as_deref() == Some(BUNDLE_ID) && (!exists(&exec) || is_link(
 k macapp.rs '    id.as_deref() == Some(BUNDLE_ID) && (!exists(&exec) || is_link(&exec))' '    id.as_deref() == Some(BUNDLE_ID) && (!exists(&exec) || is_link(&exec) || true)' macapp::tests::install_writes_ours_rewrites_ours_and_leaves_anything_else
 # AC1 aib takes more than web
 k aib_cmd.rs '        ["web", rest @ ..] => {' '        [_, rest @ ..] => {' aib_cmd::tests::aib_web_is_ctl_web_and_nothing_else_is_taken
-# AC2 AIB 1.x's aib is taken for ours and replaced
-k aib_cmd.rs '                .is_some_and(|n| n == OsStr::new(crate::install::EXE_NAME))' '                .is_some_and(|n| n != OsStr::new(""))' aib_cmd::tests::install_links_aib_to_aibd_and_leaves_another_aib
+# AC2 AIB 1.x's aib (or another install's) in the same folder is taken for ours and replaced
+k aib_cmd.rs '    is_link(link) && std::fs::read_link(link).ok().as_deref() == Some(exe)' '    is_link(link) && (std::fs::read_link(link).ok().as_deref() == Some(exe) || true)' aib_cmd::tests::install_links_aib_to_aibd_and_leaves_another_aib
 # AC3 the AIB app's own executable is taken for aib
 k aib_cmd.rs '        .is_some_and(|s| s == OsStr::new(NAME) || (cfg!(windows) && s.eq_ignore_ascii_case(NAME)))' '        .is_some_and(|s| s.eq_ignore_ascii_case(NAME))' aib_cmd::tests::aib_web_is_ctl_web_and_nothing_else_is_taken
 # AC4 install does not put aib beside aibd
@@ -48,4 +48,8 @@ k owner_method.rs '    (stale(pin, r, current_pub) && !ours).then_some("owner_me
 k install.rs '            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())) {' '            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())).filter(|_| false) {' install::tests::aibd_data_dir_alone_answers_and_the_other_aibds_plist_is_refused
 # MA4 an AIB.app whose Contents/MacOS is a link is written through (3e53b REVIEW-op1 N1)
 k macapp.rs '    if inner.iter().any(|d| is_link(d)) {' '    if false && inner.iter().any(|d| is_link(d)) {' macapp::tests::install_writes_ours_rewrites_ours_and_leaves_anything_else
+# AC5 AIB 1.x's aib elsewhere on PATH is not looked for (f163c REVIEW-op2 N1)
+k aib_cmd.rs '    if let Some(p) = path {' '    if let Some(p) = path.filter(|_| false) {' aib_cmd::tests::install_links_aib_to_aibd_and_leaves_another_aib
+# OR5 the cleared record is still said after the owner chose again (f163c REVIEW-op4 N1)
+k owner_method.rs '        *cl = None;' '        let _ = &mut *cl;' owner_method::tests::a_change_is_signed_by_the_pinned_key_then_swapped_and_pinned
 exit "$fail"

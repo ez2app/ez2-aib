@@ -380,7 +380,6 @@ pub fn password_window_for(public: &[u8]) -> bool {
 
 /// [`password_window_for`] the key in use now; `false` without an owner check.
 pub fn password_window_now() -> bool {
-    use crate::touch::Presence as _;
     OWNER
         .get()
         .and_then(|(p, _)| p.public())
@@ -700,6 +699,10 @@ fn swap_in(
     let moved = repin_at_start(pin, r, &public, c.at, c.verify).ok_or("owner_method_pin")?;
     write_json(&c.data.join(PIN_FILE), &moved.to_value())?;
     remember(read(Some(&moved), Some(r), &public, c.verify), Some(&moved));
+    // the owner chose again: the cleared record is not news any more (f163c REVIEW-op4 N1)
+    if let Ok(mut cl) = CLEARED.lock() {
+        *cl = None;
+    }
     let _ = std::fs::remove_dir_all(&old);
     Ok(())
 }
@@ -1156,9 +1159,16 @@ mod tests {
     fn a_change_is_signed_by_the_pinned_key_then_swapped_and_pinned() {
         let (t, p) = machine(true);
         let made = std::cell::Cell::new(0);
+        // a record cleared at start is said until the owner chooses again (f163c REVIEW-op4 N1)
+        *CLEARED.lock().unwrap() = Some("owner_method_record_cleared");
         assert_eq!(
             run(t.path(), Method::Password, &p, &made, true),
             Ok(Method::Biometry)
+        );
+        assert_eq!(
+            *CLEARED.lock().unwrap(),
+            None,
+            "reason: cleared_said_after_a_change"
         );
         let d = t.path();
         assert_eq!(

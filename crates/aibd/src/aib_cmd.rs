@@ -45,37 +45,43 @@ fn is_link(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
 }
 
-/// Ours: a link whose target's file name is aibd's (an install in another folder is ours too).
-fn ours(link: &Path) -> bool {
-    is_link(link)
-        && std::fs::read_link(link).is_ok_and(|t| {
-            t.file_name()
-                .is_some_and(|n| n == OsStr::new(crate::install::EXE_NAME))
-        })
+/// Ours: a link to this very aibd (the whole path, 3e53b REVIEW-op1 r1 N1: a link to another
+/// aibd is another install's, not ours).
+fn ours(link: &Path, exe: &Path) -> bool {
+    is_link(link) && std::fs::read_link(link).ok().as_deref() == Some(exe)
 }
 
 /// What [`place`] found or did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Placed {
     Written(PathBuf),
-    /// an `aib` that is not ours is there: left as it is
+    /// an `aib` that is not ours is in `dir` or anywhere on PATH: nothing placed
     NotOurs(PathBuf),
 }
 
-/// `dir/aib` → `exe`, written when nothing is there or it is ours; read back.
-pub fn place(dir: &Path, exe: &Path) -> Result<Placed, String> {
+/// An `aib` that is not ours: in `dir`, or in any folder on `path` (f163c REVIEW-op2 N1 /
+/// 3e53b PRE-READ-aib-cmd-windows r1: with AIB 1.x's anywhere on PATH, ours would hide it or be
+/// hidden by it, so none is placed).
+fn another(dir: &Path, exe: &Path, path: Option<&OsString>) -> Option<PathBuf> {
+    let mut seen = vec![dir.join(NAME)];
+    if let Some(p) = path {
+        seen.extend(std::env::split_paths(p).map(|d| d.join(NAME)));
+    }
+    seen.into_iter()
+        .find(|p| std::fs::symlink_metadata(p).is_ok() && !ours(p, exe))
+}
+
+/// `dir/aib` → `exe`, written when no other `aib` is there or on PATH; read back.
+pub fn place(dir: &Path, exe: &Path, path: Option<&OsString>) -> Result<Placed, String> {
+    if let Some(other) = another(dir, exe, path) {
+        return Ok(Placed::NotOurs(other));
+    }
     let at = dir.join(NAME);
-    if std::fs::symlink_metadata(&at).is_ok() {
-        if !ours(&at) {
-            return Ok(Placed::NotOurs(at));
-        }
-        if std::fs::read_link(&at).ok().as_deref() == Some(exe) {
-            return Ok(Placed::Written(at));
-        }
-        std::fs::remove_file(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+    if ours(&at, exe) {
+        return Ok(Placed::Written(at));
     }
     link(exe, &at)?;
-    if std::fs::read_link(&at).ok().as_deref() != Some(exe) {
+    if !ours(&at, exe) {
         return Err(format!("{} does not read back as written", at.display()));
     }
     Ok(Placed::Written(at))
@@ -91,62 +97,36 @@ fn link(_: &Path, at: &Path) -> Result<(), String> {
     Err(format!("{}: the setup puts aib.exe here", at.display()))
 }
 
-/// The first `aib` on `path` (the folders in order, links not followed).
-fn first_on_path(path: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .map(|d| d.join(NAME))
-        .find(|p| std::fs::symlink_metadata(p).is_ok())
-}
-
-/// The lines `aibd install` prints for `aib`: written / left, then what PATH means for it.
+/// The lines `aibd install` prints for `aib`: written / left, then whether PATH reaches it.
 /// Never fails the install.
 pub fn place_lines(dir: &Path, exe: &Path, path: Option<&OsString>) -> Vec<String> {
     let mut out = Vec::new();
-    let at = match place(dir, exe) {
+    match place(dir, exe, path) {
         Ok(Placed::Written(at)) => {
-            out.push(format!(
-                "AIB-CMD {} (aib web opens the workbench)",
-                at.display()
-            ));
-            at
+            out.push(format!("AIB-CMD {} (aib web opens the workbench)", at.display()));
+            let on_path = path.is_some_and(|p| std::env::split_paths(p).any(|d| d == dir));
+            if !on_path {
+                out.push(format!(
+                    "AIB-CMD-PATH {} is not on PATH: until it is, type {} web",
+                    dir.display(),
+                    at.display()
+                ));
+            }
         }
-        Ok(Placed::NotOurs(at)) => {
-            out.push(format!(
-                "AIB-CMD-LEFT {} is another aib (AIB 1.x?), left as it is; open the workbench with {} ctl web",
-                at.display(),
-                exe.display()
-            ));
-            return out;
-        }
-        Err(e) => {
-            out.push(format!("AIB-CMD-NOT-WRITTEN {e}"));
-            return out;
-        }
-    };
-    let on_path = path.is_some_and(|p| std::env::split_paths(p).any(|d| d == dir));
-    if !on_path {
-        out.push(format!(
-            "AIB-CMD-PATH {} is not on PATH: until it is, type {} web",
-            dir.display(),
-            at.display()
-        ));
-    } else if let Some(first) = path
-        .and_then(|p| first_on_path(p.as_os_str()))
-        .filter(|f| *f != at)
-    {
-        out.push(format!(
-            "AIB-CMD-PATH another aib comes first on PATH ({}): type {} web",
-            first.display(),
-            at.display()
-        ));
+        Ok(Placed::NotOurs(other)) => out.push(format!(
+            "AIB-CMD-LEFT {} is another aib (AIB 1.x?), so none was placed; open the workbench with {} ctl web",
+            other.display(),
+            exe.display()
+        )),
+        Err(e) => out.push(format!("AIB-CMD-NOT-WRITTEN {e}")),
     }
     out
 }
 
-/// `aibd uninstall`: remove ours only. `None` = nothing of ours was there.
-pub fn remove(dir: &Path) -> Option<String> {
+/// `aibd uninstall`: remove ours (the link to `exe`) only. `None` = nothing of ours was there.
+pub fn remove(dir: &Path, exe: &Path) -> Option<String> {
     let at = dir.join(NAME);
-    if !ours(&at) {
+    if !ours(&at, exe) {
         return None;
     }
     Some(match std::fs::remove_file(&at) {
@@ -193,38 +173,51 @@ mod tests {
         assert!(lines[0].starts_with("AIB-CMD "), "{lines:?}");
         assert_eq!(std::fs::read_link(bin.join("aib")).unwrap(), exe);
         // again: the same link, nothing else said
-        assert_eq!(place_lines(&bin, &exe, path.as_ref()).len(), 1);
-        // not on PATH: said, still written
+        assert_eq!(place_lines(&bin, &exe, path.as_ref()), lines);
+        // not on PATH: said, still ours
         let other = Some(std::env::join_paths([d.path().join("elsewhere")]).unwrap());
-        let lines = place_lines(&bin, &exe, other.as_ref());
-        assert!(
-            lines.iter().any(|l| l.starts_with("AIB-CMD-PATH")),
-            "{lines:?}"
-        );
-        // another aib first on PATH (AIB 1.x in its own folder): said
+        let l = place_lines(&bin, &exe, other.as_ref());
+        assert!(l.iter().any(|l| l.starts_with("AIB-CMD-PATH")), "{l:?}");
+        // AIB 1.x's aib anywhere on PATH (before or after ours): none placed, its path said
         let one = d.path().join("one");
         std::fs::create_dir_all(&one).unwrap();
         std::fs::write(one.join("aib"), b"1.x").unwrap();
-        let first = Some(std::env::join_paths([&one, &bin]).unwrap());
-        let lines = place_lines(&bin, &exe, first.as_ref());
-        assert!(lines.iter().any(|l| l.contains("comes first")), "{lines:?}");
-        // AIB 1.x's aib in the same folder (a link to its own program, or a file): left
+        let fresh = d.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        for order in [[&one, &fresh], [&fresh, &one]] {
+            let p = Some(std::env::join_paths(order).unwrap());
+            let l = place_lines(&fresh, &exe, p.as_ref());
+            assert!(l[0].starts_with("AIB-CMD-LEFT"), "{l:?}");
+            assert!(
+                l[0].contains(&one.join("aib").display().to_string()),
+                "{l:?}"
+            );
+            assert!(
+                std::fs::symlink_metadata(fresh.join("aib")).is_err(),
+                "reason: placed_beside_1x"
+            );
+        }
+        // AIB 1.x's aib in the same folder (a link to its own program): left, not removed
         let old = d.path().join("old");
         std::fs::create_dir_all(&old).unwrap();
-        std::os::unix::fs::symlink(d.path().join("ez2-aib/bin/aib"), old.join("aib")).unwrap();
-        let lines = place_lines(&old, &exe, path.as_ref());
-        assert!(lines[0].starts_with("AIB-CMD-LEFT"), "{lines:?}");
+        let theirs = d.path().join("ez2-aib/bin/aib");
+        std::os::unix::fs::symlink(&theirs, old.join("aib")).unwrap();
+        let l = place_lines(&old, &exe, path.as_ref());
+        assert!(l[0].starts_with("AIB-CMD-LEFT"), "{l:?}");
+        assert_eq!(std::fs::read_link(old.join("aib")).unwrap(), theirs);
+        assert_eq!(remove(&old, &exe), None, "reason: the_1x_aib_removed");
+        // a link to another aibd (another install's): not ours either
+        let two = d.path().join("two");
+        std::fs::create_dir_all(&two).unwrap();
+        std::os::unix::fs::symlink(d.path().join("x/aibd"), two.join("aib")).unwrap();
+        assert!(place_lines(&two, &exe, None)[0].starts_with("AIB-CMD-LEFT"));
         assert_eq!(
-            std::fs::read_link(old.join("aib")).unwrap(),
-            d.path().join("ez2-aib/bin/aib"),
-            "reason: the_1x_aib_replaced"
+            remove(&two, &exe),
+            None,
+            "reason: another_installs_aib_removed"
         );
-        assert_eq!(remove(&old), None, "reason: the_1x_aib_removed");
-        std::fs::write(one.join("aib"), b"1.x").unwrap();
-        assert!(place_lines(&one, &exe, path.as_ref())[0].starts_with("AIB-CMD-LEFT"));
-        assert_eq!(std::fs::read(one.join("aib")).unwrap(), b"1.x");
         // uninstall: ours goes
-        assert!(remove(&bin).unwrap().starts_with("REMOVED"));
+        assert!(remove(&bin, &exe).unwrap().starts_with("REMOVED"));
         assert!(std::fs::symlink_metadata(bin.join("aib")).is_err());
         assert!(exe.exists());
     }

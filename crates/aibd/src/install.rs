@@ -1787,7 +1787,7 @@ fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     if pl.label == DEFAULT_LABEL {
         if let Some(line) = Path::new(&rec.exe)
             .parent()
-            .and_then(crate::aib_cmd::remove)
+            .and_then(|d| crate::aib_cmd::remove(d, Path::new(&rec.exe)))
         {
             out.say(line);
         }

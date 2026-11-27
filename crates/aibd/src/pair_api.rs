@@ -686,6 +686,12 @@ pub async fn status(
     match p.status(&a.digest) {
         Some(v) => {
             let mut j = view_json(&v, p.channel());
+            // the page's waiting box reads this one (fc7f9 11-27): the same key_kind as codes/{id}
+            if p.channel() == crate::pairing::ConfirmChannel::TouchId {
+                if let Some(k) = crate::touch::key_kind_now() {
+                    j["key_kind"] = serde_json::Value::String(k.into());
+                }
+            }
             // the page's probe (519d0 01:41): offer the window only when aibd has it
             if v.carried && !a.carried {
                 j["reconfirmed"] = serde_json::Value::Bool(true);
