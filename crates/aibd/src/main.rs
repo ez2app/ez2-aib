@@ -127,6 +127,7 @@ fn main() -> ExitCode {
                 ld: ld.as_ref(),
                 health: &aibd::install::HttpHealth,
                 pace: &aibd::install::pace,
+                key: &aibd::install::HerePairKey,
             };
             let out = aibd::install::run(cmd, rest, &host, &svc);
             print!("{}", out.stdout);
@@ -154,6 +155,7 @@ fn main() -> ExitCode {
                 ld: ld.as_ref(),
                 health: &aibd::install::HttpHealth,
                 pace: &aibd::install::pace,
+                key: &aibd::install::HerePairKey,
             };
             let cs = platform::codesign();
             let u = aibd::install::update::Upd {

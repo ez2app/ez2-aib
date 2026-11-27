@@ -125,8 +125,8 @@ k ', seat_open: '\''夥伴開好了,到下面打一句話'\''' ''
 k 'return !!(c && c.proj === '\''hosts'\'' && c.step && c.step.id === '\''host_add'\'');' 'return false;'
 # GD52 指引鈕又寫「打開測試機」(B5)
 k 'add_host: '\''加一台主機'\''' 'add_host: '\''打開測試機'\'''
-# GD53 Windows 配對頁又叫人開終端機(B6)
-k 'if (typeof t !== '\''string'\'' || !(typeof fpWin === '\''function'\'' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)' 'if (true) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)'
+# GD53 Windows 配對頁又叫人開終端機(B6)(11-27 合 main 後重錨:pairSay 兩平台都套表)
+k '(typeof fpWin === '\''function'\'' && fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)' '(false ? PAIR_WIN_SAY : PAIR_MAC_SAY)'
 # GD54 配對表單沒經 pairSay(B6)
 k 'return pairSay(`<form class="pairbox" id="pairf"' 'return (`<form class="pairbox" id="pairf"'
 # GC7 測試機那行的鈕又被切邊(B5)
@@ -142,13 +142,13 @@ k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.
 # GD63 組字中按 Esc 也關指引(連組字一起丟)
 k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
 # GD56 終端機確認通道也換成 Windows Hello 字(f163c 1a7f49de N1)
-k 'const pairWaitSay = (chan) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan) => (false ? (t) => t : '
+k 'const pairWaitSay = (chan, kk) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan, kk) => (false ? (t) => t : '
 # GD57 等確認狀態沒記 channel
-k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: '\'''\'' }'
+k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'', kk:' 'chan: '\'''\'', kk:'
 # GD64 Mac Touch ID 通道等確認框仍叫人到終端機按 y(3e53b ea75d93f24 N1)
-k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan === '\'''\'' ? (t) => t : (t) => t);'
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(' 'chan === '\'''\'' ? (t) => t.split('\''不會有這段'\'').join('
 # GD65 channel 還沒讀到也換成 Touch ID 字
-k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join('
 # GD66 imeBusy 不認 keyCode 229(組字中 Esc 會關指引;f163c aa7164f7ed N1 行為測試)
 k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
 # GD67 Mac 等確認框並列 Touch ID 與登入密碼(3e53b 203a4beb32 L1)

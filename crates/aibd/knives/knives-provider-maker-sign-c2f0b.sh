@@ -8,8 +8,8 @@
 set -euo pipefail
 umask 022
 cd "$(git rev-parse --show-toplevel)"
-pm() { python3 -I scripts/knife.py crates/aibd/src/provider_maker.rs "$1" "$2" --expect-fail "provider_maker::tests::$3" \
-        -- cargo test -p aibd --locked --lib "provider_maker::tests::$3"; }
+pm() { python3 -I scripts/knife.py crates/aibd/src/provider_fetch/maker.rs "$1" "$2" --expect-fail "provider_fetch::maker::tests::$3" \
+        -- cargo test -p aibd --locked --lib "provider_fetch::maker::tests::$3"; }
 # PM1 the production fetch takes a signer that always says yes
 pm '    let sign = move |p: &Path, f: &File| signed_by_maker(&provider, p, f);' '    let sign = move |p: &Path, f: &File| { let _ = (&provider, p, f); Ok(()) };' the_production_fetch_refuses_an_unsigned_file_with_a_measured_hash
 # PM2 an unknown provider gets some maker

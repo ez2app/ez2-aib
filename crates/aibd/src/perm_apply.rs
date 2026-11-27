@@ -56,7 +56,8 @@ impl Expanded {
         Some(Expanded {
             tpl_uid: t.tpl_uid.clone(),
             rev: t.rev,
-            name: t.name.clone(),
+            // the writer's word, cut for the window (SCAN-owner-window-words 1)
+            name: crate::owner_ok::cut_to(&t.name, crate::owner_ok::NAME_SHOWN),
             base: t.base.clone(),
             items,
         })
@@ -160,7 +161,9 @@ pub fn window_line(e: &Expanded, raised: &[&str]) -> String {
         .iter()
         .map(|k| word(k))
         .collect();
-    let mut s = format!("用權限模板「{}」底 {}:{}", e.name, e.base, held.join("、"));
+    // ebab8 11-25 14:01 (SCAN-owner-window-words 1): the base first; the template's words
+    // after it (a kept name cut where it is read: Expanded::of, revoke_name)
+    let mut s = format!("底 {} · 模板 {}:{}", e.base, e.name, held.join("、"));
     if !missing.is_empty() {
         s.push_str(&format!(";這一版還沒有 {}", missing.join("、")));
     }
@@ -189,11 +192,16 @@ pub fn revoke_name(tpl_uid: &str, now: Option<(&str, i64)>, then: i64) -> String
         return format!("{mode} 模式本身,沒有用模板");
     }
     match now {
-        Some((name, rev)) if rev == then => name.to_owned(),
+        Some((name, rev)) if rev == then => cut_name(name),
         // c2f0b REVIEW-pa2ls L-b: the warning first, before a long name the window cuts
-        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){name}"),
+        Some((name, rev)) => format!("(已改到 rev {rev},收回到 rev {then}){}", cut_name(name)),
         None => format!("已刪的模板 · 當時 rev {then}"),
     }
+}
+
+/// A kept template's name as a window shows it (SCAN-owner-window-words 1).
+fn cut_name(name: &str) -> String {
+    crate::owner_ok::cut_to(name, crate::owner_ok::NAME_SHOWN)
 }
 
 /// What applying `new` to a seat holding `old` is.
@@ -1134,18 +1142,53 @@ mod tests {
                 "reason: who_not_first {l}"
             );
             let shown = crate::owner_ok::object_shown(&l);
-            let head: String = shown.chars().take(24).collect();
-            assert!(
-                head.starts_with("claude · un0eba · "),
-                "reason: who_cut_off {shown}"
-            );
-            assert!(
-                !head.contains("zz9zz9") && !head.contains("codex"),
-                "reason: name_stood_for_the_real_ones {shown}"
-            );
+            crate::owner_ok::fixed_first(&shown, "claude · un0eba · ", &["zz9zz9", "codex"])
+                .unwrap();
         }
         let l = open_line("AIB 本人核准安全工程師", "un0eba", "claude", &line);
         assert!(l.contains("· AIB 本人核准… · "), "reason: name_not_cut {l}");
+    }
+
+    /// ebab8 11-25 14:01 (SCAN-owner-window-words 1): a kept template's name is its writer's
+    /// word. However long, or written to look like a base, the window of an apply shows the
+    /// real base first and the name after it, cut where it is read; a take-back's warning
+    /// stays before the name.
+    #[test]
+    fn a_template_name_never_stands_before_the_base_when_applied() {
+        let all = items(&["chat", "code", "own", "cmd", "brain", "net", "push"]);
+        for name in [
+            "很長很長很長很長很長很長很長很長很長很長的模板名字",
+            "底 safe 模板 只對話",
+        ] {
+            let t = aib_store::PermTemplate {
+                tpl_uid: "tpl_a".into(),
+                name: name.into(),
+                base: "dgrs".into(),
+                items_json: all.json(),
+                rev: 3,
+                created_at: String::new(),
+                created_by: String::new(),
+                updated_at: String::new(),
+                updated_by: String::new(),
+                archived_at: None,
+            };
+            let e = Expanded::of(&t).unwrap();
+            assert!(e.name.ends_with('…'), "reason: name_not_cut {}", e.name);
+            let shown = crate::owner_ok::object_shown(&window_line(&e, &["push"]));
+            crate::owner_ok::fixed_first(&shown, "底 dgrs · 模板 ", &["safe"]).unwrap();
+            let back = Expanded {
+                name: revoke_name("tpl_a", Some((name, 5)), 3),
+                ..e.clone()
+            };
+            assert!(
+                back.name.ends_with('…'),
+                "reason: revoke_name_not_cut {}",
+                back.name
+            );
+            let shown = crate::owner_ok::object_shown(&window_line(&back, &["push"]));
+            crate::owner_ok::fixed_first(&shown, "底 dgrs · 模板 (已改到 rev 5", &["safe"])
+                .unwrap();
+        }
     }
 
     /// 7B-5: the window names every item held, what is not given, and what this turns on last.

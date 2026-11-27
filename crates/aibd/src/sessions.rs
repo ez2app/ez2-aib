@@ -2050,6 +2050,15 @@ impl Sessions {
             let argv = match self.regate(&q) {
                 Ok(argv) => argv,
                 Err(code) => {
+                    self.refuse_queued(q, code.as_str());
+                    continue;
+                }
+            };
+            // L2 (f163c REVIEW-l2-c2f0b-f163c-b029c9cc L1): a program aibd placed is checked
+            // again now, after the wait, and its checked handle is held until it has started
+            let held = match self.placed_now(argv.first().map(String::as_str)) {
+                Ok(h) => h,
+                Err(code) => {
                     self.refuse_queued(q, code);
                     continue;
                 }
@@ -2069,6 +2078,7 @@ impl Sessions {
                 Some((q.order, q.seq)),
                 q.timeout,
             );
+            drop(held);
         }
     }
 
@@ -2076,6 +2086,22 @@ impl Sessions {
     /// M1 gate once more on what the request asked for, now that the session
     /// leaves the queue. The argv to start (with `argv[0]` resolved again), or
     /// the refusal's code (audited as at the POST).
+    /// A program aibd placed (`<data>/providers/…`, data = the sessions folder's parent, as
+    /// `registry::data_of`) checked against the measured table again; the checked handle back.
+    /// Refused ⇒ the queued session fails with the check's own word (3e53b r11).
+    /// Runs on the dequeue thread (a plain thread, not a runtime worker): hashing a large
+    /// program holds up only the queue, which waits for this one anyway (3e53b r7 N1).
+    fn placed_now(&self, argv0: Option<&str>) -> Result<Option<std::fs::File>, &'static str> {
+        let Some(argv0) = argv0 else {
+            return Ok(None);
+        };
+        // no data folder to look in: refused, never started unchecked (3e53b r7 N2)
+        let Some(data) = self.default_cwd.parent() else {
+            return Err(ErrorCode::ProgramNotAllowed.as_str());
+        };
+        crate::provider_fetch::maker::placed_for_seat(data, std::path::Path::new(argv0))
+    }
+
     fn regate(&self, q: &Queued) -> Result<Vec<String>, ErrorCode> {
         let policy = self
             .policy
@@ -2114,7 +2140,7 @@ impl Sessions {
     /// A queued session the gate refused at dequeue: it ends `failed`
     /// (`ended_by: policy_refused`), its reserved slot is given back, and the
     /// next one may start.
-    fn refuse_queued(&self, q: Queued, code: ErrorCode) {
+    fn refuse_queued(&self, q: Queued, code: &'static str) {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         g.started(q.rec.seat_id.as_ref());
@@ -2125,15 +2151,21 @@ impl Sessions {
         rec.ended_at = Some(now_rfc3339());
         rec.ended_by = Some("policy_refused");
         let id = rec.id.clone();
-        tracing::warn!(session = %id, code = code.as_str(), "queued session refused by the M1 gate at start");
+        tracing::warn!(session = %id, code, "queued session refused by the M1 gate at start");
         if let Some(seat) = rec.seat_id.as_deref() {
-            crate::reply_back::failed(seat, &format!("這一席起不來:{}", code.as_str()));
+            crate::reply_back::failed(
+                seat,
+                &format!(
+                    "這一席起不來:{code}{}",
+                    crate::provider_fetch::maker::what_to_do(code)
+                ),
+            );
         }
         self.write(
             &rec,
             q.seq,
             "session.spawn_failed",
-            serde_json::json!({"id": id, "tag": "policy_refused", "code": code.as_str()}),
+            serde_json::json!({"id": id, "tag": "policy_refused", "code": code}),
         );
         g.ended.push_front((q.order, rec));
         g.ended.truncate(KEEP_ENDED);

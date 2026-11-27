@@ -1800,8 +1800,8 @@ jobs:
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K6 an empty list allows everything
           ak crates/aibd/src/allowlist.rs \
-            '    let listed = p.programs.iter().any(|e| {' \
-            '    let listed = p.programs.is_empty() || p.programs.iter().any(|e| { // knife' \
+            '    let listed = !matched.is_empty();' \
+            '    let listed = p.programs.is_empty() || !matched.is_empty(); // knife' \
             no_policy_starts_nothing_on_either_route
           # K7 the child inherits aibd's environment (no env_clear): AIBD_* leaks
           ak crates/aibd/src/platform/session_unix.rs \
@@ -2405,7 +2405,10 @@ jobs:
       # and health stays public and minimal.
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-web.sh,')
-        timeout-minutes: 15
+        # 25 (90856, ebab8 19:10): each knife edits ctl.rs and rebuilds aibd's lib tests, 3.5-6 min on
+        # macos-latest; this step took 9 min on main 08dcf8d6cb, 11 on #890 b2f6300f25, and ran out at 15
+        # on #900 cb6c9e7fb2 and d347c5d86a after 3 knives
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2663,9 +2666,10 @@ jobs:
           kp '            if mode == "dgrs" {' \
              '            if mode == "dgrs" && model.is_none() { // knife' \
              claude_dgrs_with_a_model_is_the_whole_row
-          # SP2 an AI not measured yet (grok) is started in claude's form (IFACE §3 Q1; codex has its own arm since S89-live-2)
+          # SP2 an AI not measured yet (agy) is started in claude's form (IFACE §3 Q1; codex has its own arm since S89-live-2,
+          # grok since #900: with grok here the mutant left that arm unreachable and failed -D warnings, f163c 00:46)
           kp '        "claude" => {' \
-             '        "claude" | "grok" => { // knife' \
+             '        "claude" | "agy" => { // knife' \
              a_provider_not_measured_is_refused
           # SP3 a session id that is not a uuid is passed on
           kp '    if !crate::uuid_shape(session_id) {' \
@@ -4299,6 +4303,9 @@ jobs:
     name: crate knives (macOS, ${{ matrix.shard }})
     needs: changes
     if: ${{ !cancelled() }}
+    # Six cells (90856, f163c 20:35): #900 run 45807336910 had macOS 3/4 hit the 80-minute step limit; it was
+    # planned 3536 s from 19 estimated lines. With that run's seconds in knife-secs.tsv the 100 macOS scripts plan
+    # 4667 s over four cells (78 min + the build), 3734 over five (62, over the 60 asked for), 3069 over six (51).
     # Four cells (90856, ebab8 11-26 08:47): #898 run 45701153697 had macOS 1/3 hit the 80-minute step limit twice;
     # with that run's seconds in knife-secs.tsv, three cells project 3658 s (61 min, over the 60 asked for) and
     # four 2743 s (46). Before:
@@ -4310,7 +4317,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/4", "2/4", "3/4", "4/4"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
     timeout-minutes: 100
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
@@ -4444,7 +4451,7 @@ jobs:
           CELLS: ${{ needs.crate-knives.result }}
           MACOS_CELL: ${{ needs.crate-knives-macos.result }}
           SHARDS: "4"
-          MAC_SHARDS: "4"
+          MAC_SHARDS: "6"
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}

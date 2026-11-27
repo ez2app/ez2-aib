@@ -48,9 +48,11 @@ impl T {
     }
     fn install(&self, extra: &[&str]) -> Output {
         let bin = self.p("bin");
+        // --no-pair-key: these runs never make a Secure Enclave key on the test machine
         let mut a = vec![
             "install",
             "--no-start",
+            "--no-pair-key",
             "--dir",
             bin.to_str().expect("utf8"),
         ];
@@ -203,7 +205,7 @@ fn owner_touch_is_written_only_with_touchid_and_kept_on_reinstall() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o));
     let s = String::from_utf8_lossy(&o.stdout).into_owned();
     assert!(s.contains("SET-ENV AIBD_PAIRING=touchid"), "{s}");
-    assert!(s.contains("NEXT aibd ctl pair-key init"), "{s}");
+    assert!(s.contains("PAIR-KEY skipped (--no-pair-key)"), "{s}");
 
     let o = t.install(&[]);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o));

@@ -242,6 +242,28 @@ pub fn net_caps(os: &str, proxy: bool) -> Value {
     Value::Object(by)
 }
 
+/// A14 (f163c REVIEW-a14code L2): whether a work seat's network is blocked in this build, the
+/// one answer the page ([`mode_net`]) and a seat's open line ([`aib_seatopen::mode_note`]) both
+/// take. Today: claude's sandbox keeps commands off the network, codex's profile has
+/// `network.enabled=false`. When egress (3e53b, `capabilities.net`) is wired in, this is not
+/// read as `net_state(…) == "enforced"`: enforced means "through the proxy, a card asks the
+/// owner, a yes connects", not "no network". The answer then has three words (blocked /
+/// through the proxy, asks the owner / a hint only), not a yes-no (f163c REVIEW-a14code
+/// d5a42b9d N1).
+pub fn work_net_blocked() -> bool {
+    true
+}
+
+/// A14: `{mode: {code, words}}` for every seat mode, from [`aib_seatopen::net_now`].
+pub fn mode_net() -> Value {
+    let mut m = serde_json::Map::new();
+    for mode in aib_seatopen::SEAT_MODES {
+        let (code, words) = aib_seatopen::net_now(mode, work_net_blocked());
+        m.insert((*mode).to_owned(), json!({"code": code, "words": words}));
+    }
+    Value::Object(m)
+}
+
 pub fn version_body_with(
     dgrs_input: bool,
     policy: &crate::allowlist::SessionPolicy,
@@ -272,6 +294,9 @@ pub fn version_body_with(
         "capabilities": {
             "providers": providers,
             "modes": aib_seatopen::SEAT_MODES,
+            // A14 (f163c REVIEW-a14 r0 L1): each mode's network today, the same words a seat is
+            // told at open (aib_seatopen::net_now): the page shows these, never its own
+            "mode_net": mode_net(),
             // which modes a page may type into (seat_input / message_send)
             "input_modes": if dgrs_input { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) },
             "routes": crate::guard::ROUTES,
@@ -1183,6 +1208,31 @@ pub fn import_at_start(db: &aib_store::WorkspaceDb, store: &aib_store::Store, da
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    /// A14 (f163c REVIEW-a14 r0 L1): the page's network words for a mode are the words that
+    /// mode's seat is told at open, from one place.
+    #[test]
+    fn the_page_and_the_seat_say_the_same_network() {
+        let v = version_body_with(false, &policy_with(&[]), &|_| true);
+        for mode in aib_seatopen::SEAT_MODES {
+            let w = v["capabilities"]["mode_net"][*mode]["words"]
+                .as_str()
+                .unwrap();
+            assert!(
+                aib_seatopen::mode_note(mode, work_net_blocked()).contains(w),
+                "reason: page_and_seat_differ {mode} {w}"
+            );
+        }
+        assert_eq!(v["capabilities"]["mode_net"]["safe"]["code"], "none");
+        assert_eq!(v["capabilities"]["mode_net"]["dgrs"]["code"], "open");
+        // L2: the page's work network is what aibd says, not a word fixed in aib-seatopen
+        let work = if work_net_blocked() {
+            "blocked"
+        } else {
+            "open"
+        };
+        assert_eq!(v["capabilities"]["mode_net"]["work"]["code"], work);
+    }
 
     /// N-workspace-c4 C: the table and the file agree field by field, or the start keeps the
     /// file as the tree.
