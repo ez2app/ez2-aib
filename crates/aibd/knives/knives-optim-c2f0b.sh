@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# IN1–IN3 / KK1–KK2 / MA1–MA3 / AC1–AC4 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
+# IN1–IN3 / KK1–KK2 / MA1–MA3 / AC1–AC4 / OR1–OR4 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
 # set the install record is read there only, and the real aibd's plist is still refused from another folder; the AIB app
 # in Applications is the default aibd's only; the page's waiting box gets the one window a signature opens (touch_id or
 # login_password, never both); the app's click is `ctl web` only for its own executable with nothing after it, and an
@@ -36,4 +36,12 @@ k aib_cmd.rs '                .is_some_and(|n| n == OsStr::new(crate::install::E
 k aib_cmd.rs '        .is_some_and(|s| s == OsStr::new(NAME) || (cfg!(windows) && s.eq_ignore_ascii_case(NAME)))' '        .is_some_and(|s| s.eq_ignore_ascii_case(NAME))' aib_cmd::tests::aib_web_is_ctl_web_and_nothing_else_is_taken
 # AC4 install does not put aib beside aibd
 k install.rs '        for l in crate::aib_cmd::place_lines(&dir, &target, h.path_env.as_ref()) {' '        for l in crate::aib_cmd::place_lines(&dir, &target, h.path_env.as_ref()).into_iter().skip(9) {' install::tests::the_default_aibd_gets_the_aib_app_and_a_test_label_does_not
+# OR1 one reset code gets the plain sentence (3e53b DRAFT-ownermethod-opt124 §1)
+k owner_method.rs '    if RESET_CODES.contains(&why) {' '    if RESET_CODES[..3].contains(&why) {' owner_method::tests::the_reset_sentence_is_one_for_every_reset_code_and_says_pairing_alone_keeps_the_pin
+# OR2 the way out does not say pairing again alone resets nothing (§4)
+k owner_method.rs '    "本人確認的金鑰或方式紀錄跟配對時不同，現在只用指紋。只重新配對不會重設。\' '    "本人確認的金鑰或方式紀錄跟配對時不同，現在只用指紋。\' owner_method::tests::the_reset_sentence_is_one_for_every_reset_code_and_says_pairing_alone_keeps_the_pin
+# OR3 a pairing moves a pin already there (§4)
+k owner_method.rs '    if read_pin(data).is_some() {' '    if read_pin(data).is_none() {' owner_method::tests::the_reset_sentence_is_one_for_every_reset_code_and_says_pairing_alone_keeps_the_pin
+# OR4 our own change cut short is said as a cleared record (§2)
+k owner_method.rs '    (stale(pin, r, current_pub) && !ours).then_some("owner_method_record_cleared")' '    (stale(pin, r, current_pub) || !ours).then_some("owner_method_record_cleared")' owner_method::tests::a_cleared_record_is_said_only_when_it_was_not_this_pairings
 exit "$fail"

@@ -278,19 +278,29 @@ pub fn stale(pin: &Pin, r: &Record, current_pub: &[u8]) -> bool {
     never_swapped || before_the_pairing
 }
 
+/// The readings whose way out is the reset sentence; the settings page's `OM_RESET` is the same
+/// list (3e53b DRAFT-ownermethod-opt124 §1: one list for the match and its test).
+pub const RESET_CODES: [&str; 4] = [
+    "owner_key_not_as_paired",
+    "owner_method_no_pin",
+    "owner_method_record_not_as_paired",
+    "owner_method_pin_not_moved",
+];
+
+/// The way out for [`RESET_CODES`]. Pairing again alone keeps a pin already there
+/// ([`pin_after_pairing`]), so the sentence says so first (opt124 §4).
+pub const RESET_WORDS: &str =
+    "本人確認的金鑰或方式紀錄跟配對時不同，現在只用指紋。只重新配對不會重設。\
+    要重設：關掉 aibd,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,\
+    再開 aibd 重新配對一次(回到只用指紋)。";
+
 /// What selfcheck and the settings page say for a reading that is not as paired, and the way
 /// out (3e53b REVIEW-ownermethod N1).
 pub fn why_words(why: &str) -> &'static str {
-    match why {
-        "owner_key_not_as_paired"
-        | "owner_method_no_pin"
-        | "owner_method_record_not_as_paired"
-        | "owner_method_pin_not_moved" => {
-            "本人確認的金鑰或方式紀錄跟配對時不同，現在只用指紋。要重設：關掉 aibd,刪掉資料夾裡的 \
-             pair-key-pin.json 和 pair-key-method.json,再開 aibd 重新配對一次(回到只用指紋)。"
-        }
-        _ => "本人確認現在只用指紋。",
+    if RESET_CODES.contains(&why) {
+        return RESET_WORDS;
     }
+    "本人確認現在只用指紋。"
 }
 
 /// `owner_method_set` body: `{type, to}` only.
@@ -407,16 +417,39 @@ pub fn read_record(data: &Path) -> Option<Record> {
     Record::from_value(&read_json(&data.join(RECORD_FILE))?)
 }
 
-/// The record, or none when it is [`stale`] (then its file is removed).
+/// The record, or none when it is [`stale`] (then its file is removed, and [`cleared_why`]
+/// is kept for status).
 fn live_record(data: &Path, pin: Option<&Pin>, current_pub: &[u8]) -> Option<Record> {
     let r = read_record(data)?;
     if pin.is_some_and(|p| stale(p, &r, current_pub)) {
         let _ = std::fs::remove_file(data.join(RECORD_FILE));
         tracing::warn!("owner check: a change of method that never completed was cleared");
+        if let Some(why) = pin.and_then(|p| cleared_why(p, &r, current_pub)) {
+            tracing::warn!(
+                why,
+                "owner check: the cleared record was not this pairing's"
+            );
+            if let Ok(mut c) = CLEARED.lock() {
+                *c = Some(why);
+            }
+        }
         return None;
     }
     Some(r)
 }
+
+/// Why a cleared record is said in status (opt124 §2): a [`stale`] record whose old key is not
+/// the key in use. It cannot be told apart whether the owner deleted the pin and paired again
+/// or somebody placed a record (a key of one's own signs well), so the page's words say "maybe
+/// files were deleted by hand, or somebody changed them", never which. A change of our own cut
+/// short (its old key is the one in use) is not said.
+pub fn cleared_why(pin: &Pin, r: &Record, current_pub: &[u8]) -> Option<&'static str> {
+    let ours = sha256_hex(&r.old_pub) == sha256_hex(current_pub);
+    (stale(pin, r, current_pub) && !ours).then_some("owner_method_record_cleared")
+}
+
+/// [`cleared_why`] of this start (memory only).
+static CLEARED: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
 fn write_json(p: &Path, v: &Value) -> Result<(), &'static str> {
     crate::platform::write_private_file(p, v.to_string().as_bytes())
@@ -493,16 +526,24 @@ pub fn set_owner(p: SharedPresence, gate: std::sync::Arc<crate::pairing::Pairing
     let _ = OWNER.set((p, gate));
 }
 
+/// The pin a pairing writes: only where none is there yet. A pin already there stays, so
+/// pairing again alone resets nothing ([`RESET_WORDS`] says so).
+pub fn pin_after_pairing(data: &Path, current_pub: &[u8], at: u64) -> Option<Pin> {
+    if read_pin(data).is_some() {
+        return None;
+    }
+    Some(pin_at_pairing(current_pub, at))
+}
+
 /// A pairing the owner confirmed: where no pin is there yet, the key it was confirmed with is
 /// pinned (`record_sha256: null`, so it never opens the password window by itself).
 pub fn after_pairing(current_pub: &[u8]) {
     let Some(data) = DATA.get() else {
         return;
     };
-    if read_pin(data).is_some() {
+    let Some(pin) = pin_after_pairing(data, current_pub, crate::pair_carry::now_unix()) else {
         return;
-    }
-    let pin = pin_at_pairing(current_pub, crate::pair_carry::now_unix());
+    };
     if write_json(&data.join(PIN_FILE), &pin.to_value()).is_ok() {
         let record = live_record(data, Some(&pin), current_pub);
         let verify = |k: &[u8], m: &[u8], s: &[u8]| verify_any(k, m, s);
@@ -699,6 +740,8 @@ pub async fn status() -> Response {
         "words": words,
         // which window a yes opens now (ebab8 11-27): touch_id / login_password / null
         "key_kind": crate::touch::key_kind_now(),
+        // a record cleared at this start that was not this pairing's (opt124 §2): null or a code
+        "cleared": CLEARED.lock().ok().and_then(|c| *c),
     }))
     .into_response()
 }
@@ -920,6 +963,62 @@ mod tests {
             read(Some(&pin_at_pairing(OLD, 1)), Some(&r), NEW, verify),
             Reading::BiometryBecause("owner_key_not_as_paired")
         );
+    }
+
+    /// opt124 §1 / §4: every reset reading gets the one sentence, it names both files, and it
+    /// says pairing again alone resets nothing (the code keeps a pin already there).
+    #[test]
+    fn the_reset_sentence_is_one_for_every_reset_code_and_says_pairing_alone_keeps_the_pin() {
+        for code in RESET_CODES {
+            let w = why_words(code);
+            assert_eq!(w, RESET_WORDS, "reason: not_the_reset_sentence {code}");
+            assert!(
+                w.contains(PIN_FILE) && w.contains(RECORD_FILE),
+                "reason: misses_a_file"
+            );
+        }
+        assert!(
+            RESET_WORDS.contains("只重新配對不會重設"),
+            "reason: pairing_alone_not_said"
+        );
+        assert_ne!(why_words("owner_method_record_cleared"), RESET_WORDS);
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        let first = pin_after_pairing(d, &[1; PUBLIC_KEY_LEN], 1).unwrap();
+        assert_eq!(first.record_sha256, None);
+        write_json(&d.join(PIN_FILE), &first.to_value()).unwrap();
+        let before = std::fs::read(d.join(PIN_FILE)).unwrap();
+        assert_eq!(
+            pin_after_pairing(d, &[2; PUBLIC_KEY_LEN], 2),
+            None,
+            "reason: a_pairing_moved_the_pin"
+        );
+        assert_eq!(std::fs::read(d.join(PIN_FILE)).unwrap(), before);
+    }
+
+    /// opt124 §2: a cleared record is said only when its old key is not the key in use.
+    #[test]
+    fn a_cleared_record_is_said_only_when_it_was_not_this_pairings() {
+        let cur = [2; PUBLIC_KEY_LEN];
+        // paired again (pin of the pairing) with a record from another key there: said
+        let paired = pin_at_pairing(&cur, 1);
+        let other = record(Method::Password, &[1; PUBLIC_KEY_LEN], &[3; PUBLIC_KEY_LEN]);
+        assert!(stale(&paired, &other, &cur));
+        assert_eq!(
+            cleared_why(&paired, &other, &cur),
+            Some("owner_method_record_cleared")
+        );
+        // our own change cut short before the swap (old = pin = the key in use): not said
+        let ours = record(Method::Password, &cur, &[3; PUBLIC_KEY_LEN]);
+        assert!(stale(&paired, &ours, &cur));
+        assert_eq!(
+            cleared_why(&paired, &ours, &cur),
+            None,
+            "reason: own_change_said"
+        );
+        // a record that is not stale: not cleared, not said
+        let r = record(Method::Password, OLD, NEW);
+        assert_eq!(cleared_why(&moved(&r, NEW), &r, NEW), None);
     }
 
     #[test]
