@@ -14,6 +14,7 @@
   }
   new MutationObserver((ms) => { for (const m of ms) for (const nd of m.addedNodes) applySty(nd); }).observe(document.documentElement, { childList: true, subtree: true });
   const PAIRING = { on: false };
+  const PAIR_HOLD = { on: false, chan: undefined, until: 0 }; // 配對在等本人確認(指紋 / 密碼 / Windows Hello / 終端機 y):進度那步寫等你按,不算慢
   const PAGE_N = (() => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return [...a].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return String(Date.now()) + Math.random().toString(16).slice(2); } })(); // 配對碼送出中(一次只送一個)
   const token = () => { try { return sessionStorage.getItem(KEY) || ''; } catch (e) { return ''; } };
   class ApiError extends Error {
@@ -7417,7 +7418,7 @@
     let msg = '';
     try {
       const cb = document.getElementById('pcip'), cip = cb ? cb.checked : true;
-      S.cip = cip;
+      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, until: 0 }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
       // 0eed7 VERIFY-pkg-ec695674 H1:舊 aibd 不認 n / confirm_in_page,多帶就 401「碼打錯了」。
       // 只有 GET pair/prefs 答得出 confirm_in_page(7b81e 845ef9128 起)才帶這兩欄;舊的只送碼
       const f = { code }; if (S.pairNew && cip) f.confirm_in_page = '1';
@@ -7951,7 +7952,7 @@
   // 彈窗要畫的:need 的項目照順序,各自狀態(todo / cur / ok / slow);進度 = ok / 全部
   function loadPlan(list, st) {
     const rows = list.filter((x) => x.need).map((x) => ({ key: x.key, label: x.label, state: (st && st[x.key] && st[x.key].s) || 'todo', why: (st && st[x.key] && st[x.key].why) || '' }));
-    const ok = rows.filter((r) => r.state === 'ok').length, cur = rows.filter((r) => r.state === 'cur' || r.state === 'slow').length;
+    const ok = rows.filter((r) => r.state === 'ok').length, cur = rows.filter((r) => r.state === 'cur' || r.state === 'slow' || r.state === 'hold').length;
     return { rows, n: rows.length, ok, cur, pct: rows.length ? (ok / rows.length) * 100 : 100, glide: rows.length ? Math.min(100, ((ok + 0.85 * Math.min(cur, 1)) / rows.length) * 100) : 100 };
   }
   // 跑清單:照 after 排、其餘平行;need 項回報 cur / slow / ok / fail,背景項錯了不擋;回傳「need 全部好了」
@@ -8006,9 +8007,9 @@
     const P = loadPlan(PROG.list, PROG.st);
     for (const r of P.rows) {
       const li = PROG.el.querySelector(`.pgs li[data-k="${r.key}"]`); if (!li) continue;
-      const cls = r.state === 'slow' ? 'cur slow' : r.state;
+      const cls = r.state === 'slow' ? 'cur slow' : r.state === 'hold' ? 'cur hold' : r.state;
       if (li.className !== cls) { li.className = cls; li.querySelector('.pgdot').innerHTML = r.state === 'ok' ? PG_CHECK : ''; }
-      const w = li.querySelector('.pgw'), wh = r.state === 'slow' && r.why ? `<span>${esc(r.why)}</span>${PROG.retry ? '<button type="button" class="k" data-pgretry="1">再試一次</button>' : ''}` : '';
+      const w = li.querySelector('.pgw'), wh = r.state === 'slow' && r.why ? `<span>${esc(r.why)}</span>${PROG.retry ? '<button type="button" class="k" data-pgretry="1">再試一次</button>' : ''}` : r.state === 'hold' && r.why ? `<span>${esc(r.why)}</span>` : ''; // 等本人確認:不是壞了,不給再試一次
       if (w.innerHTML !== wh) w.innerHTML = wh;
     }
     PROG.el.querySelector('.pgn').textContent = P.ok === P.n ? '完成' : '第 ' + Math.min(P.ok + 1, P.n) + ' / ' + P.n + ' 步'; // 條的起點 = 完成數 / 總數,最後一步時至少過 (n-1)/n
@@ -8037,7 +8038,21 @@
     await loadRun(LOAD.filter((x) => x.key !== 'pair'), (k, st, w) => progSet(k, st === 'fail' ? 'slow' : st, st === 'fail' ? loadErr(w) : w), { each: () => render() });
     S.boot = null; progDone();
   }
-  function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); }, 5000); render(); }
+  // ebab8 11-27 10:2x(Andy 10:14 截圖):指紋窗還開著,配對那步就寫「超過 5 秒:aibd 還沒回配對結果 + 再試一次」像壞掉 ⇒
+  // 在等本人確認(這頁確認的兌換還在等 / pair/status 回 awaiting_confirmation)那步寫「等你在…確認(還有 N 秒)」,不算慢、不出再試一次;真的過了時間才寫原因。
+  // 兩平台同句型,只差視窗名(Windows Hello ↔ 本人確認視窗;Mac 判不出這台是指紋還是密碼,寫中性);終端機確認通道照實寫終端機
+  const pairHeld = () => !!(PAIR_HOLD.on && (PAIRING.on || (S.pair && S.pair.view === 'wait')));
+  const pairHoldLeft = () => (PAIR_HOLD.until ? Math.ceil((PAIR_HOLD.until - Date.now()) / 1000) : null);
+  const pairHoldSay = (chan, left) => (chan === 'terminal-unverified' ? '等你在終端機按 y' : typeof fpWin === 'function' && fpWin() ? '等你在 Windows Hello 視窗確認' : '等你在本人確認視窗確認') + (left > 0 ? '(還有 ' + left + ' 秒)' : '');
+  function pairHoldPaint() {
+    if (!PROG.el || PROG.done || !PROG.st.pair || (PROG.st.pair.s !== 'hold' && PROG.st.pair.s !== 'cur')) return;
+    if (!pairHeld()) return;
+    const n = pairHoldLeft();
+    if (n != null && n <= 0) return progSet('pair', 'slow', '時間到了還沒確認;要重來按再試一次');
+    const w = pairHoldSay(PAIR_HOLD.chan, n); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w);
+  }
+  setInterval(pairHoldPaint, 1000);
+  function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') { if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); } }, 5000); render(); }
   function bootEnd(ok) { S.boot = null; clearTimeout(BOOT.t); if (ok) progDone(); else progClose(); }
   function bootBar() { return ''; } // 進度在彈窗(§19g / §19h);頁面上不另畫
   let again = false;
@@ -8072,10 +8087,10 @@
       if (!S.paired) {
         let st = null;
         try { st = await get('/api/v1/pair/status'); } catch (e) { if (e && (e.status === 401 || e.status === 403)) { dropToken(); S.pair = { view: 'code', msg: '這個配對已失效,請重新輸入配對碼' }; return; } throw e; }
-        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '' }; return; }
+        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '' }; Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }
         if (st.state !== 'confirmed') { dropToken(); S.pair = { view: 'code', msg: '配對' + (st.state === 'expired' ? '已過期' : '已取消') + ',請重新輸入配對碼' }; return; }
         if (st.user_page) { S.banner = '這是用戶資料夾頁的配對:只能叫安全模式的席,讀不到本文'; S.bannerKind = 'err'; }
-        S.paired = true; S.pair = null;
+        S.paired = true; S.pair = null; PAIR_HOLD.on = false;
         // §19e(Andy 20:5x「直接進畫面?或著有進度條說明?」):先畫框架,資料到一塊補一塊;串流當下就連,不等 2 秒定時器
         if (!PUSH.started && !PUSH.off) { PUSH.started = true; pushLoop(); }
         S.boot = S.boot || { at: Date.now() };

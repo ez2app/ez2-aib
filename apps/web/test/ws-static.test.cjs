@@ -700,7 +700,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
 // 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對(甲2 開席登入 11-26 拿掉:改接重新登入卡)
 {
-  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/, /'等你在終端機按 y'/];
   const bad = [];
   for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
     read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
@@ -1073,6 +1073,21 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         const mac = pick('', false); ok(/<h2>在本人確認視窗確認<\/h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
         ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
         ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
+      // ebab8 11-27(Andy 10:14 截圖):配對在等本人確認時進度那步寫「等你在…確認(還有 N 秒)」、不算慢、不出再試一次;過了時間才寫原因
+      { const h0 = ws.indexOf('  const pairHeld = '), h1 = ws.indexOf('  setInterval(pairHoldPaint, 1000);'); ok(h0 > 0 && h1 > h0, 'reason: pair_hold_block_found');
+        const hb = { win: false, now: 1000000, sets: [] }; vm.createContext(hb);
+        vm.runInContext('const fpWin = () => this.win; const S = { pair: null }; const PAIRING = { on: false }; const PAIR_HOLD = { on: false, chan: undefined, until: 0 }; const PROG = { el: {}, done: false, st: { pair: { s: "cur", why: "" } } };\nconst progSet = (k, s, w) => { PROG.st[k] = { s, why: w || "" }; this.sets.push([s, w]); };\nDate.now = () => this.now;\n' + ws.slice(h0, h1) + '\nthis.X = { S, PAIRING, PAIR_HOLD, PROG, pairHeld, pairHoldSay, pairHoldPaint };', hb);
+        const X = hb.X;
+        ok(X.pairHoldSay('', 42) === '等你在本人確認視窗確認(還有 42 秒)' && X.pairHoldSay(undefined, null) === '等你在本人確認視窗確認' && X.pairHoldSay('terminal-unverified', 5) === '等你在終端機按 y(還有 5 秒)', 'reason: pair_hold_words_mac');
+        hb.win = true; ok(X.pairHoldSay('', 42) === '等你在 Windows Hello 視窗確認(還有 42 秒)', 'reason: pair_hold_words_win'); hb.win = false;
+        ok(!X.pairHeld(), 'reason: pair_hold_off_by_default');
+        X.PAIR_HOLD.on = true; X.PAIRING.on = true; ok(X.pairHeld(), 'reason: pair_hold_while_redeem_confirms_in_page');
+        X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'hold' && X.PROG.st.pair.why === '等你在本人確認視窗確認', 'reason: pair_hold_paints_hold_not_slow ' + JSON.stringify(X.PROG.st.pair));
+        X.PAIRING.on = false; X.S.pair = { view: 'wait' }; X.PAIR_HOLD.until = hb.now + 30000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'hold' && /還有 30 秒/.test(X.PROG.st.pair.why), 'reason: pair_hold_counts_down');
+        hb.now += 31000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'slow' && /時間到了還沒確認/.test(X.PROG.st.pair.why), 'reason: pair_hold_times_out_with_reason');
+        X.PAIR_HOLD.on = false; X.PROG.st.pair = { s: 'cur', why: '' }; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'cur', 'reason: pair_hold_not_when_not_confirming');
+        // 接線:hold 不給再試一次;5 秒到時在等確認就不寫 slow;送出時照「在這頁確認」打開;awaiting_confirmation 帶到期;配對好了關掉
+        ok(ws.includes("wh = r.state === 'slow' && r.why ?") && ws.includes(": r.state === 'hold' && r.why ? `<span>${esc(r.why)}</span>` : '';") && ws.includes("if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果');") && ws.includes("Object.assign(PAIR_HOLD, { on: cip, chan: undefined, until: 0 });") && ws.includes("Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }") && ws.includes("S.paired = true; S.pair = null; PAIR_HOLD.on = false;") && ws.includes("r.state === 'cur' || r.state === 'slow' || r.state === 'hold'"), 'reason: pair_hold_wired'); }
       // ebab8 10:08 第 3 點:沒碼(直接開網址)⇒ 一句白話 + 「怎麼拿配對碼」鈕;按了才出步驟;兩平台同句型、只差第 1 步
       { vm.runInContext('this.pairHowHtml = pairHowHtml; this.NOC = PAIR_NOCODE;', box);
         ok(/^<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。<\/p>$/.test(box.NOC) && !/終端機|aib web/.test(box.NOC), 'reason: pair_nocode_plain_sentence');

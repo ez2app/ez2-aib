@@ -605,6 +605,7 @@ progress.usep::-moz-progress-bar{background:var(--green)}
 .pgw{grid-column:2;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--orange)}
 .pgw:empty{display:none}
 .pgw .k{font-size:12px}
+.pgs li.hold .pgw{color:var(--gold2);font-weight:600}
 @media (prefers-reduced-motion:reduce){.pgbar i::after,.pgs li.cur .pgdot{animation:none}}
 /* §20b 預覽清單 */
 .pvbtn{font:inherit;font-size:13px;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);cursor:pointer}

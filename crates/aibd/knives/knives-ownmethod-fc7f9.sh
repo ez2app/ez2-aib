@@ -98,3 +98,18 @@ k "esc(W.cleared) + (set ? esc(W.clearedPick) : '')" "esc(W.cleared) + esc(W.cle
 k "d.cleared === 'owner_method_record_cleared' && m === 'biometry'" "d.cleared === 'owner_method_record_cleared'"
 # CL4 什麼值都算清過
 k "if (d.cleared === 'owner_method_record_cleared' && m" "if (d.cleared && m"
+
+# PW1 等指紋時 5 秒到照樣寫 slow(ebab8 11-27 Andy 10:14 截圖)
+k "if (pairHeld()) pairHoldPaint(); else progSet" "if (false) pairHoldPaint(); else progSet"
+# PW2 等確認那步也給再試一次
+k "wh = r.state === 'slow' && r.why ?" "wh = (r.state === 'slow' || r.state === 'hold') && r.why ?"
+# PW3 時間到了不寫原因
+k "if (n != null && n <= 0) return progSet" "if (false) return progSet"
+# PW4 不倒數
+k "(left > 0 ? '(還有 ' + left + ' 秒)' : '')" "''"
+# PW5 Windows 寫本人確認視窗
+k "fpWin() ? '等你在 Windows Hello 視窗確認'" "fpWin() ? '等你在本人確認視窗確認'"
+# PW6 送出時沒打開等確認
+k "Object.assign(PAIR_HOLD, { on: cip, chan" "Object.assign(PAIR_HOLD, { on: false, chan"
+# PW7 配對好了沒關掉
+k "S.paired = true; S.pair = null; PAIR_HOLD.on = false;" "S.paired = true; S.pair = null;"
