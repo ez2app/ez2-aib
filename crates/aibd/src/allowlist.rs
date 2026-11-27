@@ -722,29 +722,28 @@ pub fn resolve(argv0: &str, p: &SessionPolicy) -> Result<PathBuf, Refused> {
         return Err(Refused::Program);
     }
     let real = std::fs::canonicalize(a).map_err(|_| Refused::Program)?;
-    let listed = p.programs.iter().any(|e| {
-        std::fs::canonicalize(&e.path)
-            .map(|r| same_path(&r, &real))
-            .unwrap_or(false)
-    });
+    // the entries naming this real file, each canonicalized once: the one list check (knife
+    // K1 bites on every platform, 90856 / f163c #901) and, on macOS, the signers checked below
+    let matched: Vec<&Program> = p
+        .programs
+        .iter()
+        .filter(|e| {
+            std::fs::canonicalize(&e.path)
+                .map(|r| same_path(&r, &real))
+                .unwrap_or(false)
+        })
+        .collect();
+    let listed = !matched.is_empty();
     if !listed {
         return Err(Refused::Program);
     }
     if cfg!(target_os = "macos") {
-        // every entry naming this real file that names a signer must pass, not only the first
-        // (3e53b REVIEW-macfirstrun N1: a hand-edited file listing it twice, the first without
-        // a signer); none matching any more is no pass
-        let mut matched = false;
-        let same =
-            |e: &&Program| std::fs::canonicalize(&e.path).is_ok_and(|r| same_path(&r, &real));
-        for e in p.programs.iter().filter(same) {
-            matched = true;
+        // every matched entry that names a signer must pass, not only the first (3e53b
+        // REVIEW-macfirstrun N1: a hand-edited file listing it twice, the first without a signer)
+        for e in &matched {
             if let Some(team) = &e.signer {
                 signed_by(&real, team)?;
             }
-        }
-        if !matched {
-            return Err(Refused::Program);
         }
     }
     if !p.interpreters_ok {
