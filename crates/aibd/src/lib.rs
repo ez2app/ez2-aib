@@ -4,6 +4,7 @@
 //! every request; accept the startup token only as `Authorization: Bearer`;
 //! reject tokens in URLs; send no CORS headers; never log headers or queries.
 
+pub mod aib_cmd;
 pub mod alive;
 pub mod allowlist;
 pub mod api;

@@ -272,6 +272,8 @@ pub struct Host {
     pub now_unix: u64,
     /// the user id (None where there is none, Windows)
     pub uid: Option<u32>,
+    /// `PATH` as this command sees it (read only: where `aib` is found, ebab8 11-27)
+    pub path_env: Option<std::ffi::OsString>,
 }
 
 impl Host {
@@ -292,6 +294,7 @@ impl Host {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             uid: crate::platform::uid(),
+            path_env: std::env::var_os("PATH"),
         })
     }
 }
@@ -1632,6 +1635,12 @@ fn install_steps(
     let data = data_dir_for(h, &rec.env)?;
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
+    // Andy 11-27 10:1x: `aib web` on a new install (the default aibd only, as the app below)
+    if pl.label.as_str() == DEFAULT_LABEL {
+        for l in crate::aib_cmd::place_lines(&dir, &target, h.path_env.as_ref()) {
+            out.say(l);
+        }
+    }
     // ebab8 11-27: AIB in Applications opens the workbench with a code (the default aibd only:
     // the app runs `ctl web`, which talks to the default one); never fails the install
     if pl.label.as_str() == DEFAULT_LABEL {
@@ -1662,12 +1671,11 @@ fn install_steps(
     Ok(keep_lines(out, res))
 }
 
+/// The installed program's file name.
+pub const EXE_NAME: &str = if cfg!(windows) { "aibd.exe" } else { "aibd" };
+
 fn exe_name() -> &'static str {
-    if cfg!(windows) {
-        "aibd.exe"
-    } else {
-        "aibd"
-    }
+    EXE_NAME
 }
 
 fn data_dir_for(h: &Host, env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
@@ -1737,8 +1745,14 @@ fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     }
     std::fs::remove_file(record_path(&data)).map_err(|e| format!("remove record: {e}"))?;
     let _ = std::fs::remove_dir(data.join(RECORD_DIR));
-    // ebab8 11-27: the AIB app goes with the default aibd (only ours: macapp::remove)
+    // ebab8 11-27: the AIB app and `aib` go with the default aibd (only ours)
     if pl.label == DEFAULT_LABEL {
+        if let Some(line) = Path::new(&rec.exe)
+            .parent()
+            .and_then(crate::aib_cmd::remove)
+        {
+            out.say(line);
+        }
         let apps = h.home.as_ref().map(|home| home.join("Applications"));
         if let Some(line) = apps.as_deref().and_then(crate::macapp::remove) {
             out.say(line);
@@ -1845,6 +1859,7 @@ mod tests {
             version: "aibd 0 windows-x86_64".into(),
             now_unix: 0,
             uid: None,
+            path_env: None,
         };
         let f = FakeLd::default();
         let hl = FakeHealth::default();
@@ -2011,6 +2026,7 @@ mod tests {
                 version: "aibd 0 macos-aarch64".into(),
                 now_unix: 0,
                 uid: Some(501),
+                path_env: None,
             };
             Mac { d, h }
         }
@@ -2534,6 +2550,13 @@ mod tests {
         assert!(o.stdout.contains("APP "), "{o:?}");
         let exec = m.p("Applications/AIB.app/Contents/MacOS/AIB");
         assert_eq!(std::fs::read_link(&exec).unwrap(), m.p("bin0/aibd"));
+        // `aib web` (Andy 11-27 10:1x): aib beside it, a link to it
+        assert!(o.stdout.contains("AIB-CMD "), "{o:?}");
+        assert_eq!(
+            std::fs::read_link(m.p("bin0/aib")).unwrap(),
+            m.p("bin0/aibd")
+        );
+        assert!(!m.p("bin/aib").exists(), "reason: test_label_took_aib");
     }
 
     #[test]

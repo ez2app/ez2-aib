@@ -40,6 +40,20 @@ fn main() -> ExitCode {
             }
         };
     }
+    // Andy 11-27 10:1x: started as `aib` (the link install puts beside aibd), `aib web` is
+    // `aibd ctl web`; nothing else is taken
+    if std::env::args_os()
+        .next()
+        .is_some_and(|a0| aibd::aib_cmd::is_aib(&a0))
+    {
+        return match aibd::aib_cmd::ctl_args(&args).and_then(|a| ctl::run(&a)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("aib: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     match args.as_slice() {
         ["setup"] | ["setup", "--uninstall" | "--rollback"] => {
             let mode = match args.get(1).copied() {
