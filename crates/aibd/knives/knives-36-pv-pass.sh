@@ -31,4 +31,4 @@ pe crates/aibd/src/preview.rs '        .stdin(Stdio::piped())' '        .stdin(S
 # PV8 an aibd that is no preview takes a pass
 pe crates/aibd/src/pair_api.rs '    if !crate::preview::is_preview() {' '    if false { // knife'
 # PV9 a pass is taken from a request with no Origin
-pe crates/aibd/src/guard.rs '    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW {' '    if path == PAIR_REDEEM || path == PAIR_NEXT { // knife'
+pe crates/aibd/src/guard.rs '    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW || path == PAIR_REISSUE {' '    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_REISSUE { // knife'

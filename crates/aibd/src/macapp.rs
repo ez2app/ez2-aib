@@ -271,6 +271,26 @@ mod tests {
             app.join("Contents/Info.plist").exists(),
             "reason: theirs_removed"
         );
+        // another bundle id whose executable is missing, or is a link: still not ours (90856
+        // op7 MA2 MISS: only the bundle id tells these apart)
+        for (name, link) in [("noexec", false), ("linkexec", true)] {
+            let app = d.path().join(name).join(APP);
+            std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            std::fs::write(app.join("Contents/Info.plist"), &other).unwrap();
+            if link {
+                std::os::unix::fs::symlink(&exe, app.join("Contents/MacOS/AIB")).unwrap();
+            }
+            assert_eq!(
+                place(&d.path().join(name), &exe, "1"),
+                Ok(Placed::NotOurs(app.clone())),
+                "reason: other_bundle_taken {name}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap(),
+                other,
+                "reason: other_bundle_rewritten {name}"
+            );
+        }
         // our bundle id but a real program as the executable: not ours either
         let mixed = d.path().join("mixed");
         let app = mixed.join(APP);

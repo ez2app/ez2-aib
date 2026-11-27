@@ -11,7 +11,7 @@ fail=0
 tw() { python3 -I scripts/knife.py crates/aibd/src/touch.rs "$1" "$2" --expect-fail "touch::tests::$3" \
         -- cargo test -p aibd --locked --lib "touch::tests::$3" || fail=1; }
 # W1 the first line no longer says to cancel when you did not start it
-tw '        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",' '        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?",' a_pairing_window_asks_first_whether_you_started_it
+tw '        Who::Terminal | Who::Page => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",' '        Who::Terminal | Who::Page => "你剛在 AIB 頁面按了配對嗎?",' a_pairing_window_asks_first_whether_you_started_it
 # W2 the code line no longer says to cancel when the page shows another code
 tw '        "{}\n你的頁面也要顯示 {code},不一樣就按取消 · {until},過了這張就作廢\n{}(對象:{})\n{}",' '        "{}\n對照碼 {code} · {until},過了這張就作廢\n{}(對象:{})\n{}",' a_pairing_window_asks_first_whether_you_started_it
 # W3 the window says a page asked when a terminal or a program did

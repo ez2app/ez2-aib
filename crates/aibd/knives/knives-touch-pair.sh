@@ -14,8 +14,8 @@ tt '        plain(who, user_page),' \
    '        reason(who, short_code, user_page),' \
    a_pairing_window_asks_first_whether_you_started_it
 # TP3 the pairing sentence does not say which page it is for
-tt '        Who::Terminal => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),' \
-   '        Who::Terminal => format!("讓這個瀏覽器分頁配對成 AIB 的頁{}", &to[..0]),' \
+tt '        Who::Terminal | Who::Page => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),' \
+   '        Who::Terminal | Who::Page => format!("讓這個瀏覽器分頁配對成 AIB 的頁{}", &to[..0]),' \
    a_pairing_window_asks_first_whether_you_started_it
 # TP6 (ebab8 11-23 05:47, four lines as an approval's) the second line names another page than the one paired
 tt '        Who::Reconfirm { .. } => format!("這一頁 → {to}"),' \
