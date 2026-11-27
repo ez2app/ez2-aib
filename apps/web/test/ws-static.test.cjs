@@ -1073,6 +1073,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         const mac = pick('', false); ok(/<h2>在本人確認視窗確認<\/h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
         ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
         ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
+      // ebab8 10:08 第 3 點:沒碼(直接開網址)⇒ 一句白話 + 「怎麼拿配對碼」鈕;按了才出步驟;兩平台同句型、只差第 1 步
+      { vm.runInContext('this.pairHowHtml = pairHowHtml; this.NOC = PAIR_NOCODE;', box);
+        ok(/^<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。<\/p>$/.test(box.NOC) && !/終端機|aib web/.test(box.NOC), 'reason: pair_nocode_plain_sentence');
+        box.win = false; const shut = box.pairHowHtml(false), mac = box.pairHowHtml(true); box.win = true; const win = box.pairHowHtml(true);
+        ok(shut === '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>', 'reason: pair_nocode_how_button ' + shut);
+        ok(/<li>打開「終端機」,打 <code>aib web<\/code> 按 Enter<\/li>/.test(mac) && /<li>從開始選單或桌面點「AIB」<\/li>/.test(win) && !/終端機|aib web|aibd/.test(win), 'reason: pair_nocode_how_steps_per_platform ' + win);
+        const tail = (h) => h.replace(/<li>[^<]*(<code>[^<]*<\/code>[^<]*)?<\/li>/, '');
+        ok(tail(mac) === tail(win) && (mac.match(/<li>/g) || []).length === 2 && (win.match(/<li>/g) || []).length === 2, 'reason: pair_nocode_how_same_shape_both');
+        ok(ws.includes("<h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>") && ws.includes(" : PAIR_NOCODE + pairHowHtml(P.how)}") && ws.includes("if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }"), 'reason: pair_nocode_wired');
+        box.win = true; }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
       // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀
       ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '' }") && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');

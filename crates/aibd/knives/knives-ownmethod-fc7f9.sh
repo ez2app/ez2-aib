@@ -68,3 +68,14 @@ k "fpWin() ? 'Ctrl' : '⌘'}+Enter" "fpWin() ? 'Ctrl' : 'Ctrl'}+Enter"
 k '說…${sendKey(' '說…${String(' 
 # SK4 舊席寄信寫成送出
 k '(走舊信件帳)${sendKey('"'"'寄出'"'"')}' '(走舊信件帳)${sendKey('"'"'送出'"'"')}'
+
+# PH1 沒碼也只丟終端機指令(ebab8 11-27 10:08 第 3 點)
+k ' : PAIR_NOCODE + pairHowHtml(P.how)}' ' : pairHowHtml(true)}'
+# PH2 步驟一開就攤開、沒有「怎麼拿配對碼」鈕
+k 'const pairHowHtml = (open) => (open ?' 'const pairHowHtml = (open) => (true ?'
+# PH3 Windows 步驟照 Mac 寫終端機
+k '<li>從開始選單或桌面點「AIB」</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter</li>'
+# PH4 按了鈕沒反應
+k 'S.pair = Object.assign({}, S.pair, { how: true })' 'S.pair = Object.assign({}, S.pair, { how: false })'
+# PH5 白話句改成指令
+k 'PAIR_NOCODE = '"'"'<p>這一頁還沒配對' 'PAIR_NOCODE = '"'"'<p>在終端機跑 aib web,這一頁還沒配對'

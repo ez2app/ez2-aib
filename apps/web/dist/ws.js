@@ -7100,13 +7100,18 @@
   const PAIR_WIN_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '從開始選單或桌面點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
-    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>']];
+    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter</li>', '<li>從開始選單或桌面點「AIB」</li>']];
   const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
   const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
   const PAIR_WAIT_MAC = '<h2>在本人確認視窗確認</h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列;Andy 22:0x 句型同 Windows(Windows Hello ↔ 本人確認視窗);跟 Windows 差在「輸入 PIN」⇒「確認」:Mac 判不出這台是指紋還是密碼
   const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
+  // ebab8 10:08 第 3 點(Andy 要「優化更多」):直接開網址、手上沒碼 ⇒ 一句白話 + 「怎麼拿配對碼」鈕,不是一上來就丟指令;
+  // 步驟兩平台同句型,只差第 1 步去哪裡點(Mac 還沒有應用程式入口,先寫終端機;有了換這一步,Windows 照 PAIR_WIN_SAY)
+  const PAIR_NOCODE = '<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。</p>';
+  const pairHowHtml = (open) => (open ? pairSay('<ol class="phow"><li>打開「終端機」,打 <code>aib web</code> 按 Enter</li><li>AIB 會在瀏覽器打開配對頁、帶好配對碼,按「配對」就好</li></ol>') : '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>');
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
@@ -7157,7 +7162,7 @@
       // f163c 1a7f49de N1:AIB 設成終端機確認(channel terminal-unverified)時確認真的在終端機按 y ⇒ 等確認框照原字,不換成 Windows Hello
       return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
-    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
+    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>' : PAIR_NOCODE + pairHowHtml(P.how)}${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
   function render() {
     guidePaintSoon(); // 新用戶指引路線層:畫完下一格重算(不產生就拆掉)
@@ -7776,6 +7781,7 @@
     const pkp = x.closest('[data-pkput]'); if (pkp) { ctInsert(pkp.dataset.pkput); return; }
     if (x.closest('[data-pkx]')) { CT.pick = null; return render(); }
     const e2 = x.closest('[data-enter2]'); if (e2) { try { localStorage.setItem(E2K, e2.checked ? '1' : '0'); } catch (err) { /* 存不了:這次有效 */ } E2.at = 0; return; }
+    if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }
     if (x.closest('[data-repair]')) { dropToken(); S.paired = false; S.pair = { view: 'code' }; return render(); }
   }
   el.addEventListener('click', onMainClick);
