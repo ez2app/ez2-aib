@@ -2595,6 +2595,10 @@ lateChecks.push((async () => {
   // c2f0b eb6c979c71:status why 四個碼 ⇒ 同一句重設出路,不出改鈕
   for (const w of ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved']) { c.S.om = { d: { method: 'biometry', can_change: true, why: w } }; const hh = F.omHtml(); ok(hh.includes('目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。') && !/data-om(ask|set)/.test(hh), 'reason: om_reset_words ' + w); }
   c.S.om = { d: { method: 'biometry', can_change: true, why: 'something_else' } }; ok(!F.omHtml().includes('要重設') && F.omHtml().includes('data-omask'), 'reason: om_reset_only_those_codes');
+  // 3e53b 11-27 10:10 §1:後端測試照字面讀這幾處(OM_RESET 一行陣列、OM_WHY 對到 omReset、四語 omReset 都含兩個檔名);改了形狀後端會紅,這裡先擋
+  { const rs = [...ws.matchAll(/ omReset: '([^']*)'/g)].map((m) => m[1]);
+    ok(rs.length === 4 && rs.every((r) => r.includes('pair-key-pin.json') && r.includes('pair-key-method.json')), 'reason: om_reset_four_languages_both_files');
+    ok(/const OM_RESET = \['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved'\];/.test(ws) && ws.includes("owner_key_not_as_paired: 'omReset'") && !/ reset: '[^']*pair-key/.test(ws), 'reason: om_reset_shape_backend_reads'); }
   // 安裝時的選擇卡:配對後新手期才出;第一次先讀狀態;biometry + can_change 才出;選了就不再出;密碼兩段同設定頁
   c.S = { guide: {} }; c.store = {}; sent.length = 0; ok(F.omCard() === '' && sent.join('|') === 'owner_method_status {}', 'reason: om_card_loads_status_once ' + sent.join('|'));
   await new Promise((r) => setTimeout(r, 0)); c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st };

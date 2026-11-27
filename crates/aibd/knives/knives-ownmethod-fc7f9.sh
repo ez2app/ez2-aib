@@ -21,7 +21,7 @@ k "const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;" 
 # OM7 多送欄位
 k "try { await act(OM_SET, { to });" "try { await act(OM_SET, { to, by: 'page' });"
 # OM8 金鑰跟配對時不同的錯誤碼沒照表(3e53b L1:用重設出路)
-k "const OM_WHY = { owner_key_not_as_paired: 'reset', " "const OM_WHY = { "
+k "const OM_WHY = { owner_key_not_as_paired: 'omReset', " "const OM_WHY = { "
 # OM9 取消的錯誤碼沒照表
 k "user_cancel: 'cancel', " ""
 # OM10 舊 aibd 也出設定鈕
@@ -56,7 +56,7 @@ k "<div class=\"occ omcard\" role=\"alertdialog\"" "<div class=\"occ omcard\" ro
 k 'return `<div class="gbox">${typeof omCard ' 'return `<div class="gbox">${typeof omCardGone '
 
 # OM25 沒讀到金鑰也寫成要重設 / 重新配對(f163c 04019a58 L1)
-k '${esc(W.nokey)}</div>' '${esc(W.reset)}</div>'
+k '${esc(W.nokey)}</div>' '${esc(W.omReset)}</div>'
 # OM26 收起設定寫死中文(f163c N1)
 k '>${esc(omW().setClose)}</button>' '>收起設定</button>'
 
@@ -79,3 +79,8 @@ k '<li>從開始選單或桌面點「AIB」</li>' '<li>打開「終端機」,打
 k 'S.pair = Object.assign({}, S.pair, { how: true })' 'S.pair = Object.assign({}, S.pair, { how: false })'
 # PH5 白話句改成指令
 k 'PAIR_NOCODE = '"'"'<p>這一頁還沒配對' 'PAIR_NOCODE = '"'"'<p>在終端機跑 aib web,這一頁還沒配對'
+
+# RS1 四語重設句有一語漏了紀錄檔名(3e53b 11-27 10:10 §1 d)
+k 'pair-key-pin.json と pair-key-method.json を削除' 'pair-key-pin.json を削除'
+# RS2 OM_WHY 對回舊鍵名 reset(用量表那個)
+k "owner_key_not_as_paired: 'omReset'" "owner_key_not_as_paired: 'reset'"
