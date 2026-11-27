@@ -272,6 +272,8 @@ pub struct Host {
     pub now_unix: u64,
     /// the user id (None where there is none, Windows)
     pub uid: Option<u32>,
+    /// `PATH` as this command sees it (read only: where `aib` is found, ebab8 11-27)
+    pub path_env: Option<std::ffi::OsString>,
 }
 
 impl Host {
@@ -292,6 +294,7 @@ impl Host {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             uid: crate::platform::uid(),
+            path_env: std::env::var_os("PATH"),
         })
     }
 }
@@ -933,16 +936,19 @@ fn read_record(data: &Path) -> Result<Option<Record>, String> {
     }
 }
 
-/// Where the record is: `AIBD_DATA_DIR`, else the platform default, else the `AIBD_DATA_DIR`
-/// the plist hands aibd (5d33a L1: `status` from a terminal without the variable).
+/// Where the record is. With `AIBD_DATA_DIR` set, only there: that folder is the aibd this
+/// command is about, so another aibd's record in the default folder never answers for it
+/// (ebab8 11-27: a second aibd for the same user was refused by the real one's record).
+/// Without it, the platform default, else the `AIBD_DATA_DIR` the plist hands aibd (5d33a L1:
+/// `status` from a terminal without the variable).
 fn find_record(
     h: &Host,
     plist: Option<&PlistSeen>,
 ) -> Result<(Option<Record>, Option<PathBuf>, &'static str), String> {
-    let mut tries: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(d) = &h.data_dir_env {
-        tries.push((d.clone(), "AIBD_DATA_DIR"));
+        return Ok((read_record(d)?, Some(d.clone()), "AIBD_DATA_DIR"));
     }
+    let mut tries: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(d) = &h.default_data_dir {
         tries.push((d.clone(), "default"));
     }
@@ -958,6 +964,69 @@ fn find_record(
         }
     }
     Ok((None, tries.first().map(|t| t.0.clone()), "none"))
+}
+
+/// With `AIBD_DATA_DIR` set and no record there, the plist this label would write may still be
+/// another aibd's: the data folder that plist hands aibd (its `AIBD_DATA_DIR`, else the
+/// default) holds a record for this label and plist. Installing would rewrite it and take that
+/// aibd out of launchd, so it is refused (the guard the default-folder record gave before).
+fn plist_of_another(h: &Host, plist: Option<&PlistSeen>, pl: &Places) -> Option<String> {
+    let env = h.data_dir_env.as_ref()?;
+    let theirs = plist?
+        .env
+        .get("AIBD_DATA_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| h.default_data_dir.clone())?;
+    if same_path(&theirs.display().to_string(), &env.display().to_string()) {
+        return None;
+    }
+    // a record that cannot be read is not taken as "nobody's"
+    let r = match read_record(&theirs) {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => return Some(e),
+    };
+    if not_ours(&r, pl).is_some() {
+        return None;
+    }
+    Some(format!(
+        "{} belongs to the aibd whose data is {}; for a second aibd pass another --label, --plist-dir and --dir",
+        pl.plist.display(),
+        theirs.display()
+    ))
+}
+
+/// With `AIBD_DATA_DIR` set and no record there, the program this install would copy to may be
+/// the one another aibd runs (f163c REVIEW-op1 L1): a record in the default folder or in the
+/// folder this label's plist hands aibd names it. Copying would put this build under that aibd.
+fn exe_of_another(h: &Host, plist: Option<&PlistSeen>, target: &Path) -> Option<String> {
+    let env = h.data_dir_env.as_ref()?;
+    let from_plist = plist
+        .and_then(|p| p.env.get("AIBD_DATA_DIR"))
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    let target_s = target.display().to_string();
+    for d in [h.default_data_dir.clone(), from_plist]
+        .into_iter()
+        .flatten()
+    {
+        if same_path(&d.display().to_string(), &env.display().to_string()) {
+            continue;
+        }
+        let r = match read_record(&d) {
+            Ok(Some(r)) => r,
+            Ok(None) => continue,
+            Err(e) => return Some(e),
+        };
+        if same_path(&r.exe, &target_s) {
+            return Some(format!(
+                "{target_s} is the program of the aibd whose data is {}; for a second aibd pass another --label, --plist-dir and --dir",
+                d.display()
+            ));
+        }
+    }
+    None
 }
 
 /// A record answers for one label and one plist path. One data folder holds one record, so a
@@ -1393,6 +1462,17 @@ fn install_steps(
     if let Some(why) = old_rec.as_ref().and_then(|r| not_ours(r, &pl)) {
         return Err(why);
     }
+    if old_rec.is_none() {
+        if let Some(why) = plist_of_another(h, existing.as_ref(), &pl) {
+            return Err(why);
+        }
+        // f163c REVIEW-op1 L1: nor the program another aibd runs (no --dir ⇒ ~/.local/bin/aibd)
+        if let Some(d) = &pl.dir {
+            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())) {
+                return Err(why);
+            }
+        }
+    }
     let mut out = Out::default();
     // environment: the old plist's keys stay unless unset (5d33a L2); --env wins. Worked out
     // before anything is stopped or copied, so a refused combination changes nothing.
@@ -1593,6 +1673,23 @@ fn install_steps(
     let data = data_dir_for(h, &rec.env)?;
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
+    // Andy 11-27 10:1x: `aib web` on a new install (the default aibd only, as the app below)
+    if DEFAULT_LABEL == pl.label.as_str() {
+        for l in crate::aib_cmd::place_lines(&dir, &target, h.path_env.as_ref()) {
+            out.say(l);
+        }
+    }
+    // ebab8 11-27: AIB in Applications opens the workbench with a code (the default aibd only:
+    // the app runs `ctl web`, which talks to the default one); never fails the install
+    if pl.label.as_str() == DEFAULT_LABEL {
+        if let Some(home) = &h.home {
+            out.say(crate::macapp::place_line(
+                &home.join("Applications"),
+                &target,
+                &h.version,
+            ));
+        }
+    }
 
     // moved with --dir: take away the old copy when it is still the recorded build
     if let Some(r) = &old_rec {
@@ -1612,12 +1709,11 @@ fn install_steps(
     Ok(keep_lines(out, res))
 }
 
+/// The installed program's file name.
+pub const EXE_NAME: &str = if cfg!(windows) { "aibd.exe" } else { "aibd" };
+
 fn exe_name() -> &'static str {
-    if cfg!(windows) {
-        "aibd.exe"
-    } else {
-        "aibd"
-    }
+    EXE_NAME
 }
 
 fn data_dir_for(h: &Host, env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
@@ -1687,6 +1783,19 @@ fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     }
     std::fs::remove_file(record_path(&data)).map_err(|e| format!("remove record: {e}"))?;
     let _ = std::fs::remove_dir(data.join(RECORD_DIR));
+    // ebab8 11-27: the AIB app and `aib` go with the default aibd (only ours)
+    if pl.label == DEFAULT_LABEL {
+        if let Some(line) = Path::new(&rec.exe)
+            .parent()
+            .and_then(|d| crate::aib_cmd::remove(d, Path::new(&rec.exe)))
+        {
+            out.say(line);
+        }
+        let apps = h.home.as_ref().map(|home| home.join("Applications"));
+        if let Some(line) = apps.as_deref().and_then(crate::macapp::remove) {
+            out.say(line);
+        }
+    }
     out.say(format!("DATA-KEPT {} {files}", data.display()));
     Ok(out)
 }
@@ -1788,6 +1897,7 @@ mod tests {
             version: "aibd 0 windows-x86_64".into(),
             now_unix: 0,
             uid: None,
+            path_env: None,
         };
         let f = FakeLd::default();
         let hl = FakeHealth::default();
@@ -1954,6 +2064,7 @@ mod tests {
                 version: "aibd 0 macos-aarch64".into(),
                 now_unix: 0,
                 uid: Some(501),
+                path_env: None,
             };
             Mac { d, h }
         }
@@ -2392,6 +2503,120 @@ mod tests {
         assert!(o.stdout.contains("PAIR-KEY checked"), "{}", o.stdout);
         assert!(!o.stdout.contains("NEXT"), "{}", o.stdout);
         assert!(f.calls().is_empty(), "{:?}", f.calls());
+    }
+
+    #[test]
+    fn aibd_data_dir_alone_answers_and_the_other_aibds_plist_is_refused() {
+        // ebab8 11-27: a second aibd for the same user was refused by the real one's record
+        let mut m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        let real = m.p("real");
+        m.h.data_dir_env = None;
+        m.h.default_data_dir = Some(real.clone());
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        let real_rec = std::fs::read(record_path(&real)).unwrap();
+        // a second aibd: its own folder, label and plist ⇒ installed; the real record as it was
+        m.h.data_dir_env = Some(m.p("second"));
+        let (la2, bin2) = (
+            m.p("la2").display().to_string(),
+            m.p("bin2").display().to_string(),
+        );
+        let a = [
+            "--no-start",
+            "--label",
+            "app.ez2.aibd.second",
+            "--plist-dir",
+            &la2,
+            "--dir",
+            &bin2,
+        ];
+        let o = run("install", &a, &m.h, &svc);
+        assert_eq!(o.code, RC_OK, "reason: refused_by_the_default_record {o:?}");
+        assert!(record_path(&m.p("second")).exists());
+        assert_eq!(std::fs::read(record_path(&real)).unwrap(), real_rec);
+        // the real aibd's label and plist from another folder ⇒ refused, nothing changed
+        m.h.data_dir_env = Some(m.p("third"));
+        let plist_before = std::fs::read(m.plist()).unwrap();
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_REFUSED, "reason: the_real_plist_rewritten {o:?}");
+        assert!(
+            o.stderr.contains("belongs to the aibd whose data is"),
+            "{o:?}"
+        );
+        assert_eq!(std::fs::read(m.plist()).unwrap(), plist_before);
+        assert!(!record_path(&m.p("third")).exists());
+        // f163c REVIEW-op1 L1: another label and plist, the real program's folder ⇒ refused,
+        // the real program's bytes kept
+        let real_exe = std::fs::read(m.p("bin/aibd")).unwrap();
+        let (la4, bin) = (
+            m.p("la4").display().to_string(),
+            m.p("bin").display().to_string(),
+        );
+        let a = [
+            "--no-start",
+            "--label",
+            "app.ez2.aibd.fourth",
+            "--plist-dir",
+            &la4,
+            "--dir",
+            &bin,
+        ];
+        std::fs::write(&m.h.exe, b"a test build").unwrap();
+        let o = run("install", &a, &m.h, &svc);
+        assert_eq!(
+            o.code, RC_REFUSED,
+            "reason: the_real_program_replaced {o:?}"
+        );
+        assert!(o.stderr.contains("is the program of the aibd"), "{o:?}");
+        assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), real_exe);
+        assert!(!record_path(&m.p("third")).exists());
+        assert!(
+            f.calls().is_empty(),
+            "reason: launchd_touched {:?}",
+            f.calls()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_aibd_gets_the_aib_app_and_a_test_label_does_not() {
+        // ebab8 11-27: clicking AIB opens the workbench with a code (macapp)
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            !m.p("Applications").exists(),
+            "reason: test_label_took_the_app"
+        );
+        let (la, bin) = (
+            m.p("la0").display().to_string(),
+            m.p("bin0").display().to_string(),
+        );
+        let mut h = m.h.clone();
+        h.data_dir_env = Some(m.p("data0"));
+        let o = run(
+            "install",
+            &["--no-start", "--plist-dir", &la, "--dir", &bin],
+            &h,
+            &svc,
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(o.stdout.contains("APP "), "{o:?}");
+        let exec = m.p("Applications/AIB.app/Contents/MacOS/AIB");
+        assert_eq!(std::fs::read_link(&exec).unwrap(), m.p("bin0/aibd"));
+        // `aib web` (Andy 11-27 10:1x): aib beside it, a link to it
+        assert!(o.stdout.contains("AIB-CMD "), "{o:?}");
+        assert_eq!(
+            std::fs::read_link(m.p("bin0/aib")).unwrap(),
+            m.p("bin0/aibd")
+        );
+        assert!(!m.p("bin/aib").exists(), "reason: test_label_took_aib");
     }
 
     /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 b: a pairing key that cannot be made now

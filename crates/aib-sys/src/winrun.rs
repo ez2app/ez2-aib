@@ -11,6 +11,13 @@
 //! - a source guard (the tests below) keeps the machine-wide root and the other registry calls
 //!   out of every crate, and the current-user root out of every file but this one.
 //!
+//! PRE-READ-aib-cmd-windows-3e53b-1127 (`aib web` on Windows): the one other value is the
+//! user's own `Path` under [`ENV_KEY`] ([`user_path_read`] / [`user_path_write`]): read as it
+//! is (`RRF_NOEXPAND`, so `%USERPROFILE%` and the like stay unexpanded), written back with the
+//! type it had (`REG_SZ` or `REG_EXPAND_SZ`), compared again just before writing, read back
+//! after and put back as it was when it does not read back. What goes into it is worked out by
+//! aibd (`aib_cmd::path_with` / `path_without`); nothing here adds or removes a folder.
+//!
 //! Same account as the rest of aibd: the Run value is the user's own and any program of theirs
 //! can change it. It is a convenience, not a defence (the defence is pairing / Windows Hello).
 
@@ -28,6 +35,29 @@ pub const UNINSTALL_NAMES: [&str; 5] = [
     "InstallLocation",
     "UninstallString",
 ];
+
+/// The current user's environment key (below the current user's root): only [`ENV_PATH_NAME`]
+/// is read or written there.
+pub const ENV_KEY: &str = "Environment";
+
+/// The one value under [`ENV_KEY`] this module touches.
+pub const ENV_PATH_NAME: &str = "Path";
+
+/// The longest `Path` value written, in UTF-16 units (an environment variable's limit).
+pub const PATH_MAX_UNITS: usize = 32767;
+
+/// [`user_path_write`]: the value changed between the caller's read and the write.
+pub const PATH_CHANGED: &str = "user_path_changed_meanwhile";
+
+/// [`user_path_write`]: the value did not read back as written (what was there is put back).
+pub const PATH_NOT_READ_BACK: &str = "user_path_not_read_back";
+
+/// The registry type the user's `Path` had: written back the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    Sz,
+    ExpandSz,
+}
 
 /// Is `name` one of [`UNINSTALL_NAMES`]?
 pub fn uninstall_name_ok(name: &str) -> bool {
@@ -68,6 +98,7 @@ fn os_err(rc: u32) -> crate::SysError {
 enum Key {
     Run,
     Uninstall,
+    Environment,
 }
 
 #[cfg(windows)]
@@ -76,6 +107,7 @@ impl Key {
         match self {
             Key::Run => RUN_KEY,
             Key::Uninstall => UNINSTALL_KEY,
+            Key::Environment => ENV_KEY,
         }
     }
 }
@@ -211,6 +243,189 @@ pub fn uninstall_delete_if(name: &str, expected: &str) -> Result<bool, crate::Sy
     delete_if(Key::Uninstall, name, expected)
 }
 
+/// The user's `Path` as stored (not expanded) and its type; `None` when there is none. Another
+/// type, a value too long or one that is not valid UTF-16 is an error: nothing is written then.
+#[cfg(windows)]
+pub fn user_path_read() -> Result<Option<(String, PathKind)>, String> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ,
+        RRF_RT_REG_SZ,
+    };
+    let (key, name) = (wide(Key::Environment.path()), wide(ENV_PATH_NAME));
+    // the limit, its terminator and one more unit: a value that fills it all is too long
+    let mut buf = vec![0u16; PATH_MAX_UNITS + 2];
+    let mut bytes = u32::try_from(buf.len() * 2).map_err(|_| "user PATH buffer".to_string())?;
+    let mut kind = 0u32;
+    // SAFETY: `buf` is writable for `bytes` bytes, `kind` is a valid out pointer, key and name
+    // are NUL-terminated. RRF_NOEXPAND (3e53b PRE-READ §2-2): a REG_EXPAND_SZ value comes back
+    // as stored, so writing it back does not freeze the customer's %VARIABLES%.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            &mut kind,
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if rc == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if rc != ERROR_SUCCESS {
+        return Err(format!(
+            "could not read the user PATH ({}); not changed",
+            os_err(rc)
+        ));
+    }
+    let kind = match kind {
+        REG_SZ => PathKind::Sz,
+        REG_EXPAND_SZ => PathKind::ExpandSz,
+        _ => return Err("the user PATH is not a text value; not changed".into()),
+    };
+    let units = (usize::try_from(bytes).unwrap_or(0) / 2).min(buf.len());
+    let got = buf.get(..units).unwrap_or_default();
+    let end = got.iter().position(|u| *u == 0).unwrap_or(got.len());
+    if end > PATH_MAX_UNITS {
+        return Err("the user PATH is longer than Windows allows; not changed".into());
+    }
+    // strict, not lossy: a lossy read would change the customer's other folders when written back
+    let v = String::from_utf16(got.get(..end).unwrap_or_default())
+        .map_err(|_| "the user PATH is not valid text; not changed".to_string())?;
+    Ok(Some((v, kind)))
+}
+
+#[cfg(windows)]
+fn user_path_set(value: &str, kind: PathKind) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, REG_SZ,
+    };
+    let (key, name) = (wide(Key::Environment.path()), wide(ENV_PATH_NAME));
+    let data = wide(value);
+    let bytes = u32::try_from(data.len() * 2).map_err(|_| "user PATH too long".to_string())?;
+    let ty = match kind {
+        PathKind::Sz => REG_SZ,
+        PathKind::ExpandSz => REG_EXPAND_SZ,
+    };
+    // SAFETY: every pointer is a NUL-terminated UTF-16 buffer alive for the call; `bytes` is
+    // the size of `data` in bytes, terminator included, as REG_SZ / REG_EXPAND_SZ want.
+    let rc = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            ty,
+            data.as_ptr().cast(),
+            bytes,
+        )
+    };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("could not write the user PATH ({})", os_err(rc)))
+    }
+}
+
+/// The user's `Path` taken away (it had none before AIB wrote one that did not read back).
+#[cfg(windows)]
+fn user_path_delete() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
+    let (key, name) = (wide(Key::Environment.path()), wide(ENV_PATH_NAME));
+    // SAFETY: key and name are NUL-terminated UTF-16 buffers alive for the call.
+    let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("could not remove the user PATH ({})", os_err(rc)))
+    }
+}
+
+/// Write the user's `Path` = `new` with type `kind`, only when it still reads `before` (value
+/// and type; `None` = there was none) — else [`PATH_CHANGED`], nothing written. Read back
+/// after: anything but `new` with `kind` puts `before` back and is [`PATH_NOT_READ_BACK`].
+#[cfg(windows)]
+pub fn user_path_write(
+    new: &str,
+    kind: PathKind,
+    before: Option<(&str, PathKind)>,
+) -> Result<(), String> {
+    write_checked(
+        &user_path_read,
+        &user_path_set,
+        &user_path_delete,
+        new,
+        kind,
+        before,
+    )
+}
+
+/// The steps of [`user_path_write`] over a given read / write / remove, so both platforms test
+/// them (f163c REVIEW-op8 L1). "Put back" is said only when a read shows it put back: the old
+/// value and type written again, or — there was none — the value taken away only while it is
+/// still exactly what this wrote.
+pub fn write_checked(
+    read: &dyn Fn() -> Result<Option<(String, PathKind)>, String>,
+    set: &dyn Fn(&str, PathKind) -> Result<(), String>,
+    remove: &dyn Fn() -> Result<(), String>,
+    new: &str,
+    kind: PathKind,
+    before: Option<(&str, PathKind)>,
+) -> Result<(), String> {
+    if new.contains('\0') || new.encode_utf16().count() > PATH_MAX_UNITS {
+        return Err("the new user PATH would be too long; not changed".into());
+    }
+    let reads = |want: Option<(&str, PathKind)>| {
+        read().is_ok_and(|now| now.as_ref().map(|(v, k)| (v.as_str(), *k)) == want)
+    };
+    if !reads(before) {
+        return Err(PATH_CHANGED.into());
+    }
+    set(new, kind)?;
+    if reads(Some((new, kind))) {
+        return Ok(());
+    }
+    let restored = match before {
+        Some((v, k)) => set(v, k).is_ok() && reads(Some((v, k))),
+        None => reads(None) || (reads(Some((new, kind))) && remove().is_ok() && reads(None)),
+    };
+    Err(format!(
+        "{PATH_NOT_READ_BACK}: the user PATH did not read back as written; {}",
+        if restored {
+            "put back as it was"
+        } else {
+            "could not put it back"
+        }
+    ))
+}
+
+/// Tell open programs the environment changed (`WM_SETTINGCHANGE` "Environment", 5 s, not to
+/// a hung window). Only new windows see the new PATH either way, so a timeout is not a failure.
+#[cfg(windows)]
+pub fn env_changed() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
+    let what = wide(ENV_KEY);
+    let mut result = 0usize;
+    // SAFETY: `what` is a NUL-terminated UTF-16 string alive for the call, the form
+    // WM_SETTINGCHANGE's lParam takes; `result` is a valid out pointer.
+    let _ = unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            what.as_ptr() as isize,
+            SMTO_ABORTIFHUNG,
+            5000,
+            &mut result,
+        )
+    };
+}
+
 /// Is this process running elevated ("Run as administrator")? The setup refuses then: it would
 /// write the wrong user's folder and Run key (COND r0 §1-4).
 #[cfg(windows)]
@@ -286,6 +501,20 @@ pub fn uninstall_delete_if(_: &str, _: &str) -> Result<bool, crate::SysError> {
 }
 
 /// Not asked off Windows.
+/// No user PATH off Windows.
+#[cfg(not(windows))]
+pub fn user_path_read() -> Result<Option<(String, PathKind)>, String> {
+    Err(crate::SysError::Unsupported.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn user_path_write(_: &str, _: PathKind, _: Option<(&str, PathKind)>) -> Result<(), String> {
+    Err(crate::SysError::Unsupported.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn env_changed() {}
+
 #[cfg(not(windows))]
 pub fn elevated() -> Result<bool, crate::SysError> {
     Err(crate::SysError::Unsupported)
@@ -418,6 +647,167 @@ mod tests {
         assert!(UNINSTALL_KEY.ends_with(r"\Uninstall\AIB"), "reason: key");
     }
 
+    /// PRE-READ-aib-cmd-windows §4: under the environment key only the `Path` value, and the
+    /// key's name is said once (in `Key::path`); every other line naming the key names the value.
+    #[test]
+    fn only_the_path_value_of_the_environment_key_is_touched() {
+        assert_eq!(ENV_KEY, "Environment", "reason: env_key");
+        assert_eq!(ENV_PATH_NAME, "Path", "reason: env_name");
+        let src = include_str!("winrun.rs");
+        let key = format!("Key::{}", "Environment");
+        let arm = format!("{key} => {}", "ENV_KEY");
+        let uses: Vec<&str> = src
+            .lines()
+            .filter(|l| l.contains(key.as_str()) && !l.contains(arm.as_str()))
+            .collect();
+        assert!(!uses.is_empty(), "reason: no_use_found");
+        for l in uses {
+            assert!(l.contains("ENV_PATH_NAME"), "reason: other_env_value {l}");
+        }
+        assert_eq!(
+            src.matches(arm.as_str()).count(),
+            1,
+            "reason: env_key_twice"
+        );
+        // read as stored, written back with its own type (PRE-READ §2-2; knives P1s / P2s)
+        let noexpand = format!("RRF_RT_REG_EXPAND_SZ | {},", "RRF_NOEXPAND");
+        assert_eq!(
+            src.matches(noexpand.as_str()).count(),
+            1,
+            "reason: path_read_expanded"
+        );
+        let kept = format!("PathKind::ExpandSz => {},", "REG_EXPAND_SZ");
+        assert_eq!(
+            src.matches(kept.as_str()).count(),
+            1,
+            "reason: path_type_not_kept"
+        );
+    }
+
+    /// A stand-in registry value: what `read` sees, the writes it took, a write that does not
+    /// stick (`mangle`), one written in between by somebody else (`theirs`).
+    struct Reg {
+        now: std::cell::RefCell<Option<(String, PathKind)>>,
+        mangle: std::cell::Cell<usize>,
+        theirs: Option<(String, PathKind)>,
+        removed: std::cell::Cell<usize>,
+        reads: std::cell::Cell<usize>,
+        fail_read: usize,
+    }
+
+    impl Reg {
+        fn new(now: Option<(&str, PathKind)>) -> Reg {
+            Reg {
+                now: std::cell::RefCell::new(now.map(|(v, k)| (v.to_string(), k))),
+                mangle: std::cell::Cell::new(0),
+                theirs: None,
+                removed: std::cell::Cell::new(0),
+                reads: std::cell::Cell::new(0),
+                fail_read: 0,
+            }
+        }
+        fn write(
+            &self,
+            new: &str,
+            kind: PathKind,
+            before: Option<(&str, PathKind)>,
+        ) -> Result<(), String> {
+            let read = || {
+                self.reads.set(self.reads.get() + 1);
+                if self.reads.get() == self.fail_read {
+                    return Err("busy".to_string());
+                }
+                Ok(self.now.borrow().clone())
+            };
+            let set = |v: &str, k: PathKind| {
+                let n = self.mangle.get();
+                *self.now.borrow_mut() = if n > 0 {
+                    self.mangle.set(n - 1);
+                    self.theirs.clone().or_else(|| Some((format!("{v}x"), k)))
+                } else {
+                    Some((v.to_string(), k))
+                };
+                Ok::<(), String>(())
+            };
+            let remove = || {
+                self.removed.set(self.removed.get() + 1);
+                *self.now.borrow_mut() = None;
+                Ok::<(), String>(())
+            };
+            write_checked(&read, &set, &remove, new, kind, before)
+        }
+    }
+
+    #[test]
+    fn a_path_write_is_compared_before_read_back_after_and_put_back_only_when_it_reads_so() {
+        use PathKind::{ExpandSz, Sz};
+        // written, type kept
+        let r = Reg::new(Some(("a", Sz)));
+        assert_eq!(r.write("a;b", Sz, Some(("a", Sz))), Ok(()));
+        assert_eq!(*r.now.borrow(), Some(("a;b".into(), Sz)));
+        // changed meanwhile (value or type): nothing written
+        let r = Reg::new(Some(("a", ExpandSz)));
+        assert_eq!(
+            r.write("a;b", Sz, Some(("a", Sz))),
+            Err(PATH_CHANGED.into())
+        );
+        assert_eq!(
+            *r.now.borrow(),
+            Some(("a".into(), ExpandSz)),
+            "reason: wrote_over_change"
+        );
+        // did not read back: the old value and type back, said only when it reads so
+        let r = Reg::new(Some(("a", ExpandSz)));
+        r.mangle.set(1);
+        let e = r.write("a;b", ExpandSz, Some(("a", ExpandSz))).unwrap_err();
+        assert!(
+            e.starts_with(PATH_NOT_READ_BACK) && e.contains("put back as it was"),
+            "{e}"
+        );
+        assert_eq!(*r.now.borrow(), Some(("a".into(), ExpandSz)));
+        let r = Reg::new(Some(("a", Sz)));
+        r.mangle.set(2);
+        let e = r.write("a;b", Sz, Some(("a", Sz))).unwrap_err();
+        assert!(
+            e.contains("could not put it back"),
+            "reason: said_put_back {e}"
+        );
+        // none before, the new one did not stick: taken away only while it is still ours
+        let r = Reg::new(None);
+        r.mangle.set(1);
+        let e = r.write("b", ExpandSz, None).unwrap_err();
+        assert!(
+            e.contains("could not put it back"),
+            "reason: removed_not_ours {e}"
+        );
+        assert_eq!(r.removed.get(), 0, "reason: removed_not_ours");
+        // none before, the read back failed once but the value is ours: taken away, and said
+        let r = Reg {
+            fail_read: 2,
+            ..Reg::new(None)
+        };
+        let e = r.write("b", ExpandSz, None).unwrap_err();
+        assert!(e.contains("put back as it was"), "{e}");
+        assert_eq!(
+            (r.removed.get(), r.now.borrow().clone()),
+            (1, None),
+            "reason: not_removed"
+        );
+        // somebody else's value there in between: not removed
+        let r = Reg {
+            theirs: Some(("c".into(), Sz)),
+            ..Reg::new(None)
+        };
+        r.mangle.set(1);
+        assert!(r.write("b", ExpandSz, None).is_err());
+        assert_eq!(r.removed.get(), 0, "reason: removed_theirs");
+        assert_eq!(*r.now.borrow(), Some(("c".into(), Sz)));
+        assert!(
+            r.write(&"x".repeat(PATH_MAX_UNITS + 1), Sz, None).is_err(),
+            "reason: too_long"
+        );
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn off_windows_there_is_no_run_key() {
@@ -431,6 +821,8 @@ mod tests {
             Err(crate::SysError::Unsupported)
         ));
         assert!(matches!(elevated(), Err(crate::SysError::Unsupported)));
+        assert!(user_path_read().is_err());
+        assert!(user_path_write("x", PathKind::Sz, None).is_err());
     }
 }
 

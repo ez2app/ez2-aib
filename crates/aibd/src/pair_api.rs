@@ -204,6 +204,56 @@ fn too_large() -> Response {
 /// Largest `POST /pair/codes` body (`{"terminal": true}`).
 const CODES_MAX_BODY: usize = 128;
 
+/// `POST /api/v1/pair/reissue` (Andy 11-27 10:18; 3e53b PRE-READ-pair-reissue): the code page
+/// asks for a new code. Public like redeem; the guard already holds Host and our own Origin
+/// (no Origin ⇒ refused); a browser's `Sec-Fetch-Site`, when sent, must be `same-origin`. No
+/// credential is read (a dead page's is never taken). 200 `{code, expires_in, expires_at_ms}`;
+/// 409 `pair_reissue_not_here` (not the owner's window); 429 `pair_reissue_too_often`.
+pub async fn reissue(Extension(p): Extension<Arc<Pairing>>, headers: HeaderMap) -> Response {
+    let r = reissue_answer(&p, &headers).await;
+    journaled(&p, "pair.reissue", None, r).await
+}
+
+/// `Sec-Fetch-Site` absent (not every client sends it) or `same-origin`; anything else (a
+/// cross-site or same-site frame / form) is refused.
+pub fn fetch_site_ok(h: &HeaderMap) -> bool {
+    let all: Vec<&HeaderValue> = h.get_all("sec-fetch-site").iter().collect();
+    match all.as_slice() {
+        [] => true,
+        [v] => v.as_bytes() == b"same-origin",
+        _ => false,
+    }
+}
+
+async fn reissue_answer(p: &Arc<Pairing>, headers: &HeaderMap) -> Response {
+    if !fetch_site_ok(headers) {
+        return error_response(
+            ErrorCode::OriginNotAllowed,
+            "pair_reissue_not_same_origin",
+            &request_id(),
+        );
+    }
+    let p = p.clone();
+    match tokio::task::spawn_blocking(move || p.reissue_code()).await {
+        Ok(Ok(n)) => no_store(json(
+            StatusCode::OK,
+            serde_json::json!({"code": n.code, "expires_in": n.expires_in, "expires_at_ms": n.expires_at_ms}),
+        )),
+        Ok(Err(crate::pairing::REISSUE_TOO_OFTEN)) => no_store(json(
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"reason": crate::pairing::REISSUE_TOO_OFTEN}),
+        )),
+        Ok(Err(why)) => no_store(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({"reason": why}),
+        )),
+        Err(_) => no_store(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({"reason": crate::pairing::REISSUE_NOT_HERE}),
+        )),
+    }
+}
+
 /// `POST /api/v1/pair/codes`; an empty body, or `{"terminal": true|false}` (SPEC §19b-3:
 /// `aibd ctl web` pairs its terminal in the same step).
 pub async fn create_code(Extension(p): Extension<Arc<Pairing>>, body: Body) -> Response {
@@ -307,6 +357,10 @@ pub async fn get_code(Extension(p): Extension<Arc<Pairing>>, Path(id): Path<Stri
             // TouchId: the terminal waits for the fingerprint instead of asking y
             if p.channel() == crate::pairing::ConfirmChannel::TouchId {
                 j["touch"] = serde_json::Value::Bool(true);
+                // which window to wait for: one of the two words, or none (ebab8 11-27)
+                if let Some(k) = crate::touch::key_kind_now() {
+                    j["key_kind"] = serde_json::Value::String(k.into());
+                }
             }
             // the terminal's own credential, once, when the code was made for it (§19b-3)
             if let Ok(Some(c)) = p.take_terminal(&id) {
@@ -593,8 +647,14 @@ async fn redeem_answer(
             if p.channel() == crate::pairing::ConfirmChannel::TouchId {
                 // aibd asks the owner now; the page and the terminal see confirmed / revoked
                 let (p, id) = (p.clone(), r.pair_id.clone());
+                // the window says who asked for the code: the page's own button, or a terminal
+                let who = if r.by_page {
+                    crate::touch::Who::Page
+                } else {
+                    crate::touch::Who::Terminal
+                };
                 tokio::task::spawn_blocking(move || {
-                    let out = p.ask_touch(&id, &crate::touch::Who::Terminal);
+                    let out = p.ask_touch(&id, &who);
                     let why = out.err().unwrap_or("ok");
                     p.journal(
                         "pair.touch",
@@ -626,6 +686,12 @@ pub async fn status(
     match p.status(&a.digest) {
         Some(v) => {
             let mut j = view_json(&v, p.channel());
+            // the page's waiting box reads this one (fc7f9 11-27): the same key_kind as codes/{id}
+            if p.channel() == crate::pairing::ConfirmChannel::TouchId {
+                if let Some(k) = crate::touch::key_kind_now() {
+                    j["key_kind"] = serde_json::Value::String(k.into());
+                }
+            }
             // the page's probe (519d0 01:41): offer the window only when aibd has it
             if v.carried && !a.carried {
                 j["reconfirmed"] = serde_json::Value::Bool(true);

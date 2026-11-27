@@ -125,8 +125,8 @@ k ', seat_open: '\''夥伴開好了,到下面打一句話'\''' ''
 k 'return !!(c && c.proj === '\''hosts'\'' && c.step && c.step.id === '\''host_add'\'');' 'return false;'
 # GD52 指引鈕又寫「打開測試機」(B5)
 k 'add_host: '\''加一台主機'\''' 'add_host: '\''打開測試機'\'''
-# GD53 Windows 配對頁又叫人開終端機(B6)
-k 'if (typeof t !== '\''string'\'' || !(typeof fpWin === '\''function'\'' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)' 'if (true) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY)'
+# GD53 Windows 配對頁又叫人開終端機(B6)(11-27 合 main 後重錨:pairSay 兩平台都套表)
+k '(typeof fpWin === '\''function'\'' && fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)' '(false ? PAIR_WIN_SAY : PAIR_MAC_SAY)'
 # GD54 配對表單沒經 pairSay(B6)
 k 'return pairSay(`<form class="pairbox" id="pairf"' 'return (`<form class="pairbox" id="pairf"'
 # GC7 測試機那行的鈕又被切邊(B5)
@@ -142,14 +142,26 @@ k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.
 # GD63 組字中按 Esc 也關指引(連組字一起丟)
 k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
 # GD56 終端機確認通道也換成 Windows Hello 字(f163c 1a7f49de N1)
-k 'const pairWaitSay = (chan) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan) => (false ? (t) => t : '
+k 'const pairWaitSay = (chan, kk) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan, kk) => (false ? (t) => t : '
 # GD57 等確認狀態沒記 channel
-k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: '\'''\'' }'
+k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'', kk:' 'chan: '\'''\'', kk:'
 # GD64 Mac Touch ID 通道等確認框仍叫人到終端機按 y(3e53b ea75d93f24 N1)
-k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan === '\'''\'' ? (t) => t : (t) => t);'
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(' 'chan === '\'''\'' ? (t) => t.split('\''不會有這段'\'').join('
 # GD65 channel 還沒讀到也換成 Touch ID 字
-k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join('
 # GD66 imeBusy 不認 keyCode 229(組字中 Esc 會關指引;f163c aa7164f7ed N1 行為測試)
 k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
 # GD67 Mac 等確認框並列 Touch ID 與登入密碼(3e53b 203a4beb32 L1)
 k '會寫同一組碼,一樣才確認;不一樣按取消。</p>'\'';' '會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。</p>'\'';'
+# GD68 沒 dev 欄也出測試機(客戶當成加主機;ebab8 21:51 + Andy 22:0x 兩平台都藏)
+k 'return !!(v && v.dev === true); };' 'return true; };'
+# GD69 測試機卡不看 thDev
+k 'if (hasAct('\''test_host_list'\'') !== true || (typeof thDev === '\''function'\'' && !thDev())) return '\'''\'';' 'if (hasAct('\''test_host_list'\'') !== true) return '\'''\'';'
+# GD70 開席視窗的測試機候選不看 thDev
+k '    if (typeof thDev === '\''function'\'' && !thDev()) return '\'''\''; // 測試機候選' '    if (false) return '\'''\''; // 測試機候選'
+# GD72 不照 version 的 dev 欄(Mac 一般用戶看得到測試機;c2f0b 48f0342806 / ebab8 21:55)
+k 'return !!(v && v.dev === true); };' 'return !!(v && v.dev); };'
+# GD74 Mac 沒 dev 欄仍出測試機(Andy 22:0x 兩平台一致)
+k 'return !!(v && v.dev === true); };' 'return !!(v ? v.dev === true : !(typeof fpWin === '\''function'\'' && fpWin())); };'
+# GD75 頁面又自己判「加一台主機」(6770f / ebab8 22:10:照 aibd)
+k '    if (s.why === '\''next_version'\'') return '\''later'\'';' '    if (s.why === '\''next_version'\'' || (s.id === '\''host_add'\'' && !thDev())) return '\''later'\'';'

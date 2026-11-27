@@ -4,6 +4,7 @@
 //! every request; accept the startup token only as `Authorization: Bearer`;
 //! reject tokens in URLs; send no CORS headers; never log headers or queries.
 
+pub mod aib_cmd;
 pub mod alive;
 pub mod allowlist;
 pub mod api;
@@ -58,6 +59,7 @@ pub mod install;
 pub mod ledger_cards;
 pub mod legacy_send;
 pub mod lineage;
+pub mod macapp;
 pub mod mail_nudge;
 pub mod merge_acts;
 pub mod merge_find;
@@ -69,6 +71,7 @@ pub mod net_allow;
 pub mod nodes;
 pub mod now_gate;
 pub mod owner_batch;
+pub mod owner_method;
 pub mod owner_ok;
 pub mod owner_probe;
 pub mod owner_probe_win;

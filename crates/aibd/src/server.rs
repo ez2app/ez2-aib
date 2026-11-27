@@ -286,6 +286,8 @@ pub async fn run(
                     crate::owner_ok::set_presence(p.clone(), pairing.clone());
                     tracing::warn!("the page may ask the owner's fingerprint (AIBD_OWNER_TOUCH=1)");
                 }
+                // the fingerprint-or-password choice signs with this key (PLAN-owner-method r3)
+                crate::owner_method::set_owner(p.clone(), pairing.clone());
                 pairing.set_presence(p);
                 // pairing's windows get the countdown beside them too (Andy 11-21 01:42; 519d0 05:49)
                 crate::touch_hud::turn_on();

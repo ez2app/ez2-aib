@@ -972,6 +972,8 @@ impl Owner {
             "outcome": outcome_word(&slot.state),
             "secs": now.saturating_sub(asked_at),
             "by": slot.by,
+            // how a yes is given here: biometry / password / windows_hello (PLAN-owner-method r2 d)
+            "method": crate::owner_method::method_word(),
         });
         let (told, yes) = (slot.on_answer.take(), slot.rec.approved);
         drop(s);
@@ -1985,10 +1987,22 @@ mod tests {
         assert_eq!(a["outcome"], "approved", "reason: outcome");
         assert_eq!(a["secs"], 7, "reason: secs");
         assert_eq!(a["by"], x.by.as_str());
+        assert!(
+            ["biometry", "password", "windows_hello"].contains(&a["method"].as_str().unwrap_or("")),
+            "reason: answer_without_method {a}"
+        );
         let keys: Vec<&str> = a.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["by", "operation", "outcome", "resource", "secs", "ticket"],
+            [
+                "by",
+                "method",
+                "operation",
+                "outcome",
+                "resource",
+                "secs",
+                "ticket"
+            ],
             "reason: params_in_journal {a}"
         );
         assert_eq!(got[1].0, OWNER_USED);

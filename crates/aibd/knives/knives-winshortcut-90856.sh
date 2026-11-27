@@ -25,12 +25,12 @@ sc '            say(&format!("3/5 no AIB shortcut: {e}"));' \
    '            if true { panic!("3/5 no AIB shortcut: {e}") }' \
    no_shortcut_does_not_stop_the_setup
 # SC5 `ctl web` from another program starts the installed aibd.exe
-sc '    if !resident || !ops.same_file(current, &p.exe) {' \
-   '    if !resident || (false && !ops.same_file(current, &p.exe)) {' \
+sc '    if !resident || !(ops.same_file(current, &p.exe) || from_aib()) {' \
+   '    if !resident || (false && !(ops.same_file(current, &p.exe) || from_aib())) {' \
    web_from_elsewhere_starts_nothing
 # SC6 `ctl web` naming another aibd (test / preview) starts the resident one
-sc '    if !resident || !ops.same_file(current, &p.exe) {' \
-   '    if (false && !resident) || !ops.same_file(current, &p.exe) {' \
+sc '    if !resident || !(ops.same_file(current, &p.exe) || from_aib()) {' \
+   '    if (false && !resident) || !(ops.same_file(current, &p.exe) || from_aib()) {' \
    web_from_elsewhere_starts_nothing
 # SC7 the shortcut runs something other than the workbench line
 sc 'pub const SHORTCUT_ARGS: &str = "ctl web";' \

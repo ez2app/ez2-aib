@@ -33,6 +33,9 @@ pub const PUBLIC_KEY_LEN: usize = 65;
 pub enum Who {
     /// The one line, `aibd ctl web`.
     Terminal,
+    /// The code page's own 「重新取得配對碼」 (Andy 11-27 10:18; 3e53b PRE-READ-pair-reissue 4):
+    /// the window says the browser page asked, never the terminal.
+    Page,
     /// The page asking again, for a pairing carried over an update (BOUNDARY r3 §3). A yes lifts
     /// the whole page to this run's full rights until its own end, so the window says that, and
     /// the action only as what started it (5d33a REVIEW-touchid-8ec571dc L1): `act` from aibd's
@@ -55,6 +58,9 @@ pub fn reason(who: &Who, short_code: &str, user_page: bool) -> String {
         Who::Terminal => format!(
             "aibd 配對網頁:短碼 {short_code};給 {to};由終端機 / 程式要求。{OWNER_CHECK_WORD}"
         ),
+        Who::Page => format!(
+            "aibd 配對網頁:短碼 {short_code};給 {to};由瀏覽器頁要求(重新取得配對碼)。{OWNER_CHECK_WORD}"
+        ),
         // a carried pairing has no short code (it was made before the update)
         Who::Reconfirm { act, until } => format!(
             "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}"
@@ -75,7 +81,7 @@ pub const OWNER_CHECK_WORD: &str = "Windows Hello 確認(不留金鑰)";
 /// say to cancel when not.
 pub fn ask_first(who: &Who) -> &'static str {
     match who {
-        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
+        Who::Terminal | Who::Page => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
         Who::Reconfirm { .. } => "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
     }
 }
@@ -89,7 +95,7 @@ pub fn plain(who: &Who, user_page: bool) -> String {
         "內建頁"
     };
     match who {
-        Who::Terminal => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),
+        Who::Terminal | Who::Page => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),
         Who::Reconfirm { act, until } => {
             format!("讓這一頁繼續用完整權限到 {until}(起因:{act})")
         }
@@ -105,7 +111,7 @@ pub fn object(who: &Who, user_page: bool) -> String {
         "內建頁"
     };
     match who {
-        Who::Terminal => format!("這個瀏覽器分頁 → {to}"),
+        Who::Terminal | Who::Page => format!("這個瀏覽器分頁 → {to}"),
         Who::Reconfirm { .. } => format!("這一頁 → {to}"),
     }
 }
@@ -247,6 +253,17 @@ pub trait Presence: Send + Sync {
     /// "always" is never offered (c2f0b REVIEW-netallow-incr L-a).
     fn signs(&self) -> bool {
         false // a presence with no key signs nothing
+    }
+    /// The public key it signs with now, where it has one (owner_method: the pin is compared
+    /// with it before each signature, 3e53b r3 must-add).
+    fn public(&self) -> Option<[u8; PUBLIC_KEY_LEN]> {
+        None
+    }
+    /// Signs with `key` from the next signature on, waiting for a signature under way to end
+    /// (owner_method_set, r2b: no swap while signing). Only a [`SwapPresence`] can.
+    fn replace_key(&self, key: KeyFiles) -> Result<(), &'static str> {
+        let _ = key;
+        Err("owner_method_not_here")
     }
 }
 
@@ -406,9 +423,99 @@ pub fn routed<T>(
     }
 }
 
+/// [`routed`], where the owner chose the login password too (owner_method, PLAN-owner-method
+/// r3): with Touch ID working the key's own window instead of the finger-only one, and only
+/// when `password_chosen` ([`crate::owner_method::password_window_for`] of the key about to
+/// sign). Every other reading is [`routed`]'s.
+pub fn routed_chosen<T>(
+    now: crate::owner_probe::Class,
+    password_chosen: bool,
+    finger_only: impl FnOnce() -> Result<T, &'static str>,
+    as_the_key_allows: impl FnOnce() -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    if password_chosen && now == crate::owner_probe::Class::Fingerprint {
+        return as_the_key_allows();
+    }
+    routed(now, finger_only, as_the_key_allows)
+}
+
+/// A [`KeyPresence`] whose key the owner may swap (owner_method_set): a signature holds the
+/// read lock, a swap the write lock, so no swap happens while signing (r2b). `dev` makes the
+/// device for each key.
+pub struct SwapPresence {
+    now: std::sync::RwLock<(KeyPresence, [u8; PUBLIC_KEY_LEN])>,
+    dev: Box<dyn Fn() -> Box<dyn KeyDevice> + Send + Sync>,
+}
+
+impl SwapPresence {
+    /// Only after [`check`] passed (as [`KeyPresence::new`]).
+    pub fn new(
+        dev: Box<dyn Fn() -> Box<dyn KeyDevice> + Send + Sync>,
+        key: KeyFiles,
+    ) -> Result<SwapPresence, &'static str> {
+        let public = key.public;
+        let p = KeyPresence::new(dev(), key)?;
+        Ok(SwapPresence {
+            now: std::sync::RwLock::new((p, public)),
+            dev,
+        })
+    }
+    fn with<T>(&self, f: impl FnOnce(&KeyPresence) -> T) -> Result<T, &'static str> {
+        let g = self.now.read().map_err(|_| "pair_key_lock")?;
+        Ok(f(&g.0))
+    }
+}
+
+impl Presence for SwapPresence {
+    fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str> {
+        self.with(|p| p.ask(reason, msg))?
+    }
+    fn ask_until(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<(), &'static str> {
+        self.with(|p| p.ask_until(reason, msg, limit))?
+    }
+    fn ask_until_keep(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+        keep: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        self.with(|p| p.ask_until_keep(reason, msg, limit, keep))?
+    }
+    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+        self.with(|p| p.verify(msg, sig)).unwrap_or(false)
+    }
+    fn signs(&self) -> bool {
+        true
+    }
+    fn public(&self) -> Option<[u8; PUBLIC_KEY_LEN]> {
+        self.now.read().ok().map(|g| g.1)
+    }
+    fn replace_key(&self, key: KeyFiles) -> Result<(), &'static str> {
+        let public = key.public;
+        let p = KeyPresence::new((self.dev)(), key)?;
+        let mut g = self.now.write().map_err(|_| "pair_key_lock")?;
+        *g = (p, public);
+        Ok(())
+    }
+}
+
 /// This Mac's Secure Enclave.
 #[cfg(target_os = "macos")]
 pub struct MacSe;
+
+/// Whether the owner chose the login password for the key `blob` (its public key read back
+/// and compared with the pin, [`crate::owner_method::password_window_for`]).
+#[cfg(target_os = "macos")]
+fn password_chosen(blob: &[u8]) -> bool {
+    aib_sys::presence_macos::public_key(blob)
+        .is_ok_and(|public| crate::owner_method::password_window_for(&public))
+}
 
 #[cfg(target_os = "macos")]
 fn se_code(e: aib_sys::presence_macos::SeError) -> &'static str {
@@ -457,6 +564,36 @@ fn class_now() -> crate::owner_probe::Class {
     )
 }
 
+/// What the next owner window asks for, for the page's waiting box (ebab8 11-27; 3e53b
+/// REVIEW-guide L1 b): `touch_id` or `login_password`, one and never both. The choice
+/// [`routed_chosen`] makes for a signature: the password where the owner chose it or the Mac
+/// has no Touch ID, the finger where Touch ID works. `None` when no window would open now
+/// (Touch ID there but not usable, no owner check): the page keeps its neutral words.
+pub fn key_kind_word(
+    now: crate::owner_probe::Class,
+    password_chosen: bool,
+) -> Option<&'static str> {
+    use crate::owner_probe::Class;
+    match (now, password_chosen) {
+        (Class::Fingerprint, false) => Some("touch_id"),
+        (Class::Fingerprint, true) | (Class::PasswordOnly, _) => Some("login_password"),
+        _ => None,
+    }
+}
+
+/// [`key_kind_word`] of this Mac now: the owner check as read now and whether the key in use
+/// opens the chosen password window. Asks nobody (no window).
+#[cfg(target_os = "macos")]
+pub fn key_kind_now() -> Option<&'static str> {
+    key_kind_word(class_now(), crate::owner_method::password_window_now())
+}
+
+/// Windows says Windows Hello on its own; elsewhere there is no owner window.
+#[cfg(not(target_os = "macos"))]
+pub fn key_kind_now() -> Option<&'static str> {
+    key_kind_word(crate::owner_probe::Class::None, false)
+}
+
 /// A window with no limit of its own ([`KeyDevice::sign`]) still closes after this on the
 /// finger-only path, which only has the limited call.
 #[cfg(target_os = "macos")]
@@ -471,8 +608,9 @@ impl KeyDevice for MacSe {
         aib_sys::presence_macos::public_key(blob).map_err(|e| e.code())
     }
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
-        routed(
+        routed_chosen(
             class_now(),
+            password_chosen(blob),
             || {
                 aib_sys::presence_macos::sign_until_finger_only(
                     blob,
@@ -492,8 +630,9 @@ impl KeyDevice for MacSe {
         msg: &[u8],
         limit: std::time::Duration,
     ) -> Result<Vec<u8>, &'static str> {
-        routed(
+        routed_chosen(
             class_now(),
+            password_chosen(blob),
             || {
                 aib_sys::presence_macos::sign_until_finger_only(blob, reason, msg, limit)
                     .map_err(se_code)
@@ -780,10 +919,18 @@ pub fn presence_after_session(
 pub fn presence_here(data: &Path) -> Result<SharedPresence, &'static str> {
     #[cfg(target_os = "macos")]
     {
+        // a change of method cut short: the old key back, a new one never taken (r2b)
+        crate::owner_method::mend_dirs(data);
         let key = load(&key_dir(data))?;
         // read once at start, so a fingerprint seen now is remembered (3e53b REVIEW-s102b L1)
         let _ = class_now();
-        Ok(Arc::new(KeyPresence::new(Box::new(MacSe), key)?))
+        let public = key.public;
+        let p = SwapPresence::new(Box::new(|| Box::new(MacSe) as Box<dyn KeyDevice>), key)?;
+        crate::owner_method::read_at_start(data, &public, |k, m, s| {
+            k.try_into()
+                .is_ok_and(|k: [u8; PUBLIC_KEY_LEN]| MacSe.verify(&k, m, s))
+        });
+        Ok(Arc::new(p))
     }
     // B2: a gesture at the desktop, no key; no Hello for this user ⇒ refused (B3: every owner
     // action stays closed, the page shows the set-a-PIN card)
@@ -1419,6 +1566,101 @@ pub mod tests {
             assert_eq!(go(c), Err(why));
             assert_eq!(went.get(), "", "reason: {why}_opened_a_window");
         }
+    }
+
+    /// owner_method (PLAN r3): the key's own window with Touch ID working only when the owner
+    /// chose the password for this key; every other reading as before.
+    #[test]
+    fn a_chosen_password_opens_the_keys_own_window_only_where_touch_id_works() {
+        use crate::owner_probe::Class;
+        assert_eq!(
+            routed_chosen(Class::Fingerprint, true, || Ok(1), || Ok(2)),
+            Ok(2)
+        );
+        assert_eq!(
+            routed_chosen(Class::Fingerprint, false, || Ok(1), || Ok(2)),
+            Ok(1)
+        );
+        assert_eq!(
+            routed_chosen(Class::NotNow, true, || Ok(1), || Ok(2)),
+            Err("owner_check_finger_not_now"),
+            "reason: password_when_touch_id_not_now"
+        );
+        assert_eq!(
+            routed_chosen(Class::PasswordOnly, false, || Ok(1), || Ok(2)),
+            Ok(2)
+        );
+    }
+
+    /// ebab8 11-27: the page's waiting box says the window that will open, one word, the same
+    /// choice a signature makes; nothing where no window opens.
+    #[test]
+    fn the_key_kind_is_the_window_a_signature_opens_and_one_word() {
+        use crate::owner_probe::Class;
+        let cases = [
+            (Class::Fingerprint, false, Some("touch_id")),
+            (Class::Fingerprint, true, Some("login_password")),
+            (Class::PasswordOnly, false, Some("login_password")),
+            (Class::PasswordOnly, true, Some("login_password")),
+            (Class::NotNow, false, None),
+            (Class::NotNow, true, None),
+            (Class::NotEnrolled, true, None),
+            (Class::None, true, None),
+        ];
+        for (now, chosen, want) in cases {
+            assert_eq!(key_kind_word(now, chosen), want, "{now:?} chosen={chosen}");
+            // the same route a signature takes: the password word only where it is the key's
+            // own window, the finger word only where it is the finger-only one
+            let r = routed_chosen(now, chosen, || Ok("touch_id"), || Ok("login_password"));
+            assert_eq!(
+                r.ok(),
+                want,
+                "reason: page_and_signature_differ {now:?} {chosen}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(key_kind_now(), None);
+    }
+
+    /// r2b: a swap waits for a signature under way; the next one signs with the new key.
+    #[test]
+    fn a_swapped_key_signs_from_the_next_signature_on() {
+        let dev = |public: [u8; PUBLIC_KEY_LEN]| FakeDev {
+            public,
+            probe_ok: true,
+            sign_ok: true,
+            good_sig: true,
+        };
+        let a = [1u8; PUBLIC_KEY_LEN];
+        let b = [2u8; PUBLIC_KEY_LEN];
+        let which = Arc::new(Mutex::new(a));
+        let w = which.clone();
+        let p = SwapPresence::new(
+            Box::new(move || Box::new(dev(*w.lock().unwrap())) as Box<dyn KeyDevice>),
+            KeyFiles {
+                blob: vec![1],
+                public: a,
+            },
+        )
+        .unwrap();
+        assert_eq!(p.public(), Some(a));
+        *which.lock().unwrap() = b;
+        p.replace_key(KeyFiles {
+            blob: vec![2],
+            public: b,
+        })
+        .unwrap();
+        assert_eq!(p.public(), Some(b), "reason: not_swapped");
+        assert!(p.ask("r", b"m").is_ok());
+        // a key that fails the start-up check is not taken; the one in use stays
+        *which.lock().unwrap() = a;
+        assert!(p
+            .replace_key(KeyFiles {
+                blob: vec![3],
+                public: b
+            })
+            .is_err());
+        assert_eq!(p.public(), Some(b));
     }
 
     /// 3e53b REVIEW-s102b L1: once aibd read "fingerprint", a later "no biometry" (a Touch ID
