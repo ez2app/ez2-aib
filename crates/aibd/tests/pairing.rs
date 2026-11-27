@@ -835,3 +835,53 @@ async fn a_seat_token_only_lists_seats_and_sends_and_dies_with_the_seat() {
         "reason: stopped_seat_token_kept"
     );
 }
+
+/// Andy 11-27 10:18 / 3e53b PRE-READ-pair-reissue §2: the page's 「重新取得配對碼」 takes our own
+/// Origin and Host only (no Origin ⇒ refused), a browser's Sec-Fetch-Site must be same-origin,
+/// and where the terminal's y confirms there is no such code (409, the page shows no button).
+#[tokio::test]
+async fn a_new_code_for_the_page_needs_our_own_origin_and_the_owners_window() {
+    let t = app();
+    let ask = |host: &str, origin: Option<&str>, site: Option<&str>| {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/api/v1/pair/reissue")
+            .header("host", host);
+        if let Some(o) = origin {
+            b = b.header("origin", o);
+        }
+        if let Some(s) = site {
+            b = b.header("sec-fetch-site", s);
+        }
+        b.body(Body::empty()).unwrap()
+    };
+    let own_host = format!("127.0.0.1:{PORT}");
+    for o in [
+        Some("http://127.0.0.1:1"),
+        Some("http://evil.example"),
+        Some("null"),
+        None,
+    ] {
+        let r = t.send(ask(&own_host, o, None)).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{o:?}");
+        assert_eq!(code_of(&r), "origin_not_allowed", "{o:?}");
+    }
+    let r = t.send(ask("evil.example:47771", Some(OWN), None)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(code_of(&r), "host_not_allowed");
+    for s in ["cross-site", "same-site", "none"] {
+        let r = t.send(ask(&own_host, Some(OWN), Some(s))).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "reason: fetch_site {s}");
+    }
+    // our own page, but the terminal's y confirms here: no code
+    for s in [None, Some("same-origin")] {
+        let r = t.send(ask(&own_host, Some(OWN), s)).await;
+        assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
+        assert!(r.text.contains("pair_reissue_not_here"), "{}", r.text);
+        assert!(
+            !r.text.contains("\"code\""),
+            "reason: a_code_given {}",
+            r.text
+        );
+    }
+}

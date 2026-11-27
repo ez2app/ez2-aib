@@ -33,6 +33,9 @@ pub const PUBLIC_KEY_LEN: usize = 65;
 pub enum Who {
     /// The one line, `aibd ctl web`.
     Terminal,
+    /// The code page's own 「重新取得配對碼」 (Andy 11-27 10:18; 3e53b PRE-READ-pair-reissue 4):
+    /// the window says the browser page asked, never the terminal.
+    Page,
     /// The page asking again, for a pairing carried over an update (BOUNDARY r3 §3). A yes lifts
     /// the whole page to this run's full rights until its own end, so the window says that, and
     /// the action only as what started it (5d33a REVIEW-touchid-8ec571dc L1): `act` from aibd's
@@ -55,6 +58,9 @@ pub fn reason(who: &Who, short_code: &str, user_page: bool) -> String {
         Who::Terminal => format!(
             "aibd 配對網頁:短碼 {short_code};給 {to};由終端機 / 程式要求。{OWNER_CHECK_WORD}"
         ),
+        Who::Page => format!(
+            "aibd 配對網頁:短碼 {short_code};給 {to};由瀏覽器頁要求(重新取得配對碼)。{OWNER_CHECK_WORD}"
+        ),
         // a carried pairing has no short code (it was made before the update)
         Who::Reconfirm { act, until } => format!(
             "aibd 網頁重新確認:升級這頁到本輪完整權限,到 {until};起因:{act};換版前延續的配對,給 {to};由瀏覽器頁要求。{OWNER_CHECK_WORD}"
@@ -75,7 +81,7 @@ pub const OWNER_CHECK_WORD: &str = "Windows Hello 確認(不留金鑰)";
 /// say to cancel when not.
 pub fn ask_first(who: &Who) -> &'static str {
     match who {
-        Who::Terminal => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
+        Who::Terminal | Who::Page => "你剛在 AIB 頁面按了配對嗎?沒有就按取消",
         Who::Reconfirm { .. } => "你剛在 AIB 頁面要它繼續用完整權限嗎?沒有就按取消",
     }
 }
@@ -89,7 +95,7 @@ pub fn plain(who: &Who, user_page: bool) -> String {
         "內建頁"
     };
     match who {
-        Who::Terminal => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),
+        Who::Terminal | Who::Page => format!("讓這個瀏覽器分頁配對成 AIB 的{to}"),
         Who::Reconfirm { act, until } => {
             format!("讓這一頁繼續用完整權限到 {until}(起因:{act})")
         }
@@ -105,7 +111,7 @@ pub fn object(who: &Who, user_page: bool) -> String {
         "內建頁"
     };
     match who {
-        Who::Terminal => format!("這個瀏覽器分頁 → {to}"),
+        Who::Terminal | Who::Page => format!("這個瀏覽器分頁 → {to}"),
         Who::Reconfirm { .. } => format!("這一頁 → {to}"),
     }
 }

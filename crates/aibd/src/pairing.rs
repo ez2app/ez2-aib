@@ -50,6 +50,13 @@ use subtle::ConstantTimeEq;
 
 /// How long a pairing code can be redeemed (trial value; a person reads and types it).
 pub const CODE_TTL: Duration = Duration::from_secs(120);
+/// At most this many page-asked codes ([`Pairing::reissue_code`]) in [`REISSUE_WINDOW`].
+pub const REISSUE_MAX: usize = 5;
+pub const REISSUE_WINDOW: Duration = Duration::from_secs(600);
+/// The channel is not the owner's window: no page-asked code (the page shows no button).
+pub const REISSUE_NOT_HERE: &str = "pair_reissue_not_here";
+/// [`REISSUE_MAX`] reached.
+pub const REISSUE_TOO_OFTEN: &str = "pair_reissue_too_often";
 /// How long a redeemed credential waits for the short-code confirmation (trial value).
 pub const CONFIRM_WINDOW: Duration = Duration::from_secs(120);
 /// 519d0 11-18 20:36 (Andy hit it in the preview: a double submit revoked his good credential):
@@ -229,6 +236,9 @@ impl std::fmt::Debug for NewCode {
 pub struct Redeemed {
     pub pair_id: String,
     pub credential: String,
+    /// The code was asked for by the page itself ([`Pairing::reissue_code`]): the window says
+    /// "由瀏覽器頁要求", never the terminal.
+    pub by_page: bool,
 }
 
 impl std::fmt::Debug for Redeemed {
@@ -323,6 +333,8 @@ struct Pair {
     /// SPEC §19f: the code that replaced this expired one, `(pair id, code)`, in memory only;
     /// handed to whoever shows this code ([`Pairing::next_code`]), never written anywhere.
     next: Option<(String, String)>,
+    /// Asked for by the page's 「重新取得配對碼」 ([`Pairing::reissue_code`]), not a terminal.
+    by_page: bool,
 }
 
 impl Pair {
@@ -442,6 +454,9 @@ struct Inner {
     touch_cool_until: Option<Instant>,
     /// When a redeem's windows were shown (the last hour, the whole aibd).
     touch_asks: VecDeque<Instant>,
+    /// When the page asked for a new code ([`Pairing::reissue_code`], the last
+    /// [`REISSUE_WINDOW`]).
+    reissue_asks: VecDeque<Instant>,
     /// Preview passes the parent aibd handed this preview down its stdin (digest, until):
     /// one each, for the page its paired page opened ([`Pairing::admit_pass`]).
     passes: VecDeque<(Hash, Instant)>,
@@ -876,6 +891,48 @@ impl Pairing {
         }
     }
 
+    /// `POST /api/v1/pair/reissue` (Andy 11-27 10:18; 3e53b PRE-READ-pair-reissue): the code
+    /// page's 「重新取得配對碼」. Only where the owner's window confirms ([`ConfirmChannel::TouchId`]:
+    /// the terminal's y would wait for nobody); at most [`REISSUE_MAX`] in [`REISSUE_WINDOW`];
+    /// one such code alive at a time (the one before it, unredeemed, is revoked; codes from a
+    /// terminal stay). The code is not a credential: the owner's window after redeem is the
+    /// gate, and it says the page asked ([`Redeemed::by_page`]).
+    pub fn reissue_code(&self) -> Result<NewCode, &'static str> {
+        if self.channel != ConfirmChannel::TouchId {
+            return Err(REISSUE_NOT_HERE);
+        }
+        {
+            let mut inner = self.lock();
+            let now = (self.clock)();
+            let asks = &mut inner.reissue_asks;
+            while asks.front().is_some_and(|t| now >= *t + REISSUE_WINDOW) {
+                asks.pop_front();
+            }
+            if asks.len() >= REISSUE_MAX {
+                return Err(REISSUE_TOO_OFTEN);
+            }
+            asks.push_back(now);
+        }
+        let n = self.create_code_next(false, None).map_err(|e| match e {
+            PairError::Full => "pair_full",
+            _ => REISSUE_NOT_HERE,
+        })?;
+        let mut inner = self.lock();
+        let older: Vec<String> = inner
+            .pairs
+            .iter()
+            .filter(|(id, p)| p.by_page && p.stored == Stored::Issued && **id != n.pair_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in older {
+            Self::revoke(&mut inner, &id);
+        }
+        if let Some(p) = inner.pairs.get_mut(&n.pair_id) {
+            p.by_page = true;
+        }
+        Ok(n)
+    }
+
     /// `POST /api/v1/pair/codes` (start-up token only).
     pub fn create_code(&self) -> Result<NewCode, PairError> {
         self.create_code_for(false)
@@ -939,6 +996,7 @@ impl Pairing {
                 page_nonce: None,
                 rotation,
                 next: None,
+                by_page: false,
             },
         );
         let shown = format!("{}-{}", &code[..5], &code[5..]);
@@ -1114,9 +1172,11 @@ impl Pairing {
             p.page_nonce = nonce_hash;
         }
         inner.creds.insert(digest, id.clone());
+        let by_page = inner.pairs.get(&id).is_some_and(|p| p.by_page);
         Ok(Redeemed {
             pair_id: id,
             credential,
+            by_page,
         })
     }
 
@@ -1265,6 +1325,7 @@ impl Pairing {
                 page_nonce: None,
                 rotation: 0,
                 next: None,
+                by_page: false,
             },
         );
         inner.creds.insert(digest, id.clone());
@@ -1339,6 +1400,7 @@ impl Pairing {
                 page_nonce: None,
                 rotation: 0,
                 next: None,
+                by_page: false,
             },
         );
         inner.creds.insert(digest, id);
@@ -1427,6 +1489,7 @@ impl Pairing {
                     page_nonce: None,
                     rotation: 0,
                     next: None,
+                    by_page: false,
                 },
             );
             inner.creds.insert(c.digest, id);
@@ -1475,6 +1538,54 @@ mod tests {
             p.set_presence(rec.clone());
         }
         (p, rec)
+    }
+
+    /// Andy 11-27 10:18 / 3e53b PRE-READ-pair-reissue: the page's 「重新取得配對碼」 only where the
+    /// owner's window confirms; one such code alive; at most REISSUE_MAX in REISSUE_WINDOW; the
+    /// window it leads to says the page asked; a terminal's code is left alone.
+    #[test]
+    fn a_page_asked_code_is_the_owners_window_only_one_alive_and_limited() {
+        use crate::touch::{reason, Who};
+        for ch in [ConfirmChannel::Off, ConfirmChannel::TerminalUnverified] {
+            let p = Pairing::default().with_channel(ch);
+            assert_eq!(
+                p.reissue_code().unwrap_err(),
+                REISSUE_NOT_HERE,
+                "reason: given_on {ch:?}"
+            );
+        }
+        let (clock, o) = fake();
+        let p = Pairing::with_clock(clock).with_channel(ConfirmChannel::TouchId);
+        let terminal = p.create_code_for(true).unwrap();
+        let first = p.reissue_code().unwrap();
+        let second = p.reissue_code().unwrap();
+        assert_eq!(
+            p.redeem_with(&first.code, false, false, None).unwrap_err(),
+            PairError::Failed,
+            "reason: the_older_page_code_still_redeems"
+        );
+        let r = p.redeem_with(&second.code, false, false, None).unwrap();
+        assert!(r.by_page, "reason: not_marked_as_the_page");
+        assert_eq!(
+            p.view(&r.pair_id).unwrap().state,
+            PairState::AwaitingConfirmation,
+            "reason: confirmed_without_the_window"
+        );
+        let t = p.redeem_with(&terminal.code, false, false, None).unwrap();
+        assert!(!t.by_page, "reason: the_terminals_code_marked_as_the_page");
+        assert!(reason(&Who::Page, "AB12", false).contains("由瀏覽器頁要求"));
+        assert!(!reason(&Who::Page, "AB12", false).contains("終端機"));
+        // the limit: REISSUE_MAX in REISSUE_WINDOW, then again after it
+        for _ in 2..REISSUE_MAX {
+            p.reissue_code().unwrap();
+        }
+        assert_eq!(
+            p.reissue_code().unwrap_err(),
+            REISSUE_TOO_OFTEN,
+            "reason: no_limit"
+        );
+        advance(&o, REISSUE_WINDOW);
+        assert!(p.reissue_code().is_ok(), "reason: limited_forever");
     }
 
     /// DESIGN-pair-touchid r3 / 5d33a CHECK-pair-touchid: with the TouchId channel neither the

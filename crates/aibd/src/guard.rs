@@ -99,6 +99,8 @@ pub const PAIR_PREFS: &str = "/api/v1/pair/prefs";
 pub const PAIR_NEXT: &str = "/api/v1/pair/next";
 /// A preview's page shows the pass its parent's paired page opened it with (Andy 11-19).
 pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
+/// The code page's 「重新取得配對碼」 (public; our own Origin only, as redeem).
+pub const PAIR_REISSUE: &str = "/api/v1/pair/reissue";
 /// GAP-repo-register G2 (043dd): a fingerprint ticket's state, so the page tells "not pressed
 /// yet" from "refused" without resending the act.
 pub const OWNER_TICKET: &str = "/api/v1/owner/tickets/{id}";
@@ -169,6 +171,7 @@ pub const ROUTES: &[&str] = &[
     PAIR_PREFS,
     PAIR_NEXT,
     PAIR_PREVIEW,
+    PAIR_REISSUE,
     OWNER_TICKET,
     SESSION_POLICY,
     OWNER_CHECK,
@@ -178,7 +181,14 @@ pub const ROUTES: &[&str] = &[
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
 /// authenticated by the pairing code in its body.
 /// Routes answered without any token (the code page runs before pairing).
-pub const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM, PAIR_PREFS, PAIR_NEXT, PAIR_PREVIEW];
+pub const PUBLIC_PATHS: &[&str] = &[
+    HEALTH,
+    PAIR_REDEEM,
+    PAIR_PREFS,
+    PAIR_NEXT,
+    PAIR_PREVIEW,
+    PAIR_REISSUE,
+];
 
 /// What an unconfirmed page credential may call (ADR 0006 §7); health is public anyway.
 const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE, GUIDE];
@@ -198,6 +208,7 @@ pub const LOGGED_ROUTES: &[&str] = &[
     PAIR_PREFS,
     PAIR_NEXT,
     PAIR_PREVIEW,
+    PAIR_REISSUE,
 ];
 pub const UNMATCHED_PATH: &str = "<unmatched>";
 
@@ -462,7 +473,7 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     let path = req.uri().path();
     let origin = single_header(h, header::ORIGIN)
         .map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
-    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW {
+    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW || path == PAIR_REISSUE {
         // W1: the person types the code into a page aibd serves, so the form comes from our
         // own origin. `null` (the P2 local-file form) is not taken until P2 is built: today
         // it would only let any web page's sandboxed frame fill the failure limit (043dd L1)
