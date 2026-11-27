@@ -2505,9 +2505,6 @@ mod tests {
         assert!(f.calls().is_empty(), "{:?}", f.calls());
     }
 
-    /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 b: a pairing key that cannot be made now
-    /// (Touch ID not usable) or one there that fails aibd's start-up check stops the install
-    /// before anything is copied or written, and says why.
     #[test]
     fn aibd_data_dir_alone_answers_and_the_other_aibds_plist_is_refused() {
         // ebab8 11-27: a second aibd for the same user was refused by the real one's record
@@ -2622,6 +2619,9 @@ mod tests {
         assert!(!m.p("bin/aib").exists(), "reason: test_label_took_aib");
     }
 
+    /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 b: a pairing key that cannot be made now
+    /// (Touch ID not usable) or one there that fails aibd's start-up check stops the install
+    /// before anything is copied or written, and says why.
     #[test]
     fn a_pairing_key_that_fails_installs_nothing() {
         let sw = crate::owner_ok::SWITCH;

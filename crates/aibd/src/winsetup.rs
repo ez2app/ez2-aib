@@ -407,8 +407,8 @@ fn aib_command(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
             p.dir.display()
         )),
         Ok(false) => {}
-        Err(e) => say(&format!(
-            "AIB-CMD-PATH {} is not on your PATH ({e}): until it is, type \"{}\" web",
+        Err(why) => say(&format!(
+            "AIB-CMD-PATH {} is not on your PATH ({why}): until it is, type \"{}\" web",
             p.dir.display(),
             p.aib.display()
         )),

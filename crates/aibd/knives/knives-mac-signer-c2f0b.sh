@@ -14,5 +14,5 @@ kn session_policy_setup.rs '        Kind::Native => signed(name, &real).map_err(
 # MS2 any non-empty text is taken as a Team ID
 kn allowlist.rs '    t.len() == 10' '    !t.is_empty()' allowlist::tests::a_team_id_is_ten_capitals_or_digits
 # MS3 codex checked against another team
-kn provider_maker.rs '("codex", "2DC432GLL2")' '("codex", "Q6L2SF6YDW")' provider_maker::tests::a_policy_program_has_its_makers_team_id
+kn provider_fetch/maker.rs '("codex", "2DC432GLL2")' '("codex", "Q6L2SF6YDW")' provider_fetch::maker::tests::a_policy_program_has_its_makers_team_id
 exit "$fail"

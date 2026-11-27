@@ -13,7 +13,7 @@ kn() { python3 -I scripts/knife.py "crates/aibd/src/$1" "$2" "$3" --expect-fail 
 # MS4 the seat-open signer check is gone
 kn allowlist.rs '                signed_by(&real, team)?;' '                signed_by(&real, team).or(Ok::<(), Refused>(()))?;' allowlist::tests::unix::with_a_signer_a_renamed_copy_of_sh_is_refused
 # MS6 only the first entry naming the real file is checked (3e53b REVIEW-macfirstrun N1)
-kn allowlist.rs '        for e in p.programs.iter().filter(same) {' '        for e in p.programs.iter().take(1).filter(same) {' allowlist::tests::unix::with_a_signer_a_renamed_copy_of_sh_is_refused
+kn allowlist.rs '        for e in &matched {' '        for e in matched.iter().take(1) {' allowlist::tests::unix::with_a_signer_a_renamed_copy_of_sh_is_refused
 # MS5 a Mac policy without a signer is written
 kn session_policy_setup.rs '            return None;' '            let _ = ();' session_policy_setup::tests::an_unsigned_program_is_never_written_and_a_mac_policy_names_its_signer
 exit "$fail"

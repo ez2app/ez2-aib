@@ -219,10 +219,24 @@ pub const NAME_SHOWN: usize = 8;
 /// [`OBJECT_HEAD`] characters of a long object: a name put first pushed the fixed words out,
 /// and a name written to look like them stood where the real ones should be.
 pub fn fixed_then_name(fixed: &[&str], name: &str) -> String {
-    let mut n: String = name.chars().take(NAME_SHOWN).collect();
-    if name.chars().count() > NAME_SHOWN {
+    fixed_then_cut(fixed, name, NAME_SHOWN)
+}
+
+/// An AI-writable word cut to `shown` characters, `…` when it was longer.
+pub fn cut_to(word: &str, shown: usize) -> String {
+    let mut n: String = word.chars().take(shown).collect();
+    if word.chars().count() > shown {
         n.push('…');
     }
+    n
+}
+
+/// [`fixed_then_name`]'s rule with its own length (ebab8 11-25 14:01, c2f0b's order of
+/// SCAN-owner-window-words 3 1 2 5): aibd's fixed words first, an empty one left out, then
+/// the AI-writable word cut to `shown`.
+pub fn fixed_then_cut(fixed: &[&str], word: &str, shown: usize) -> String {
+    let n = cut_to(word, shown);
+    let fixed: Vec<&str> = fixed.iter().copied().filter(|f| !f.is_empty()).collect();
     let fixed = fixed.join(" · ");
     format!("{fixed} · {n}")
 }
@@ -1281,6 +1295,23 @@ pub fn record_matches(rec: &Record, ticket: &str, ask: &Ask, now: u64) -> bool {
         && rec.params_sha256 == params_sha256(&ask.params)
 }
 
+/// A test's check (c2f0b REVIEW-pa2ls-50ab4651 N1): the object as the window shows it starts
+/// with aibd's fixed words, and an imitation of them (a fake uid, a fake brand) is nowhere
+/// before their end — a check that holds wherever the window cuts, not one a cut point passes.
+#[cfg(test)]
+pub(crate) fn fixed_first(shown: &str, fixed: &str, fakes: &[&str]) -> Result<(), String> {
+    if !shown.starts_with(fixed) {
+        return Err(format!("reason: fixed_not_first {shown}"));
+    }
+    match fakes
+        .iter()
+        .find(|f| shown.find(**f).is_some_and(|i| i < fixed.len()))
+    {
+        Some(f) => Err(format!("reason: fake_before_the_fixed {f} {shown}")),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1298,21 +1329,19 @@ mod tests {
                 "reason: fixed_not_first {o}"
             );
             let shown = object_shown(&format!("{o} · {tail}"));
-            let head: String = shown.chars().take(OBJECT_HEAD).collect();
-            assert!(
-                head.starts_with("claude · un0eba · "),
-                "reason: fixed_cut_off {shown}"
-            );
-            assert!(
-                !head.contains("zz9zz9") && !head.contains("codex"),
-                "reason: name_stood_for_the_fixed {shown}"
-            );
+            fixed_first(&shown, "claude · un0eba · ", &["zz9zz9", "codex"]).unwrap();
         }
         assert_eq!(
             fixed_then_name(&["claude", "un0eba"], "AIB 本人核准安全工程師"),
             "claude · un0eba · AIB 本人核准…"
         );
         assert_eq!(fixed_then_name(&["claude"], "小安"), "claude · 小安");
+        // an empty fixed word (a warning that is not there) leaves no empty place
+        assert_eq!(
+            fixed_then_cut(&["", "收據到 lin"], "web-b4297-012345678", 12),
+            "收據到 lin · web-b4297-01…"
+        );
+        assert_eq!(cut_to("短", 12), "短");
     }
 
     fn a() -> Ask {

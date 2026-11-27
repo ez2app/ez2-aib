@@ -48,6 +48,7 @@ pub mod net_card_web;
 pub mod host_addr;
 // hostmode r3 §3-4: the one pinned ssh command of host_exec (3e53b 11-23)
 pub mod guide;
+pub mod handoff_latest;
 pub mod host_ssh;
 pub mod hosts;
 pub mod idem;
@@ -99,7 +100,9 @@ pub mod preview_tree;
 pub mod preview_up;
 pub mod provider_fetch;
 pub mod provider_login;
-pub mod provider_maker;
+/// L2: the production download, whose signer is fixed (kept a child of `provider_fetch` so
+/// only it can call the private `provider_fetch::run`; 3e53b / f163c REVIEW-l2-maker r3).
+pub use provider_fetch::maker as provider_maker;
 pub mod proxy;
 pub mod receipt_bundle;
 pub mod receipt_check;

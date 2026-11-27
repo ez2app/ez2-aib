@@ -217,11 +217,14 @@ pub fn clean_name(s: &str) -> Option<String> {
     (!RESERVED.iter().any(|r| r.eq_ignore_ascii_case(&n))).then_some(n)
 }
 
-/// The window's line: the template, its base, what it holds, and what this change turns on
-/// last (`owner_ok::clean_resource` keeps the end of a long line).
+/// The window's line: the base first (aibd's word), the template's name after it cut to
+/// [`crate::owner_ok::NAME_SHOWN`] (ebab8 11-25 14:01, SCAN-owner-window-words 2: a long
+/// name pushed the base into the part the window cuts), what it holds, and what this change
+/// turns on last (the window keeps the end of a long line).
 pub fn window_line(name: &str, base: &str, items: &Items, raised: &[&str]) -> String {
     let held: Vec<&str> = items.keys_on().into_iter().map(word).collect();
-    let mut s = format!("權限模板「{name}」底 {base}:{}", held.join("、"));
+    let head = crate::owner_ok::fixed_then_name(&[&format!("底 {base}"), "權限模板"], name);
+    let mut s = format!("{head}:{}", held.join("、"));
     if !raised.is_empty() {
         let r: Vec<&str> = raised.iter().copied().map(word).collect();
         s.push_str(&format!(";這次多開 {}", r.join("、")));
@@ -679,5 +682,26 @@ mod tests {
             "reason: raise_not_last {line}"
         );
         assert!(line.contains("對話、推送"));
+    }
+
+    /// ebab8 11-25 14:01 (SCAN-owner-window-words 2): the template's name is the writer's
+    /// word. However long, or written to look like a base, the window shows the real base
+    /// first and the name after it, cut.
+    #[test]
+    fn a_template_name_never_stands_before_the_base() {
+        let it = Items::from_keys(&["chat", "code", "own", "cmd", "brain", "net", "push"]);
+        for name in [
+            "很長很長很長很長很長很長很長很長很長很長的模板名字",
+            "底 safe 權限模板",
+        ] {
+            let line = window_line(name, "dgrs", &it, &["push"]);
+            let shown = crate::owner_ok::object_shown(&line);
+            crate::owner_ok::fixed_first(&shown, "底 dgrs · 權限模板 · ", &["safe"]).unwrap();
+            assert!(line.contains('…'), "reason: name_not_cut {line}");
+            assert!(
+                line.ends_with(";這次多開 推送"),
+                "reason: raise_not_last {line}"
+            );
+        }
     }
 }

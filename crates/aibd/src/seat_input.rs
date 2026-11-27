@@ -67,6 +67,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::owner_method::STATUS,
     crate::seat_move::MOVE,
     crate::seat_move::UNMOVE,
+    crate::handoff_latest::KIND,
     crate::test_host_web::LIST,
     crate::time_saved::KIND,
     crate::plugins_page::LIST,
@@ -860,6 +861,19 @@ pub async fn act(
                 }
                 _ => crate::provider_login::look(body, by).await,
             };
+        }
+        // S6 (DESIGN-s6-handofflatest-08de5-1123): the newest handoff and memory pack of a seat
+        // code, names and times only; the built-in page (a carried pairing too: it only reads)
+        Some(crate::handoff_latest::KIND) => {
+            let held_by_user_page = held_as_user_page(&page).await;
+            if held_by_user_page {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "the newest handoff is listed for the built-in page only",
+                );
+            }
+            return crate::handoff_latest::act(st, body).await;
         }
         // G5 信橋 (DESIGN-g5-bridge-7ebca-1121 r1 §1): a 1.x seat moves into a web seat from the
         // built-in page in this pairing only, with the owner's fingerprint; going back needs none

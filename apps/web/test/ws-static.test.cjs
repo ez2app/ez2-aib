@@ -678,7 +678,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
 // 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對(甲2 開席登入 11-26 拿掉:改接重新登入卡)
 {
-  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
   const bad = [];
   for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
     read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
@@ -1035,8 +1035,17 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
       const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
       { const w = box.pairSay('<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'); ok(/Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消/.test(w) && !/AIB 的視窗/.test(w), 'reason: b6_wait_says_hello_compare_code ' + w); }
+      { const j0 = ws.indexOf('  const PAIR_WAIT_TERM = '), j1 = ws.indexOf('  function cdLeft() {'); ok(j0 > 0 && j1 > j0 && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_selector_found');
+        vm.runInContext('this.pairWaitSay = pairWaitSay; this.W0 = PAIR_WAIT_TERM;', box); // 這段已在上面 PAIR_WIN_SAY 那段一起載入
+        const W0 = '<div class="pairbox">' + box.W0 + '<div class="short">123456</div></div>', pick = (chan, win) => { box.win = win; return box.pairWaitSay(chan)(W0); };
+        ok(pick('terminal-unverified', true) === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('', true)) && /Windows Hello/.test(pick(undefined, true)), 'reason: pair_wait_terminal_channel_keeps_y');
+        const mac = pick('', false); ok(/<h2>在系統確認視窗確認<\/h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
+        ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
       box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
-      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairSay(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
+      // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀
+      ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '' }") && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');
+      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
     c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
@@ -1085,6 +1094,16 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const k2 = mk(); k2.S.mode = 'a1b2c'; k2.S.drafts = { a1b2c: '舊' }; k2.document = { getElementById: () => ({ value: '新的字', disabled: true }) }; k2.X.guideSkip(true);
       const k3 = mk(); k3.S.mode = 'shared'; k3.S.drafts = { shared: '留著' }; k3.document = { getElementById: () => null }; k3.X.guideSkip(true);
       ok(k2.S.drafts.a1b2c === '舊' && k3.S.drafts.shared === '留著', 'reason: guide_skip_disabled_or_no_box_keeps_draft'); }
+    // f163c aa7164f7ed N1:組字中 Esc 不關指引要有行為測試(不只字串比對):真的 ws.js 監聽行 + 真的 IME / imeBusy 四行
+    { const wl = ws.split('\n'), esc = wl.find((l) => l.includes("if (e.key === 'Escape' && document.getElementById('gtour')")), i0 = wl.findIndex((l) => l.startsWith('  const IME = { on: false'));
+      ok(!!esc && i0 > 0 && wl[i0 + 3].startsWith('  const imeBusy = '), 'reason: guide_esc_ime_lines_found');
+      const kb = vm.createContext({ Date, skipped: 0, ls: [], guideSkip: () => { kb.skipped++; }, document: { getElementById: (id) => (id === 'gtour' ? {} : null), addEventListener: (t, f) => kb.ls.push([t, f]) } });
+      vm.runInContext(wl.slice(i0, i0 + 4).join('\n') + '\n' + esc.trim() + '\nthis.IME = IME;', kb);
+      const kd = kb.ls.find((x) => x[0] === 'keydown')[1], hit = (e) => { const n = kb.skipped; kd(Object.assign({ key: 'Escape', timeStamp: 10000 }, e)); return kb.skipped - n; };
+      ok(hit({ isComposing: true }) === 0 && hit({ keyCode: 229 }) === 0, 'reason: guide_esc_while_composing_closes');
+      kb.IME.on = true; kb.IME.since = Date.now(); ok(hit({}) === 0, 'reason: guide_esc_while_ime_on_closes'); kb.IME.on = false;
+      kb.IME.end = 9950; ok(hit({}) === 0, 'reason: guide_esc_right_after_compose_closes'); kb.IME.end = -1e9;
+      ok(hit({}) === 1 && hit({ key: 'Enter' }) === 0, 'reason: guide_esc_plain_does_not_close'); }
     // 接線(靜態):暗格點了不動作、指引鈕走原本那顆、打開面板記第 6 步、畫完重算路線、讀 guide、面板套暗格、配對頁加清單
     ok(/async function onMainClick\(e\) \{\n    const x = e\.target;\n    if \(x\.closest\('\.gdim'\)\) return;/.test(ws), 'reason: guide_dim_click_does_nothing');
     ok(/S\.rg = null; S\.rgMsg = null;\n      guideOnPanel\(\);\n      render\(\);/.test(ws) && /function render\(\) \{\n    guidePaintSoon\(\);/.test(ws) && /if \(!S\.gAt \|\| Date\.now\(\) - S\.gAt > 8000\) await guideLoad\(\);/.test(ws), 'reason: guide_wired');
@@ -2018,6 +2037,32 @@ const hsChecks = (async () => {
   ok(!/終端機打 (copilot|codex|claude)/.test(ws) && /grok: 'Grok', copilot: 'Copilot' \}/.test(ws), 'reason: copilot_key_wording_in_login');
   ok(!/COPILOT_GITHUB_TOKEN|GITHUB_COPILOT_TOKEN|api-key-copilot/.test(ws), 'reason: page_asks_copilot_key');
 }
+// c2f0b IFACE-provider-lifecycle §5b:開席被拒三個碼 = 這是什麼 + 怎麼辦 + 鈕(verify_failed / unmeasured 接 provider_install、path_linked 只說明),四語、沒有「略過照開」
+lateChecks.push((async () => {
+  const a = ws.indexOf('  const OPEN_RF = {'), b = ws.indexOf('  function addErr(e) {', a), src = a >= 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: { add: null }, esc: E, render: () => {}, lang: 'zh-TW', has: true, lcName: (k) => 'N:' + k, lcWhy: (code, n) => 'LW:' + code + ':' + n, lcLoad: async () => null,
+    rgCode: (e) => String((e && (e.reason || e.code)) || ''), fingerAct: async (t, body) => { sent.push([t, JSON.stringify(body)]); if (c.fail) throw { reason: 'lifecycle_offline' }; return { ok: true }; } });
+  vm.runInContext('const askLang = () => lang; const lcHas = (k) => has && k === "provider_install";\n' + src + '\nthis.F = { rfHtml, rfFix, rfOwn, OPEN_RF };', c);
+  const F = c.F, A = (code) => (c.S.add = { refuse: { code, provider: 'claude' } });
+  ok(src.length > 2000, 'reason: rf_block_found');
+  let h = F.rfHtml(A('lifecycle_verify_failed'));
+  ok(h === '<div class="aerr" role="alert"><b>AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。</b> 按「重新安裝」,AIB 會重新下載、驗過再放好;若重裝後仍是這個錯,是開席設定指錯了,請聯絡我們協助重設。<div class="afoot"><button type="button" class="go" data-addrfx="1" >重新安裝</button></div></div>', 'reason: rf_verify_failed_zh ' + h);
+  h = F.rfHtml(A('provider_unmeasured')); ok(h.includes('不在 AIB 驗過的清單上') && h.includes('請聯絡我們協助') && !h.includes('<button'), 'reason: rf_unmeasured_no_button_until_reset ' + h);
+  h = F.rfHtml(A('provider_path_linked')); ok(h.includes('被換成了連結(symlink / junction)') && !/捷徑|shortcut|ショートカット|바로 가기/.test(src) && h.includes('搬回來或請我們協助') && !h.includes('<button'), 'reason: rf_path_linked_no_button ' + h);
+  ok(!/略過|照開|Skip|skip|スキップ|건너/.test(src), 'reason: rf_no_skip_button');
+  for (const x of ['constructor', 'done', 'busy', 'zz', null]) ok(F.rfHtml(A(x)) === '', 'reason: rf_unknown_code_nothing ' + x);
+  c.has = false; ok(!F.rfHtml(A('lifecycle_verify_failed')).includes('<button'), 'reason: rf_no_button_without_act'); c.has = true;
+  for (const [l, w] of [['en', '>Reinstall</button>'], ['ja', '>再インストール</button>'], ['ko', '>다시 설치</button>']]) { c.lang = l; const x = F.rfHtml(A('lifecycle_verify_failed')); ok(x.includes(w) && !/[一-鿿]{4}/.test(x.replace(/<[^>]+>/g, '').replace(/[ぁ-んァ-ヶー]/g, '')) === (l !== 'ja'), 'reason: rf_4lang ' + l + ' ' + x); }
+  c.lang = 'zh-TW';
+  ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OPEN_RF[l]).join() === Object.keys(F.OPEN_RF['zh-TW']).join()), 'reason: rf_4lang_same_keys');
+  A('provider_unmeasured'); await F.rfFix(); ok(sent.length === 0, 'reason: rf_unmeasured_no_fix ' + JSON.stringify(sent));
+  A('lifecycle_verify_failed'); await F.rfFix(); ok(sent.length === 1 && sent[0][0] === 'provider_install' && sent[0][1] === '{"provider":"claude"}' && c.S.add.refuse.done === true && F.rfHtml(c.S.add).includes('裝好了,再按一次「開」。') && !F.rfHtml(c.S.add).includes('<button'), 'reason: rf_fix_installs_provider_only ' + JSON.stringify(sent));
+  A('provider_path_linked'); await F.rfFix(); ok(sent.length === 1, 'reason: rf_path_linked_no_fix');
+  c.fail = true; A('lifecycle_verify_failed'); await F.rfFix(); ok(c.S.add.refuse.err === 'LW:lifecycle_offline:N:claude' && !c.S.add.refuse.done, 'reason: rf_fix_error_said ' + JSON.stringify(c.S.add.refuse));
+  ok(ws.includes("      else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }") && ws.includes("A.grp = null; A.refuse = null; render();") && ws.includes('${rfHtml(A)}') && ws.includes("if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }"), 'reason: rf_wired');
+})());
+
 // c2f0b 03:31:開席設定卡頂端照 GET /api/v1/owner-check 的 class 寫這台是哪一種;頁面照 class 選字、不印 words;no_hello / unknown 出設 PIN 三步 + 重新檢查(再 GET 一次)
 lateChecks.push((async () => {
   const a = ws.indexOf('  const OC_CLASSES = ['), b = ws.indexOf('  async function spLoad() {', a), src = a >= 0 && b > a ? ws.slice(a, b) : '';
@@ -2103,7 +2148,7 @@ lateChecks.push((async () => {
       passphrase_locked: "The passphrase was wrong too many times, so it is locked for now.",
       owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
       policy_no_native: "No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).",
-      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_exists: "This computer's seat-opening security setting is already set, and AIB won't change it.",
       policy_write_failed: "AIB could not write the seat-opening setup file. Nothing was changed. You can press again.",
       policy_bad_request: "The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.",
       pin: "If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.",
@@ -2127,7 +2172,7 @@ lateChecks.push((async () => {
       pair_touch_not_on_this_system: "このパソコンのシステムはまだ本人確認に対応していません。",
       passphrase_locked: "パスフレーズを何度も間違えたため、一時的にロックされています。",
       policy_no_native: "このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」(再検索)を押してください。",
-      policy_exists: "このパソコンにはすでに AI の席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」(再検索)を押してください。",
+      policy_exists: 'このパソコンの席を開く安全設定はすでに設定済みで、AIB は変更しません。',
       policy_write_failed: "AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。",
       policy_bad_request: "ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。",
       class_na: "このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。",
@@ -2150,7 +2195,7 @@ lateChecks.push((async () => {
       pair_touch_not_on_this_system: "이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.",
       passphrase_locked: "암호 문구를 너무 많이 틀려 잠시 잠겼습니다.",
       policy_no_native: "이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」(다시 찾기)를 누르세요.",
-      policy_exists: "이 컴퓨터에는 이미 AI 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」(다시 찾기)를 누르세요.",
+      policy_exists: '이 컴퓨터의 좌석 열기 보안 설정은 이미 되어 있으며, AIB는 바꾸지 않습니다.',
       policy_write_failed: "AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.",
       policy_bad_request: "페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
       class_na: "이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.",
@@ -2186,6 +2231,21 @@ lateChecks.push((async () => {
   ok(mk('Win32', 'zh-TW').f('cancel') === '你按了取消,沒有動任何東西。' && mk('MacIntel').f('pair_key_missing') === '這台還沒有配對金鑰。請先建配對金鑰。', 'reason: ap26_4lang_zh_stays_zh');
   ok(ws.includes("const L = typeof askLang === 'function' ? askLang() : 'zh-TW'"), 'reason: ap26_4lang_same_lang_as_ask');
 }
+// c2f0b dc4e963b56:unsigned 那列「重新安裝」只送 provider_install {provider},一次一個,只認 found 裡真的是 unsigned 的名字,錯了照 lcWhy 寫在那列,完後重讀
+lateChecks.push((async () => {
+  const a = ws.indexOf('  async function spFix(k) {'), b = ws.indexOf('  async function spInit() {', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const sent = [], c = vm.createContext({ S: { sp: { d: { found: [{ name: 'claude', kind: 'unsigned', path: '/x' }, { name: 'codex', kind: 'native', path: '/y' }] } } }, render: () => {}, has: true, fail: false, loads: 0,
+    lcHas: (t) => c.has && t === 'provider_install', spFound: (d) => d.found, lcWhy: (code, n) => 'LW:' + code + ':' + n, lcName: (k) => 'N:' + k, rgCode: (e) => e.reason, lcLoad: async () => { c.loads++; }, spLoad: async () => { c.loads++; },
+    fingerAct: async (t, body) => { sent.push(t + ' ' + JSON.stringify(body)); if (c.fail) throw { reason: 'lifecycle_offline' }; return { ok: true }; } });
+  vm.runInContext(src + '\nthis.spFix = spFix;', c);
+  ok(src.length > 200, 'reason: sp_fix_found');
+  await c.spFix('codex'); await c.spFix('nope'); await c.spFix(''); c.has = false; await c.spFix('claude'); c.has = true;
+  ok(sent.length === 0, 'reason: sp_fix_only_unsigned_with_act ' + sent.join('|'));
+  await c.spFix('claude'); ok(sent.join('|') === 'provider_install {"provider":"claude"}' && c.S.sp.fix === '' && c.loads === 2, 'reason: sp_fix_sends_install_then_reloads ' + sent.join('|'));
+  c.fail = true; await c.spFix('claude'); ok(c.S.sp.fixErr.claude === 'LW:lifecycle_offline:N:claude', 'reason: sp_fix_error_on_row');
+  c.S.sp.fix = 'claude'; c.fail = false; const n = sent.length; await c.spFix('claude'); ok(sent.length === n, 'reason: sp_fix_one_at_a_time');
+  ok(ws.includes("{ const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }"), 'reason: sp_fix_click_wired');
+})());
 // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
 {
   const a = ws.indexOf('  const SP_INIT = '), b = ws.indexOf('  async function spLoad() {', a);
@@ -2202,7 +2262,20 @@ lateChecks.push((async () => {
   const h = src ? c.card({ d }) : '';
   ok(/✅ Claude:找到了\(<span class="sppath" title="C:\\Users\\x\\\.local\\bin\\claude\.exe">/.test(h), 'reason: w10_native_row_found_with_path');
   ok(h.includes('⚠️ Codex:這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 Codex。請改用官方安裝程式(下面的連結),裝好後按「重新找」。'), 'reason: w10_npm_row_says_why_and_what_to_do');
-  ok(h.includes('<li>gemini:沒找到</li>') && h.includes('⚠️ sh:找到的不是程式本體(<span class="sppath" title="/bin/sh">/bin/sh</span>),請用官方安裝程式重裝'), 'reason: w10_not_found_and_not_the_program_rows');
+  ok(h.includes('<li>這台電腦還沒裝 gemini。照官方步驟裝好後,回來再按一次。</li>') && h.includes('⚠️ sh:找到的不是程式本體(<span class="sppath" title="/bin/sh">/bin/sh</span>),請用官方安裝程式重裝'), 'reason: w10_not_found_and_not_the_program_rows');
+  // c2f0b dc4e963b56 + 20:01 定字:Mac 找到但不是官方簽章(unsigned);沒裝 / 不是官方版 ⇒ 有 provider_install 才給 AIB 自己裝
+  { const uf = { policy: 'missing', programs: [], can_write: true, found: [{ name: 'claude', kind: 'unsigned', path: '/Users/x/.local/bin/claude' }, { name: 'codex', kind: 'not_found', path: '' }] };
+    const u0 = c.card({ d: uf });
+    ok(u0.includes('⚠️ 找到的 Claude 不是官方簽章的版本,可能被換過,為了安全不會用它。請從官方重新安裝。') && !u0.includes('data-spfix') && !u0.includes('data-spok') && u0.includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_unsigned_row_no_install_act ' + u0);
+    c.lcHas = (t) => t === 'provider_install'; c.lcNeeds = (k) => k === 'codex';
+    const u1 = c.card({ d: uf });
+    ok(u1.includes('⚠️ 找到的 Claude 不是官方簽章的版本,可能被換過,為了安全不會用它。按「重新安裝」,AIB 會改裝官方版。') && u1.includes('<button type="button" class="go" data-spfix="claude" >重新安裝</button>'), 'reason: sp_unsigned_row_reinstall_button ' + u1);
+    c.S.sp = { fix: 'claude' }; const ub = c.card({ d: uf }); c.S.sp = null; // f163c 3798e7b4 N1:按下後鈕停用、寫安裝中
+    ok(ub.includes('<button type="button" class="go" data-spfix="claude" disabled>安裝中…</button>') && !ub.includes('>重新安裝</button>'), 'reason: sp_unsigned_button_busy ' + ub);
+    ok(u1.includes('這台電腦還沒裝 Codex。按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。'), 'reason: sp_not_found_points_to_install_card');
+    c.lcNeeds = () => false; ok(c.card({ d: uf }).includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_not_found_no_card_falls_back');
+    ok(!/Team ID|signer|簽章者/.test(u1), 'reason: sp_unsigned_hides_signer');
+    delete c.lcHas; delete c.lcNeeds; }
   ok(h.indexOf('<h4>還沒設定這台能開哪些 AI</h4>') >= 0 && h.indexOf('AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。') > h.indexOf('<h4>'), 'reason: w10_card_title_then_what_aib_opens');
   ok(h.includes('data-spok="1"') && h.includes('>核准並啟用</button>') && h.includes('data-spre="1"'), 'reason: w10_approve_shown_with_a_native');
   const h2 = src ? c.card({ d: Object.assign({}, d, { can_write: false }) }) : 'data-spok';
@@ -2236,7 +2309,7 @@ lateChecks.push((async () => {
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
   ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
-  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
+  ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
 // 登入卡(08de5 SHOT-login-card-*-08de5-1126;DESIGN-login-card-page-fc7f9-1126;Andy 01:04 網址已帶碼就不顯示貼碼):大字碼框、按了才複製、共幾步、有效時間照實寫
 const relogChecks = (async () => {

@@ -248,11 +248,117 @@ pub fn test_search_dirs(dirs: Option<Vec<PathBuf>>) {
 }
 
 /// Where the providers are looked for: aibd's own `PATH`, then the native installers'
-/// `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows), often not on `PATH`.
-pub fn search_dirs() -> Vec<PathBuf> {
+/// `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows), often not on `PATH`, then the
+/// copies aibd itself placed under `data` ([`with_placed`]).
+pub fn search_dirs(data: &Path) -> Vec<PathBuf> {
     if let Some(d) = TEST_DIRS.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return d;
     }
+    with_placed(user_dirs(), data, aib_seatopen::measured::this_platform())
+}
+
+/// `dirs`, then aibd's own placed copies (L1 provider_fetch / L2, IFACE-provider-lifecycle
+/// §3.4; ebab8 11-26 12:14 C): `<data>/providers/<name>/<version>/` for this platform's
+/// measured rows only, never another folder under `providers/` (a version not in the table
+/// is not run, Andy 11-26 02:3x). After the user's own folders: a native program the user
+/// installed is the one they chose. The look still takes only a native executable there.
+pub fn with_placed(mut dirs: Vec<PathBuf>, data: &Path, platform: Option<&str>) -> Vec<PathBuf> {
+    let Some(platform) = platform else {
+        return dirs;
+    };
+    if !data.is_absolute() {
+        return dirs;
+    }
+    let placed = aib_seatopen::MEASURED
+        .iter()
+        .filter(|m| PROVIDERS.contains(&m.provider) && m.platform == platform)
+        .filter_map(|m| {
+            let d =
+                crate::provider_fetch::placed_dir(data, &crate::provider_fetch::FetchRow::from(m));
+            no_link_below(data, &d, m.provider).then_some(d)
+        });
+    dirs.extend(placed);
+    dirs
+}
+
+/// 3e53b 11-26 12:16 / 12:2x: `data` itself, every folder from it down to `dir` (the four
+/// levels L2's placed check reads: data, providers, provider, version) and the program in it
+/// (either file name) are themselves and not links (a Windows junction counts as one); a part
+/// that is missing is fine (nothing to find).
+fn no_link_below(data: &Path, dir: &Path, provider: &str) -> bool {
+    let Ok(rest) = dir.strip_prefix(data) else {
+        return false;
+    };
+    let link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    if link(data) {
+        return false;
+    }
+    let mut at = data.to_path_buf();
+    for part in rest.components() {
+        at.push(part);
+        if link(&at) {
+            return false;
+        }
+    }
+    ![provider.to_owned(), format!("{provider}.exe")]
+        .iter()
+        .any(|f| link(&dir.join(f)))
+}
+
+/// c2f0b 11-26 12:27: at `session_policy_init`, before the owner is asked, a program found in
+/// aibd's placed folder is exactly the measured one (L1 `verify_placed`: the whole file's
+/// SHA-256 and size) or it counts as not found: the window asks the owner to approve that very
+/// program. L2 checks it again at each open. `GET` (`full` false) checks only the size the
+/// table names, so the page and the init agree on what is found without a full hash on every
+/// read (3e53b REVIEW-polook r1 N1); only a same-size file with other bytes differs, and init
+/// and L2 refuse that one.
+pub fn placed_verified(
+    looks: Vec<Look>,
+    data: &Path,
+    platform: Option<&str>,
+    full: bool,
+) -> Vec<Look> {
+    looks
+        .into_iter()
+        .map(|l| {
+            let Some(path) = l.path.clone().filter(|_| l.kind == LookKind::Native) else {
+                return l;
+            };
+            let row = aib_seatopen::MEASURED
+                .iter()
+                .filter(|m| m.provider == l.name && Some(m.platform) == platform)
+                .map(crate::provider_fetch::FetchRow::from)
+                .find(|r| {
+                    path.parent() == Some(crate::provider_fetch::placed_dir(data, r).as_path())
+                });
+            let Some(row) = row else {
+                return l;
+            };
+            let ok = if full {
+                crate::provider_fetch::verify_placed(&row, &path).is_ok()
+            } else {
+                std::fs::symlink_metadata(&path).is_ok_and(|m| m.len() == row.size)
+            };
+            if !ok {
+                return Look {
+                    name: l.name,
+                    kind: LookKind::NotFound,
+                    path: None,
+                    signer: None,
+                    why: format!(
+                        "{}: not the measured {} {}",
+                        path.display(),
+                        row.provider,
+                        row.version
+                    ),
+                };
+            }
+            l
+        })
+        .collect()
+}
+
+fn user_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
@@ -486,10 +592,12 @@ fn refused(r: InitRefused) -> Response {
 
 /// `GET /api/v1/session-policy` (r5 §1a + r3 `policy_path`): no window, read on every call.
 pub async fn state(State(st): State<AppState>) -> Response {
-    let path = policy_path(&crate::registry::data_of(&st));
+    let data = crate::registry::data_of(&st);
+    let path = policy_path(&data);
     let looked = tokio::task::spawn_blocking(move || {
-        let dirs = search_dirs();
+        let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
+        let found = placed_verified(found, &data, aib_seatopen::measured::this_platform(), false);
         (file_state(&path), found, path)
     })
     .await;
@@ -557,13 +665,15 @@ pub async fn init(st: &AppState, body: Value, by: String) -> Response {
             "this computer's policy is written by `aibd ctl policy init`",
         );
     }
-    let path = policy_path(&crate::registry::data_of(st));
+    let data = crate::registry::data_of(st);
+    let path = policy_path(&data);
     let p2 = path.clone();
     let looked = tokio::task::spawn_blocking(move || {
         let exists = !matches!(std::fs::symlink_metadata(&p2),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-        let dirs = search_dirs();
+        let dirs = search_dirs(&data);
         let found: Vec<Look> = PROVIDERS.iter().map(|n| look(n, &dirs)).collect();
+        let found = placed_verified(found, &data, aib_seatopen::measured::this_platform(), true);
         (
             exists,
             policy_text(&found, |k| std::env::var_os(k).is_some()),
@@ -662,6 +772,174 @@ mod tests {
         let l = look_in("claude", &dirs, true);
         assert_eq!(l.kind, LookKind::Native, "{l:?}");
         assert_eq!(l.path, Some(d.path().join("claude.exe")));
+    }
+
+    /// ebab8 11-26 12:14 C: the copy L1 / L2 placed is found after the user's own folders,
+    /// only in a measured version's folder of this platform.
+    #[test]
+    fn aibds_placed_copy_is_looked_for_after_the_users_folders_and_only_a_measured_one() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data");
+        let user = d.path().join("user");
+        std::fs::create_dir_all(&user).unwrap();
+        assert_eq!(
+            with_placed(vec![user.clone()], &data, Some("win32-x64")),
+            vec![
+                user.clone(),
+                data.join("providers").join("claude").join("2.1.326")
+            ],
+            "reason: placed_dirs"
+        );
+        assert_eq!(
+            with_placed(vec![user.clone()], &data, None),
+            vec![user.clone()],
+            "reason: no_platform"
+        );
+        let placed = data.join("providers").join("claude").join("2.1.326");
+        let other = data.join("providers").join("claude").join("9.9.9");
+        std::fs::create_dir_all(&placed).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        file(&other, "claude.exe", b"MZ\x90\x00");
+        let dirs = with_placed(vec![user.clone()], &data, Some("win32-x64"));
+        assert_eq!(
+            look_in("claude", &dirs, true).kind,
+            LookKind::NotFound,
+            "reason: unmeasured_version_taken"
+        );
+        file(&placed, "claude.exe", b"MZ\x90\x00");
+        let l = look_in("claude", &dirs, true);
+        assert_eq!(
+            l.path,
+            Some(placed.join("claude.exe")),
+            "reason: placed_not_found {l:?}"
+        );
+        file(&user, "claude.exe", b"MZ\x90\x00");
+        let l = look_in("claude", &dirs, true);
+        assert_eq!(
+            l.path,
+            Some(user.join("claude.exe")),
+            "reason: user_not_first {l:?}"
+        );
+    }
+
+    /// 3e53b 11-26 12:16: a relative data folder adds nothing.
+    #[test]
+    fn a_relative_data_folder_adds_no_placed_folder() {
+        let user = vec![PathBuf::from("/u")];
+        assert_eq!(
+            with_placed(user.clone(), Path::new("data"), Some("win32-x64")),
+            user,
+            "reason: relative_placed"
+        );
+    }
+
+    /// 3e53b 11-26 12:16: a placed folder (any level below data) or its program that is a
+    /// link is never looked in.
+    #[cfg(unix)]
+    #[test]
+    fn a_placed_folder_or_program_that_is_a_link_is_not_looked_in() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        file(&elsewhere, "claude.exe", b"MZ\x90\x00");
+        let only = |data: &Path| with_placed(Vec::new(), data, Some("win32-x64"));
+        // the version folder is a link
+        let a = d.path().join("a");
+        std::fs::create_dir_all(a.join("providers").join("claude")).unwrap();
+        symlink(
+            &elsewhere,
+            a.join("providers").join("claude").join("2.1.326"),
+        )
+        .unwrap();
+        assert_eq!(only(&a), Vec::<PathBuf>::new(), "reason: link_folder");
+        // a folder on the way (providers) is a link
+        let b = d.path().join("b");
+        let real = d.path().join("real-providers");
+        std::fs::create_dir_all(real.join("claude").join("2.1.326")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        symlink(&real, b.join("providers")).unwrap();
+        assert_eq!(only(&b), Vec::<PathBuf>::new(), "reason: link_on_the_way");
+        // the program is a link
+        let c = d.path().join("c");
+        let v = c.join("providers").join("claude").join("2.1.326");
+        std::fs::create_dir_all(&v).unwrap();
+        symlink(elsewhere.join("claude.exe"), v.join("claude.exe")).unwrap();
+        assert_eq!(only(&c), Vec::<PathBuf>::new(), "reason: link_program");
+        std::fs::remove_file(v.join("claude.exe")).unwrap();
+        file(&v, "claude.exe", b"MZ\x90\x00");
+        assert_eq!(only(&c), vec![v.clone()], "reason: plain_placed");
+        // data itself is a link
+        let e = d.path().join("e");
+        symlink(&c, &e).unwrap();
+        assert_eq!(only(&e), Vec::<PathBuf>::new(), "reason: link_data");
+    }
+
+    /// 3e53b 11-26 12:2x: what the policy names is the placed path as written,
+    /// `<data>/providers/<provider>/<version>/<program>` (not a resolved or other name), so
+    /// L2's placed check at the open compares the same text.
+    #[test]
+    fn the_policy_names_the_placed_program_by_its_placed_path() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data");
+        let m = aib_seatopen::measured_for("claude", "win32-x64").unwrap();
+        let placed =
+            crate::provider_fetch::placed_dir(&data, &crate::provider_fetch::FetchRow::from(m));
+        std::fs::create_dir_all(&placed).unwrap();
+        file(&placed, "claude.exe", b"MZ\x90\x00");
+        let dirs = with_placed(Vec::new(), &data, Some("win32-x64"));
+        let text = policy_text(&[look_in("claude", &dirs, true)], |_| false).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            v["programs"][0]["path"].as_str(),
+            placed.join("claude.exe").to_str(),
+            "reason: placed_path_literal"
+        );
+    }
+
+    /// c2f0b 11-26 12:27: at init a placed program that is not the measured file is not
+    /// found (the owner is never asked about it); a program in the user's own folder is left
+    /// as the look found it.
+    #[test]
+    fn at_init_a_placed_program_must_be_the_measured_file() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data");
+        let m = aib_seatopen::measured_for("claude", "win32-x64").unwrap();
+        let placed =
+            crate::provider_fetch::placed_dir(&data, &crate::provider_fetch::FetchRow::from(m));
+        std::fs::create_dir_all(&placed).unwrap();
+        file(&placed, "claude.exe", b"MZ\x90\x00");
+        let dirs = with_placed(Vec::new(), &data, Some("win32-x64"));
+        let found = vec![look_in("claude", &dirs, true)];
+        assert_eq!(found[0].kind, LookKind::Native);
+        let v = placed_verified(found.clone(), &data, Some("win32-x64"), false);
+        assert_eq!(v[0].kind, LookKind::NotFound, "reason: placed_size {v:?}");
+        let v = placed_verified(found, &data, Some("win32-x64"), true);
+        assert_eq!(
+            v[0].kind,
+            LookKind::NotFound,
+            "reason: placed_unverified {v:?}"
+        );
+        assert_eq!(v[0].path, None, "{v:?}");
+        assert!(
+            v[0].why.contains("not the measured claude 2.1.326"),
+            "{v:?}"
+        );
+        assert_eq!(
+            policy_text(&v, |_| false),
+            None,
+            "reason: placed_unverified"
+        );
+        let user = d.path().join("user");
+        std::fs::create_dir_all(&user).unwrap();
+        file(&user, "claude.exe", b"MZ\x90\x00");
+        let found = vec![look_in("claude", std::slice::from_ref(&user), true)];
+        let v = placed_verified(found, &data, Some("win32-x64"), true);
+        assert_eq!(
+            v[0].path,
+            Some(user.join("claude.exe")),
+            "reason: user_checked {v:?}"
+        );
     }
 
     #[test]

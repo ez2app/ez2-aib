@@ -17,12 +17,13 @@ python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs \
   '        .map(|c| format!("- {}", c.replace(" *", " …")))' \
   --expect-fail a_work_seat_adds_files_by_name_and_is_told_what_it_may_run \
   -- cargo test -p aib-seatopen --locked --lib a_work_seat_adds_files_by_name_and_is_told_what_it_may_run
-# WN3 a claude work seat opens without the note
+# WN3 a claude seat opens without the note (A14: every claude seat is told its mode, a work seat
+# then its commands)
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
-  '    provider == "claude" && mode == "work"' \
-  '    provider == "claude" && mode == "safe"' \
-  --expect-fail a_work_seat_is_told_its_commands_before_its_card \
-  -- cargo test -p aibd --locked --lib a_work_seat_is_told_its_commands_before_its_card
+  '    matches!(provider, "claude")' \
+  '    matches!(provider, "")' \
+  --expect-fail a_seat_is_told_its_mode_then_its_commands_before_its_card \
+  -- cargo test -p aibd --locked --lib a_seat_is_told_its_mode_then_its_commands_before_its_card
 # G4A1 a web seat cannot read git at any ref (DECISION-council-cutover-519d0-1121 §2, DESIGN-g4-7b81e-1121)
 python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs \
   '    "Bash(git log *)", // G4a reads' \

@@ -141,3 +141,15 @@ k 'const tr = (R.ring || R.to).getBoundingClientRect()' 'const tr = R.to.getBoun
 k 'if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value;' 'if (false) S.drafts[S.mode] = i.value;'
 # GD63 組字中按 Esc 也關指引(連組字一起丟)
 k '&& !(typeof imeBusy === '\''function'\'' && imeBusy(e))) guideSkip(true);' ') guideSkip(true);'
+# GD56 終端機確認通道也換成 Windows Hello 字(f163c 1a7f49de N1)
+k 'const pairWaitSay = (chan) => (chan === '\''terminal-unverified'\'' ? (t) => t : ' 'const pairWaitSay = (chan) => (false ? (t) => t : '
+# GD57 等確認狀態沒記 channel
+k 'chan: typeof st.channel === '\''string'\'' ? st.channel : '\'''\'' }' 'chan: '\'''\'' }'
+# GD64 Mac Touch ID 通道等確認框仍叫人到終端機按 y(3e53b ea75d93f24 N1)
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan === '\'''\'' ? (t) => t : (t) => t);'
+# GD65 channel 還沒讀到也換成 Touch ID 字
+k 'chan === '\'''\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);' 'chan !== '\''x'\'' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);'
+# GD66 imeBusy 不認 keyCode 229(組字中 Esc 會關指引;f163c aa7164f7ed N1 行為測試)
+k '!!(e && (e.isComposing || e.keyCode === 229)) || imeOn()' '!!(e && (e.isComposing)) || imeOn()'
+# GD67 Mac 等確認框並列 Touch ID 與登入密碼(3e53b 203a4beb32 L1)
+k '會寫同一組碼,一樣才確認;不一樣按取消。</p>'\'';' '會寫同一組碼,一樣才用 Touch ID 或輸入登入密碼;不一樣按取消。</p>'\'';'

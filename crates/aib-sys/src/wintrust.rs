@@ -8,7 +8,7 @@
 //! Every `unsafe` block is one FFI call or one pointer read with its own SAFETY note.
 //!
 //! [`signed_by_org`] has the shape of L1a's `provider_fetch::Signer` (`Fn(&Path, &File)`), so
-//! L2's `signed_by_maker` can hand it straight to `provider_fetch::run` / `verify_placed`.
+//! L2's `signed_by_maker` (`provider_fetch::maker`) passes it to the download and `verify_placed`.
 //!
 //! UNVERIFIED (not measured on a Windows machine; the Mac only type-checks it through
 //! `scripts/dev/wincheck.sh`; the tests below run on CI-windows): the real claude.exe result
