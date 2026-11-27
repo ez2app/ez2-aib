@@ -143,7 +143,7 @@ k "r.status === 429 ? '按太多次了,等幾分鐘再按' : " ""
 # RE4 焦點沒到配對鈕
 k "if (b) b.focus(); }" "}"
 # RE5 碼沒驗形狀
-k "typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}$/.test(j.code)" "typeof j.code === 'string'"
+k "typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}\$/.test(j.code)" "typeof j.code === 'string'"
 # RE6 配對中也能按
 k "if (PAIR_RE.no || PAIR_RE.busy || PAIRING.on) return;" "if (PAIR_RE.no || PAIR_RE.busy) return;"
 # RE7 鈕沒接上點擊
