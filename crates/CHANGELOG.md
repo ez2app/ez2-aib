@@ -48,6 +48,17 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `touch::GesturePresence` reads whether Hello is set up at every ask (a PIN set later counts without
   restarting aibd), shows the window every time (nothing cached), shows only text aibd composed, and
   signs nothing, so a keyless owner check takes no batch (`owner_batch_one_at_a_time`). Knives G1–G9.
+- Opening a seat whose provider program aibd placed checks that program again, when the
+  seat opens and again when a queued start leaves the queue; its checked handle is held until
+  the program has started. Refusals, as the `code` of the open's error, of a queued session's
+  `session.spawn_failed` event (`tag: policy_refused`) and of the seat's reply:
+  `lifecycle_verify_failed` (the placed file is not the measured one, the policy does not name
+  exactly that file, or it is a link), `provider_unmeasured` (that provider / version is not in
+  the measured table), `provider_path_linked` (the data folder, `providers`, the provider or
+  the version folder is a link or junction). The seat's reply adds one line on what to do.
+  Known limit: on macOS / Linux the held handle does not stop a same-path rename between the
+  check and the start.
+
 - `skipstop.stop.json`: this repo's checks for `aib-skipstop stop` (the plugin's stop system),
   to run before a push or a long knife run: the branch merges into main (`git merge-tree`),
   every knife's text is in its file once (`knife-anchors`), the knives this change touches

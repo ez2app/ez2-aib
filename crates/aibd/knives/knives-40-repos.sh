@@ -46,3 +46,7 @@ rq crates/aibd/src/seats.rs '    if !crate::owner_ok::approved_for(ticket, &ask)
 rq crates/aibd/src/repos.rs '    if !crate::owner_ok::approved_for(&ticket, &ask) {' \
    '    if false && !crate::owner_ok::approved_for(&ticket, &ask) { // knife' \
    a_repo_reaches_a_seat_only_through_the_owners_fingerprint
+# RP9 a brand aibd cannot start with a repo asks the fingerprint first (08de5 11-26, 3e53b 15:29)
+rq crates/aibd/src/seats.rs '    if aib_seatopen::PROVIDERS.contains(&req.provider.as_str()) && !pipe_supported(&req.provider) {' \
+   '    if false && aib_seatopen::PROVIDERS.contains(&req.provider.as_str()) && !pipe_supported(&req.provider) { // knife' \
+   a_repo_reaches_a_seat_only_through_the_owners_fingerprint

@@ -86,6 +86,8 @@ pub fn measured_for(provider: &str, platform: &str) -> Option<&'static Measured>
 }
 
 /// Is `out` (what `claude --version` printed, `2.1.326 (Claude Code)`) a measured version?
+/// The program says this about itself: it is a hint for the page, never a reason to let a
+/// program run or to skip the hash check (3e53b REVIEW-l2-maker N4).
 pub fn claude_version_ok(out: &str) -> bool {
     out.lines().any(|l| {
         let l = l.trim();

@@ -5366,7 +5366,7 @@
     owner_check_finger_not_now: '這台的 Touch ID 現在讀不到(蓋子蓋著,或指紋鍵盤沒接):打開蓋子或接上鍵盤再按一次。',
     // W-10(c2f0b IFACE r3 核字;11-26 後半句照用字第 11 列改成「沒有動任何東西」,待 c2f0b 再核):寫開席設定的拒絕原因
     policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。',
-    policy_exists: '這台已經有開席設定,AIB 不會蓋掉它。要重設,請先刪掉開席設定檔再按「重新找」。',
+    policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。',
     policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。',
     policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。',
   };
@@ -5397,7 +5397,7 @@
       passphrase_locked: 'The passphrase was wrong too many times, so it is locked for now.',
       owner_check_finger_not_now: "Touch ID on this computer can't be read right now (the lid is closed, or the Magic Keyboard with Touch ID is not connected). Open the lid or connect the keyboard and press again.",
       policy_no_native: 'No usable AI program was found on this computer, so no setup was written. Install it with the official installer, then press “重新找” (Find again).',
-      policy_exists: "This computer already has a seat-opening setup, and AIB won't overwrite it. To reset it, delete the setup file first, then press “重新找” (Find again).",
+      policy_exists: "This computer's seat-opening security setting is already set, and AIB won't change it.",
       policy_write_failed: 'AIB could not write the seat-opening setup file. Nothing was changed. You can press again.',
       policy_bad_request: 'The page sent a request in the wrong format. Nothing was changed. Reload the page and try again.',
       pin: 'If Windows Hello is not set up yet, set up a PIN in three steps (no fingerprint or face hardware needed): 1. Open Settings → Accounts → Sign-in options. 2. Under PIN (Windows Hello), press Set up and follow the screens. 3. Come back to this page and press again. If this computer has no Windows sign-in password, set one first.',
@@ -5421,7 +5421,7 @@
       pair_touch_not_on_this_system: 'このパソコンのシステムはまだ本人確認に対応していません。',
       passphrase_locked: 'パスフレーズを何度も間違えたため、一時的にロックされています。',
       policy_no_native: 'このパソコンで使える AI プログラム本体が見つからなかったため、設定は書いていません。公式インストーラーで入れてから「重新找」(再検索)を押してください。',
-      policy_exists: 'このパソコンにはすでに AI の席を開く設定があり、AIB は上書きしません。リセットするには、先に設定ファイルを削除してから「重新找」(再検索)を押してください。',
+      policy_exists: 'このパソコンの席を開く安全設定はすでに設定済みで、AIB は変更しません。',
       policy_write_failed: 'AIB は AI の席を開く設定ファイルに書き込めませんでした。何も変更していません。もう一度押せます。',
       policy_bad_request: 'ページが送ったリクエストの形式が正しくありません。何も変更していません。ページを再読み込みしてから試してください。',
       class_na: 'このパソコンの本人確認の種類と強化の方法:この AIB のバージョンにはまだありません。',
@@ -5444,7 +5444,7 @@
       pair_touch_not_on_this_system: '이 컴퓨터의 시스템은 아직 본인 확인을 지원하지 않습니다.',
       passphrase_locked: '암호 문구를 너무 많이 틀려 잠시 잠겼습니다.',
       policy_no_native: '이 컴퓨터에서 쓸 수 있는 AI 프로그램 본체를 찾지 못해 설정을 쓰지 않았습니다. 공식 설치 프로그램으로 설치한 뒤 「重新找」(다시 찾기)를 누르세요.',
-      policy_exists: '이 컴퓨터에는 이미 AI 좌석 열기 설정이 있으며, AIB는 덮어쓰지 않습니다. 다시 설정하려면 먼저 설정 파일을 지운 뒤 「重新找」(다시 찾기)를 누르세요.',
+      policy_exists: '이 컴퓨터의 좌석 열기 보안 설정은 이미 되어 있으며, AIB는 바꾸지 않습니다.',
       policy_write_failed: 'AIB가 AI 좌석 열기 설정 파일에 쓰지 못했습니다. 아무것도 바꾸지 않았습니다. 다시 누를 수 있습니다.',
       policy_bad_request: '페이지가 보낸 요청 형식이 올바르지 않습니다. 아무것도 바꾸지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.',
       class_na: '이 컴퓨터의 본인 확인 종류와 강화 방법: 이 버전의 AIB에는 아직 없습니다.',
@@ -6256,7 +6256,7 @@
   // 讀 GET /api/v1/session-policy(不跳窗,每次讀 aibd 都重找);頁面不送任何名字或路徑,寫哪些由 aibd 自己從 found 挑 kind = native
   // 寫設定走既有 act 流程(c2f0b IFACE r2:type = session_policy_init,202 + ticket;body 只有 type,多帶欄位 aibd 回 400)— 舊 aibd 沒有 GET ⇒ 不出卡,照舊那一句
   const SP_INIT = 'session_policy_init';
-  const SP_KINDS = ['native', 'npm', 'script', 'interpreter', 'not_found'];
+  const SP_KINDS = ['native', 'npm', 'script', 'interpreter', 'not_found', 'unsigned']; // c2f0b dc4e963b56:Mac 找到但不是官方簽章 = unsigned
   const SP_NAME = { claude: 'Claude', codex: 'Codex' };
   const SP_INSTALL_NA = '官方安裝說明的連結:這一版 AIB 還沒有';
   const SP_NPM_WHY = (n) => `這台的是用 npm 裝的,AIB 不能用這種。npm 版其實是用 Node 執行的腳本,檔案任何程式都改得到,AIB 沒辦法確定開的是不是真的 ${n}。請改用官方安裝程式(下面的連結),裝好後按「重新找」。`;
@@ -6277,7 +6277,10 @@
     const n = esc(spName(f.name)), pt = f.path ? `<span class="sppath" title="${esc(f.path)}">${esc(spPath(f.path))}</span>` : '';
     if (f.kind === 'native') return `<li class="spok">✅ ${n}:找到了${pt ? '(' + pt + ')' : ''}</li>`;
     if (f.kind === 'npm') return `<li class="spwarn">⚠️ ${n}:${esc(SP_NPM_WHY(spName(f.name)))}${pt ? '<br>' + pt : ''}</li>`;
-    if (f.kind === 'not_found') return `<li>${n}:沒找到</li>`;
+    // c2f0b 20:01 定字(fc7f9 版):缺什麼 AIB 自己裝,只在有 provider_install 時給鈕;沒有才叫人照官方步驟
+    const inst = typeof lcHas === 'function' && lcHas('provider_install'), busy = S.sp && S.sp.fix === f.name;
+    if (f.kind === 'not_found') return `<li>這台電腦還沒裝 ${n}。${inst && typeof lcNeeds === 'function' && lcNeeds(f.name) ? '按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。' : '照官方步驟裝好後,回來再按一次。'}</li>`;
+    if (f.kind === 'unsigned') return `<li class="spwarn">⚠️ 找到的 ${n} 不是官方簽章的版本,可能被換過,為了安全不會用它。${inst ? `按「重新安裝」,AIB 會改裝官方版。${pt ? '<br>' + pt : ''}<div class="afoot"><button type="button" class="go" data-spfix="${esc(f.name)}" ${busy ? 'disabled' : ''}>${busy ? '安裝中…' : '重新安裝'}</button></div>` : `請從官方重新安裝。${pt ? '<br>' + pt : ''}`}${S.sp && S.sp.fixErr && S.sp.fixErr[f.name] ? `<div class="aerr" role="alert">${esc(S.sp.fixErr[f.name])}</div>` : ''}</li>`;
     return `<li class="spwarn">⚠️ ${n}:找到的不是程式本體${pt ? '(' + pt + ')' : ''},請用官方安裝程式重裝</li>`;
   }
   function spCard(SP) {
@@ -6327,6 +6330,14 @@
     SP.busy = true; render();
     const r = await soft(get('/api/v1/session-policy')).catch(() => null);
     SP.busy = false; SP.d = r && typeof r === 'object' && !Array.isArray(r) ? r : null; render();
+  }
+  // unsigned 那列的「重新安裝」:同 rfFix,只送 provider;完後重讀 lifecycle 與開席設定
+  async function spFix(k) {
+    const SP = S.sp; if (!SP || SP.fix || typeof k !== 'string' || !k || !(typeof lcHas === 'function' && lcHas('provider_install'))) return;
+    if (!spFound(SP.d).some((f) => f.name === k && f.kind === 'unsigned')) return;
+    SP.fix = k; SP.fixErr = SP.fixErr || {}; delete SP.fixErr[k]; render();
+    const body = { provider: k }; try { await fingerAct('provider_install', body); } catch (e) { SP.fixErr[k] = lcWhy(rgCode(e), lcName(k)); }
+    SP.fix = ''; if (typeof lcLoad === 'function') await lcLoad().catch(() => null); await spLoad();
   }
   async function spInit() {
     const SP = S.sp; if (!SP || !SP.d || SP.busy) return;
@@ -6421,7 +6432,7 @@
       <div class="apsrc">${esc(apSrc())}</div>${guideTourLine()}
       ${apTop(A)}${set}
       ${apMine(A)}
-      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
+      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       ${apGrp(A)}
       <div class="afoot">${!addNoRepo(A) ? `<span class="apsum">${esc(A.plan && pv ? apSum(A, pv) : '先選一個方案')}</span>` : ''}${addNoRepo(A) ? `<span class="anorepo" role="alert">${esc(NO_REPO)}${A.noRepoAsk ? ';確定要開就再按一次' : ''}</span>` : ''}<button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv || !A.plan ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(addNoRepo(A) && A.noRepoAsk && !A.busy ? '確定不用倉,開' : !A.busy && (A.mates || []).length ? `開這一組(${(A.mates || []).length + 1} 位)` : step)}</button></div></div></div>`;
@@ -6816,6 +6827,40 @@
       try { await act('seat_input', { seat_id: id, text: f.line }); delete P[id]; say('已請 @' + f.nm + ' 讀交接檔'); } catch (e) { f.sending = false; if (e && e.status === 409) f.next = Date.now() + 10000; else f.tries++; }
     }
   }
+  // c2f0b IFACE-provider-lifecycle §5b(05:3x;頭 02e02b0453 起開席回原字):開席被拒的三個碼 = 這是什麼 + 怎麼辦 + 鈕;
+  // verify_failed 給一顆鈕接既有 provider_install(body 只帶 provider,同版重放);unmeasured 先不給鈕(f163c REVIEW 294d4bc2 L1:裝了新版本夾、開席設定還指舊版、r3 不准覆寫 ⇒ 會一直重裝;等 W-2 r4 session_policy_reset)、只寫聯絡我們;path_linked 只說明;三個都不給「略過照開」
+  const OPEN_RF = {
+    'zh-TW': { lifecycle_verify_failed: ['AIB 放好的 AI 程式被改過,跟量過的那份不一樣,為了安全不開這一席。', '按「重新安裝」,AIB 會重新下載、驗過再放好;若重裝後仍是這個錯,是開席設定指錯了,請聯絡我們協助重設。', '重新安裝'],
+      provider_unmeasured: ['這個 AI 程式的版本不在 AIB 驗過的清單上,不開這一席。', '這台的開席設定指著這個版本;要換成驗過的版本得重設開席設定,這一版 AIB 還不能從頁面做,請聯絡我們協助。', ''],
+      provider_path_linked: ['AIB 的資料夾(或裡面放 AI 程式的資料夾)被換成了連結(symlink / junction),AIB 只從自己的資料夾啟動 AI 程式。', '把 AIB 的資料夾設回實際位置(不要用連結);如果是你自己搬過資料夾,搬回來或請我們協助。', ''],
+      done: '裝好了,再按一次「開」。', busy: '安裝中…' },
+    en: { lifecycle_verify_failed: ['The AI program AIB placed has been changed and no longer matches the measured copy, so this seat was not opened for safety.', 'Press Reinstall and AIB will download it again, check it and put it back. If the same error comes back after reinstalling, the seat-opening setup points to the wrong file; contact us and we will help reset it.', 'Reinstall'],
+      provider_unmeasured: ['This version of the AI program is not on the list AIB has verified, so this seat was not opened.', 'The seat-opening setup on this computer points to this version; switching to a verified version needs the setup reset, which this version of AIB cannot do from the page yet. Contact us and we will help.', ''],
+      provider_path_linked: ["AIB's folder (or the folder inside it that holds the AI program) has been replaced with a link (symlink / junction); AIB only starts AI programs from its own folder.", "Put AIB's folder back in its real location (not a link). If you moved the folder yourself, move it back or ask us for help.", ''],
+      done: 'Installed. Press Open again.', busy: 'Installing…' },
+    ja: { lifecycle_verify_failed: ['AIB が置いた AI プログラムが変更されていて、計測したものと一致しないため、安全のためこの席は開きませんでした。', '「再インストール」を押すと、AIB がもう一度ダウンロードし、確認してから置き直します。再インストール後も同じエラーなら、席を開く設定の指す先が間違っています。リセットのお手伝いをしますのでご連絡ください。', '再インストール'],
+      provider_unmeasured: ['この AI プログラムのバージョンは AIB が検証した一覧にないため、この席は開きませんでした。', 'このパソコンの席を開く設定はこのバージョンを指しています。検証済みのバージョンに切り替えるには設定のリセットが必要ですが、この版の AIB ではまだページからできません。お手伝いしますのでご連絡ください。', ''],
+      provider_path_linked: ['AIB のフォルダ(またはその中の AI プログラムを置くフォルダ)がリンク(symlink / junction)に置き換えられています。AIB は自分のフォルダからしか AI プログラムを起動しません。', 'AIB のフォルダを実際の場所に戻してください(リンクは使わないでください)。ご自身でフォルダを移動した場合は、元に戻すか、私たちにご相談ください。', ''],
+      done: '入れました。もう一度「開く」を押してください。', busy: 'インストール中…' },
+    ko: { lifecycle_verify_failed: ['AIB가 놓아 둔 AI 프로그램이 바뀌어 측정한 것과 달라서, 안전을 위해 이 좌석을 열지 않았습니다.', '「다시 설치」를 누르면 AIB가 다시 내려받아 확인한 뒤 다시 놓습니다. 다시 설치한 뒤에도 같은 오류가 나면 좌석 열기 설정이 잘못된 파일을 가리키고 있으니, 연락 주시면 재설정을 도와드리겠습니다.', '다시 설치'],
+      provider_unmeasured: ['이 AI 프로그램 버전은 AIB가 검증한 목록에 없어 이 좌석을 열지 않았습니다.', '이 컴퓨터의 좌석 열기 설정이 이 버전을 가리키고 있습니다. 검증된 버전으로 바꾸려면 설정을 재설정해야 하는데, 이번 버전의 AIB는 아직 페이지에서 할 수 없습니다. 연락 주시면 도와드리겠습니다.', ''],
+      provider_path_linked: ['AIB 폴더(또는 그 안의 AI 프로그램 폴더)가 링크(symlink / junction)로 바뀌었습니다. AIB는 자기 폴더에서만 AI 프로그램을 시작합니다.', 'AIB 폴더를 실제 위치로 되돌려 주세요(링크는 쓰지 마세요). 직접 폴더를 옮겼다면 되돌리거나 저희에게 도움을 요청하세요.', ''],
+      done: '설치했습니다. 「열기」를 다시 눌러 주세요.', busy: '설치하는 중…' },
+  };
+  const rfT = () => OPEN_RF[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OPEN_RF['zh-TW'];
+  const rfOwn = (c) => (typeof c === 'string' && c !== 'done' && c !== 'busy' && Object.prototype.hasOwnProperty.call(OPEN_RF['zh-TW'], c) ? c : '');
+  function rfHtml(A) {
+    const R = A && A.refuse, c = R && rfOwn(R.code); if (!c) return '';
+    const T = rfT(), w = T[c], btn = w[2] && typeof lcHas === 'function' && lcHas('provider_install');
+    return `<div class="aerr" role="alert"><b>${esc(w[0])}</b> ${esc(R.done ? T.done : w[1])}${btn && !R.done ? `<div class="afoot"><button type="button" class="go" data-addrfx="1" ${R.busy ? 'disabled' : ''}>${esc(R.busy ? T.busy : w[2])}</button></div>` : ''}</div>`;
+  }
+  async function rfFix() {
+    const A = S.add, R = A && A.refuse; if (!R || R.busy || R.done || !rfOwn(R.code) || !rfT()[R.code][2]) return;
+    R.busy = true; render();
+    try { await fingerAct('provider_install', { provider: R.provider }); R.done = true; }
+    catch (e) { R.err = lcWhy(rgCode(e), lcName(R.provider)); }
+    R.busy = false; if (typeof lcLoad === 'function') await lcLoad().catch(() => null); render();
+  }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
     if (c === 'host_ssh_missing' || c === 'host_verify_failed') return HS_WHY[c] + '。席沒有開';
@@ -6846,7 +6891,7 @@
     if (mpPath && (!hoPath || !mpPathOk(mpPath))) { A.msg = hoPath ? '記憶包要是完整路徑、檔名 MEMPACK-<5 碼席碼>-<月日>.md(一行、不超過 400 字)' : '填了記憶包也要填交接單'; A.err = true; return render(); }
     if (hoPath && !hoPathOk(hoPath)) { A.msg = '交接單要是完整路徑、檔名 HANDOFF-….md(一行、不超過 400 字)'; A.err = true; return render(); }
     try { localStorage.setItem('ws.lastPersona', persona); } catch (e) { /* 記不住就下次再選 */ }
-    A.busy = true; A.step = 1; A.msg = ''; A.grp = null; render();
+    A.busy = true; A.step = 1; A.msg = ''; A.grp = null; A.refuse = null; render();
     let body0 = null;
     try {
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
@@ -6906,6 +6951,7 @@
       // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
       const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
       if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
+      else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }
       else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
     }
     A.busy = false; render();
@@ -6951,6 +6997,11 @@
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
     ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>']];
   const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
+  // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
+  // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
+  const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
+  const PAIR_WAIT_MAC = '<h2>在系統確認視窗確認</h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列
+  const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
@@ -6998,7 +7049,8 @@
     if (P.view === 'code') loadPairPrefs();
     if (P.view === 'busy' || (P.view === 'wait' && P.opening)) return `<div class="pairbox">${bootBar() || `<div class="boot"><div class="bt"><i data-sty="width:40%"></i></div><span>配對好了,正在打開工作台…</span></div>`}</div>`;
     if (P.view === 'wait') {
-      return pairSay(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
+      // f163c 1a7f49de N1:AIB 設成終端機確認(channel terminal-unverified)時確認真的在終端機按 y ⇒ 等確認框照原字,不換成 Windows Hello
+      return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
     return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
@@ -7543,8 +7595,10 @@
       return;
     }
     if (S.add && x.closest('[data-spre]')) { spLoad(); return; }
+    if (S.add && x.closest('[data-addrfx]')) { rfFix(); return; }
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
+    { const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列
       const bk = x.closest('[data-apback]'); if (bk) { const A = S.add, code = bk.dataset.apback, sx = S.seats.find((y) => apCode(y) === code); A.plan = 'back:' + code; A.from = code; A.cat = 'handoff'; A.noRepoAsk = false; if (sx && sx.persona_uid) { A.persona = sx.persona_uid; A.personaTried = true; A.brainTouched = false; brainPreselect(A); } if (sx && AP_MODE[sx.mode]) A.mode = sx.mode; if (!A.ho || /HANDOFF-[0-9a-f]{5}-$/.test(A.ho)) A.ho = '~/.ez2-aib/pending/HANDOFF-' + code + '-'; A.rowOpen = 'ho'; A.key = idem(); render(); hlLoad(A, code); const i = document.querySelector('[data-addho]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } return; }
@@ -7896,7 +7950,7 @@
       if (!S.paired) {
         let st = null;
         try { st = await get('/api/v1/pair/status'); } catch (e) { if (e && (e.status === 401 || e.status === 403)) { dropToken(); S.pair = { view: 'code', msg: '這個配對已失效,請重新輸入配對碼' }; return; } throw e; }
-        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in }; return; }
+        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '' }; return; }
         if (st.state !== 'confirmed') { dropToken(); S.pair = { view: 'code', msg: '配對' + (st.state === 'expired' ? '已過期' : '已取消') + ',請重新輸入配對碼' }; return; }
         if (st.user_page) { S.banner = '這是用戶資料夾頁的配對:只能叫安全模式的席,讀不到本文'; S.bannerKind = 'err'; }
         S.paired = true; S.pair = null;

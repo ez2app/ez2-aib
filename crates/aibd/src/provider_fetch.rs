@@ -31,6 +31,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
+pub mod maker;
+
 /// One row of the measured table (L2 owns the table; L1 reads only these).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRow {
@@ -337,8 +339,9 @@ fn random_name() -> Result<String, &'static str> {
 }
 
 /// Download `row`, check P and S, place it; the placed path. Whatever happens, the job's
-/// download folder is gone afterwards.
-pub fn run(
+/// download folder is gone afterwards. Private: the one caller is the child module
+/// [`maker`]'s `fetch_measured`, whose signer is fixed (3e53b / f163c REVIEW-l2-maker r3).
+fn run(
     data: &Path,
     row: &FetchRow,
     fetch: &dyn Fetch,

@@ -121,6 +121,29 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         "reason: repo_modes {}",
         v.body
     );
+    // 08de5 11-26 (3e53b 15:29): a brand aibd cannot start (agy) with a repo is refused
+    // before the fingerprint is asked or a tree is opened
+    let r = post(
+        json!({"type": "seat_open", "provider": "agy", "mode": "dgrs",
+                        "persona_uid": "un0eba", "idem_key": "a1", "repo": "my-repo"}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "reason: unsupported_brand_asked {}", r.body);
+    assert_eq!(r.json["reason"], "provider_unsupported", "{}", r.body);
+    let work0 = aibd::folders::folder(&data, "seat-work");
+    let trees0 = std::fs::read_dir(&work0)
+        .map(|r| {
+            r.flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("wt"))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(trees0, 0, "reason: unsupported_brand_tree");
+    assert_eq!(
+        seats(&d.call("GET", "/api/v1/seats", None, None).await.json),
+        before,
+        "reason: unsupported_brand_wrote"
+    );
     // refused before any ask: a safe seat, an unknown name
     for (key, mode, name) in [("w0", "safe", "my-repo"), ("u1", "dgrs", "not-there")] {
         let r = post(open(key, mode, name)).await;

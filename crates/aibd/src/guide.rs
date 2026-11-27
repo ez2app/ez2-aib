@@ -216,9 +216,15 @@ pub fn pinned(data: &Path) -> Option<bool> {
 /// Everything the GET answers from; reads only.
 pub fn gather(data: &Path, store: &aib_store::Store, programs: &[String]) -> Facts {
     use crate::session_policy_setup as sp;
-    // the session policy's own look (when aibd's placed folder joins it, with L2, this is the
-    // same call with the placed copy checked at its measured size)
-    let kind = sp::look("claude", &sp::search_dirs()).kind;
+    // the session policy's own look (with L2 + C, placed copy checked at its measured size)
+    let dirs = sp::search_dirs(data);
+    let kind = sp::placed_verified(
+        vec![sp::look("claude", &dirs)],
+        data,
+        aib_seatopen::measured::this_platform(),
+        false,
+    )[0]
+    .kind;
     Facts {
         claude: claude_word(kind, || crate::workspace::login_now("claude")),
         allow: allow_word(programs),

@@ -147,10 +147,11 @@ async fn a_full_permission_seat_from_a_template_is_always_asked() {
     );
     assert_eq!(list().await, before, "reason: opened_before_the_owner");
     // pa2 L2 (c2f0b REVIEW-pa2-postmerge L2, REVIEW-pa2ls L-a): the window's object starts
-    // with the brand and the uid, then the card's name, then the template's line
+    // with the brand and the uid, then the card's name, then the template's line, its base
+    // first (SCAN-owner-window-words 1)
     let w = SEEN.lock().unwrap().last().cloned().unwrap_or_default();
     assert!(
-        w.contains("claude · un0eba · 送字測試 · 用權限模板"),
+        w.contains("claude · un0eba · 送字測試 · 底 dgrs · 模板 完全"),
         "reason: open_window_without_who {w}"
     );
 

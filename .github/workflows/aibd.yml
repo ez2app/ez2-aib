@@ -1800,8 +1800,8 @@ jobs:
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K6 an empty list allows everything
           ak crates/aibd/src/allowlist.rs \
-            '    let listed = p.programs.iter().any(|e| {' \
-            '    let listed = p.programs.is_empty() || p.programs.iter().any(|e| { // knife' \
+            '    let listed = !matched.is_empty();' \
+            '    let listed = p.programs.is_empty() || !matched.is_empty(); // knife' \
             no_policy_starts_nothing_on_either_route
           # K7 the child inherits aibd's environment (no env_clear): AIBD_* leaks
           ak crates/aibd/src/platform/session_unix.rs \

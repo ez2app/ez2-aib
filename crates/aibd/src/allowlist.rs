@@ -116,6 +116,8 @@ pub enum Refused {
     Program,
     Env,
     ProviderInstall,
+    /// macOS: the listed entry names a signer and the real file is not signed by it.
+    Signer,
 }
 
 impl Refused {
@@ -124,6 +126,7 @@ impl Refused {
             Refused::Program => ErrorCode::ProgramNotAllowed,
             Refused::Env => ErrorCode::EnvNotAllowed,
             Refused::ProviderInstall => ErrorCode::ProviderInstallUnsupported,
+            Refused::Signer => ErrorCode::ProgramNotAllowed,
         }
     }
 
@@ -133,6 +136,9 @@ impl Refused {
             Refused::Env => "env key is not one of the names in AIBD_SESSION_POLICY",
             Refused::ProviderInstall => {
                 "this provider install runs through node; install the standalone signed build"
+            }
+            Refused::Signer => {
+                "argv[0] is not signed by the signer AIBD_SESSION_POLICY names for it (reinstall it from its maker)"
             }
         }
     }
@@ -706,20 +712,39 @@ pub fn env_allowed<'a>(
 /// The path to run for `argv0`, resolved now (no cache). `argv0` must be absolute without
 /// `..`, its real path must equal the real path of a listed program, and (unless
 /// `interpreters_ok`) neither name may be an interpreter and the real file must be a
-/// native executable. A file swapped between this check and exec is not caught (P8).
+/// native executable. On macOS a listed entry that names a signer also needs that real file
+/// signed by it ([`signed_by`], 3e53b PLAN-mac-firstrun r2 乙 / r3): the same `real` that is
+/// returned and run, only the matched entry's signer. A file swapped between this check and
+/// exec is not caught (P8). Windows signers are not checked yet.
 pub fn resolve(argv0: &str, p: &SessionPolicy) -> Result<PathBuf, Refused> {
     let a = Path::new(argv0);
     if !plain_absolute(a) {
         return Err(Refused::Program);
     }
     let real = std::fs::canonicalize(a).map_err(|_| Refused::Program)?;
-    let listed = p.programs.iter().any(|e| {
-        std::fs::canonicalize(&e.path)
-            .map(|r| same_path(&r, &real))
-            .unwrap_or(false)
-    });
+    // the entries naming this real file, each canonicalized once: the one list check (knife
+    // K1 bites on every platform, 90856 / f163c #901) and, on macOS, the signers checked below
+    let matched: Vec<&Program> = p
+        .programs
+        .iter()
+        .filter(|e| {
+            std::fs::canonicalize(&e.path)
+                .map(|r| same_path(&r, &real))
+                .unwrap_or(false)
+        })
+        .collect();
+    let listed = !matched.is_empty();
     if !listed {
         return Err(Refused::Program);
+    }
+    if cfg!(target_os = "macos") {
+        // every matched entry that names a signer must pass, not only the first (3e53b
+        // REVIEW-macfirstrun N1: a hand-edited file listing it twice, the first without a signer)
+        for e in &matched {
+            if let Some(team) = &e.signer {
+                signed_by(&real, team)?;
+            }
+        }
     }
     if !p.interpreters_ok {
         if is_interpreter(&real) || is_interpreter(a) {
@@ -736,6 +761,31 @@ pub fn resolve(argv0: &str, p: &SessionPolicy) -> Result<PathBuf, Refused> {
         }
     }
     Ok(exec_path(real))
+}
+
+/// A macOS Team ID: 10 characters, A-Z and 0-9 (r2 h4), checked before it goes into the
+/// codesign requirement.
+pub fn team_id_ok(t: &str) -> bool {
+    t.len() == 10
+        && t.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// `real` signed through Apple's root with a Developer ID leaf of Team ID `team`, one codesign
+/// call (the same requirement the page checked before writing the policy).
+fn signed_by(real: &Path, team: &str) -> Result<(), Refused> {
+    if !team_id_ok(team) {
+        return Err(Refused::Signer);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::provider_maker::mac_signed_by_team(real, team).map_err(|_| Refused::Signer)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = real;
+        Err(Refused::Signer)
+    }
 }
 
 /// Windows `canonicalize` answers `\\?\C:\…`; run `C:\…` (the verbatim prefix is not
@@ -1256,10 +1306,63 @@ mod tests {
             };
             assert_eq!(resolve(s(&copy), &p), Ok(real(s(&copy))));
         }
+
+        /// I4 with a signer (3e53b PLAN-mac-firstrun r3): the same renamed copy of `sh`, listed
+        /// with the maker's Team ID, is refused at seat open; so is a link that points at it, and
+        /// a signer that is not a Team ID. Real codesign, no hook.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn with_a_signer_a_renamed_copy_of_sh_is_refused() {
+            let d = tempfile::tempdir().unwrap();
+            let copy = d.path().join("fixture-ok");
+            std::fs::copy("/bin/sh", &copy).unwrap();
+            let link = d.path().join("claude");
+            std::os::unix::fs::symlink(&copy, &link).unwrap();
+            for team in ["Q6L2SF6YDW", "q6l2sf6ydw", "Q6L2SF6YD", "X\" or \"Y"] {
+                let mut e = prog("claude", &link);
+                e.signer = Some(team.into());
+                let p = SessionPolicy {
+                    programs: vec![e],
+                    ..Default::default()
+                };
+                assert_eq!(resolve(s(&copy), &p), Err(Refused::Signer), "{team}");
+                assert_eq!(resolve(s(&link), &p), Err(Refused::Signer), "{team}");
+            }
+            // N1: listed twice, the first without a signer: the second is still checked
+            let mut signed = prog("claude", &link);
+            signed.signer = Some("Q6L2SF6YDW".into());
+            let p = SessionPolicy {
+                programs: vec![prog("claude", &copy), signed],
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(s(&copy), &p),
+                Err(Refused::Signer),
+                "reason: first_entry_only"
+            );
+        }
     }
 
     /// 043dd T80 L1: every name `policy init` may write passes the policy check, and only
     /// the set ones are written.
+    /// r2 h4: only a 10-character A-Z / 0-9 Team ID goes into a codesign requirement.
+    #[test]
+    fn a_team_id_is_ten_capitals_or_digits() {
+        assert!(team_id_ok("Q6L2SF6YDW"));
+        assert!(team_id_ok("2DC432GLL2"));
+        for bad in [
+            "",
+            "Q6L2SF6YD",
+            "Q6L2SF6YDWX",
+            "q6l2sf6ydw",
+            "Q6L2SF6YD\"",
+            "Q6L2 F6YDW",
+            "Ｑ6L2SF6YD",
+        ] {
+            assert!(!team_id_ok(bad), "{bad}");
+        }
+    }
+
     #[test]
     fn prefill_names_pass_the_check_and_only_set_ones_are_listed() {
         let names: Vec<String> = PREFILL_ENV.iter().map(|s| s.to_string()).collect();
