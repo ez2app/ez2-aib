@@ -933,16 +933,19 @@ fn read_record(data: &Path) -> Result<Option<Record>, String> {
     }
 }
 
-/// Where the record is: `AIBD_DATA_DIR`, else the platform default, else the `AIBD_DATA_DIR`
-/// the plist hands aibd (5d33a L1: `status` from a terminal without the variable).
+/// Where the record is. With `AIBD_DATA_DIR` set, only there: that folder is the aibd this
+/// command is about, so another aibd's record in the default folder never answers for it
+/// (ebab8 11-27: a second aibd for the same user was refused by the real one's record).
+/// Without it, the platform default, else the `AIBD_DATA_DIR` the plist hands aibd (5d33a L1:
+/// `status` from a terminal without the variable).
 fn find_record(
     h: &Host,
     plist: Option<&PlistSeen>,
 ) -> Result<(Option<Record>, Option<PathBuf>, &'static str), String> {
-    let mut tries: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(d) = &h.data_dir_env {
-        tries.push((d.clone(), "AIBD_DATA_DIR"));
+        return Ok((read_record(d)?, Some(d.clone()), "AIBD_DATA_DIR"));
     }
+    let mut tries: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(d) = &h.default_data_dir {
         tries.push((d.clone(), "default"));
     }
@@ -958,6 +961,37 @@ fn find_record(
         }
     }
     Ok((None, tries.first().map(|t| t.0.clone()), "none"))
+}
+
+/// With `AIBD_DATA_DIR` set and no record there, the plist this label would write may still be
+/// another aibd's: the data folder that plist hands aibd (its `AIBD_DATA_DIR`, else the
+/// default) holds a record for this label and plist. Installing would rewrite it and take that
+/// aibd out of launchd, so it is refused (the guard the default-folder record gave before).
+fn plist_of_another(h: &Host, plist: Option<&PlistSeen>, pl: &Places) -> Option<String> {
+    let env = h.data_dir_env.as_ref()?;
+    let theirs = plist?
+        .env
+        .get("AIBD_DATA_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| h.default_data_dir.clone())?;
+    if same_path(&theirs.display().to_string(), &env.display().to_string()) {
+        return None;
+    }
+    // a record that cannot be read is not taken as "nobody's"
+    let r = match read_record(&theirs) {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => return Some(e),
+    };
+    if not_ours(&r, pl).is_some() {
+        return None;
+    }
+    Some(format!(
+        "{} belongs to the aibd whose data is {}; for a second aibd pass another --label and --plist-dir",
+        pl.plist.display(),
+        theirs.display()
+    ))
 }
 
 /// A record answers for one label and one plist path. One data folder holds one record, so a
@@ -1392,6 +1426,11 @@ fn install_steps(
     let (old_rec, _, _) = find_record(h, existing.as_ref())?;
     if let Some(why) = old_rec.as_ref().and_then(|r| not_ours(r, &pl)) {
         return Err(why);
+    }
+    if old_rec.is_none() {
+        if let Some(why) = plist_of_another(h, existing.as_ref(), &pl) {
+            return Err(why);
+        }
     }
     let mut out = Out::default();
     // environment: the old plist's keys stay unless unset (5d33a L2); --env wins. Worked out
@@ -2397,6 +2436,56 @@ mod tests {
     /// ebab8 11-26 第四包 / 3e53b PLAN-mac-firstrun r1 b: a pairing key that cannot be made now
     /// (Touch ID not usable) or one there that fails aibd's start-up check stops the install
     /// before anything is copied or written, and says why.
+    #[test]
+    fn aibd_data_dir_alone_answers_and_the_other_aibds_plist_is_refused() {
+        // ebab8 11-27: a second aibd for the same user was refused by the real one's record
+        let mut m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        let real = m.p("real");
+        m.h.data_dir_env = None;
+        m.h.default_data_dir = Some(real.clone());
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        let real_rec = std::fs::read(record_path(&real)).unwrap();
+        // a second aibd: its own folder, label and plist ⇒ installed; the real record as it was
+        m.h.data_dir_env = Some(m.p("second"));
+        let (la2, bin2) = (
+            m.p("la2").display().to_string(),
+            m.p("bin2").display().to_string(),
+        );
+        let a = [
+            "--no-start",
+            "--label",
+            "app.ez2.aibd.second",
+            "--plist-dir",
+            &la2,
+            "--dir",
+            &bin2,
+        ];
+        let o = run("install", &a, &m.h, &svc);
+        assert_eq!(o.code, RC_OK, "reason: refused_by_the_default_record {o:?}");
+        assert!(record_path(&m.p("second")).exists());
+        assert_eq!(std::fs::read(record_path(&real)).unwrap(), real_rec);
+        // the real aibd's label and plist from another folder ⇒ refused, nothing changed
+        m.h.data_dir_env = Some(m.p("third"));
+        let plist_before = std::fs::read(m.plist()).unwrap();
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_REFUSED, "reason: the_real_plist_rewritten {o:?}");
+        assert!(
+            o.stderr.contains("belongs to the aibd whose data is"),
+            "{o:?}"
+        );
+        assert_eq!(std::fs::read(m.plist()).unwrap(), plist_before);
+        assert!(!record_path(&m.p("third")).exists());
+        assert!(
+            f.calls().is_empty(),
+            "reason: launchd_touched {:?}",
+            f.calls()
+        );
+    }
+
     #[test]
     fn a_pairing_key_that_fails_installs_nothing() {
         let sw = crate::owner_ok::SWITCH;
