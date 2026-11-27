@@ -297,7 +297,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
       box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); box.win = false; const hd2 = box.testHostHtml(); box.S.version = { dev: 'yes' }; const hd3 = box.testHostHtml(); delete box.S.version;
       ok(hd0 === '' && /data-thopen="1"/.test(hd1) && /data-thopen="1"/.test(hd2) && hd3 === '', 'reason: th_follows_dev_flag ' + hd0 + hd3);
       ok(ws.includes("    mac_only: '測試機目前只支援 Mac', no_receipt_gate:"), 'reason: th_mac_only_words'); box.navigator.languages = ['en-US']; ok(box.thErr('mac_only') === 'Test machines work only on a Mac for now', 'reason: th_mac_only_en'); box.navigator.languages = ['zh-TW'];
-      box.thDev = undefined; delete box.fpWin; }
+      box.thDev = undefined; box.fpWin = undefined; }
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
@@ -1137,7 +1137,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
-    c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
+    c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); c.present = undefined;
     // 6770f 14:00:後端有開著的 2.0 席、還沒說話 ⇒ why=seat_open、next_act=focus_chat;四語都要有字(沒有字那行會空白)
     ok(['zh-TW', 'en', 'ja', 'ko'].every((L) => { const T = X.GUIDE_W[L] && X.GUIDE_W[L].why; return T && typeof T.seat_open === 'string' && T.seat_open.length > 4; }), 'reason: guide_why_seat_open_words');
     { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.gstep\.gcur \.gact\{grid-column:1\/-1;/.test(css) && /\.gstep\.gcur \.ghello\{flex-basis:100%\}/.test(css) && /\.gskip\{position:absolute;bottom:16px;right:16px;/.test(css), 'reason: guide_layout_real_aib_b2_b4'); }
@@ -1256,7 +1256,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   { const bad = mkEl({ 'data-apsub': 'x"]\n,[y' }); const dl = { scrollTop: 5, contains: (x) => x === bad }; doc.activeElement = bad;
     const k2 = F.apKeep({ querySelector: (q) => (q === '.adlg' ? dl : null) });
     ok(k2 && k2.top === 5 && k2.fk === null, 'reason: s1b_keep_unsafe_value ' + JSON.stringify(k2));
-    ctx.CSS = { escape: (v) => v.replace(/["\n\]\[,]/g, (c) => '\\' + c) }; const k3 = F.apKeep({ querySelector: (q) => (q === '.adlg' ? dl : null) }); delete ctx.CSS;
+    ctx.CSS = { escape: (v) => v.replace(/["\n\]\[,]/g, (c) => '\\' + c) }; const k3 = F.apKeep({ querySelector: (q) => (q === '.adlg' ? dl : null) }); ctx.CSS = undefined;
     ok(k3 && k3.fk === '[data-apsub="x\\"\\]\\\n\\,\\[y"]', 'reason: s1b_keep_css_escape ' + JSON.stringify(k3)); doc.activeElement = btn; }
   ok(/    const apK = apKeep\(el\); \/\/ S1b 2\n/.test(ws) && /\n    apRestore\(el, apK\); \/\/ S1b 2/.test(ws) && ws.indexOf('apRestore(el, apK)') > ws.indexOf('${S.add ? addHtml() : \'\'}'), 'reason: s1b_render_not_wired');
   ok(/S\.add\.rowOpen = S\.add\.rowOpen === rw\.dataset\.aprow \? null : rw\.dataset\.aprow; S\.add\.reveal = !!S\.add\.rowOpen;/.test(ws), 'reason: s1b_row_reveal');
@@ -2401,7 +2401,7 @@ ok(ws.includes("msg: thErr(c) || (c === 'internal' && m && m !== c ? m : errText
     ok(u1.includes('這台電腦還沒裝 Codex。按下面的「同意並安裝」,AIB 會從官方下載、驗過再放好。'), 'reason: sp_not_found_points_to_install_card');
     c.lcNeeds = () => false; ok(c.card({ d: uf }).includes('這台電腦還沒裝 Codex。照官方步驟裝好後,回來再按一次。'), 'reason: sp_not_found_no_card_falls_back');
     ok(!/Team ID|signer|簽章者/.test(u1), 'reason: sp_unsigned_hides_signer');
-    delete c.lcHas; delete c.lcNeeds; }
+    c.lcHas = undefined; c.lcNeeds = undefined; }
   ok(h.indexOf('<h4>還沒設定這台能開哪些 AI</h4>') >= 0 && h.indexOf('AIB 只開你核准過、這台電腦上真正安裝的 AI 程式。') > h.indexOf('<h4>'), 'reason: w10_card_title_then_what_aib_opens');
   ok(h.includes('data-spok="1"') && h.includes('>核准並啟用</button>') && h.includes('data-spre="1"'), 'reason: w10_approve_shown_with_a_native');
   const h2 = src ? c.card({ d: Object.assign({}, d, { can_write: false }) }) : 'data-spok';
