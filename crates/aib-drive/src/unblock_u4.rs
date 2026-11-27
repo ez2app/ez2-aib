@@ -293,7 +293,8 @@ pub struct ReviewAsk {
 }
 
 /// A dm queue item that is a review dispatch still in force; anything else ⇒ `None`
-/// (superseded / deleted / expired items were taken back).
+/// (superseded / deleted / expired items were taken back; a done / archived one was taken up
+/// and closed by its reviewer, 5d33a VERIFY-u4-ready L1).
 pub fn review_ask(item: &Value) -> Option<ReviewAsk> {
     let msg = item["msg"].as_str()?;
     let line = msg.lines().next()?.trim();
@@ -301,7 +302,10 @@ pub fn review_ask(item: &Value) -> Option<ReviewAsk> {
         return None;
     }
     let status = item["status"].as_str().unwrap_or_default();
-    if matches!(status, "superseded" | "deleted" | "expired") {
+    if matches!(
+        status,
+        "superseded" | "deleted" | "expired" | "done" | "archived"
+    ) {
         return None;
     }
     Some(ReviewAsk {
@@ -322,18 +326,36 @@ pub fn named_head(msg: &str) -> Option<String> {
     longest_hex(rest.split_whitespace().next()?)
 }
 
-/// The longest run of 8–40 lowercase hex characters in `s` (a head or its short form).
+/// The sha256 a sign / tool review names: `sha256: <8–64>` or
+/// `(sha256 前 16 碼 <16>)`; `None` when no `sha256` is followed by one (0eed7 S79-u4 M1: such a
+/// review was never taken for one; its dispatch's `sha256 <64>` was dropped by the 40-digit cap).
+pub fn sha256_named(msg: &str) -> Option<String> {
+    msg.match_indices("sha256").find_map(|(i, m)| {
+        let mut rest = msg[i + m.len()..]
+            .trim_start_matches(|c: char| c == ':' || c == '：' || c.is_whitespace());
+        if let Some(r) = rest.strip_prefix('前') {
+            rest = r.split_once('碼')?.1.trim_start();
+        }
+        longest_hex(rest.split_whitespace().next()?)
+    })
+}
+
+/// The longest run of 8–64 lowercase hex characters in `s` (a head, a file's sha256, or
+/// their short forms).
 pub fn longest_hex(s: &str) -> Option<String> {
     s.split(|c: char| !(c.is_ascii_digit() || ('a'..='f').contains(&c)))
-        .filter(|t| (8..=40).contains(&t.len()) && t.bytes().any(|b| b.is_ascii_digit()))
+        .filter(|t| (8..=64).contains(&t.len()) && t.bytes().any(|b| b.is_ascii_digit()))
         .max_by_key(|t| t.len())
         .map(str::to_owned)
 }
 
-/// The head named on a review's first line (`頭: <sha>`), or `None`.
+/// The head named on a review's first line (`頭: <sha>`), else the sha256 a sign / tool
+/// review names there (`sha256: <sha>` or `稿: …(sha256 前 16 碼 <sha>)`), or `None`.
 pub fn review_head(first_line: &str) -> Option<String> {
-    let rest = first_line.split_once("頭:")?.1.trim_start();
-    longest_hex(rest.split_whitespace().next()?)
+    let head = first_line
+        .split_once("頭:")
+        .and_then(|(_, rest)| longest_hex(rest.split_whitespace().next()?));
+    head.or_else(|| sha256_named(first_line))
 }
 
 /// U11: a review dispatch read [`U11_AFTER_SECS`] or more ago whose head has no review
@@ -845,7 +867,7 @@ mod tests {
 
     fn ask(id: &str, to: &str, head: &str, sent: u64, read: Option<u64>) -> ReviewAsk {
         review_ask(&json!({
-            "id": id, "seat": to, "status": "done", "sent_at": sent, "read_at": read,
+            "id": id, "seat": to, "status": "read", "sent_at": sent, "read_at": read,
             "msg": format!("派工: 審 S79 u4 {} → {to}\n頭 {head}(未推)", &head[..8]),
         }))
         .expect("a review dispatch")
@@ -885,12 +907,82 @@ mod tests {
         assert!(u11(&asks[..1], &short, NOW).is_empty());
     }
 
+    /// 0eed7 S79-u4 M1: the five sign / tool review dispatches U11 listed on main 3d92c6b6
+    /// were all reviewed. Word for word: the dms' first lines (as U11 printed them) and the first
+    /// lines of their reviews;
+    /// a dispatch names `sha256 <64>` and its review `sha256: <sha>` or `(sha256 前 16 碼 <16>)`.
+    #[test]
+    fn sign_and_tool_reviews_named_by_sha256_are_taken_as_reviewed() {
+        let dms = [
+            r#"派工: 審簽核單 → 5d33a。Andy 10:1x 親打「#346 也一起換」(上一張 344 / 345 已實跑成功,核准單 1794881180-fc5e71a7)。檔 ~/.ez2-aib/pending/SIGN-sin02-wuxuan-board-346-edit-f1fae-1117.sh,sha256 dac9beba231273f4623b8c28437d8a4ec52611d72b304eeea877c9657f2255db。主體由你審過的 0fd1fb7e 機械改出:set -uo pipefail 以下只差 13 行(留言號 346、卡 1031、釘的 md5、另一則 331、備份夾、單數用字),可 diff 兩檔;檔頭有換完的全文。只讀試跑 DRYRUN-sin02-wuxuan-board-346-edit-f1fae-1117.log(old、1031=2)。時間照上一張 Andy 按的:保留原時間。"#,
+            r#"派工: 審增量 → 5d33a。Drive 單照你的 L1 改了 3 行:固定 PATH(homebrew 在前)、開頭檢查 timeout、ssh 與 osascript,缺就在跳視窗之前停。新 sha256 ac3548d0ea27cb3e36bcea74af817bb9037e4a6d5eb3cc75a1f8bc8d7158fe50;差異 ~/.ez2-aib/pending/SIGN-eu02-gdrive-own-client-f1fae-1117.4fdd9d99-to-new.diff(舊檔 .bak-4fdd9d99)。只讀試跑改在 env -i + LC_ALL=C + PATH=/usr/bin:/bin 下重跑過(DRYRUN 同名檔已更新)。N1:中文提示在 C 語系下經 osascript 參數來回,位元組相同。"#,
+            r#"派工: 審增量(第三輪,抱歉)→ 5d33a。刪分支簽核單送 consent 被 sign-lint S3 擋(視窗沒跳、沒刪任何東西):七處 x=$(…) 沒接 || die,其中 git cherry 失敗會讓 plus 變 0 是真的洞。全改:每個命令替換都接 die、要比的值先存變數(MTREE、nowmain)、計數改 awk、取第一行改參數展開。新 sha256 8936ff49e781857f0c12e52452f9a829d5aa1535c6beef3a3f6329ab38467c98;差異 ~/.ez2-aib/pending/SIGN-github-delete-3-stale-branches-f1fae-1117.560ae7fb-to-new.diff(舊檔 .bak-560ae7fb)。aib-signlint check:0 left(只 ack S2);空環境只讀試跑重跑過。"#,
+            r#"派工: 審增量 → 5d33a。刪分支簽核單照你的 L1 L2 N1 改了,新 sha256 560ae7fb2001f585f8d55fc8574804221cb6a182cd834c7ed9caf0b79081f49a;差異 ~/.ez2-aib/pending/SIGN-github-delete-3-stale-branches-f1fae-1117.5a9b9821-to-new.diff(舊檔 .bak-5a9b9821)。只讀試跑在空環境重跑過(DRYRUN 同名檔已更新,含 git push --dry-run --force-with-lease 的形式)。"#,
+            r#"派工: 審補跑工具的差異 → 5d33a(519d0 裁:閘類工具，新版要審;今晚那班的整格收據可以先用它跑、但進疊要等審過)。全部差異一份:~/.ez2-aib/pending/tools-f1fae/cell-steps-f1fae-49374dbc-to-b0f45c9f.diff(現行 sha b0f45c9f;你確認過的兩道鎖在裡面，之後又加兩處:1. 照你的 N1,NO-JOB-HEADER 拒跑時也印 CELL-RED 1 REFUSED / END rc=3 並留 .done 與 .red;2. 照 a9136 的請求加 UTC 的 TIME-START / TIME-END 兩行，拒跑與 0 步那兩條路也印 TIME-END)。三種小測試檔的結果在 tools-f1fae/OPS-log-f1fae-1115.md 尾。另請把「STEP 行數 > 0 才算綠」寫進你那份 RV7(519d0 09:20 的第 2 條;我的規格 A3 引用 RV7,核對腳本已照做)。"#,
+        ];
+        let firsts = [
+            r#"結論: 通過 sha256: dac9beba231273f4623b8c28437d8a4ec52611d72b304eeea877c9657f2255db H/M/L/N: 0/0/0/1 範圍: 全文(主體對已審 0fd1fb7e 逐行 diff)"#,
+            r#"結論: 通過 sha256: ac3548d0ea27cb3e36bcea74af817bb9037e4a6d5eb3cc75a1f8bc8d7158fe50 H/M/L/N: 0/0/0/0 範圍: 增量 4fdd9d9963116d2868da2c40c5242b25499ba047f652bdcc8a34a49f645f1daa..ac3548d0ea27cb3e36bcea74af817bb9037e4a6d5eb3cc75a1f8bc8d7158fe50"#,
+            r#"結論: 通過 稿: SIGN-github-delete-3-stale-branches-f1fae-1117.sh(sha256 前 16 碼 8936ff49e781857f)H/M/L/N: 0/0/0/1 範圍: 增量 560ae7fb..8936ff49"#,
+            r#"結論: 通過 稿: SIGN-github-delete-3-stale-branches-f1fae-1117.sh(sha256 前 16 碼 560ae7fb2001f585)H/M/L/N: 0/0/0/0 範圍: 增量 5a9b9821..560ae7fb"#,
+            r#"結論: 通過 稿: SIGN-github-delete-3-stale-branches-f1fae-1117.sh(sha256 前 16 碼 5a9b982123bc4664)H/M/L/N: 0/0/2/1 範圍: 全文"#,
+            r#"結論: 通過 sha256: b0f45c9f(cell-steps-f1fae.sh 現檔，shasum -a 256 前 8 碼我本機重算相同)H/M/L/N: 0/0/0/2 範圍: 全文 49374dbc..b0f45c9f(cell-steps-f1fae-49374dbc-to-b0f45c9f.diff)"#,
+        ];
+        let want = [
+            "dac9beba231273f4623b8c28437d8a4ec52611d72b304eeea877c9657f2255db",
+            "ac3548d0ea27cb3e36bcea74af817bb9037e4a6d5eb3cc75a1f8bc8d7158fe50",
+            "8936ff49e781857f0c12e52452f9a829d5aa1535c6beef3a3f6329ab38467c98",
+            "560ae7fb2001f585f8d55fc8574804221cb6a182cd834c7ed9caf0b79081f49a",
+            "b0f45c9f",
+        ];
+        let asks: Vec<ReviewAsk> = dms
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                review_ask(&json!({
+                    "id": format!("q_{i}"), "seat": "5d33a", "status": "read",
+                    "sent_at": NOW - 3600, "read_at": NOW - 3000, "msg": m,
+                }))
+                .expect("a review dispatch")
+            })
+            .collect();
+        let got: Vec<&str> = asks
+            .iter()
+            .map(|a| a.head.as_deref().unwrap_or("-"))
+            .collect();
+        assert_eq!(got, want, "reason: dispatch_sha256_not_read");
+        let reviewed: BTreeSet<String> = firsts.iter().filter_map(|l| review_head(l)).collect();
+        assert_eq!(
+            reviewed.len(),
+            6,
+            "reason: review_sha256_not_read {reviewed:?}"
+        );
+        let rows = u11(&asks, &reviewed, NOW);
+        assert!(
+            rows.is_empty(),
+            "reason: reviewed_sign_listed_as_untaken {rows:?}"
+        );
+        // a 頭 named on a review still wins over a sha256 later on its line
+        assert_eq!(
+            review_head(&format!("結論: 通過 頭: {HA} sha256: {}", want[0])).as_deref(),
+            Some(HA)
+        );
+    }
+
     /// Only a 派工: 審 dm still in force is a review dispatch.
     #[test]
     fn only_a_review_dispatch_in_force_is_read() {
         let item = |msg: &str, status: &str| json!({"id": "q_9", "seat": "5d33a", "status": status, "sent_at": NOW, "msg": msg});
         assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "queued")).is_some());
         assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "superseded")).is_none());
+        // 5d33a VERIFY-u4-ready L1: a dispatch its reviewer closed (done / archived) was taken up
+        for closed in ["done", "archived"] {
+            assert!(
+                review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), closed)).is_none(),
+                "reason: closed_dispatch_counted {closed}"
+            );
+        }
+        assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "read")).is_some());
         assert!(review_ask(&item(&format!("派工: 修 x {HA} → 5d33a"), "queued")).is_none());
         assert_eq!(
             longest_hex(&format!("頭 {} 與 {HA}", &HB[..8])).as_deref(),

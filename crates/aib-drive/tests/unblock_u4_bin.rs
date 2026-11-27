@@ -84,7 +84,7 @@ fn the_three_rules_come_from_the_files_and_write_keeps_them() {
     r.put("pending/RECEIPT-m1-b-a9136-bbbbbbbb.out", &red(HB));
     r.put(
         "state/dm-queue/5d33a/q_00000001.json",
-        &json!({"id": "q_00000001", "seat": "5d33a", "status": "done",
+        &json!({"id": "q_00000001", "seat": "5d33a", "status": "read",
                 "sent_at": now - 3600, "read_at": now - 2400,
                 "msg": format!("派工: 審 a {} → 5d33a\n頭 {HA}", &HA[..8])})
         .to_string(),
@@ -96,7 +96,7 @@ fn the_three_rules_come_from_the_files_and_write_keeps_them() {
     );
     r.put(
         "state/dm-queue/5d33a/q_00000002.json",
-        &json!({"id": "q_00000002", "seat": "5d33a", "status": "done",
+        &json!({"id": "q_00000002", "seat": "5d33a", "status": "read",
                 "sent_at": now - 3600, "read_at": now - 2400,
                 "msg": format!("長訊已落檔(60 位元組,來自 @519d0),請讀:{}", r.0.join("pending/RELAY-dm-c.txt").display())})
         .to_string(),
@@ -154,7 +154,7 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     fs::remove_dir_all(r.0.join("pending")).expect("rm pending");
     r.put(
         "state/dm-queue/5d33a/q_00000001.json",
-        &json!({"id": "q_00000001", "seat": "5d33a", "status": "done",
+        &json!({"id": "q_00000001", "seat": "5d33a", "status": "read",
                 "sent_at": now - 3600, "read_at": now - 2400,
                 "msg": format!("派工: 審 a → 5d33a\n頭 {HA}")})
         .to_string(),
@@ -162,7 +162,7 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     // a long dm whose file is not under the state root cannot be read: said, not skipped
     r.put(
         "state/dm-queue/5d33a/q_00000003.json",
-        &json!({"id": "q_00000003", "seat": "5d33a", "status": "done",
+        &json!({"id": "q_00000003", "seat": "5d33a", "status": "read",
                 "sent_at": now - 3600, "read_at": now - 2400,
                 "msg": "長訊已落檔(60 位元組,來自 @519d0),請讀:/nowhere/RELAY-dm-x.txt"})
         .to_string(),

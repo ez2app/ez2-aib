@@ -33,7 +33,7 @@ uf '            .any(|r| r.starts_with(head.as_str()) || head.starts_with(r.as_s
    '            .any(|r| r.starts_with(head.as_str()) && head.starts_with(r.as_str())) // knife' \
    a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
 # UF8 a dispatch taken back (superseded) is still read
-uf '    if matches!(status, "superseded" | "deleted" | "expired") {' '    if matches!(status, "deleted" | "expired") { // knife' \
+uf '        "superseded" | "deleted" | "expired" | "done" | "archived"' '        "deleted" | "expired" | "done" | "archived" // knife' \
    only_a_review_dispatch_in_force_is_read
 # UF9 a dispatch older than a day is still U11
 uf '        if now.saturating_sub(a.sent_at) > DAY_SECS {' '        if now.saturating_sub(a.sent_at) > DAY_SECS * 2 { // knife' \
@@ -77,3 +77,16 @@ python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '    if lost > 0 
 uf '        let Some(key) = v["key"].as_str().filter(|k| k.starts_with(NUDGE_KEY)) else {' \
    '        let Some(key) = v["key"].as_str() else { // knife' \
    act_gone_lines_of_the_last_day_are_one_row_per_seat
+# UF21 (0eed7 S79-u4 M1) a dispatch's 64-digit sha256 is dropped and an approval number taken for its head
+uf '        .filter(|t| (8..=64).contains(&t.len()) && t.bytes().any(|b| b.is_ascii_digit()))' \
+   '        .filter(|t| (8..=40).contains(&t.len()) && t.bytes().any(|b| b.is_ascii_digit())) // knife' \
+   sign_and_tool_reviews_named_by_sha256_are_taken_as_reviewed
+# UF22 (M1) a sign / tool review naming sha256: (no 頭:) is not taken for a review
+uf '    head.or_else(|| sha256_named(first_line))' '    head.or_else(|| sha256_named(first_line).filter(|_| false)) // knife' \
+   sign_and_tool_reviews_named_by_sha256_are_taken_as_reviewed
+# UF23 (M1) the (sha256 前 16 碼 <16>) form is read as the number 16
+uf "            rest = r.split_once('碼')?.1.trim_start();" "            rest = r.trim_start(); // knife" \
+   sign_and_tool_reviews_named_by_sha256_are_taken_as_reviewed
+# UF24 (5d33a VERIFY-u4-ready L1) a dispatch its reviewer closed (done / archived) is still listed as untaken
+uf '        "superseded" | "deleted" | "expired" | "done" | "archived"' '        "superseded" | "deleted" | "expired" // knife' \
+   only_a_review_dispatch_in_force_is_read
