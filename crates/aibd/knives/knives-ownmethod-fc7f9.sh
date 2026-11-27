@@ -117,9 +117,9 @@ k "S.paired = true; S.pair = null; PAIR_HOLD.on = false;" "S.paired = true; S.pa
 # KK1 Mac 照舊只套 Windows 字(c2f0b 11-27 10:17 應用程式入口)
 k "fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)" "fpWin() ? PAIR_WIN_SAY : [])"
 # KK2 Mac 拿碼句寫回終端機
-k "'點應用程式裡的「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'" "'在終端機跑 <code>aib web</code>,把它給的配對碼打在這裡。'"
+k "'用 Spotlight(⌘ 空白鍵)搜「AIB」打開,它會打開這一頁並給你配對碼,把碼打在這裡。'" "'在終端機跑 <code>aib web</code>,把它給的配對碼打在這裡。'"
 # KK3 沒碼步驟拿掉 aib web 第二條路(Andy 10:1x)
-k "'<li>點應用程式裡的「AIB」(或在終端機打 <code>aib web</code>)</li>'" "'<li>點應用程式裡的「AIB」</li>'"
+k "'<li>用 Spotlight(⌘ 空白鍵)搜「AIB」打開(或在終端機打 <code>aib web</code>)</li>'" "'<li>用 Spotlight(⌘ 空白鍵)搜「AIB」打開</li>'"
 # KK4 不看 key_kind
 k "Object.prototype.hasOwnProperty.call(PAIR_WAIT_KK, kk) ? PAIR_WAIT_KK[kk] : PAIR_WAIT_MAC" "PAIR_WAIT_MAC"
 # KK5 Touch ID 與密碼並列

@@ -1097,7 +1097,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         ok(/^<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。<\/p>$/.test(box.NOC) && !/終端機|aib web/.test(box.NOC), 'reason: pair_nocode_plain_sentence');
         box.win = false; const shut = box.pairHowHtml(false), mac = box.pairHowHtml(true); box.win = true; const win = box.pairHowHtml(true);
         ok(shut === '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>', 'reason: pair_nocode_how_button ' + shut);
-        ok(/<li>點應用程式裡的「AIB」\(或在終端機打 <code>aib web<\/code>\)<\/li>/.test(mac) && !/aibd/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(win) && /<li>從開始選單點「AIB」\(或打 <code>aib web<\/code>\)<\/li>/.test(win) && !/終端機|aibd/.test(win), 'reason: pair_nocode_how_steps_per_platform ' + win);
+        ok(/<li>用 Spotlight\(⌘ 空白鍵\)搜「AIB」打開\(或在終端機打 <code>aib web<\/code>\)<\/li>/.test(mac) && !/aibd/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(win) && /<li>從開始選單點「AIB」\(或打 <code>aib web<\/code>\)<\/li>/.test(win) && !/終端機|aibd/.test(win), 'reason: pair_nocode_how_steps_per_platform ' + win);
         const tail = (h) => h.replace(/<li>[^<]*(<code>[^<]*<\/code>[^<]*)*<\/li>/, '');
         ok(tail(mac) === tail(win) && (mac.match(/<li>/g) || []).length === 2 && (win.match(/<li>/g) || []).length === 2, 'reason: pair_nocode_how_same_shape_both');
         ok(ws.includes("<h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>") && ws.includes(" : PAIR_NOCODE + pairHowHtml(P.how)}") && ws.includes("if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }"), 'reason: pair_nocode_wired');
@@ -1106,7 +1106,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       box.win = false; vm.runInContext('this.PAIR_MAC_SAY = PAIR_MAC_SAY;', box);
       { const mac = src.map(box.pairSay), keep = ['在這一頁確認,終端機不用按 y', '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'];
         ok(src.every((a, i) => keep.includes(a) ? mac[i] === a : mac[i] !== a && !/aibd/.test(mac[i]) && (!/終端機/.test(mac[i]) || /aib web/.test(mac[i]))), 'reason: b6_mac_app_folder ' + mac.join(' | '));
-        ok(box.pairSay('在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。') === '點應用程式裡的「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。' && box.pairSay('這組碼已經用過了,請在終端機再打一次 aibd ctl web 拿新碼') === '這組碼已經用過了,請再點一次應用程式裡的「AIB」 拿新碼', 'reason: b6_mac_app_folder_words');
+        ok(box.pairSay('在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。') === '用 Spotlight(⌘ 空白鍵)搜「AIB」打開,它會打開這一頁並給你配對碼,把碼打在這裡。' && box.pairSay('這組碼已經用過了,請在終端機再打一次 aibd ctl web 拿新碼') === '這組碼已經用過了,請再用 Spotlight 搜「AIB」打開一次 拿新碼', 'reason: b6_mac_app_folder_words');
         ok(box.PAIR_MAC_SAY.every(([a]) => ws.includes(a)), 'reason: b6_mac_source_words_exist'); }
       // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀
       ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '', kk: typeof st.key_kind === 'string' ? st.key_kind : '' }") && ws.includes('return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');
