@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# P1–P10 `aib web` on Windows (Andy 11-27 10:1x via ebab8; 3e53b PRE-READ-aib-cmd-windows-3e53b-1127 r1):
+# P1–P13 `aib web` on Windows (Andy 11-27 10:1x via ebab8; 3e53b PRE-READ-aib-cmd-windows-3e53b-1127 r1):
 # aib.exe beside aibd.exe, the AIB folder at the END of the user's PATH with its type kept and read
 # unexpanded, there already (any case, %VAR%) ⇒ not added, uninstall takes out only the noted entry
 # and only when it is there once, another aib on PATH ⇒ none placed. The PATH rules are plain Rust
@@ -42,4 +42,10 @@ w '            if ours {' '            if ours || !ours {' uninstall_takes_out_o
 w '    let Some(seg) = ops.note_read(&p.path_note) else {' '    let Some(seg) = ops.note_read(&p.path_note).or_else(|| Some(p.dir.to_string_lossy().into_owned())) else {' uninstall_takes_out_only_our_path_entry_and_our_aib
 # P10 `aib web` from an aib.exe that is not this aibd.exe's copy starts aibd
 w '                .is_ok_and(|h| ops.hash(&p.exe).is_ok_and(|e| e == h))' '                .is_ok_and(|_h| true)' web_from_our_aib_starts_the_installed_aibd
+# P11 "put back as it was" said without reading it back (f163c REVIEW-op8 L1)
+s '        Some((v, k)) => set(v, k).is_ok() && reads(Some((v, k))),' '        Some((v, k)) => set(v, k).is_ok(),' a_path_write_is_compared_before_read_back_after_and_put_back_only_when_it_reads_so
+# P12 none before: the value is taken away whatever it is now (somebody else's too)
+s '        None => reads(None) || (reads(Some((new, kind))) && remove().is_ok() && reads(None)),' '        None => reads(None) || (remove().is_ok() && reads(None)),' a_path_write_is_compared_before_read_back_after_and_put_back_only_when_it_reads_so
+# P13 uninstall trusts a note naming another folder (3e53b r5 N1)
+w '    if crate::aib_cmd::seg_key(&seg) != this {' '    if false && crate::aib_cmd::seg_key(&seg) != this {' uninstall_takes_out_only_our_path_entry_and_our_aib
 exit "$fail"

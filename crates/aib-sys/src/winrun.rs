@@ -329,6 +329,21 @@ fn user_path_set(value: &str, kind: PathKind) -> Result<(), String> {
     }
 }
 
+/// The user's `Path` taken away (it had none before AIB wrote one that did not read back).
+#[cfg(windows)]
+fn user_path_delete() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
+    let (key, name) = (wide(Key::Environment.path()), wide(ENV_PATH_NAME));
+    // SAFETY: key and name are NUL-terminated UTF-16 buffers alive for the call.
+    let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("could not remove the user PATH ({})", os_err(rc)))
+    }
+}
+
 /// Write the user's `Path` = `new` with type `kind`, only when it still reads `before` (value
 /// and type; `None` = there was none) — else [`PATH_CHANGED`], nothing written. Read back
 /// after: anything but `new` with `kind` puts `before` back and is [`PATH_NOT_READ_BACK`].
@@ -338,22 +353,44 @@ pub fn user_path_write(
     kind: PathKind,
     before: Option<(&str, PathKind)>,
 ) -> Result<(), String> {
+    write_checked(
+        &user_path_read,
+        &user_path_set,
+        &user_path_delete,
+        new,
+        kind,
+        before,
+    )
+}
+
+/// The steps of [`user_path_write`] over a given read / write / remove, so both platforms test
+/// them (f163c REVIEW-op8 L1). "Put back" is said only when a read shows it put back: the old
+/// value and type written again, or — there was none — the value taken away only while it is
+/// still exactly what this wrote.
+pub fn write_checked(
+    read: &dyn Fn() -> Result<Option<(String, PathKind)>, String>,
+    set: &dyn Fn(&str, PathKind) -> Result<(), String>,
+    remove: &dyn Fn() -> Result<(), String>,
+    new: &str,
+    kind: PathKind,
+    before: Option<(&str, PathKind)>,
+) -> Result<(), String> {
     if new.contains('\0') || new.encode_utf16().count() > PATH_MAX_UNITS {
         return Err("the new user PATH would be too long; not changed".into());
     }
-    let now = user_path_read()?;
-    if now.as_ref().map(|(v, k)| (v.as_str(), *k)) != before {
+    let reads = |want: Option<(&str, PathKind)>| {
+        read().is_ok_and(|now| now.as_ref().map(|(v, k)| (v.as_str(), *k)) == want)
+    };
+    if !reads(before) {
         return Err(PATH_CHANGED.into());
     }
-    user_path_set(new, kind)?;
-    let back = user_path_read();
-    let same = matches!(&back, Ok(Some((v, k))) if v == new && *k == kind);
-    if same {
+    set(new, kind)?;
+    if reads(Some((new, kind))) {
         return Ok(());
     }
     let restored = match before {
-        Some((v, k)) => user_path_set(v, k).is_ok(),
-        None => delete_if(Key::Environment, ENV_PATH_NAME, new).is_ok(),
+        Some((v, k)) => set(v, k).is_ok() && reads(Some((v, k))),
+        None => reads(None) || (reads(Some((new, kind))) && remove().is_ok() && reads(None)),
     };
     Err(format!(
         "{PATH_NOT_READ_BACK}: the user PATH did not read back as written; {}",
@@ -644,6 +681,130 @@ mod tests {
             src.matches(kept.as_str()).count(),
             1,
             "reason: path_type_not_kept"
+        );
+    }
+
+    /// A stand-in registry value: what `read` sees, the writes it took, a write that does not
+    /// stick (`mangle`), one written in between by somebody else (`theirs`).
+    struct Reg {
+        now: std::cell::RefCell<Option<(String, PathKind)>>,
+        mangle: std::cell::Cell<usize>,
+        theirs: Option<(String, PathKind)>,
+        removed: std::cell::Cell<usize>,
+        reads: std::cell::Cell<usize>,
+        fail_read: usize,
+    }
+
+    impl Reg {
+        fn new(now: Option<(&str, PathKind)>) -> Reg {
+            Reg {
+                now: std::cell::RefCell::new(now.map(|(v, k)| (v.to_string(), k))),
+                mangle: std::cell::Cell::new(0),
+                theirs: None,
+                removed: std::cell::Cell::new(0),
+                reads: std::cell::Cell::new(0),
+                fail_read: 0,
+            }
+        }
+        fn write(
+            &self,
+            new: &str,
+            kind: PathKind,
+            before: Option<(&str, PathKind)>,
+        ) -> Result<(), String> {
+            let read = || {
+                self.reads.set(self.reads.get() + 1);
+                if self.reads.get() == self.fail_read {
+                    return Err("busy".to_string());
+                }
+                Ok(self.now.borrow().clone())
+            };
+            let set = |v: &str, k: PathKind| {
+                let n = self.mangle.get();
+                *self.now.borrow_mut() = if n > 0 {
+                    self.mangle.set(n - 1);
+                    self.theirs.clone().or_else(|| Some((format!("{v}x"), k)))
+                } else {
+                    Some((v.to_string(), k))
+                };
+                Ok::<(), String>(())
+            };
+            let remove = || {
+                self.removed.set(self.removed.get() + 1);
+                *self.now.borrow_mut() = None;
+                Ok::<(), String>(())
+            };
+            write_checked(&read, &set, &remove, new, kind, before)
+        }
+    }
+
+    #[test]
+    fn a_path_write_is_compared_before_read_back_after_and_put_back_only_when_it_reads_so() {
+        use PathKind::{ExpandSz, Sz};
+        // written, type kept
+        let r = Reg::new(Some(("a", Sz)));
+        assert_eq!(r.write("a;b", Sz, Some(("a", Sz))), Ok(()));
+        assert_eq!(*r.now.borrow(), Some(("a;b".into(), Sz)));
+        // changed meanwhile (value or type): nothing written
+        let r = Reg::new(Some(("a", ExpandSz)));
+        assert_eq!(
+            r.write("a;b", Sz, Some(("a", Sz))),
+            Err(PATH_CHANGED.into())
+        );
+        assert_eq!(
+            *r.now.borrow(),
+            Some(("a".into(), ExpandSz)),
+            "reason: wrote_over_change"
+        );
+        // did not read back: the old value and type back, said only when it reads so
+        let r = Reg::new(Some(("a", ExpandSz)));
+        r.mangle.set(1);
+        let e = r.write("a;b", ExpandSz, Some(("a", ExpandSz))).unwrap_err();
+        assert!(
+            e.starts_with(PATH_NOT_READ_BACK) && e.contains("put back as it was"),
+            "{e}"
+        );
+        assert_eq!(*r.now.borrow(), Some(("a".into(), ExpandSz)));
+        let r = Reg::new(Some(("a", Sz)));
+        r.mangle.set(2);
+        let e = r.write("a;b", Sz, Some(("a", Sz))).unwrap_err();
+        assert!(
+            e.contains("could not put it back"),
+            "reason: said_put_back {e}"
+        );
+        // none before, the new one did not stick: taken away only while it is still ours
+        let r = Reg::new(None);
+        r.mangle.set(1);
+        let e = r.write("b", ExpandSz, None).unwrap_err();
+        assert!(
+            e.contains("could not put it back"),
+            "reason: removed_not_ours {e}"
+        );
+        assert_eq!(r.removed.get(), 0, "reason: removed_not_ours");
+        // none before, the read back failed once but the value is ours: taken away, and said
+        let r = Reg {
+            fail_read: 2,
+            ..Reg::new(None)
+        };
+        let e = r.write("b", ExpandSz, None).unwrap_err();
+        assert!(e.contains("put back as it was"), "{e}");
+        assert_eq!(
+            (r.removed.get(), r.now.borrow().clone()),
+            (1, None),
+            "reason: not_removed"
+        );
+        // somebody else's value there in between: not removed
+        let r = Reg {
+            theirs: Some(("c".into(), Sz)),
+            ..Reg::new(None)
+        };
+        r.mangle.set(1);
+        assert!(r.write("b", ExpandSz, None).is_err());
+        assert_eq!(r.removed.get(), 0, "reason: removed_theirs");
+        assert_eq!(*r.now.borrow(), Some(("c".into(), Sz)));
+        assert!(
+            r.write(&"x".repeat(PATH_MAX_UNITS + 1), Sz, None).is_err(),
+            "reason: too_long"
         );
     }
 

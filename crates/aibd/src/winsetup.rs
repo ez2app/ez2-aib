@@ -421,6 +421,15 @@ fn user_path_remove(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
     let Some(seg) = ops.note_read(&p.path_note) else {
         return;
     };
+    // the note is the user's file too: only this AIB folder is ever taken out (3e53b r5 N1)
+    let this = crate::aib_cmd::seg_key(&p.dir.to_string_lossy());
+    if crate::aib_cmd::seg_key(&seg) != this {
+        say(&format!(
+            "{} names {seg}, not this AIB folder; your PATH is left as it is",
+            p.path_note.display()
+        ));
+        return;
+    }
     for _ in 0..2 {
         let before = match ops.user_path_read() {
             Ok(Some(b)) => b,
@@ -2344,6 +2353,18 @@ mod tests {
         assert!(uninstall_with(&p, &twice, CMD, &mut |l| lines.push(l.to_string())).is_ok());
         assert!(!twice.has("path "), "reason: removed_one_of_two");
         assert!(lines.iter().any(|l| l.contains("2 times")), "{lines:?}");
+        // a note naming another folder (the note is the user's file): PATH left
+        let other = Fake {
+            user_path: RefCell::new(Some((r"C:\x;C:\Windows".into(), PathKind::Sz))),
+            notes: RefCell::new(BTreeMap::from([(
+                p.path_note.clone(),
+                r"C:\Windows".into(),
+            )])),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &other, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(!other.has("path "), "reason: took_another_folder {lines:?}");
         // not noted (the customer had it before AIB): left
         let theirs = Fake {
             user_path: RefCell::new(Some((dir.clone(), PathKind::Sz))),
