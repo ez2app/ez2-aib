@@ -64,10 +64,17 @@ fn exists(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok()
 }
 
-/// Is the `AIB.app` at `app` ours: a real folder (not a link), its Info.plist a plain file
+/// Is the `AIB.app` at `app` ours: a real folder (not a link, nor `Contents` / `Contents/MacOS`
+/// inside it), its Info.plist a plain file
 /// naming [`BUNDLE_ID`], its executable a link or nothing.
 pub fn ours(app: &Path) -> bool {
     if is_link(app) || !app.is_dir() {
+        return false;
+    }
+    // 3e53b REVIEW-op1 N1: a folder inside that is a link sends the writes (and the removes)
+    // somewhere else
+    let inner = [app.join("Contents"), app.join("Contents").join("MacOS")];
+    if inner.iter().any(|d| is_link(d)) {
         return false;
     }
     let plist = app.join("Contents").join("Info.plist");
@@ -147,7 +154,8 @@ pub fn place_line(apps: &Path, exe: &Path, version: &str) -> String {
     }
 }
 
-/// Where a click that failed is written: `~/Library/Logs/AIB-app.log`.
+/// Where a click that failed is written: `~/Library/Logs/AIB-app.log`. Only the file is checked
+/// for a link, not the Logs folder (3e53b REVIEW-op1 N2: a reason line, nothing to protect).
 pub const LOG: &str = "AIB-app.log";
 
 /// One line for a click that failed (the reason only, never a code), appended to a plain file
@@ -275,6 +283,17 @@ mod tests {
         std::fs::create_dir_all(&linked).unwrap();
         std::os::unix::fs::symlink(apps.join(APP), linked.join(APP)).unwrap();
         assert!(matches!(place(&linked, &exe, "1"), Ok(Placed::NotOurs(_))));
+        // our bundle id, but Contents/MacOS a link to somewhere else: not ours, nothing written
+        let far = d.path().join("far");
+        std::fs::create_dir_all(&far).unwrap();
+        let inner = d.path().join("inner");
+        let app = inner.join(APP);
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(app.join("Contents/Info.plist"), info_plist("1")).unwrap();
+        std::os::unix::fs::symlink(&far, app.join("Contents/MacOS")).unwrap();
+        assert_eq!(place(&inner, &exe, "1"), Ok(Placed::NotOurs(app)));
+        assert!(!far.join(EXEC).exists(), "reason: written_through_a_link");
+        assert!(remove(&inner).unwrap().starts_with("APP-LEFT"));
         // uninstall: ours goes, the installed aibd stays
         assert!(remove(&apps).unwrap().starts_with("APP-REMOVED"));
         assert!(!exists(&apps.join(APP)), "reason: ours_kept");

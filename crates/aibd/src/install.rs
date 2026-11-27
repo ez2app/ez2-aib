@@ -991,10 +991,42 @@ fn plist_of_another(h: &Host, plist: Option<&PlistSeen>, pl: &Places) -> Option<
         return None;
     }
     Some(format!(
-        "{} belongs to the aibd whose data is {}; for a second aibd pass another --label and --plist-dir",
+        "{} belongs to the aibd whose data is {}; for a second aibd pass another --label, --plist-dir and --dir",
         pl.plist.display(),
         theirs.display()
     ))
+}
+
+/// With `AIBD_DATA_DIR` set and no record there, the program this install would copy to may be
+/// the one another aibd runs (f163c REVIEW-op1 L1): a record in the default folder or in the
+/// folder this label's plist hands aibd names it. Copying would put this build under that aibd.
+fn exe_of_another(h: &Host, plist: Option<&PlistSeen>, target: &Path) -> Option<String> {
+    let env = h.data_dir_env.as_ref()?;
+    let from_plist = plist
+        .and_then(|p| p.env.get("AIBD_DATA_DIR"))
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    let target_s = target.display().to_string();
+    for d in [h.default_data_dir.clone(), from_plist]
+        .into_iter()
+        .flatten()
+    {
+        if same_path(&d.display().to_string(), &env.display().to_string()) {
+            continue;
+        }
+        let r = match read_record(&d) {
+            Ok(Some(r)) => r,
+            Ok(None) => continue,
+            Err(e) => return Some(e),
+        };
+        if same_path(&r.exe, &target_s) {
+            return Some(format!(
+                "{target_s} is the program of the aibd whose data is {}; for a second aibd pass another --label, --plist-dir and --dir",
+                d.display()
+            ));
+        }
+    }
+    None
 }
 
 /// A record answers for one label and one plist path. One data folder holds one record, so a
@@ -1433,6 +1465,12 @@ fn install_steps(
     if old_rec.is_none() {
         if let Some(why) = plist_of_another(h, existing.as_ref(), &pl) {
             return Err(why);
+        }
+        // f163c REVIEW-op1 L1: nor the program another aibd runs (no --dir ⇒ ~/.local/bin/aibd)
+        if let Some(d) = &pl.dir {
+            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())) {
+                return Err(why);
+            }
         }
     }
     let mut out = Out::default();
@@ -2512,6 +2550,31 @@ mod tests {
             "{o:?}"
         );
         assert_eq!(std::fs::read(m.plist()).unwrap(), plist_before);
+        assert!(!record_path(&m.p("third")).exists());
+        // f163c REVIEW-op1 L1: another label and plist, the real program's folder ⇒ refused,
+        // the real program's bytes kept
+        let real_exe = std::fs::read(m.p("bin/aibd")).unwrap();
+        let (la4, bin) = (
+            m.p("la4").display().to_string(),
+            m.p("bin").display().to_string(),
+        );
+        let a = [
+            "--no-start",
+            "--label",
+            "app.ez2.aibd.fourth",
+            "--plist-dir",
+            &la4,
+            "--dir",
+            &bin,
+        ];
+        std::fs::write(&m.h.exe, b"a test build").unwrap();
+        let o = run("install", &a, &m.h, &svc);
+        assert_eq!(
+            o.code, RC_REFUSED,
+            "reason: the_real_program_replaced {o:?}"
+        );
+        assert!(o.stderr.contains("is the program of the aibd"), "{o:?}");
+        assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), real_exe);
         assert!(!record_path(&m.p("third")).exists());
         assert!(
             f.calls().is_empty(),

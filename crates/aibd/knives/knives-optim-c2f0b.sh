@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aib-knives: os=unix
-# IN1–IN3 / KK1–KK2 / MA1–MA3 / AC1–AC4 / OR1–OR4 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
+# IN1–IN4 / KK1–KK2 / MA1–MA4 / AC1–AC4 / OR1–OR4 Andy's Mac clean install, then "optimise more" (ebab8 11-27 10:08): with AIBD_DATA_DIR
 # set the install record is read there only, and the real aibd's plist is still refused from another folder; the AIB app
 # in Applications is the default aibd's only; the page's waiting box gets the one window a signature opens (touch_id or
 # login_password, never both); the app's click is `ctl web` only for its own executable with nothing after it, and an
@@ -44,4 +44,8 @@ k owner_method.rs '    "本人確認的金鑰或方式紀錄跟配對時不同�
 k owner_method.rs '    if read_pin(data).is_some() {' '    if read_pin(data).is_none() {' owner_method::tests::the_reset_sentence_is_one_for_every_reset_code_and_says_pairing_alone_keeps_the_pin
 # OR4 our own change cut short is said as a cleared record (§2)
 k owner_method.rs '    (stale(pin, r, current_pub) && !ours).then_some("owner_method_record_cleared")' '    (stale(pin, r, current_pub) || !ours).then_some("owner_method_record_cleared")' owner_method::tests::a_cleared_record_is_said_only_when_it_was_not_this_pairings
+# IN4 a second aibd without --dir copies over the real one's program (f163c REVIEW-op1 L1)
+k install.rs '            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())) {' '            if let Some(why) = exe_of_another(h, existing.as_ref(), &d.join(exe_name())).filter(|_| false) {' install::tests::aibd_data_dir_alone_answers_and_the_other_aibds_plist_is_refused
+# MA4 an AIB.app whose Contents/MacOS is a link is written through (3e53b REVIEW-op1 N1)
+k macapp.rs '    if inner.iter().any(|d| is_link(d)) {' '    if false && inner.iter().any(|d| is_link(d)) {' macapp::tests::install_writes_ours_rewrites_ours_and_leaves_anything_else
 exit "$fail"
