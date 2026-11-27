@@ -149,7 +149,8 @@ pub fn seg_key(s: &str) -> String {
         .to_lowercase()
 }
 
-/// `%NAME%` replaced by `var(NAME)`; an unset one (or a lone `%`) stays as written.
+/// `%NAME%` replaced by `var(NAME)` (any case: tried as written, then upper case); an unset
+/// one (or a lone `%`) stays as written.
 pub fn expand_vars(s: &str, var: &dyn Fn(&str) -> Option<String>) -> String {
     let mut out = String::new();
     let mut rest = s;
@@ -159,7 +160,9 @@ pub fn expand_vars(s: &str, var: &dyn Fn(&str) -> Option<String>) -> String {
         match after.find('%') {
             Some(j) if j > 0 => {
                 let name = after.get(..j).unwrap_or_default();
-                match var(name) {
+                // Windows names are not case sensitive: %localappdata% is LOCALAPPDATA
+                // (90856 op11: a lower-case entry was taken for another folder and added again)
+                match var(name).or_else(|| var(&name.to_ascii_uppercase())) {
                     Some(v) => out.push_str(&v),
                     None => {
                         out.push('%');
