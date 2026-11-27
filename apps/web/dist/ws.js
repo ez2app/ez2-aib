@@ -14,6 +14,7 @@
   }
   new MutationObserver((ms) => { for (const m of ms) for (const nd of m.addedNodes) applySty(nd); }).observe(document.documentElement, { childList: true, subtree: true });
   const PAIRING = { on: false };
+  const PAIR_HOLD = { on: false, chan: undefined, until: 0, at: 0 }; // 配對在等本人確認(指紋 / 密碼 / Windows Hello / 終端機 y):進度那步寫等你按,不算慢
   const PAGE_N = (() => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return [...a].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return String(Date.now()) + Math.random().toString(16).slice(2); } })(); // 配對碼送出中(一次只送一個)
   const token = () => { try { return sessionStorage.getItem(KEY) || ''; } catch (e) { return ''; } };
   class ApiError extends Error {
@@ -318,6 +319,10 @@
   // 暗格 / 遮罩 / 路線只是畫面:不送 act、不改任何鈕的 disabled 與焦點、沒有閘讀它;按下去走的都是頁面上原本那顆鈕。
   // 路線終點只從 GUIDE_GO 這張頁面寫死的表查(next_act 只當鍵),只指「開始」類入口,不指核准並啟用 / 本人確認 / 加測試機那幾顆。
   const GUIDE_STEPS = { start: ['health', 'pair', 'claude', 'allow', 'first', 'tour'], hosts: ['host_add', 'host_reach', 'host_handoff', 'site_first'] };
+  // ebab8 21:51(客戶 Windows 實用回報):測試機 = 收據用、只收 Mac 的開發功能;Windows 客戶當成「加主機」按了回 internal ⇒ Windows 整塊不出,指引的「加一台主機」標下一版
+  // 指引「加一台主機」照 aibd 回的顯示(6770f 11-26 22:0x:兩平台都回 done:false / why:next_version、不給 next_act;ebab8:頁面別另判)
+  // c2f0b 48f0342806:GET version 多 dev(AIBD_DEV=1 才 true,預設 false)⇒ 照它;Andy 22:0x「mac 與 win 能一致就一致」⇒ 沒 dev 欄(舊 aibd)兩平台一起藏,不再只藏 Windows
+  const thDev = () => { const v = typeof S !== 'undefined' && S && S.version; return !!(v && v.dev === true); };
   const GUIDE_W = {
     'zh-TW': { start: '開始使用 AIB', hosts: '管理網站 / 主機', hostsOff: '（完成上面後開放）', builtin: '內建', later: '下一版', unsure: '判不出來', skip: '略過指引', again: '再看一次', dim: '完成「開始使用 AIB」後開放', here: '就是這一頁', pin: '沒設 Windows Hello?先設一個 PIN',
       tourLine: '現在全部開放了:可以選別的方案、人格、第二大腦、角色,也可以一次開多位夥伴。', hello: ['可能要 Windows Hello', '可能要 Touch ID 或密碼'],
@@ -364,7 +369,7 @@
   // ok 打勾 / bad 未完成 / unsure 判不出(不勾、不擋後面) / lock 配對前鎖 / later 下一版
   function gState(s) {
     if (!s) return 'bad';
-    if (s.why === 'next_version') return 'later';
+    if (s.why === 'next_version') return 'later'; // ebab8 21:51:Windows 還沒有客戶用的「加主機」(那顆鈕接的是開發用測試機)⇒ 標下一版,不出鈕
     if (s.why === 'locked' || !Object.prototype.hasOwnProperty.call(s, 'done')) return 'lock';
     return s.done === true ? 'ok' : s.done === null ? 'unsure' : 'bad';
   }
@@ -410,7 +415,7 @@
       out.push(`<div class="row d0 gproj${all ? ' gok' : ''}" data-gproj="${id}"><div class="nm"><span class="tw" data-gtw="${id}">${L.length ? (open ? '▾' : '▸') : '·'}</span><span class="lv a">${esc(gW('builtin'))}</span><span class="tx">${esc(gW(id))}${all ? ` ✅ ${okN}/${tot}` : ''}</span></div>${tot ? `<progress class="mini" max="${tot}" value="${okN}" title="${okN} / ${tot}"></progress>` : '<span></span>'}<div class="seats">${again ? `<button type="button" class="k gagain" data-gagain="1">${esc(gW('again'))}</button>` : ''}</div></div>`);
       if (open) gRows(P, id, cur, out);
     }
-    return `<div class="gbox">${out.join('')}</div>`;
+    return `<div class="gbox">${typeof omCard === 'function' ? omCard() : ''}${out.join('')}</div>`;
   }
   // 配對前(沒有頁面憑證):aibd 只回 health 與 pair,其他四步 locked;配對鈕旁照實寫要先設 PIN(配對前不探 Hello)
   function guidePreHtml() {
@@ -1194,7 +1199,7 @@
     aibd_own_key: '這台設定用的是 AIB 自己的鑰匙',
   };
   const TH_ERR = {
-    no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
+    mac_only: '測試機目前只支援 Mac', no_receipt_gate: '那台還沒裝收據閘,先裝收據閘再加', not_a_mac: '那台不是 Mac,還不能拿來跑收據', owner_login_failed: '你自己的 ssh 連不上那台',
     write_failed: '寫不進那台的設定', remove_failed: '收不回:那台的設定改不動', owner_check_not_approved: '指紋沒按到', owner_check_unavailable: '這台現在叫不出指紋視窗',
     page_only: '只有這台 AIB 的內建頁能改測試機', finger_denied: '指紋被拒', finger_expired: '指紋視窗逾時', finger_timeout: '等指紋逾時',
   };
@@ -1468,9 +1473,9 @@
     ko: {"reached_through_something_else": "점프 호스트를 거쳐야 해서 지원하지 않음", "config_has_match_or_include": "ssh 설정에 Match / Include가 있어 정확히 읽을 수 없어 지원하지 않음", "no_identity_file": "이 기기의 ssh 설정을 이해할 수 없음", "identity_file_not_absolute": "이 기기의 ssh 설정을 이해할 수 없음", "value_with_a_token": "이 기기의 ssh 설정을 이해할 수 없음", "port": "이 기기의 ssh 설정을 이해할 수 없음", "aibd_own_key": "이 설정은 AIB 자체 키를 사용합니다"},
   };
   const TH_ERR_L = {
-    en: {"no_receipt_gate": "That machine has no receipt gate yet; install it first, then add it", "not_a_mac": "That machine isn't a Mac, so it can't run receipts yet", "owner_login_failed": "Your own ssh can't reach that machine", "write_failed": "Couldn't write that machine's settings", "remove_failed": "Couldn't take it back: that machine's settings can't be changed", "owner_check_not_approved": "The owner check wasn't confirmed", "owner_check_unavailable": "This computer can't show the owner-check window right now", "page_only": "Only this computer's built-in AIB page can change test machines", "finger_denied": "The owner check was refused", "finger_expired": "The owner-check window timed out", "finger_timeout": "Timed out waiting for the owner check"},
-    ja: {"no_receipt_gate": "そのマシンにはまだレシートゲートがありません。先に入れてから追加してください", "not_a_mac": "そのマシンは Mac ではないため、まだレシートを回せません", "owner_login_failed": "あなた自身の ssh でそのマシンにつながりません", "write_failed": "そのマシンの設定に書き込めません", "remove_failed": "外せません:そのマシンの設定を変更できません", "owner_check_not_approved": "本人確認が通りませんでした", "owner_check_unavailable": "このパソコンは今、本人確認の画面を出せません", "page_only": "テスト機を変更できるのはこのパソコンの AIB 内蔵ページだけです", "finger_denied": "本人確認が拒否されました", "finger_expired": "本人確認の画面が時間切れになりました", "finger_timeout": "本人確認の待ち時間が切れました"},
-    ko: {"no_receipt_gate": "그 기기에는 아직 영수증 게이트가 없습니다. 먼저 설치한 뒤 추가하세요", "not_a_mac": "그 기기는 Mac이 아니어서 아직 영수증을 돌릴 수 없습니다", "owner_login_failed": "본인 ssh로 그 기기에 연결되지 않습니다", "write_failed": "그 기기의 설정에 쓸 수 없습니다", "remove_failed": "뺄 수 없습니다: 그 기기의 설정을 바꿀 수 없습니다", "owner_check_not_approved": "본인 확인이 되지 않았습니다", "owner_check_unavailable": "이 컴퓨터는 지금 본인 확인 창을 띄울 수 없습니다", "page_only": "테스트 기기는 이 컴퓨터의 AIB 내장 페이지에서만 바꿀 수 있습니다", "finger_denied": "본인 확인이 거부되었습니다", "finger_expired": "본인 확인 창 시간이 지났습니다", "finger_timeout": "본인 확인을 기다리다 시간이 지났습니다"},
+    en: {"mac_only": "Test machines work only on a Mac for now", "no_receipt_gate": "That machine has no receipt gate yet; install it first, then add it", "not_a_mac": "That machine isn't a Mac, so it can't run receipts yet", "owner_login_failed": "Your own ssh can't reach that machine", "write_failed": "Couldn't write that machine's settings", "remove_failed": "Couldn't take it back: that machine's settings can't be changed", "owner_check_not_approved": "The owner check wasn't confirmed", "owner_check_unavailable": "This computer can't show the owner-check window right now", "page_only": "Only this computer's built-in AIB page can change test machines", "finger_denied": "The owner check was refused", "finger_expired": "The owner-check window timed out", "finger_timeout": "Timed out waiting for the owner check"},
+    ja: {"mac_only": "テストマシンは今のところ Mac でのみ使えます", "no_receipt_gate": "そのマシンにはまだレシートゲートがありません。先に入れてから追加してください", "not_a_mac": "そのマシンは Mac ではないため、まだレシートを回せません", "owner_login_failed": "あなた自身の ssh でそのマシンにつながりません", "write_failed": "そのマシンの設定に書き込めません", "remove_failed": "外せません:そのマシンの設定を変更できません", "owner_check_not_approved": "本人確認が通りませんでした", "owner_check_unavailable": "このパソコンは今、本人確認の画面を出せません", "page_only": "テスト機を変更できるのはこのパソコンの AIB 内蔵ページだけです", "finger_denied": "本人確認が拒否されました", "finger_expired": "本人確認の画面が時間切れになりました", "finger_timeout": "本人確認の待ち時間が切れました"},
+    ko: {"mac_only": "테스트 기기는 지금은 Mac에서만 쓸 수 있습니다", "no_receipt_gate": "그 기기에는 아직 영수증 게이트가 없습니다. 먼저 설치한 뒤 추가하세요", "not_a_mac": "그 기기는 Mac이 아니어서 아직 영수증을 돌릴 수 없습니다", "owner_login_failed": "본인 ssh로 그 기기에 연결되지 않습니다", "write_failed": "그 기기의 설정에 쓸 수 없습니다", "remove_failed": "뺄 수 없습니다: 그 기기의 설정을 바꿀 수 없습니다", "owner_check_not_approved": "본인 확인이 되지 않았습니다", "owner_check_unavailable": "이 컴퓨터는 지금 본인 확인 창을 띄울 수 없습니다", "page_only": "테스트 기기는 이 컴퓨터의 AIB 내장 페이지에서만 바꿀 수 있습니다", "finger_denied": "본인 확인이 거부되었습니다", "finger_expired": "본인 확인 창 시간이 지났습니다", "finger_timeout": "본인 확인을 기다리다 시간이 지났습니다"},
   };
   const thL = () => (typeof askLang === 'function' ? askLang() : 'zh-TW');
   const thWhy = (c) => ((TH_WHY_L[thL()] || {})[c]) || TH_WHY[c] || '';
@@ -1483,7 +1488,7 @@
       : `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(none)}</span><button type="button" class="k" data-thopen="1">${esc(open)}</button></div>`; };
   const thW = () => TH_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || TH_L['zh-TW'];
   function testHostHtml() {
-    if (hasAct('test_host_list') !== true) return '';
+    if (hasAct('test_host_list') !== true || (typeof thDev === 'function' && !thDev())) return '';
     const T = S.th;
     if (!T && !thWant()) return thClosed(thW().none, thW().open);
     if (!T || (!T.list && !T.err)) { if (!T || !T.loading) setTimeout(thLoad, 0); return `<div class="thh"><b>${esc(thX().title)}</b><span class="hv">${esc(thX().loading)}</span></div>`; }
@@ -1513,7 +1518,7 @@
       const r = await fingerAct(kind === 'add' ? 'test_host_add' : 'test_host_remove', { name }, (t, sec) => { R.wait = FP_SEE; render(); });
       if (r && r.reason === 'gate_did_not_answer') { T.row[name] = { half: true, gateless: true, msg: thX().gateless, bad: true }; }
       else T.row[name] = { msg: kind === 'add' ? thX().added : thX().removed };
-    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)); T.row[name] = { msg: thErr(c) || errText(e), bad: true }; }
+    } catch (e) { const c = e && (e.code || e.reason || (e.body && e.body.code)), m = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); T.row[name] = { msg: thErr(c) || (c === 'internal' && m && m !== c ? m : errText(e)), bad: true }; } // c2f0b 21:57:internal 改顯示 aibd 回的 message
     S.th = Object.assign(S.th, { loading: false }); await thLoad();
   }
 
@@ -2727,7 +2732,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${seatModeTag(s.mode)}${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${ptSeatBtn(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${ptSeatBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}${moveMineHtml(S.moveMsg)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      ${chatSavedHtml()}${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
+      ${chatSavedHtml()}${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…${sendKey('送出')}">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -2753,7 +2758,7 @@
     const rows = sharedTo(s.seat_id).concat((Array.isArray(s.mirror) ? s.mirror : []).map((m) => ({ t: m.created, h: `<div class="out"><div class="body">${esc(String(m.body || ''))}</div><div class="tm">${esc(hhmm(m.created))}${m.to ? ' · 寄給 @' + esc(String(m.to).replace(/^seat:/, '')) : ''}</div></div>` }))).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc(['舊式席', modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${n && n.item ? `<span class="turn">${esc(String(n.item).slice(0, 40))}</span>` : ''}${steps}${s.mirror ? '' : '<span class="pvdemo" title="鏡像還沒接上:這一席的信與輸出還讀不到">示意</span>'}</div>
       ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這是舊式席(不是網頁開的);它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
-      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳)${sendKey('寄出')}">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 五顆快捷鈕 = 送一句固定的話給這一席(舊版對話面板的五顆;今晚只送字,沒有另外的介面)
   const QUICK = [
@@ -2968,7 +2973,7 @@
     return `${headHtml()}
       <div class="tl" id="tl">${rows || `<div class="empty">${soleSeat() ? '還沒有對話。寫一句送出,就交給 @' + esc(seatName(soleSeat())) + ';有兩席以上再用 @ 選。' : '還沒有對話。打 @ 選一席,寫一句送出。'}</div>`}</div>
       ${atpop}${askBar()}
-      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰${sendKey('送出')}">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
 
@@ -3119,6 +3124,8 @@
   const E2K = 'aib.ws.enter2';
   const enter2On = () => { try { return localStorage.getItem(E2K) === '1'; } catch (e) { return false; } };
   const enter2Box = () => `<label class="e2"><input type="checkbox" class="e2c" data-enter2="1"${enter2On() ? ' checked' : ''}>連按兩次 Enter 送出</label>`;
+  // 輸入框提示字:兩平台同句型,只差按鍵名(Windows 寫 Ctrl,Mac 寫 ⌘);單按 Enter 是換行,客戶才知道怎麼送
+  const sendKey = (w) => `(${typeof fpWin === 'function' && fpWin() ? 'Ctrl' : '⌘'}+Enter ${w})`;
   const E2 = { at: 0 };
   // IME-BEGIN 1a93b 11-22(Andy 第二次:「沒打完中文,就一直自動送出英文」;9918e 派工):
   // 組字狀態自己記,不只靠 isComposing / 229。① 組字中、與組字結束後 IME_GAP 毫秒內的 Enter 一律不算(瀏覽器會在選字後再補一個
@@ -3504,7 +3511,7 @@
       ${M ? `<div class="mem">${M}</div>` : ''}
       <div class="tl" id="tl">${postRows() || '<div class="empty">這一項還沒有對話。寫一句送出;要誰接手就 @ 誰。</div>'}</div>
       ${atpop}
-      ${askBar()}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
+      ${askBar()}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他${sendKey('送出')}">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   async function sendNode(text) {
@@ -6350,6 +6357,106 @@
     } catch (e) { SP.msg = { bad: true, text: errText(e) }; }
     SP.busy = false; await spLoad();
   }
+  // 「能改程式」開關(c2f0b ef615567db;3e53b PRE-READ-dgrs-switch D1–D8;ebab8 21:51 客戶 Windows 回報:紅字後沒地方開)
+  // 開:dgrs_switch_set {on:true} 走本人確認(fingerAct);關:{on:false} 不用確認、立刻關;狀態:dgrs_switch_status {on, source, can_on, can_off, owner_check}
+  const DG_SET = 'dgrs_switch_set', DG_ST = 'dgrs_switch_status';
+  const DG_WHAT = '打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。';
+  const DG_NOOC = '這台沒有本人確認,不能從網頁打開。';
+  async function dgLoad() {
+    if (hasAct(DG_ST) !== true) { S.dg = null; return; }
+    const D = S.dg = S.dg || {};
+    try { const r = await act(DG_ST, {}); D.d = r && typeof r === 'object' && !Array.isArray(r) && typeof r.on === 'boolean' ? r : null; } catch (e) { D.d = null; }
+    render();
+  }
+  function dgHtml(A) {
+    const D = S.dg, d = D && D.d; if (!A || !d) return '';
+    const msg = D.msg ? `<div class="${D.msg.bad ? 'aerr' : 'aok'}" role="${D.msg.bad ? 'alert' : 'status'}">${esc(D.msg.text)}</div>` : '';
+    if (d.on === true) { // D6:開著照實寫;source=env(環境變數開的)頁面關不掉,不出關鈕
+      if (A.mode !== 'dgrs' && !A.dgNeed) return msg;
+      const off = d.can_off === true && d.source !== 'env' && hasAct(DG_SET) === true;
+      return `<div class="occ" role="status">這台已開「能改程式」。${d.source === 'env' ? '這是用 AIB 的環境設定打開的,網頁關不掉。' : ''}${off ? `<button type="button" class="k" data-dgoff="1" ${D.busy ? 'disabled' : ''}>關掉</button>` : ''}</div>${msg}`;
+    }
+    if (!A.dgNeed) return msg;
+    if (d.can_on === true && hasAct(DG_SET) === true) { // D7:紅字後接按這裡打開
+      const w = typeof fpWin === 'function' && fpWin() ? 'Windows Hello' : '本人確認視窗'; // Andy 22:0x 兩平台同字同位置,只換平台名詞
+      return `<div class="occ warn">${esc(DG_WHAT)}<button type="button" class="go" data-dgon="1" ${D.busy ? 'disabled' : ''}>${D.busy ? '等你確認…' : '按這裡打開(會跳出 ' + w + ' 確認)'}</button></div>${msg}`;
+    }
+    return (d.owner_check === false ? `<div class="occ warn">${esc(DG_NOOC)}</div>` : '') + msg;
+  }
+  async function dgSet(on) {
+    const D = S.dg; if (!D || D.busy || hasAct(DG_SET) !== true) return;
+    D.busy = true; D.msg = null; render();
+    try {
+      if (on === true) await fingerAct(DG_SET, { on: true }); else await act(DG_SET, { on: false });
+      D.msg = { bad: false, text: on === true ? '已打開「能改程式」,再按一次「開」。' : '已關掉「能改程式」。' };
+      if (on === true && S.add) { S.add.dgNeed = false; S.add.msg = ''; S.add.err = false; }
+    } catch (e) { const c = rgCode(e); D.msg = { bad: true, text: c === 'owner_check_unavailable' ? DG_NOOC : (on === true ? '沒有打開:' : '沒有關掉:') + errText(e) }; }
+    D.busy = false; await dgLoad();
+  }
+  // 本人確認方式(c2f0b df67611099;PLAN-owner-method-c2f0b r2 §2 / §5 / §9;Andy 21:1x:不做卡頂常駐、不放顯眼鈕,改方式放設定頁;3e53b 21:19:設定頁照實寫目前方式)
+  // 讀 owner_method_status {method, can_change, why};改 owner_method_set {to} 會直接跳本人確認窗(用現在的鑰),不走 ticket,請求等到窗按完(最多約 2 分)
+  // 兩平台同一塊、同位置、同句型(Andy 22:0x);不一樣只在做不到的地方:Windows 不能在 AIB 裡選(can_change=false),只照實寫 Windows Hello 與去哪改
+  const OM_ST = 'owner_method_status', OM_SET = 'owner_method_set';
+  const OM_L = {
+    'zh-TW': { title: '本人確認方式', biometry: '目前用指紋。', password: '目前用登入密碼。', windows_hello: '目前用 Windows Hello(PIN、指紋或臉,由 Windows 設定決定)。', winHow: '要改請到 Windows 設定 › 帳戶 › 登入選項。', toPw: '改用登入密碼', toBio: '改回指紋', warn: '用指紋:只有你的手指能核准 AIB 的動作。用登入密碼:知道這台電腦登入密碼的人,都能核准 AIB 的動作。之後可以在設定裡改回來。', sure: '確定改用登入密碼', no: '不要', wait: '等你在本人確認視窗按…', donePw: '已改成登入密碼。', doneBio: '已改回指紋。', fail: '沒有改:', cleared: 'AIB 啟動時清掉了一筆跟這次配對對不上的確認方式紀錄(可能是手動刪過檔,或有人動過)。現在只用指紋。', clearedPick: '要改用登入密碼,在這裡重新選一次。', nokey: '這次 AIB 啟動時沒有讀到本人確認的金鑰:現在不能做本人確認,也不能改方式。', set: '設定', setClose: '收起設定', notHere: '這台不能改本人確認方式。', cancel: '你按了取消,沒有改。', pageOnly: '只有這台 AIB 的內建頁能改。', read: '讀不到目前的方式。', omReset: '目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。', pickT: '這台的本人確認要用什麼?', pickBio: '指紋(建議)', pickPw: '登入密碼(較弱)' },
+    en: { title: 'How you confirm', biometry: 'You confirm with your fingerprint.', password: 'You confirm with your login password.', windows_hello: 'You confirm with Windows Hello (PIN, fingerprint or face, as set in Windows).', winHow: 'To change it, open Windows Settings › Accounts › Sign-in options.', toPw: 'Use login password instead', toBio: 'Go back to fingerprint', warn: 'With fingerprint: only your finger can approve AIB actions. With login password: anyone who knows this computer\'s login password can approve AIB actions. You can switch back in settings later.', sure: 'Yes, use login password', no: 'Cancel', wait: 'Waiting for you in the confirmation window…', donePw: 'Changed to login password.', doneBio: 'Back to fingerprint.', fail: 'Not changed: ', cleared: 'When AIB started, it cleared a confirmation-method record that did not match this pairing (a file may have been deleted by hand, or someone changed it). You confirm with your fingerprint only for now.', clearedPick: 'To use your login password, choose it again here.', nokey: 'AIB did not read the confirmation key when it started this time: confirming it is you does not work right now, and the method cannot be changed.', set: 'Settings', setClose: 'Close settings', notHere: 'This computer cannot change how you confirm.', cancel: 'You cancelled; nothing changed.', pageOnly: 'Only this computer\'s built-in AIB page can change it.', read: 'Could not read the current method.', omReset: 'Fingerprint only for now: the confirmation key or record differs from when you paired. To reset: quit AIB, delete pair-key-pin.json and pair-key-method.json in its folder, then open AIB and pair again.', pickT: 'How should this computer confirm it is you?', pickBio: 'Fingerprint (recommended)', pickPw: 'Login password (weaker)' },
+    ja: { title: '本人確認の方法', biometry: '今は指紋で確認しています。', password: '今はログインパスワードで確認しています。', windows_hello: '今は Windows Hello(PIN・指紋・顔、Windows の設定しだい)で確認しています。', winHow: '変更は Windows の設定 › アカウント › サインイン オプションで。', toPw: 'ログインパスワードに変える', toBio: '指紋に戻す', warn: '指紋なら、AIB の操作を承認できるのはあなたの指だけです。ログインパスワードなら、このパソコンのログインパスワードを知っている人は誰でも AIB の操作を承認できます。あとで設定から戻せます。', sure: 'ログインパスワードに変える', no: 'やめる', wait: '本人確認の画面で押してください…', donePw: 'ログインパスワードに変えました。', doneBio: '指紋に戻しました。', fail: '変更されていません:', cleared: 'AIB の起動時に、今回のペアリングと合わない確認方法の記録を消しました(手でファイルを消したか、誰かが手を加えた可能性があります)。今は指紋だけで確認します。', clearedPick: 'ログインパスワードを使うなら、ここでもう一度選んでください。', nokey: '今回 AIB の起動時に本人確認の鍵を読めませんでした:今は本人確認ができず、方法も変えられません。', set: '設定', setClose: '設定を閉じる', notHere: 'このパソコンでは本人確認の方法を変えられません。', cancel: 'キャンセルしたので、変わっていません。', pageOnly: '変えられるのはこのパソコンの AIB 内蔵ページだけです。', read: '今の方法を読めませんでした。', omReset: '今は指紋だけです:本人確認の鍵か記録がペアリング時と違います。リセットするには、AIB を終了し、フォルダー内の pair-key-pin.json と pair-key-method.json を削除してから、AIB を開いてもう一度ペアリングしてください。', pickT: 'このパソコンの本人確認は何を使いますか?', pickBio: '指紋(おすすめ)', pickPw: 'ログインパスワード(弱め)' },
+    ko: { title: '본인 확인 방법', biometry: '지금은 지문으로 확인합니다.', password: '지금은 로그인 암호로 확인합니다.', windows_hello: '지금은 Windows Hello(PIN, 지문 또는 얼굴, Windows 설정에 따름)로 확인합니다.', winHow: '바꾸려면 Windows 설정 › 계정 › 로그인 옵션에서 하세요.', toPw: '로그인 암호로 바꾸기', toBio: '지문으로 되돌리기', warn: '지문을 쓰면 AIB 작업은 당신의 손가락으로만 승인할 수 있습니다. 로그인 암호를 쓰면 이 컴퓨터의 로그인 암호를 아는 사람은 누구나 AIB 작업을 승인할 수 있습니다. 나중에 설정에서 되돌릴 수 있습니다.', sure: '로그인 암호로 바꾸기', no: '취소', wait: '본인 확인 창에서 눌러 주세요…', donePw: '로그인 암호로 바꿨습니다.', doneBio: '지문으로 되돌렸습니다.', fail: '바뀌지 않았습니다: ', cleared: 'AIB가 시작할 때 이번 페어링과 맞지 않는 확인 방법 기록을 지웠습니다(직접 파일을 지웠거나 누군가 손댔을 수 있습니다). 지금은 지문으로만 확인합니다.', clearedPick: '로그인 암호를 쓰려면 여기서 다시 고르세요.', nokey: '이번에 AIB가 시작할 때 본인 확인 키를 읽지 못했습니다: 지금은 본인 확인을 할 수 없고, 방법도 바꿀 수 없습니다.', set: '설정', setClose: '설정 닫기', notHere: '이 컴퓨터에서는 본인 확인 방법을 바꿀 수 없습니다.', cancel: '취소해서 바뀌지 않았습니다.', pageOnly: '이 컴퓨터의 AIB 기본 페이지에서만 바꿀 수 있습니다.', read: '지금 방법을 읽지 못했습니다.', omReset: '지금은 지문만 씁니다: 본인 확인 키나 기록이 페어링 때와 다릅니다. 초기화하려면 AIB를 끄고 폴더에서 pair-key-pin.json과 pair-key-method.json을 지운 뒤 AIB를 열어 다시 페어링하세요.', pickT: '이 컴퓨터의 본인 확인은 무엇으로 할까요?', pickBio: '지문(권장)', pickPw: '로그인 암호(더 약함)' },
+  };
+  // 3e53b 04019a58 L1:「先重新配對」做不到(已有 pin 就不換)⇒ set 回 owner_key_not_as_paired 也用重設出路
+  // c2f0b eb6c979c71:status 的 why 是這四個碼之一 ⇒ 金鑰或紀錄跟配對時不同,只用指紋;同一句固定字 + 重設的出路(words 欄照規矩不讀)
+  // 3e53b 11-27 10:10 §1:重設句的鍵叫 omReset(不叫 reset:用量表另有 reset),後端 owner_method 測試讀這一檔比 OM_RESET 碼集合、OM_WHY 對到 omReset、四語 omReset 都含兩個檔名
+  const OM_RESET = ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved'];
+  const OM_WHY = { owner_key_not_as_paired: 'omReset', owner_method_not_here: 'notHere', user_cancel: 'cancel', page_only: 'pageOnly' };
+  const omW = () => OM_L[typeof askLang === 'function' ? askLang() : 'zh-TW'] || OM_L['zh-TW'];
+  async function omLoad() {
+    if (hasAct(OM_ST) !== true) { S.om = null; return; }
+    const O = S.om = S.om || {};
+    try { const r = await act(OM_ST, {}); O.d = r && typeof r === 'object' && !Array.isArray(r) && typeof r.method === 'string' ? r : null; O.bad = !O.d; } catch (e) { O.d = null; O.bad = true; }
+    render();
+  }
+  function omHtml() {
+    const O = S.om; if (!O) return '';
+    const W = omW(), d = O.d, msg = O.msg ? `<div class="${O.msg.bad ? 'aerr' : 'aok'}" role="${O.msg.bad ? 'alert' : 'status'}">${esc(O.msg.text)}</div>` : '';
+    if (!d) return `<div class="occ"><b>${esc(W.title)}</b>${O.bad ? esc(W.read) : ''}</div>${msg}`;
+    if (OM_RESET.includes(d.why)) return `<div class="occ"><b>${esc(W.title)}</b>${esc(W.omReset)}</div>${msg}`; // 改不了,只寫重設的出路
+    const m = d.method, set = hasAct(OM_SET) === true && d.can_change === true;
+    if (m === 'unknown') return `<div class="occ"><b>${esc(W.title)}</b>${esc(W.nokey)}</div>${msg}`; // f163c a179d649 N1 / c2f0b 05:52:沒讀到金鑰 = 這次啟動配對與所有本人確認都關(不是退回指紋)⇒ 只寫定字,不說目前用什麼
+    let body = esc(Object.prototype.hasOwnProperty.call(W, m) && /^(biometry|password|windows_hello)$/.test(m) ? W[m] : W.read);
+    // c2f0b 10:18 §2(3e53b 草稿):啟動時清掉一筆舊鑰 ≠ 現鑰的確認方式紀錄 ⇒ 照實說清過、現在只用指紋;改鈕照 can_change 照常出(不卡客戶)。只認這個碼,自己換到一半清掉的後端不報
+    if (d.cleared === 'owner_method_record_cleared' && m === 'biometry') body = esc(W.cleared) + (set ? esc(W.clearedPick) : '');
+    if (m === 'windows_hello') body += esc(W.winHow); // Windows 不能在 AIB 裡選:做不到,照實寫去哪改
+    else if (O.busy) body += `<button type="button" class="k" disabled>${esc(W.wait)}</button>`;
+    else if (set && m === 'biometry' && O.ask) body = `${body}<span class="omw">${esc(W.warn)}</span><button type="button" class="k" data-omno="1">${esc(W.no)}</button><button type="button" class="k" data-omset="password">${esc(W.sure)}</button>`; // 換成較弱的要按兩次(只防誤按;真正的證明是本人確認窗)
+    else if (set && m === 'biometry') body += `<button type="button" class="k" data-omask="1">${esc(W.toPw)}</button>`;
+    else if (set && m === 'password') body += `<button type="button" class="k" data-omset="biometry">${esc(W.toBio)}</button>`; // 改回較嚴的不用先問
+    return `<div class="occ"><b>${esc(W.title)}</b>${body}</div>${msg}`;
+  }
+  async function omSet(to) {
+    const O = S.om; if (!O || O.busy || !O.d || (to !== 'password' && to !== 'biometry') || hasAct(OM_SET) !== true || O.d.can_change !== true) return;
+    if (to === 'password' && !O.ask) return; // 沒先看過說明不送
+    const W = omW(); O.busy = true; O.ask = false; O.msg = null; render();
+    try { await act(OM_SET, { to }); O.msg = { bad: false, text: to === 'password' ? W.donePw : W.doneBio }; omMark(); } catch (e) { const k = OM_WHY[rgCode(e)]; O.msg = { bad: true, text: k ? W[k] : W.fail + errText(e) }; }
+    O.busy = false; await omLoad();
+  }
+  // 安裝時的選擇卡(PLAN §2;c2f0b 05:45 照做):配對成功後、新手期指引最上面一張;只在 method=biometry 且 can_change 時出,選了就不再出(這個瀏覽器記住)
+  // 預設指紋;選密碼跟設定頁同一條路(先出降級白話字、再按一次才送)。role=alertdialog ⇒ 指引遮罩看到確認類就整層拆掉(guideBlocked),卡不會被蓋住
+  const OM_PICK = 'aib.om.pick';
+  const omPicked = () => { try { if (localStorage.getItem(OM_PICK) === '1') return true; } catch (e) { /* 本機偏好讀不到 ⇒ 看這一頁的 */ } return !!S.omPicked; };
+  function omMark() { S.omPicked = true; try { localStorage.setItem(OM_PICK, '1'); } catch (e) { /* 存不了就只記這一頁 */ } }
+  function omCard() {
+    if (S.pair || typeof guideNew !== 'function' || !guideNew(S.guide) || hasAct(OM_ST) !== true || hasAct(OM_SET) !== true || omPicked()) return '';
+    if (!S.om && !S.omTried) { S.omTried = true; omLoad(); return ''; }
+    const O = S.om, d = O && O.d; if (!d || d.method !== 'biometry' || d.can_change !== true || OM_RESET.includes(d.why)) return '';
+    const W = omW(), msg = O.msg && O.msg.bad ? `<div class="aerr" role="status">${esc(O.msg.text)}</div>` : '';
+    const body = O.busy ? `<button type="button" class="k" disabled>${esc(W.wait)}</button>`
+      : O.ask ? `<span class="omw">${esc(W.warn)}</span><button type="button" class="k" data-omno="1">${esc(W.no)}</button><button type="button" class="k" data-omset="password">${esc(W.sure)}</button>`
+      : `<button type="button" class="k g" data-ompick="1">${esc(W.pickBio)}</button><button type="button" class="k" data-omask="1">${esc(W.pickPw)}</button>`;
+    return `<div class="occ omcard" role="alertdialog" aria-label="${esc(W.pickT)}"><b>${esc(W.pickT)}</b>${body}${msg}</div>`;
+  }
+  // 設定面板(⚙️ 設定):目前只有本人確認方式;aibd 沒有 owner_method_status 就不出這顆鈕
+  const setBtn = () => (hasAct(OM_ST) === true ? `<button type="button" class="ib${S.setOpen ? ' on' : ''}" data-setopen="1" aria-expanded="${S.setOpen ? 'true' : 'false'}" title="${esc(omW().set)}">⚙️ ${esc(omW().set)}</button>` : '');
+  const setHtml = () => (S.setOpen && hasAct(OM_ST) === true ? `<div class="box setp" role="region" aria-label="${esc(omW().set)}">${omHtml()}<button type="button" class="k" data-setopen="0">${esc(omW().setClose)}</button></div>` : '');
   // 新增視窗裡的重新登入:同一張卡(relogHtml);登入完重抓 version,開席時被 409 擋下的那一次自動再送
   const addLoginCard = (k) => `<span class="anlc">${relogHtml(k)}</span>`;
   const addSnap = (b) => JSON.stringify(Object.assign({}, b, { idem_key: '' })); // 開席 body 快照(idem_key 每次新的,不算)
@@ -6432,7 +6539,7 @@
       <div class="apsrc">${esc(apSrc())}</div>${guideTourLine()}
       ${apTop(A)}${set}
       ${apMine(A)}
-      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
+      ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}${typeof dgHtml === 'function' ? dgHtml(A) : ''}${rfHtml(A)}${A.refuse && A.refuse.err ? `<div class="aerr" role="alert">${esc(A.refuse.err)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       ${apGrp(A)}
       <div class="afoot">${!addNoRepo(A) ? `<span class="apsum">${esc(A.plan && pv ? apSum(A, pv) : '先選一個方案')}</span>` : ''}${addNoRepo(A) ? `<span class="anorepo" role="alert">${esc(NO_REPO)}${A.noRepoAsk ? ';確定要開就再按一次' : ''}</span>` : ''}<button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv || !A.plan ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(addNoRepo(A) && A.noRepoAsk && !A.busy ? '確定不用倉,開' : !A.busy && (A.mates || []).length ? `開這一組(${(A.mates || []).length + 1} 位)` : step)}</button></div></div></div>`;
@@ -6511,6 +6618,7 @@
     H.busy = false; render();
   }
   function hsTestChips() {
+    if (typeof thDev === 'function' && !thDev()) return ''; // 測試機候選 / 收據機也是開發功能,Windows 不出
     // f163c 897efdc8cd L1:「+ AI 夥伴」面板一打開也會讀 ssh 設定 ⇒ 跟設定頁同一個開關,沒按過只出一行 + 同一顆鈕
     if ((hsHas('cand') || hasAct('test_host_list') === true) && !thWant()) return `<div class="aplab apgold">${esc(thX().title)}</div><div class="apn">${esc(thW().none)} <button type="button" class="k" data-thopen="1">${esc(thW().open)}</button></div>`;
     if (hsHas('cand')) {
@@ -6950,6 +7058,7 @@
     } catch (e) {
       // 08de5 定案 3:開席前 aibd 先查登入,沒登入 / 過期回 409 not_logged_in ⇒ 就地出重新登入卡,登入完自動再送這一次
       const nl = e && (e.code === 'not_logged_in' || e.reason === 'not_logged_in' || (e.body && e.body.reason === 'not_logged_in'));
+      A.dgNeed = rgCode(e) === 'dgrs_needs_switch'; // 紅字後接開關鈕(dgHtml)
       if (nl && RELOG_NAME[A.provider]) { A.needLogin = A.provider; A.msg = '這台的 ' + RELOG_NAME[A.provider] + ' 沒登入或已過期,席沒有開。按下面「重新登入 ' + RELOG_NAME[A.provider] + '」,登入完會自動再開一次'; A.err = true; A.key = idem(); }
       else if (rfOwn(rgCode(e))) { A.refuse = { code: rgCode(e), provider: A.provider }; A.msg = ''; A.err = true; A.key = idem(); }
       else { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
@@ -6995,13 +7104,28 @@
   const PAIR_WIN_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '從開始選單或桌面點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
-    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>']];
-  const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
+    ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單點「AIB」(或開一個新的命令提示字元,打 <code>aib web</code>)</li>']];
+  // c2f0b 11-27 10:17(後端 d7171a356f):Mac 安裝後應用程式資料夾有 AIB,點它就開頁 + 帶碼(同 Windows 開始選單)⇒ Mac 拿碼的字也改「在應用程式資料夾點 AIB」,
+  // 兩平台同句型、只差去哪裡點(Andy 22:0x;ebab8 10:22 定:Mac「點應用程式裡的 AIB(或在終端機打 aib web)」、Windows「從開始選單點 AIB(或打 aib web)」);
+  // c2f0b 15:15(op8 3036c0d801):Windows 的 aib 裝好後要「新開」命令提示字元才讀得到 PATH ⇒ 括號寫明開一個新的
+  // f163c 1379264d N1:AIB.app 在 ~/Applications(家目錄的應用程式),不是 Finder 側欄那個 /Applications ⇒ Mac 寫「用 Spotlight 搜 AIB」(找得到兩處),同「從開始選單點」句型終端機確認通道(按 y)是真的在終端機,不換;沒碼步驟留 aib web 當第二條路(Andy 10:1x)
+  const PAIR_MAC_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '用 Spotlight(⌘ 空白鍵)搜「AIB」打開,它會打開這一頁並給你配對碼,把碼打在這裡。'],
+    ['請在終端機再打一次 aibd ctl web', '請再用 Spotlight 搜「AIB」打開一次'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'], ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], // aibd ctl web
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>用 Spotlight(⌘ 空白鍵)搜「AIB」打開(或在終端機打 <code>aib web</code>)</li>']];
+  const pairSay = (t) => { if (typeof t !== 'string') return t; let o = t; for (const [a, b] of (typeof fpWin === 'function' && fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)) o = o.split(a).join(b); return o; };
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
   const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
-  const PAIR_WAIT_MAC = '<h2>在系統確認視窗確認</h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列
-  const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
+  const PAIR_WAIT_MAC = '<h2>在本人確認視窗確認</h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列;Andy 22:0x 句型同 Windows(Windows Hello ↔ 本人確認視窗);跟 Windows 差在「輸入 PIN」⇒「確認」:Mac 判不出這台是指紋還是密碼
+  // c2f0b 11-27 10:17:aibd 帶 key_kind('touch_id' / 'login_password')就照實只寫一種(3e53b REVIEW-guide L1 b:不並列);沒有這欄照中性字
+  const PAIR_WAIT_KK = { touch_id: '<h2>用 Touch ID 確認</h2><p>Touch ID 視窗會寫同一組碼,一樣才按指紋;不一樣按取消。</p>', login_password: '<h2>輸入登入密碼確認</h2><p>確認視窗會寫同一組碼,一樣才輸入這台電腦的登入密碼;不一樣按取消。</p>' };
+  const pairWaitSay = (chan, kk) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(Object.prototype.hasOwnProperty.call(PAIR_WAIT_KK, kk) ? PAIR_WAIT_KK[kk] : PAIR_WAIT_MAC) : (t) => t);
+  // ebab8 10:08 第 3 點(Andy 要「優化更多」):直接開網址、手上沒碼 ⇒ 一句白話 + 「怎麼拿配對碼」鈕,不是一上來就丟指令;
+  // 步驟兩平台同句型,只差第 1 步去哪裡點(Mac 照 PAIR_MAC_SAY 換成應用程式資料夾、Windows 照 PAIR_WIN_SAY)
+  // f163c 45d289a4 L1 + Andy 10:1x 親打「新安裝的 aib 也應該要能用 aib web 一鍵啟用」(ebab8 轉):主寫 aib web(c2f0b 讓乾淨安裝也有 aib);交件前括號留完整路徑備援(不靠 PATH);N1:配對後還要確認本人(指紋 / Windows Hello / 終端機 y),寫中性「照畫面確認」
+  const PAIR_NOCODE = '<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。</p>';
+  const pairHowHtml = (open) => (open ? pairSay('<ol class="phow"><li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li><li>AIB 會在瀏覽器打開配對頁、帶好配對碼;按「配對」,再照畫面確認是你本人</li></ol>') : '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>');
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
@@ -7039,6 +7163,29 @@
       }
     } catch (e) { /* 下一輪再試 */ } finally { setTimeout(() => { CODE.polling = false; }, 2000); }
   }
+  // Andy 10:18 親打(ebab8 轉):配對頁要一顆鈕「重取配對金鑰,把新碼輸入回驗證欄」。3e53b PRE-READ-pair-reissue r1 + c2f0b 15:02:
+  // POST /api/v1/pair/reissue(空 body、同源 fetch 帶 Origin)200 {code, expires_in, expires_at_ms} ⇒ 填進欄、焦點到「配對」,不自動送(按配對 → 本人確認窗是客戶自己做的,窗第 1 行才有意義);
+  // 409 pair_reissue_not_here(不是本人確認窗管道)/ 舊 aibd 沒這支 ⇒ 不出鈕,照上面的說明拿碼;429 ⇒ 白話;碼以外的回傳字不顯示。兩平台同一顆、同一句
+  const PAIR_RE = { no: false, busy: false };
+  async function pairReissue() {
+    if (PAIR_RE.no || PAIR_RE.busy || PAIRING.on) return;
+    PAIR_RE.busy = true; pairShown = ''; render();
+    let msg = '', nc = '';
+    try {
+      const r = await fetch('/api/v1/pair/reissue', { method: 'POST', cache: 'no-store', credentials: 'omit' });
+      let j = null; try { j = await r.json(); } catch (e) { /* 不是 JSON */ }
+      if (r.ok && j && typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}$/.test(j.code)) {
+        nc = j.code.toUpperCase(); CODE.cur = nc; CODE.gone = false; CODE.off = false; CODE.tries = 0;
+        CODE.exp = Number(j.expires_at_ms) > 0 ? Number(j.expires_at_ms) : Number(j.expires_in) > 0 ? Date.now() + Number(j.expires_in) * 1000 : 0;
+        msg = '拿到新的配對碼了,按「配對」';
+      } else if (r.status === 409 || r.status === 404 || r.status === 405) PAIR_RE.no = true;
+      else msg = r.status === 429 ? '按太多次了,等幾分鐘再按' : '沒拿到新的配對碼,照上面的方法拿';
+    } catch (e) { msg = '連不上 AIB'; }
+    PAIR_RE.busy = false;
+    if (S.pair) S.pair = Object.assign({}, S.pair, { view: 'code', msg: nc ? '' : msg, ok: nc ? msg : '', code: nc || S.pair.code || '' });
+    pairShown = ''; render();
+    if (nc) { const b = document.querySelector('#pairf button[type="submit"]'); if (b) b.focus(); }
+  }
   async function loadPairPrefs() {
     if (S.cipAsked) return; S.cipAsked = true;
     if (PREFILL && !CODE.off) codePoll(true);
@@ -7050,9 +7197,9 @@
     if (P.view === 'busy' || (P.view === 'wait' && P.opening)) return `<div class="pairbox">${bootBar() || `<div class="boot"><div class="bt"><i data-sty="width:40%"></i></div><span>配對好了,正在打開工作台…</span></div>`}</div>`;
     if (P.view === 'wait') {
       // f163c 1a7f49de N1:AIB 設成終端機確認(channel terminal-unverified)時確認真的在終端機按 y ⇒ 等確認框照原字,不換成 Windows Hello
-      return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
+      return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
-    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
+    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>' : PAIR_NOCODE + pairHowHtml(P.how)}${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}${P.ok ? `<p class="aok" role="status">${esc(P.ok)}</p>` : ''}${PAIR_RE.no ? '' : `<button type="button" class="ib" data-pairre="1" ${PAIR_RE.busy || PAIRING.on ? 'disabled' : ''}>${PAIR_RE.busy ? '取得中…' : '重新取得配對碼'}</button>`}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
   function render() {
     guidePaintSoon(); // 新用戶指引路線層:畫完下一格重算(不產生就拆掉)
@@ -7090,9 +7237,9 @@
     const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span><button type="button" class="k g startc" data-startclaude="1" title="用預設(Claude · 討論研究 · 內建人格)開一席">開始用 Claude</button>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="舊式席(不是網頁開的),等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="新增 AI 夥伴">+ AI 夥伴${netDot()}</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
-    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
+    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}${inboxBtn()}${typeof setBtn === 'function' ? setBtn() : ''}<a class="ib" href="contacts.html" title="原聯絡中心;所有席的信分四欄、光點從寄件人流到收件人">📥 待審區</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">AIB 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
-      ${decideHtml()}<div class="upper">
+      ${decideHtml()}${typeof setHtml === 'function' ? setHtml() : ''}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
         ${S.add ? guideDim(addHtml()) : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : seatNowBox(P) + sharedWin()}`}</div>
         <div class="box">${slotsHtml()}</div>
@@ -7303,7 +7450,7 @@
     let msg = '';
     try {
       const cb = document.getElementById('pcip'), cip = cb ? cb.checked : true;
-      S.cip = cip;
+      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, kk: '', until: 0, at: Date.now() }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
       // 0eed7 VERIFY-pkg-ec695674 H1:舊 aibd 不認 n / confirm_in_page,多帶就 401「碼打錯了」。
       // 只有 GET pair/prefs 答得出 confirm_in_page(7b81e 845ef9128 起)才帶這兩欄;舊的只送碼
       const f = { code }; if (S.pairNew && cip) f.confirm_in_page = '1';
@@ -7582,7 +7729,7 @@
       if (!S.pt.off) ptLoad(); // S3:每次開都重讀(別的分頁可能改過)
       hsLoad(); // S2:沒有 act 就不送
       lcLoad(); // L3:安裝 / 換版卡(舊 aibd 沒有這支 GET ⇒ 不出卡)
-      S.sp = null; spLoad(); // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
+      S.sp = null; spLoad(); if (typeof dgLoad === 'function') { S.dg = null; dgLoad(); } // W-10:開席設定;舊 aibd 404 ⇒ 不出卡;每次開都清掉上次的結果(f163c N1)
       { const A = S.add; setTimeout(() => { if (S.add === A) A.still = true; }, 400); } // 進場只播一次,之後點選重畫不再播
       // 0eed7 L:人格清單有介面就用(GET /api/v1/personas,形狀未定:{personas:[{uid, display_name}]} 或陣列);沒有就從現有席收
       const r = await soft(get('/api/v1/personas')).catch(() => null);
@@ -7599,6 +7746,13 @@
     if (S.add && x.closest('[data-ocre]')) { ocLoad(); return; }
     if (S.add && x.closest('[data-spok]')) { spInit(); return; }
     { const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }
+    { const so = x.closest('[data-setopen]'); if (so) { S.setOpen = so.dataset.setopen === '1' ? !S.setOpen : false; if (S.setOpen) { S.om = null; omLoad(); } render(); return; } }
+    if (x.closest('[data-omask]') && S.om) { S.om.ask = true; S.om.msg = null; render(); return; }
+    if (x.closest('[data-omno]') && S.om) { S.om.ask = false; render(); return; }
+    if (x.closest('[data-ompick]')) { omMark(); render(); return; }
+    { const os = x.closest('[data-omset]'); if (os && S.om) { omSet(os.dataset.omset); return; } }
+    if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }
+    if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }
     if (S.add) {
       // S1:接回 / 最近用過 / 大分類 / 小分類 / 設定列
       const bk = x.closest('[data-apback]'); if (bk) { const A = S.add, code = bk.dataset.apback, sx = S.seats.find((y) => apCode(y) === code); A.plan = 'back:' + code; A.from = code; A.cat = 'handoff'; A.noRepoAsk = false; if (sx && sx.persona_uid) { A.persona = sx.persona_uid; A.personaTried = true; A.brainTouched = false; brainPreselect(A); } if (sx && AP_MODE[sx.mode]) A.mode = sx.mode; if (!A.ho || /HANDOFF-[0-9a-f]{5}-$/.test(A.ho)) A.ho = '~/.ez2-aib/pending/HANDOFF-' + code + '-'; A.rowOpen = 'ho'; A.key = idem(); render(); hlLoad(A, code); const i = document.querySelector('[data-addho]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } return; }
@@ -7664,6 +7818,8 @@
     const pkp = x.closest('[data-pkput]'); if (pkp) { ctInsert(pkp.dataset.pkput); return; }
     if (x.closest('[data-pkx]')) { CT.pick = null; return render(); }
     const e2 = x.closest('[data-enter2]'); if (e2) { try { localStorage.setItem(E2K, e2.checked ? '1' : '0'); } catch (err) { /* 存不了:這次有效 */ } E2.at = 0; return; }
+    if (x.closest('[data-pairre]')) { pairReissue(); return; }
+    if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }
     if (x.closest('[data-repair]')) { dropToken(); S.paired = false; S.pair = { view: 'code' }; return render(); }
   }
   el.addEventListener('click', onMainClick);
@@ -7829,7 +7985,7 @@
   // 彈窗要畫的:need 的項目照順序,各自狀態(todo / cur / ok / slow);進度 = ok / 全部
   function loadPlan(list, st) {
     const rows = list.filter((x) => x.need).map((x) => ({ key: x.key, label: x.label, state: (st && st[x.key] && st[x.key].s) || 'todo', why: (st && st[x.key] && st[x.key].why) || '' }));
-    const ok = rows.filter((r) => r.state === 'ok').length, cur = rows.filter((r) => r.state === 'cur' || r.state === 'slow').length;
+    const ok = rows.filter((r) => r.state === 'ok').length, cur = rows.filter((r) => r.state === 'cur' || r.state === 'slow' || r.state === 'hold').length;
     return { rows, n: rows.length, ok, cur, pct: rows.length ? (ok / rows.length) * 100 : 100, glide: rows.length ? Math.min(100, ((ok + 0.85 * Math.min(cur, 1)) / rows.length) * 100) : 100 };
   }
   // 跑清單:照 after 排、其餘平行;need 項回報 cur / slow / ok / fail,背景項錯了不擋;回傳「need 全部好了」
@@ -7884,9 +8040,9 @@
     const P = loadPlan(PROG.list, PROG.st);
     for (const r of P.rows) {
       const li = PROG.el.querySelector(`.pgs li[data-k="${r.key}"]`); if (!li) continue;
-      const cls = r.state === 'slow' ? 'cur slow' : r.state;
+      const cls = r.state === 'slow' ? 'cur slow' : r.state === 'hold' ? 'cur hold' : r.state;
       if (li.className !== cls) { li.className = cls; li.querySelector('.pgdot').innerHTML = r.state === 'ok' ? PG_CHECK : ''; }
-      const w = li.querySelector('.pgw'), wh = r.state === 'slow' && r.why ? `<span>${esc(r.why)}</span>${PROG.retry ? '<button type="button" class="k" data-pgretry="1">再試一次</button>' : ''}` : '';
+      const w = li.querySelector('.pgw'), wh = r.state === 'slow' && r.why ? `<span>${esc(r.why)}</span>${PROG.retry ? '<button type="button" class="k" data-pgretry="1">再試一次</button>' : ''}` : r.state === 'hold' && r.why ? `<span>${esc(r.why)}</span>` : ''; // 等本人確認:不是壞了,不給再試一次
       if (w.innerHTML !== wh) w.innerHTML = wh;
     }
     PROG.el.querySelector('.pgn').textContent = P.ok === P.n ? '完成' : '第 ' + Math.min(P.ok + 1, P.n) + ' / ' + P.n + ' 步'; // 條的起點 = 完成數 / 總數,最後一步時至少過 (n-1)/n
@@ -7915,7 +8071,23 @@
     await loadRun(LOAD.filter((x) => x.key !== 'pair'), (k, st, w) => progSet(k, st === 'fail' ? 'slow' : st, st === 'fail' ? loadErr(w) : w), { each: () => render() });
     S.boot = null; progDone();
   }
-  function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); }, 5000); render(); }
+  // ebab8 11-27 10:2x(Andy 10:14 截圖):指紋窗還開著,配對那步就寫「超過 5 秒:aibd 還沒回配對結果 + 再試一次」像壞掉 ⇒
+  // 在等本人確認(這頁確認的兌換還在等 / pair/status 回 awaiting_confirmation)那步寫「等你在…確認(還有 N 秒)」,不算慢、不出再試一次;真的過了時間才寫原因。
+  // 兩平台同句型,只差視窗名(Windows Hello ↔ 本人確認視窗;Mac 判不出這台是指紋還是密碼,寫中性);終端機確認通道照實寫終端機
+  const pairHeld = () => !!(PAIR_HOLD.on && (PAIRING.on || (S.pair && S.pair.view === 'wait')));
+  // f163c e7e78fe4 N1:「在這頁確認」的兌換還沒回(還不知道到期)時不能永遠寫在等你 ⇒ 從送出起最多 150 秒(配對確認窗約 2 分 + 餘裕),過了轉 slow 寫原因
+  const PAIR_HOLD_MAX = 150000;
+  const pairHoldLeft = () => (PAIR_HOLD.until ? Math.ceil((PAIR_HOLD.until - Date.now()) / 1000) : PAIR_HOLD.at ? Math.ceil((PAIR_HOLD.at + PAIR_HOLD_MAX - Date.now()) / 1000) : null);
+  const pairHoldSay = (chan, left, kk) => (chan === 'terminal-unverified' ? '等你在終端機按 y' : typeof fpWin === 'function' && fpWin() ? '等你在 Windows Hello 視窗確認' : kk === 'touch_id' ? '等你用 Touch ID 確認' : kk === 'login_password' ? '等你輸入登入密碼確認' : '等你在本人確認視窗確認') + (left > 0 ? '(還有 ' + left + ' 秒)' : '');
+  function pairHoldPaint() {
+    if (!PROG.el || PROG.done || !PROG.st.pair || (PROG.st.pair.s !== 'hold' && PROG.st.pair.s !== 'cur')) return;
+    if (!pairHeld()) return;
+    const n = pairHoldLeft();
+    if (n != null && n <= 0) return progSet('pair', 'slow', '時間到了還沒確認;要重來按再試一次');
+    const w = pairHoldSay(PAIR_HOLD.chan, PAIR_HOLD.until ? n : null, PAIR_HOLD.kk); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w); // 只有 aibd 給了到期才寫秒數;兌換還沒回時只寫在等你
+  }
+  setInterval(pairHoldPaint, 1000);
+  function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') { if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); } }, 5000); render(); }
   function bootEnd(ok) { S.boot = null; clearTimeout(BOOT.t); if (ok) progDone(); else progClose(); }
   function bootBar() { return ''; } // 進度在彈窗(§19g / §19h);頁面上不另畫
   let again = false;
@@ -7950,10 +8122,10 @@
       if (!S.paired) {
         let st = null;
         try { st = await get('/api/v1/pair/status'); } catch (e) { if (e && (e.status === 401 || e.status === 403)) { dropToken(); S.pair = { view: 'code', msg: '這個配對已失效,請重新輸入配對碼' }; return; } throw e; }
-        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '' }; return; }
+        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '', kk: typeof st.key_kind === 'string' ? st.key_kind : '' }; Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, kk: S.pair.kk, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }
         if (st.state !== 'confirmed') { dropToken(); S.pair = { view: 'code', msg: '配對' + (st.state === 'expired' ? '已過期' : '已取消') + ',請重新輸入配對碼' }; return; }
         if (st.user_page) { S.banner = '這是用戶資料夾頁的配對:只能叫安全模式的席,讀不到本文'; S.bannerKind = 'err'; }
-        S.paired = true; S.pair = null;
+        S.paired = true; S.pair = null; PAIR_HOLD.on = false;
         // §19e(Andy 20:5x「直接進畫面?或著有進度條說明?」):先畫框架,資料到一塊補一塊;串流當下就連,不等 2 秒定時器
         if (!PUSH.started && !PUSH.off) { PUSH.started = true; pushLoop(); }
         S.boot = S.boot || { at: Date.now() };

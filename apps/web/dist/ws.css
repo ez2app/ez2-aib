@@ -253,6 +253,7 @@ a.ib:hover{border-color:var(--gold);color:var(--gold2)}
 .atpop .dg,.all .dg{display:block;font-size:10px;font-style:normal;color:var(--red,#e5484d)}
 .pairbox{max-width:420px;margin:48px auto;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);display:flex;flex-direction:column;gap:10px}
 .pairbox h2{margin:0;font-size:18px}
+.pairbox .phow{margin:0;padding-left:22px;line-height:1.7}.pairbox .phow code{font-size:14px}
 .pairbox input{font:inherit;font-size:20px;letter-spacing:2px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);text-transform:uppercase}
 .pairbox .short{font-size:32px;letter-spacing:6px;font-weight:700;text-align:center;color:var(--gold)}
 .pairbox .bad{color:var(--red,#e5484d)}
@@ -604,6 +605,7 @@ progress.usep::-moz-progress-bar{background:var(--green)}
 .pgw{grid-column:2;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--orange)}
 .pgw:empty{display:none}
 .pgw .k{font-size:12px}
+.pgs li.hold .pgw{color:var(--gold2);font-weight:600}
 @media (prefers-reduced-motion:reduce){.pgbar i::after,.pgs li.cur .pgdot{animation:none}}
 /* §20b 預覽清單 */
 .pvbtn{font:inherit;font-size:13px;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);cursor:pointer}
@@ -1636,3 +1638,6 @@ label.rvr{cursor:pointer}
 /* B5:窄卡時鈕換到下一行,不切邊 */
 .thh{flex-wrap:wrap}
 .thh .k{white-space:nowrap}
+/* 本人確認方式設定面板(c2f0b df67611099;Andy 21:1x 改方式放設定頁、不顯眼) */
+.setp{padding:4px 14px 12px}.setp .omw{display:block;margin:8px 0}.setp .occ .k{margin:8px 8px 0 0}
+.omcard{margin:6px 0 10px}.omcard .omw{display:block;margin:8px 0}.omcard .k{margin:8px 8px 0 0}

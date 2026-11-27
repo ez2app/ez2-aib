@@ -289,12 +289,21 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     box.S.th = { list: [{ name: 'okbox', address: 'x', usable: true, pinned: true }, { name: 'nbox', address: 'y', usable: true, pinned: false }], pinned: 1, max: 16, row: {}, open: true }; h = box.testHostHtml();
     ok(/Runs receipts/.test(h) && />Take back</.test(h) && />Add</.test(h) && /Not added/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_rows_not_english ' + h.slice(0, 400));
     box.S.th = null; box.S.thWant = false; h = box.testHostHtml(); ok(/<b>Test machines<\/b>/.test(h) && !/[\u4e00-\u9fff]/.test(h), 'reason: th_collapsed_title_not_english ' + h);
+    // ebab8 21:51 客戶 Windows:測試機是開發用(收據、只收 Mac)⇒ Windows 整塊不出;Mac 照舊。用 ws.js 真的 thDev 那一行
+    { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); ok(!!dl, 'reason: th_dev_line_found');
+      vm.runInContext(dl.trim().replace('const thDev', 'this.thDev') , box); box.win = false; box.fpWin = () => box.win;
+      box.S.th = null; box.S.thWant = false; const hm = box.testHostHtml(); box.win = true; const hw = box.testHostHtml(); box.S.thWant = true; const hw2 = box.testHostHtml(); box.S.thWant = false;
+      ok(hm === '' && hw === '' && hw2 === '', 'reason: th_hidden_on_windows ' + hm + hw + hw2); // Andy 22:0x 兩平台一致:沒 dev 欄兩邊都藏
+      box.win = false; box.S.version = { dev: false }; const hd0 = box.testHostHtml(); box.S.version = { dev: true }; box.win = true; const hd1 = box.testHostHtml(); box.win = false; const hd2 = box.testHostHtml(); box.S.version = { dev: 'yes' }; const hd3 = box.testHostHtml(); delete box.S.version;
+      ok(hd0 === '' && /data-thopen="1"/.test(hd1) && /data-thopen="1"/.test(hd2) && hd3 === '', 'reason: th_follows_dev_flag ' + hd0 + hd3);
+      ok(ws.includes("    mac_only: '測試機目前只支援 Mac', no_receipt_gate:"), 'reason: th_mac_only_words'); box.navigator.languages = ['en-US']; ok(box.thErr('mac_only') === 'Test machines work only on a Mac for now', 'reason: th_mac_only_en'); box.navigator.languages = ['zh-TW'];
+      delete box.thDev; delete box.fpWin; }
     box.S.thWant = null;
     for (const l of ['zh-TW', 'en', 'ja', 'ko']) ok(new RegExp("^ +" + (l === 'zh-TW' ? "'zh-TW'" : l) + ': \\{"title":', 'm').test(ws.slice(a, b)), 'reason: th_x_missing_lang ' + l);
     // f163c b67 / de39 N1:不能用原因 / 加收回錯誤 / 面板字也四語;每個中文碼在英日韓表都有
     { const keysOf = (name) => { const m = ws.match(new RegExp('const ' + name + ' = \\{([\\s\\S]*?)\\n  \\};')); return m ? [...m[1].matchAll(/\b([a-z_]+): '/g)].map((x) => x[1]) : []; };
       const kw = keysOf('TH_WHY'), ke = keysOf('TH_ERR');
-      ok(kw.length === 7 && ke.length === 11, 'reason: th_zh_tables_moved ' + kw.length + ' ' + ke.length);
+      ok(kw.length === 7 && ke.length === 12, 'reason: th_zh_tables_moved ' + kw.length + ' ' + ke.length);
       for (const l of ['en', 'ja', 'ko']) { ok(kw.every((k) => box.TH_WHY_L[l] && box.TH_WHY_L[l][k]), 'reason: th_why_missing ' + l); ok(ke.every((k) => box.TH_ERR_L[l] && box.TH_ERR_L[l][k]), 'reason: th_err_missing ' + l); }
       box.navigator.languages = ['en-US'];
       ok(box.thWhy('port') === "This machine's ssh settings can't be understood" && box.thErr('not_a_mac') === "That machine isn't a Mac, so it can't run receipts yet", 'reason: th_why_err_not_english ' + box.thWhy('port'));
@@ -400,6 +409,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   // ebab8 13:4x 總刀:畫面上任何字面「指紋」都要經 fpSay;例外只有下面三種(新加的字不在表上 ⇒ 紅,要先分類)
   { const SINK = ['PV_CARRIED', 'TH_ERR', 'TICK_WHY', 'tickOkWhy', 'DRV_ERR', 'REC', 'RCP_WHY', 'SB_WHY', 'PUSH_WHY', 'PR_WHY', 'GHTOK_WHY', 'TRUST_WHY', 'RELOG_WHY', 'MOVE_WHY', 'REPO_WHY', 'PP_WHY', 'NET_WHY', 'ideaAnswer', 'reviewSeen']; // 顯示端已包 fpSay(fp_win_why_wrapped / fp_win_maps_wrapped 核)
     const SELF = ['FP_WIN_SAY', 'fpSay']; // 換字表本身
+    const BYAIBD = ['OM_L', 'PAIR_WAIT_KK'];  // PAIR_WAIT_KK:aibd 的 key_kind 說這台是 Touch ID 才出指紋字,Windows 走 pairSay 不會讀它(pair_wait_key_kind 核); // 本人確認方式:哪一句由 aibd 回的 method 決定(Windows 一律 windows_hello,那句的「指紋」是 Windows Hello 的選項之一),不能再經 fpSay 換字;om_windows_no_choice 核
     const KEEP = [['FP_WHAT', '機器與金鑰指紋'], ['pvDialog', '預覽的指紋不對'], ['pvDialog', '這一份的指紋(sha256'], ['hsRow', '驗證窗列出指紋、真的 IP'], ['upConsent', '清單指紋'], ['hsLine', '指紋 '], // 雜湊 / 主機金鑰,不是本人確認
       ['OWNER_WHY', 'Touch ID 現在讀不到'], ['pwText', '這台用系統本人驗證(指紋或登入密碼)'], ['fpcHtml', '跳出的<b>系統視窗</b>按指紋'], // Mac 分支
       ['OWNER_PIN_HOW', '不用指紋或臉部辨識的硬體'], ['OC_W', '不需要指紋或臉部辨識的硬體'], ['OC_W', '指紋や顔認証']]; // Windows 說明「不需要指紋硬體」
@@ -411,7 +421,7 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
       for (let j = l.indexOf('指紋'); j >= 0; j = l.indexOf('指紋', j + 1)) { if (ci >= 0 && j > ci) break;
         let q = j - 1; while (q >= 0 && l[q] !== "'" && l[q] !== '`') q--; const pre = l.slice(0, Math.max(q, 0));
         if (q >= 0 && /fpSay : \(t\) => t\)\($/.test(pre)) continue;
-        if (SINK.includes(owner) || SELF.includes(owner)) continue;
+        if (SINK.includes(owner) || SELF.includes(owner) || BYAIBD.includes(owner)) continue;
         if (KEEP.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 30), j + 30).includes(t))) continue;
         if (COND.some(([o, t]) => o === owner && l.slice(Math.max(0, j - 80), j + 60).includes(t.slice(t.indexOf("'") + 1)))) continue;
         bad.push((i + 1) + ' ' + owner + ' ' + l.slice(Math.max(0, j - 20), j + 12)); } });
@@ -572,6 +582,18 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/e\.target\.id === 'inp' && e\.key === 'Enter' && !imeBusy\(e\)\)/.test(ws), 'reason: ime_enter_counts');
   // 0.5 秒內第二下送出、去掉換行;Shift 永遠換行;Cmd / Ctrl 永遠送出;空白不送
   ok(/now - E2\.at <= 500/.test(ws) && /t\.value\.slice\(0, i - 1\) \+ t\.value\.slice\(i\)/.test(ws) && /!e\.shiftKey && enter2On\(\)/.test(ws) && /if \(e\.metaKey \|\| e\.ctrlKey\) \{ e\.preventDefault\(\); E2\.at = 0; go\(\); \}/.test(ws) && /if \(t\.value\.trim\(\)\) go\(\)/.test(ws), 'reason: double_enter_rules');
+  // 輸入框提示字(ebab8 11-27 09:36):四個輸入框都寫按哪個鍵送;兩平台同句型,Windows 寫 Ctrl、Mac 寫 ⌘
+  {
+    const a = ws.indexOf('  const sendKey = '), b = ws.indexOf('\n', a);
+    ok(a > 0, 'reason: send_key_hint_missing');
+    const box = { win: false }; vm.createContext(box);
+    vm.runInContext('const fpWin = () => this.win;\n' + ws.slice(a, b) + '\nthis.sendKey = sendKey;', box);
+    ok(box.sendKey('送出') === '(⌘+Enter 送出)', 'reason: send_key_hint_mac');
+    box.win = true;
+    ok(box.sendKey('送出') === '(Ctrl+Enter 送出)' && box.sendKey('寄出') === '(Ctrl+Enter 寄出)', 'reason: send_key_hint_win');
+    const ph = ws.match(/<textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="[^"]*"/g) || [];
+    ok(ph.length === 4 && ph.filter((x) => /\$\{sendKey\('送出'\)\}"$/.test(x)).length === 3 && ph.filter((x) => /\$\{sendKey\('寄出'\)\}"$/.test(x)).length === 1, 'reason: send_key_hint_not_on_every_composer');
+  }
   // 複製鈕:三種完成的訊息都有;等候列(產生中)沒有
   ok((ws.match(/\$\{copyBtn\(/g) || []).length === 3, 'reason: copy_button_not_on_replies');
   const run = ws.slice(ws.indexOf('function waitRow('), ws.indexOf('function saidRows('));
@@ -678,7 +700,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
 // §28 D9 頁面不叫人開終端機(519d0 DECISION-council-driveweb r1;1a93b PREREAD-d9-noterminal)
 // 對人文字(非註解行)出現「終端機 / terminal / ターミナル / 터미널」只准在白名單:甲1 配對(甲2 開席登入 11-26 拿掉:改接重新登入卡)
 {
-  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/];
+  const allow = [/aib web/, /aibd ctl web/, /到終端機確認/, /chan === 'terminal-unverified' \? \(t\) => t/, /終端機會顯示同一組短碼/, /等終端機換一組新的/, /對一下終端機上的碼/, /'等你在終端機按 y'/];
   const bad = [];
   for (const f of ['ws.js', 'app.js', 'copy.js', 'tree.js', 'index.html']) {
     read('apps/web/dist/' + f).split('\n').forEach((l, i) => {
@@ -972,6 +994,15 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       { id: 'hosts', lit: !!lit, steps: [st('host_add', false, 'none', 'add_host'), st('host_reach', false, 'next_version'), st('host_handoff', false, 'next_version'), st('site_first', false, 'next_version')] }] });
     const cOk = st('claude', true, 'ok'), aOk = st('allow', true, 'ok'), fOk = st('first', true, 'ok'), tOk = st('tour', true, 'ok');
     const c = mk();
+    // ebab8 21:51:Windows 的「加一台主機」接的是開發用測試機 ⇒ 標下一版、不出鈕、不是現在那一步;Mac 照舊
+    { const all = G(cOk, aOk, fOk, tOk, true), w = mk('zh-TW', true), m = mk('zh-TW', false); w.S.guide = all; m.S.guide = all;
+      const ha = all.projects[1].steps[0];
+      // 6770f 22:0x / ebab8 22:10:加一台主機照 aibd 回的(兩平台都 next_version、不給 next_act)⇒ 頁面不另判;dev 欄不影響指引
+      const nx = G(cOk, aOk, fOk, tOk, true); nx.projects[1].steps[0] = st('host_add', false, 'next_version');
+      for (const x of [w, m]) { x.S.guide = nx; x.S.version = { dev: false }; }
+      ok(w.X.gState(nx.projects[1].steps[0]) === 'later' && m.X.gState(nx.projects[1].steps[0]) === 'later' && w.X.guideCur(nx) === null && !/data-ggo="add_host"/.test(w.X.guideHtml()) && !/data-ggo="add_host"/.test(m.X.guideHtml()), 'reason: guide_host_add_follows_aibd_next_version');
+      m.S.guide = all; m.S.version = { dev: false }; ok(m.X.gState(ha) === 'bad', 'reason: guide_host_add_page_does_not_override_aibd');
+      ok(m.X.gState(st('host_add', true, 'ok', 'add_host')) === 'ok', 'reason: guide_host_add_done_shows_done'); }
     const X = c.X;
     // 四語:每個步驟、鈕、原因短碼都有字
     const W = X.GUIDE_W, steps = X.GUIDE_STEPS.start.concat(X.GUIDE_STEPS.hosts), gos = Object.keys(X.GUIDE_GO), whys = Object.keys(W['zh-TW'].why);
@@ -1001,8 +1032,8 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     c.S.guide = G(cOk, st('allow', false, 'no_claude', 'session_policy_init'), fOk, tOk, true);
     h = X.guideHtml();
     ok(X.guideDim(panel) === panel && /data-ggo="session_policy_init"/.test(h) && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_broken_after_done_not_dim');
-    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機;下一版三步沒有鈕
-    c.S.guide = G(cOk, aOk, fOk, tOk, true);
+    // 全部走完:收成一行 ✅ 6/6;專案二亮起、下一步 = 加一台主機(開發機 dev=true;一般用戶兩平台都標下一版,見 guide_host_add_*);下一版三步沒有鈕
+    c.S.guide = G(cOk, aOk, fOk, tOk, true); c.S.version = { dev: true };
     h = X.guideHtml();
     ok(/開始使用 AIB ✅ 6\/6/.test(h) && !/data-gstep="tour"/.test(h) && /data-ggo="add_host">加一台主機</.test(h) && (h.match(/<span class="stn">下一版<\/span>/g) || []).length === 3 && (h.match(/data-ggo="/g) || []).length === 1, 'reason: guide_done_collapses_hosts_next ' + h);
     // 配對前:aibd 只回 health 與 pair,其他鎖著;Windows 才有設 PIN 說明
@@ -1035,17 +1066,75 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
       const src = box.PAIR_WIN_SAY.map(([a]) => a); const gone = src.filter((a) => !ws.includes(a)); ok(!gone.length, 'reason: b6_source_words_exist ' + gone.join(' | '));
       const all = src.map(box.pairSay); ok(all.every((x) => !/終端機|aibd/.test(x)), 'reason: b6_windows_no_terminal ' + all.filter((x) => /終端機|aibd/.test(x)).join(' | '));
       { const w = box.pairSay('<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'); ok(/Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消/.test(w) && !/AIB 的視窗/.test(w), 'reason: b6_wait_says_hello_compare_code ' + w); }
-      { const j0 = ws.indexOf('  const PAIR_WAIT_TERM = '), j1 = ws.indexOf('  function cdLeft() {'); ok(j0 > 0 && j1 > j0 && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_selector_found');
+      { const j0 = ws.indexOf('  const PAIR_WAIT_TERM = '), j1 = ws.indexOf('  function cdLeft() {'); ok(j0 > 0 && j1 > j0 && ws.includes('return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_selector_found');
         vm.runInContext('this.pairWaitSay = pairWaitSay; this.W0 = PAIR_WAIT_TERM;', box); // 這段已在上面 PAIR_WIN_SAY 那段一起載入
         const W0 = '<div class="pairbox">' + box.W0 + '<div class="short">123456</div></div>', pick = (chan, win) => { box.win = win; return box.pairWaitSay(chan)(W0); };
         ok(pick('terminal-unverified', true) === W0 && /Windows Hello 視窗會寫同一組碼/.test(pick('', true)) && /Windows Hello/.test(pick(undefined, true)), 'reason: pair_wait_terminal_channel_keeps_y');
-        const mac = pick('', false); ok(/<h2>在系統確認視窗確認<\/h2><p>AIB 跳出的系統確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
+        const mac = pick('', false); ok(/<h2>在本人確認視窗確認<\/h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。<\/p>/.test(mac) && !/終端機|<b>y<\/b>/.test(mac) && /123456/.test(mac), 'reason: pair_wait_mac_touchid_words ' + mac);
         ok(!(/Touch ID/.test(mac) && /密碼/.test(mac)), 'reason: pair_wait_mac_touchid_and_password_together ' + mac); // 3e53b L1:Touch ID 機只收指紋,並列 = 暗示能打密碼
         ok(pick('terminal-unverified', false) === W0 && pick(undefined, false) === W0, 'reason: pair_wait_mac_terminal_or_unknown_keeps_y'); box.win = true; }
-      box.win = false; ok(src.every((a) => box.pairSay(a) === a), 'reason: b6_mac_unchanged');
+      // ebab8 11-27(Andy 10:14 截圖):配對在等本人確認時進度那步寫「等你在…確認(還有 N 秒)」、不算慢、不出再試一次;過了時間才寫原因
+      { const h0 = ws.indexOf('  const pairHeld = '), h1 = ws.indexOf('  setInterval(pairHoldPaint, 1000);'); ok(h0 > 0 && h1 > h0, 'reason: pair_hold_block_found');
+        const hb = { win: false, now: 1000000, sets: [] }; vm.createContext(hb);
+        vm.runInContext('const fpWin = () => this.win; const S = { pair: null }; const PAIRING = { on: false }; const PAIR_HOLD = { on: false, chan: undefined, until: 0, at: 0 }; const PROG = { el: {}, done: false, st: { pair: { s: "cur", why: "" } } };\nconst progSet = (k, s, w) => { PROG.st[k] = { s, why: w || "" }; this.sets.push([s, w]); };\nDate.now = () => this.now;\n' + ws.slice(h0, h1) + '\nthis.X = { S, PAIRING, PAIR_HOLD, PROG, pairHeld, pairHoldSay, pairHoldPaint };', hb);
+        const X = hb.X;
+        ok(X.pairHoldSay('', 42) === '等你在本人確認視窗確認(還有 42 秒)' && X.pairHoldSay(undefined, null) === '等你在本人確認視窗確認' && X.pairHoldSay('terminal-unverified', 5) === '等你在終端機按 y(還有 5 秒)' && X.pairHoldSay('', 9, 'touch_id') === '等你用 Touch ID 確認(還有 9 秒)' && X.pairHoldSay('', 0, 'login_password') === '等你輸入登入密碼確認' && X.pairHoldSay('terminal-unverified', 0, 'touch_id') === '等你在終端機按 y', 'reason: pair_hold_words_mac');
+        hb.win = true; ok(X.pairHoldSay('', 42) === '等你在 Windows Hello 視窗確認(還有 42 秒)', 'reason: pair_hold_words_win'); hb.win = false;
+        ok(!X.pairHeld(), 'reason: pair_hold_off_by_default');
+        X.PAIR_HOLD.on = true; X.PAIRING.on = true; ok(X.pairHeld(), 'reason: pair_hold_while_redeem_confirms_in_page');
+        X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'hold' && X.PROG.st.pair.why === '等你在本人確認視窗確認', 'reason: pair_hold_paints_hold_not_slow ' + JSON.stringify(X.PROG.st.pair));
+        X.PAIRING.on = false; X.S.pair = { view: 'wait' }; X.PAIR_HOLD.until = hb.now + 30000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'hold' && /還有 30 秒/.test(X.PROG.st.pair.why), 'reason: pair_hold_counts_down');
+        hb.now += 31000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'slow' && /時間到了還沒確認/.test(X.PROG.st.pair.why), 'reason: pair_hold_times_out_with_reason');
+        X.PAIR_HOLD.on = false; X.PROG.st.pair = { s: 'cur', why: '' }; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'cur', 'reason: pair_hold_not_when_not_confirming');
+        // f163c e7e78fe4 N1:兌換還沒回(沒有到期)時不寫秒數,但從送出起 150 秒後轉 slow
+        Object.assign(X.PAIR_HOLD, { on: true, until: 0, at: hb.now, chan: undefined, kk: '' }); X.PAIRING.on = true; X.PROG.st.pair = { s: 'cur', why: '' };
+        hb.now += 60000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'hold' && X.PROG.st.pair.why === '等你在本人確認視窗確認', 'reason: pair_hold_inflight_no_seconds ' + X.PROG.st.pair.why);
+        hb.now += 91000; X.pairHoldPaint(); ok(X.PROG.st.pair.s === 'slow', 'reason: pair_hold_inflight_capped'); X.PAIRING.on = false; X.PAIR_HOLD.on = false;
+        // 接線:hold 不給再試一次;5 秒到時在等確認就不寫 slow;送出時照「在這頁確認」打開;awaiting_confirmation 帶到期;配對好了關掉
+        ok(ws.includes("wh = r.state === 'slow' && r.why ?") && ws.includes(": r.state === 'hold' && r.why ? `<span>${esc(r.why)}</span>` : '';") && ws.includes("if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果');") && ws.includes("Object.assign(PAIR_HOLD, { on: cip, chan: undefined, kk: '', until: 0, at: Date.now() });") && ws.includes("Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, kk: S.pair.kk, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }") && ws.includes("S.paired = true; S.pair = null; PAIR_HOLD.on = false;") && ws.includes("r.state === 'cur' || r.state === 'slow' || r.state === 'hold'"), 'reason: pair_hold_wired'); }
+      // ebab8 10:08 第 3 點:沒碼(直接開網址)⇒ 一句白話 + 「怎麼拿配對碼」鈕;按了才出步驟;兩平台同句型、只差第 1 步
+      { vm.runInContext('this.pairHowHtml = pairHowHtml; this.NOC = PAIR_NOCODE;', box);
+        ok(/^<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。<\/p>$/.test(box.NOC) && !/終端機|aib web/.test(box.NOC), 'reason: pair_nocode_plain_sentence');
+        box.win = false; const shut = box.pairHowHtml(false), mac = box.pairHowHtml(true); box.win = true; const win = box.pairHowHtml(true);
+        ok(shut === '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>', 'reason: pair_nocode_how_button ' + shut);
+        ok(/<li>用 Spotlight\(⌘ 空白鍵\)搜「AIB」打開\(或在終端機打 <code>aib web<\/code>\)<\/li>/.test(mac) && !/aibd/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(mac) && /按「配對」,再照畫面確認是你本人<\/li>/.test(win) && /<li>從開始選單點「AIB」\(或開一個新的命令提示字元,打 <code>aib web<\/code>\)<\/li>/.test(win) && !/終端機|aibd/.test(win), 'reason: pair_nocode_how_steps_per_platform ' + win);
+        const tail = (h) => h.replace(/<li>[^<]*(<code>[^<]*<\/code>[^<]*)*<\/li>/, '');
+        ok(tail(mac) === tail(win) && (mac.match(/<li>/g) || []).length === 2 && (win.match(/<li>/g) || []).length === 2, 'reason: pair_nocode_how_same_shape_both');
+        ok(ws.includes("<h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>") && ws.includes(" : PAIR_NOCODE + pairHowHtml(P.how)}") && ws.includes("if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }"), 'reason: pair_nocode_wired');
+      // Andy 10:18(ebab8 轉)+ 3e53b PRE-READ-pair-reissue + c2f0b 15:02:「重新取得配對碼」鈕 ⇒ POST /api/v1/pair/reissue,新碼填進欄、焦點到配對、不自動送
+      { const r0 = ws.indexOf('  const PAIR_RE = '), r1 = ws.indexOf('  async function loadPairPrefs() {'); ok(r0 > 0 && r1 > r0, 'reason: pair_reissue_block_found');
+        const rb = { calls: [], resp: null, focused: 0 }; vm.createContext(rb);
+        vm.runInContext('let pairShown = "x"; const PAIRING = { on: false }; const CODE = { exp: 0, gone: true, off: true, tries: 3 }; const S = { pair: { view: "code", msg: "配對已失效,請重新輸入配對碼" } };\nconst render = () => {}; const document = { querySelector: () => ({ focus: () => { this.focused++; } }) };\nconst fetch = async (u, o) => { this.calls.push([u, o]); const r = this.resp; return { ok: r.status === 200, status: r.status, json: async () => r.body }; };\nDate.now = () => 1000;\n' + ws.slice(r0, r1) + '\nthis.X = { PAIR_RE, PAIRING, CODE, S, pairReissue };', rb);
+        const X = rb.X; (async () => {
+          rb.resp = { status: 200, body: { code: 'abcde-fghjk', expires_in: 300, expires_at_ms: 999000 } }; await X.pairReissue();
+          ok(rb.calls.length === 1 && rb.calls[0][0] === '/api/v1/pair/reissue' && rb.calls[0][1].method === 'POST' && !rb.calls[0][1].body && rb.calls[0][1].credentials === 'omit', 'reason: pair_reissue_posts_empty_same_origin');
+          ok(X.S.pair.code === 'ABCDE-FGHJK' && X.CODE.cur === 'ABCDE-FGHJK' && X.CODE.exp === 999000 && !X.CODE.gone && !X.CODE.off && X.S.pair.msg === '' && X.S.pair.ok === '拿到新的配對碼了,按「配對」' && rb.focused === 1 && X.S.pair.view === 'code', 'reason: pair_reissue_fills_box_focuses_pair ' + JSON.stringify(X.S.pair));
+          rb.resp = { status: 429, body: { reason: 'pair_reissue_too_often' } }; await X.pairReissue(); ok(X.S.pair.msg === '按太多次了,等幾分鐘再按' && !X.PAIR_RE.no && rb.focused === 1 && X.S.pair.code === 'ABCDE-FGHJK', 'reason: pair_reissue_429_plain');
+          rb.resp = { status: 500, body: { reason: 'secret words' } }; await X.pairReissue(); ok(X.S.pair.msg === '沒拿到新的配對碼,照上面的方法拿' && !/secret/.test(JSON.stringify(X.S.pair)), 'reason: pair_reissue_other_error_no_aibd_words');
+          rb.resp = { status: 200, body: { code: 'x"><b>' } }; await X.pairReissue(); ok(X.S.pair.code === 'ABCDE-FGHJK' && X.S.pair.msg === '沒拿到新的配對碼,照上面的方法拿', 'reason: pair_reissue_bad_code_ignored');
+          rb.resp = { status: 409, body: { reason: 'pair_reissue_not_here' } }; await X.pairReissue(); ok(X.PAIR_RE.no === true, 'reason: pair_reissue_409_hides_button');
+          const n = rb.calls.length; await X.pairReissue(); ok(rb.calls.length === n, 'reason: pair_reissue_not_after_409');
+          X.PAIR_RE.no = false; rb.resp = { status: 404, body: null }; await X.pairReissue(); ok(X.PAIR_RE.no === true, 'reason: pair_reissue_old_aibd_hides_button');
+          X.PAIR_RE.no = false; X.PAIR_RE.busy = true; const m = rb.calls.length; await X.pairReissue(); ok(rb.calls.length === m, 'reason: pair_reissue_one_at_a_time'); X.PAIR_RE.busy = false;
+          X.PAIRING.on = true; await X.pairReissue(); ok(rb.calls.length === m, 'reason: pair_reissue_not_while_pairing'); X.PAIRING.on = false;
+        })().catch((e) => { console.error(e); process.exitCode = 1; });
+        ok(ws.includes("${PAIR_RE.no ? '' : `<button type=\"button\" class=\"ib\" data-pairre=\"1\" ${PAIR_RE.busy || PAIRING.on ? 'disabled' : ''}>${PAIR_RE.busy ? '取得中…' : '重新取得配對碼'}</button>`}") && ws.includes("if (x.closest('[data-pairre]')) { pairReissue(); return; }") && !/pair\/reissue[^\n]*\.submit\(|requestSubmit/.test(ws.slice(r0, r1)), 'reason: pair_reissue_wired_no_auto_send'); }
+        box.win = true; }
+      // c2f0b 11-27 10:17:Mac 也有應用程式入口 ⇒ 拿碼的字換成「在應用程式資料夾點 AIB」(同 Windows 句型);終端機確認通道(按 y)兩句不換
+      box.win = false; vm.runInContext('this.PAIR_MAC_SAY = PAIR_MAC_SAY;', box);
+      { const mac = src.map(box.pairSay), keep = ['在這一頁確認,終端機不用按 y', '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>'];
+        ok(src.every((a, i) => keep.includes(a) ? mac[i] === a : mac[i] !== a && !/aibd/.test(mac[i]) && (!/終端機/.test(mac[i]) || /aib web/.test(mac[i]))), 'reason: b6_mac_app_folder ' + mac.join(' | '));
+        ok(box.pairSay('在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。') === '用 Spotlight(⌘ 空白鍵)搜「AIB」打開,它會打開這一頁並給你配對碼,把碼打在這裡。' && box.pairSay('這組碼已經用過了,請在終端機再打一次 aibd ctl web 拿新碼') === '這組碼已經用過了,請再用 Spotlight 搜「AIB」打開一次 拿新碼', 'reason: b6_mac_app_folder_words');
+        ok(box.PAIR_MAC_SAY.every(([a]) => ws.includes(a)), 'reason: b6_mac_source_words_exist'); }
       // f163c N1:終端機確認通道照原字(y),Windows Hello 通道才換字;channel 只從 /pair/status 讀
-      ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '' }") && ws.includes('return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');
-      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
+      ok(ws.includes("chan: typeof st.channel === 'string' ? st.channel : '', kk: typeof st.key_kind === 'string' ? st.key_kind : '' }") && ws.includes('return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2>'), 'reason: pair_wait_words_follow_channel');
+      // c2f0b 11-27 10:17:Mac 等確認框照 key_kind 只寫一種(Touch ID 或登入密碼,不並列);沒有這欄 / 不認得的值照中性;終端機通道與 Windows 不看它
+      { vm.runInContext('this.KK = PAIR_WAIT_KK;', box); const W0 = '<div class="pairbox">' + box.W0 + '</div>', pk = (chan, kk, win) => { box.win = win; return box.pairWaitSay(chan, kk)(W0); };
+        const t = pk('', 'touch_id', false), pw = pk('', 'login_password', false);
+        ok(/<h2>用 Touch ID 確認<\/h2>/.test(t) && !/密碼/.test(t) && /<h2>輸入登入密碼確認<\/h2>/.test(pw) && !/Touch ID|指紋/.test(pw), 'reason: pair_wait_key_kind ' + t + pw);
+        ok(/在本人確認視窗確認/.test(pk('', '', false)) && /在本人確認視窗確認/.test(pk('', 'constructor', false)) && pk('terminal-unverified', 'touch_id', false) === W0 && /Windows Hello/.test(pk('', 'touch_id', true)), 'reason: pair_wait_key_kind_only_mac_touch_channel');
+        box.win = true; }
+      ok(["pairSay('這組碼過期了,請在終端機再打一次 aibd ctl web')", "pairSay('這組碼過期了,等終端機換一組新的…')", 'return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2>', 'return pairSay(`<form class="pairbox" id="pairf"', "msg = pairSay(c === 'pairing_rate_limited'"].every((x) => ws.includes(x)), 'reason: b6_pair_exits_wrapped'); }
     // 真 AIB 實看 B1:開出 2.0 席後後端仍回 start_claude ⇒ 頁面當 focus_chat(鈕「去說一句」、沒有 Touch ID 提示、路線只指 #inp)
     c.present = () => [{ seat_id: 'seat_a' }]; { const h = X.guideHtml(); ok(/data-ggo="focus_chat">去說一句<\/button>/.test(h) && !/data-ggo="start_claude"/.test(h) && !/ghello/.test(h), 'reason: guide_seat_open_goes_to_chat ' + h.slice(h.indexOf('data-ggo') - 10, h.indexOf('data-ggo') + 80)); }
     c.present = () => []; ok(/data-ggo="start_claude"/.test(X.guideHtml()), 'reason: guide_no_seat_still_start'); delete c.present;
@@ -1950,6 +2039,9 @@ const hsChecks = (async () => {
       store.has.managed_host_candidates = false; store.has.test_host_list = true; const h1 = F.hsTestChips(); ok(tloads.length === 0 && /data-thopen="1"/.test(h1), 'reason: hs_test_chips_th_read_before_asked ' + tloads.length);
       ctx.thWant = () => true; S.th = { list: [{ name: 'goodbox', usable: true }, { name: 'badbox', usable: false, why: 'port' }], row: {} };
       const h2 = F.hsTestChips(); ok(/goodbox/.test(h2) && !/badbox/.test(h2), 'reason: hs_test_chips_lists_unusable ' + h2);
+      { const dl = ws.split('\n').find((l) => l.startsWith('  const thDev = ')); vm.runInContext(dl.trim().replace('const thDev', 'this.thDev'), ctx); const sv = ctx.S.version;
+        ctx.S.version = { dev: false }; const hw = F.hsTestChips(); ctx.S.version = undefined; const hn = F.hsTestChips(); ctx.S.version = { dev: true }; const hm = F.hsTestChips(); ctx.S.version = sv; delete ctx.thDev;
+        ok(hw === '' && hn === '' && /goodbox/.test(hm), 'reason: hs_test_chips_hidden_on_windows ' + hw + hn); } // ebab8 21:51 + Andy 22:0x 兩平台一致
       { const kx = ctx.thX; ctx.thX = () => ({ title: 'Test machines', loading: 'Loading…' }); const h3 = F.hsTestChips(); ctx.thX = kx; ok(/>Test machines</.test(h3) && !/測試機/.test(h3), 'reason: hs_test_chips_title_not_english ' + h3); }
       delete store.has.test_host_list; store.has.managed_host_candidates = true; delete S.th; }
     S.hs.cand = null; S.hs.candBusy = false; await F.hsCandLoad();
@@ -2246,6 +2338,40 @@ lateChecks.push((async () => {
   c.S.sp.fix = 'claude'; c.fail = false; const n = sent.length; await c.spFix('claude'); ok(sent.length === n, 'reason: sp_fix_one_at_a_time');
   ok(ws.includes("{ const sf = S.add && x.closest('[data-spfix]'); if (sf) { spFix(sf.dataset.spfix); return; } }"), 'reason: sp_fix_click_wired');
 })());
+// 「能改程式」開關(c2f0b ef615567db;3e53b PRE-READ-dgrs-switch D6 / D7;ebab8 21:51 客戶 Windows):紅字後接按這裡打開(本人確認);開著照實寫 + 關鈕(env 開的不出);沒本人確認照實寫
+lateChecks.push((async () => {
+  const a = ws.indexOf('  // 「能改程式」開關(c2f0b'), b = ws.indexOf('  // 新增視窗裡的重新登入', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: { add: null }, esc: E, render: () => {}, acts: ['dgrs_switch_status', 'dgrs_switch_set'], win: true, st: null, fail: null, errText: (e) => 'ET:' + (e && e.reason),
+    hasAct: (t) => c.acts.includes(t), fpWin: () => c.win, rgCode: (e) => String((e && e.reason) || ''),
+    act: async (t, b) => { sent.push(['act', t, JSON.stringify(b)]); if (t === 'dgrs_switch_status') return c.st; if (c.fail) throw c.fail; return { done: true }; },
+    fingerAct: async (t, b) => { sent.push(['finger', t, JSON.stringify(b)]); if (c.fail) throw c.fail; return { done: true, on: true }; } });
+  vm.runInContext(src + '\nthis.F = { dgLoad, dgHtml, dgSet };', c);
+  const F = c.F; ok(src.length > 1500, 'reason: dg_block_found');
+  const off = { on: false, source: '', can_on: true, can_off: false, owner_check: true };
+  c.st = off; await F.dgLoad(); ok(sent.length === 1 && sent[0][1] === 'dgrs_switch_status' && c.S.dg.d === off, 'reason: dg_status_read');
+  const need = { mode: 'dgrs', dgNeed: true };
+  let h = F.dgHtml(need); ok(h.includes('打開後,AI 可以在這台電腦執行指令、改檔案、連你的主機。') && h.includes('data-dgon="1"') && h.includes('>按這裡打開(會跳出 Windows Hello 確認)</button>'), 'reason: dg_off_button_after_red ' + h);
+  c.win = false; ok(F.dgHtml(need).includes('>按這裡打開(會跳出 本人確認視窗 確認)</button>') && !/指紋|Touch ID/.test(F.dgHtml(need)), 'reason: dg_off_button_mac_words'); c.win = true;
+  ok(F.dgHtml({ mode: 'dgrs' }) === '' && F.dgHtml({ mode: 'safe', dgNeed: false }) === '', 'reason: dg_nothing_without_refusal');
+  c.acts = ['dgrs_switch_status']; ok(!F.dgHtml(need).includes('data-dgon'), 'reason: dg_no_button_without_set_act'); c.acts = ['dgrs_switch_status', 'dgrs_switch_set'];
+  c.S.dg.d = { on: false, can_on: false, owner_check: false }; h = F.dgHtml(need); ok(h.includes('這台沒有本人確認,不能從網頁打開。') && !h.includes('data-dgon'), 'reason: dg_no_owner_check_says_so ' + h);
+  c.S.dg.d = { on: true, source: 'page', can_off: true }; h = F.dgHtml({ mode: 'dgrs' }); ok(h.includes('這台已開「能改程式」。') && h.includes('data-dgoff="1"') && F.dgHtml({ mode: 'safe' }) === '', 'reason: dg_on_says_so_with_off ' + h);
+  c.S.dg.d = { on: true, source: 'env', can_off: true }; ok(F.dgHtml({ mode: 'dgrs' }).includes('這台已開「能改程式」。') && !F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_env_on_no_off_button');
+  ok(F.dgHtml({ mode: 'dgrs' }).includes('這是用 AIB 的環境設定打開的,網頁關不掉。'), 'reason: dg_env_says_page_cannot_turn_off'); c.S.dg.d = { on: true, source: 'page', can_off: true }; ok(!F.dgHtml({ mode: 'dgrs' }).includes('網頁關不掉'), 'reason: dg_page_on_no_env_words');
+  c.S.dg.d = { on: true, source: 'page', can_off: false }; ok(!F.dgHtml({ mode: 'dgrs' }).includes('data-dgoff'), 'reason: dg_off_only_when_can_off');
+  // 開走本人確認、只送 on;成功清掉開席紅字;關不走本人確認
+  sent.length = 0; c.S.dg = { d: off }; c.S.add = { dgNeed: true, msg: '這台還沒開「能改程式」的開關', err: true };
+  await F.dgSet(true); ok(sent[0] && sent[0].join(' ') === 'finger dgrs_switch_set {"on":true}' && c.S.add.dgNeed === false && c.S.add.msg === '' && c.S.dg.msg.text === '已打開「能改程式」,再按一次「開」。', 'reason: dg_on_uses_owner_check_only_on ' + JSON.stringify(sent));
+  sent.length = 0; await F.dgSet(false); ok(sent[0] && sent[0].join(' ') === 'act dgrs_switch_set {"on":false}' && !sent.some((x) => x[0] === 'finger'), 'reason: dg_off_no_owner_check ' + JSON.stringify(sent));
+  c.fail = { reason: 'owner_check_unavailable' }; await F.dgSet(true); ok(c.S.dg.msg.bad && c.S.dg.msg.text === '這台沒有本人確認,不能從網頁打開。', 'reason: dg_owner_check_unavailable_words');
+  c.fail = { reason: 'cancel' }; c.S.add = { dgNeed: true, msg: 'x', err: true }; await F.dgSet(true); ok(c.S.dg.msg.text === '沒有打開:ET:cancel' && c.S.add.dgNeed === true, 'reason: dg_on_fail_keeps_refusal'); c.fail = null;
+  c.S.dg.busy = true; sent.length = 0; await F.dgSet(true); ok(sent.length === 0, 'reason: dg_one_at_a_time'); c.S.dg.busy = false;
+  c.acts = []; c.S.dg = { d: off }; await F.dgLoad(); ok(c.S.dg === null, 'reason: dg_old_aibd_nothing');
+  ok(ws.includes("A.dgNeed = rgCode(e) === 'dgrs_needs_switch';") && ws.includes("${typeof dgHtml === 'function' ? dgHtml(A) : ''}${rfHtml(A)}") && ws.includes("if (S.add && x.closest('[data-dgon]')) { dgSet(true); return; }") && ws.includes("if (S.add && x.closest('[data-dgoff]')) { dgSet(false); return; }"), 'reason: dg_wired');
+})());
+// 測試機「沒送出:internal」改顯示 aibd 回的 message(c2f0b 21:57)
+ok(ws.includes("msg: thErr(c) || (c === 'internal' && m && m !== c ? m : errText(e)), bad: true };"), 'reason: th_internal_shows_message');
 // W-10 開席設定引導卡(c2f0b IFACE-w10-session-policy r0 §2):沒設定時取代「開不了任何 AI」;頁面不送名字;連結照實寫還沒有
 {
   const a = ws.indexOf('  const SP_INIT = '), b = ws.indexOf('  async function spLoad() {', a);
@@ -2307,7 +2433,7 @@ lateChecks.push((async () => {
   ok(ws.includes("session_policy_init: () => ['允許 AIB 在這台開', [['程式', typeof spFound === 'function' && typeof S !== 'undefined' ? spFound(S.sp && S.sp.d).filter((f) => f.kind === 'native').map((f) => spName(f.name) + '(' + f.path + ')').join('、') : '', true]"), 'reason: w10_fp_card_same_order_as_window');
   ok(ws.includes("${S.sp && S.sp.d && spNeed(S.sp.d) ? spCard(S.sp) : `<div class=\"aerr\" role=\"alert\">這台現在開不了任何 AI,所以不能加席。</div>"), 'reason: w10_card_replaces_cannot_open_line');
   ok(ws.includes('const r = await fingerAct(SP_INIT, {});') && ws.includes("const r = await soft(get('/api/v1/session-policy')).catch(() => null);"), 'reason: w10_page_sends_no_names_and_reads_get');
-  ok(ws.includes('      S.sp = null; spLoad(); // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
+  ok(ws.includes('      S.sp = null; spLoad(); if (typeof dgLoad === \'function\') { S.dg = null; dgLoad(); } // W-10') && ws.includes("if (S.add && x.closest('[data-spok]')) { spInit(); return; }") && ws.includes("if (S.add && x.closest('[data-spre]')) { spLoad(); return; }"), 'reason: w10_open_reads_and_buttons_wired');
   const ow = ws.slice(ws.indexOf('  const OWNER_WHY = {'), ws.indexOf('\n  };', ws.indexOf('  const OWNER_WHY = {')));
   ok(ow.includes("policy_no_native: '這台沒找到可以用的 AI 程式本體,沒寫設定。請用官方安裝程式裝好後按「重新找」。'") && ow.includes("policy_exists: '這台的開席安全設定已經設好了,AIB 不會改掉它。'") && ow.includes("policy_write_failed: 'AIB 寫不進開席設定檔,沒有動任何東西。可以再按一次。'") && ow.includes("policy_bad_request: '頁面送出的請求格式不對,沒有動任何東西;請重新整理頁面再試。'"), 'reason: w10_policy_refusals_said');
 }
@@ -2485,4 +2611,72 @@ const lcChecks = (async () => {
 // 接線:開席視窗兩處 + 開席設定卡 + 開視窗就讀 + 點擊先給 lcClick;登入卡共用品牌標
 ok(ws.includes("${PV.filter((p) => !p.open && lcNeeds(p.key)).map((p) => `<div class=\"apn anl\">${lcCard(p.key)}</div>`).join('')}") && ws.includes(": lcNeeds(p.key) ? '。' + `<span class=\"anlc\">${lcCard(p.key)}</span>` : FIX[p.why] ?") && ws.includes('      ${spInstallHtml()}${msg}') && ws.includes('      lcLoad(); // L3') && ws.includes("    if (lcClick(x)) return;\n    const rlb = x.closest('[data-relogin]');") && ws.includes('<div class="rlcband">${rlcMark(b, N)}<b>${esc(N)}</b><span class="rlcstep">共 ${steps.length} 步</span>'), 'reason: lc_wired');
 { const css = fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8'); ok(/\.lc \.lcpg::-webkit-progress-value\{background:var\(--rlb\)/.test(css) && /\.lc \.rlcrow \.k\{font-size:17px[^}]*min-height:52px\}/.test(css), 'reason: lc_card_css_brand_progress_big_buttons'); }
+// 本人確認方式設定(c2f0b df67611099;PLAN-owner-method r2 §2 / §5 / §9):照實寫目前方式;改成密碼要先看說明、按兩次;改回指紋一次;Windows 不出選項;錯誤碼照表
+lateChecks.push((async () => {
+  const a = ws.indexOf('  // 本人確認方式(c2f0b'), b = ws.indexOf('  // 新增視窗裡的重新登入', a), src = a > 0 && b > a ? ws.slice(a, b) : '';
+  const E = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'), sent = [];
+  const c = vm.createContext({ S: {}, esc: E, render: () => {}, acts: ['owner_method_status', 'owner_method_set'], st: null, fail: null, lang: 'zh-TW', errText: (e) => 'ET:' + (e && e.reason),
+    hasAct: (t) => c.acts.includes(t), askLang: () => c.lang, rgCode: (e) => String((e && e.reason) || ''), gnew: true, guideNew: () => c.gnew, store: {},
+    localStorage: { getItem: (k) => (Object.prototype.hasOwnProperty.call(c.store, k) ? c.store[k] : null), setItem: (k, v) => { c.store[k] = String(v); } },
+    act: async (t, bd) => { sent.push(t + ' ' + JSON.stringify(bd)); if (t === 'owner_method_status') { if (c.stFail) throw c.stFail; return c.st; } if (c.fail) throw c.fail; return { done: true }; } });
+  vm.runInContext(src + '\nthis.F = { omLoad, omHtml, omSet, setBtn, setHtml, OM_L, omCard, omPicked };', c);
+  const F = c.F; ok(src.length > 3000, 'reason: om_block_found');
+  c.st = { method: 'biometry', can_change: true, why: null }; await F.omLoad(); ok(sent.join('|') === 'owner_method_status {}' && c.S.om.d === c.st, 'reason: om_status_read');
+  let h = F.omHtml(); ok(h.includes('目前用指紋。') && h.includes('data-omask="1"') && h.includes('>改用登入密碼</button>') && !h.includes('data-omset'), 'reason: om_bio_offers_password_behind_ask ' + h);
+  sent.length = 0; await F.omSet('password'); ok(sent.length === 0, 'reason: om_password_needs_ask_first');
+  c.S.om.ask = true; h = F.omHtml(); ok(h.includes('知道這台電腦登入密碼的人,都能核准 AIB 的動作。') && h.includes('data-omset="password"') && h.includes('data-omno="1"'), 'reason: om_ask_shows_downgrade_words ' + h);
+  await F.omSet('password'); ok(sent[0] === 'owner_method_set {"to":"password"}' && c.S.om.msg.text === '已改成登入密碼。' && !c.S.om.ask, 'reason: om_set_password_only_to ' + sent.join('|'));
+  c.S.om.d = { method: 'password', can_change: true }; h = F.omHtml(); ok(h.includes('目前用登入密碼。') && h.includes('data-omset="biometry"') && !h.includes('data-omask'), 'reason: om_password_back_one_click ' + h);
+  sent.length = 0; c.S.om.d = { method: 'password', can_change: true }; await F.omSet('biometry'); ok(sent[0] === 'owner_method_set {"to":"biometry"}' && c.S.om.msg.text === '已改回指紋。', 'reason: om_set_biometry');
+  c.S.om.d = { method: 'windows_hello', can_change: false }; h = F.omHtml(); ok(h.includes('Windows Hello(PIN、指紋或臉,由 Windows 設定決定)') && h.includes('Windows 設定 › 帳戶 › 登入選項') && !/data-om(ask|set)/.test(h), 'reason: om_windows_no_choice ' + h);
+  c.S.om.d = { method: 'windows_hello', can_change: true }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_windows_never_choice');
+  c.S.om.d = { method: 'unknown', can_change: true, why: null }; c.S.om.msg = null; h = F.omHtml(); ok(h.includes('這次 AIB 啟動時沒有讀到本人確認的金鑰:現在不能做本人確認,也不能改方式。') && h.includes('不能做本人確認') && !h.includes('指紋') && !h.includes('目前用') && !h.includes('配對') && !/data-om(ask|set)/.test(h), 'reason: om_unknown_null_says_not_read ' + h);
+  c.S.om.d = { method: 'unknown', can_change: false, why: 'owner_key_not_as_paired' }; h = F.omHtml(); ok(h.includes('目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。') && h.includes('pair-key-pin.json') && h.includes('pair-key-method.json') && !/data-om(ask|set)/.test(h), 'reason: om_unknown_key_differs_says_reset ' + h);
+  c.S.om.d = { method: 'biometry', can_change: false }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_no_button_without_can_change');
+  c.acts = ['owner_method_status']; c.S.om.d = { method: 'biometry', can_change: true }; ok(!/data-om(ask|set)/.test(F.omHtml()), 'reason: om_no_button_without_set_act'); c.acts = ['owner_method_status', 'owner_method_set'];
+  const tryErr = async (r) => { c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st, ask: true }; c.fail = { reason: r }; await F.omSet('password'); c.fail = null; return c.S.om.msg.text; };
+  ok(await tryErr('owner_key_not_as_paired') === '目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。' && await tryErr('user_cancel') === '你按了取消,沒有改。' && await tryErr('owner_method_not_here') === '這台不能改本人確認方式。' && await tryErr('page_only') === '只有這台 AIB 的內建頁能改。' && await tryErr('pair_touch_busy') === '沒有改:ET:pair_touch_busy', 'reason: om_error_words');
+  c.S.om = { d: { method: 'biometry', can_change: true }, ask: true, busy: true }; sent.length = 0; await F.omSet('password'); ok(sent.length === 0 && F.omHtml().includes('disabled'), 'reason: om_one_at_a_time');
+  c.S.om = null; c.stFail = { reason: 'x' }; await F.omLoad(); ok(c.S.om.d === null && F.omHtml().includes('讀不到目前的方式。'), 'reason: om_status_fail_says_so'); c.stFail = null;
+  c.lang = 'en'; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.omHtml().includes('Use login password instead'), 'reason: om_en'); c.lang = 'zh-TW';
+  ok(['en', 'ja', 'ko'].every((l) => Object.keys(F.OM_L[l]).join() === Object.keys(F.OM_L['zh-TW']).join()), 'reason: om_four_langs_same_keys');
+  // c2f0b eb6c979c71:status why 四個碼 ⇒ 同一句重設出路,不出改鈕
+  for (const w of ['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved']) { c.S.om = { d: { method: 'biometry', can_change: true, why: w } }; const hh = F.omHtml(); ok(hh.includes('目前只用指紋:本人確認的金鑰或紀錄跟配對時不同。要重設:關掉 AIB,刪掉資料夾裡的 pair-key-pin.json 和 pair-key-method.json,再打開 AIB 重新配對一次。') && !/data-om(ask|set)/.test(hh), 'reason: om_reset_words ' + w); }
+  c.S.om = { d: { method: 'biometry', can_change: true, why: 'something_else' } }; ok(!F.omHtml().includes('要重設') && F.omHtml().includes('data-omask'), 'reason: om_reset_only_those_codes');
+  // c2f0b 10:18 §2:status.cleared = owner_method_record_cleared ⇒ 照實說清過一筆紀錄、現在只用指紋;改鈕照 can_change;別的值 / 非指紋不出
+  { const CL = 'AIB 啟動時清掉了一筆跟這次配對對不上的確認方式紀錄(可能是手動刪過檔,或有人動過)。現在只用指紋。', PK = '要改用登入密碼,在這裡重新選一次。';
+    c.S.om = { d: { method: 'biometry', can_change: true, why: null, cleared: 'owner_method_record_cleared' } }; let hh = F.omHtml();
+    ok(hh.includes(CL + PK) && hh.includes('data-omask') && !hh.includes('目前用指紋。'), 'reason: om_cleared_says_so_and_keeps_button ' + hh);
+    c.S.om = { d: { method: 'biometry', can_change: false, why: null, cleared: 'owner_method_record_cleared' } }; hh = F.omHtml();
+    ok(hh.includes(CL) && !hh.includes(PK) && !hh.includes('data-omask'), 'reason: om_cleared_no_pick_when_cannot_change ' + hh);
+    c.S.om = { d: { method: 'biometry', can_change: true, why: null, cleared: 'something_else' } }; ok(!F.omHtml().includes('清掉了'), 'reason: om_cleared_only_that_code');
+    c.S.om = { d: { method: 'password', can_change: true, why: null, cleared: 'owner_method_record_cleared' } }; ok(!F.omHtml().includes('清掉了') && F.omHtml().includes('data-omset="biometry"'), 'reason: om_cleared_only_with_fingerprint');
+    c.S.om = { d: { method: 'biometry', can_change: true, why: 'owner_method_no_pin', cleared: 'owner_method_record_cleared' } }; ok(!F.omHtml().includes('清掉了') && F.omHtml().includes('要重設'), 'reason: om_reset_wins_over_cleared');
+    ok(['en', 'ja', 'ko'].every((l) => F.OM_L[l].cleared && F.OM_L[l].clearedPick && F.OM_L[l].cleared !== CL), 'reason: om_cleared_four_languages'); }
+  // 3e53b 11-27 10:10 §1:後端測試照字面讀這幾處(OM_RESET 一行陣列、OM_WHY 對到 omReset、四語 omReset 都含兩個檔名);改了形狀後端會紅,這裡先擋
+  { const rs = [...ws.matchAll(/ omReset: '([^']*)'/g)].map((m) => m[1]);
+    ok(rs.length === 4 && rs.every((r) => r.includes('pair-key-pin.json') && r.includes('pair-key-method.json')), 'reason: om_reset_four_languages_both_files');
+    ok(/const OM_RESET = \['owner_key_not_as_paired', 'owner_method_no_pin', 'owner_method_record_not_as_paired', 'owner_method_pin_not_moved'\];/.test(ws) && ws.includes("owner_key_not_as_paired: 'omReset'") && !/ reset: '[^']*pair-key/.test(ws), 'reason: om_reset_shape_backend_reads'); }
+  // 安裝時的選擇卡:配對後新手期才出;第一次先讀狀態;biometry + can_change 才出;選了就不再出;密碼兩段同設定頁
+  c.S = { guide: {} }; c.store = {}; sent.length = 0; ok(F.omCard() === '' && sent.join('|') === 'owner_method_status {}', 'reason: om_card_loads_status_once ' + sent.join('|'));
+  await new Promise((r) => setTimeout(r, 0)); c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st };
+  h = F.omCard(); ok(h.includes('role="alertdialog"') && h.includes('這台的本人確認要用什麼?') && h.includes('data-ompick="1"') && h.includes('>指紋(建議)</button>') && h.includes('data-omask="1"') && h.includes('>登入密碼(較弱)</button>') && !h.includes('data-omset'), 'reason: om_card_two_choices ' + h);
+  c.S.om.ask = true; h = F.omCard(); ok(h.includes('知道這台電腦登入密碼的人,都能核准 AIB 的動作。') && h.includes('data-omset="password"') && h.includes('data-omno="1"'), 'reason: om_card_password_asks_first'); c.S.om.ask = false;
+  c.gnew = false; ok(F.omCard() === '', 'reason: om_card_only_new_users'); c.gnew = true;
+  c.S.pair = { code: 1 }; ok(F.omCard() === '', 'reason: om_card_not_before_pair'); c.S.pair = null;
+  for (const d of [{ method: 'password', can_change: true }, { method: 'windows_hello', can_change: false }, { method: 'windows_hello', can_change: true }, { method: 'unknown', can_change: true }, { method: 'biometry', can_change: false }, { method: 'biometry', can_change: true, why: 'owner_method_no_pin' }]) { c.S.om = { d }; ok(F.omCard() === '', 'reason: om_card_hidden_for ' + JSON.stringify(d)); }
+  c.acts = ['owner_method_status']; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.omCard() === '', 'reason: om_card_needs_set_act'); c.acts = ['owner_method_status', 'owner_method_set'];
+  c.store = { 'aib.om.pick': '1' }; ok(F.omCard() === '' && F.omPicked(), 'reason: om_card_picked_stays_hidden'); c.store = {}; c.S.omPicked = false;
+  c.S.om = { d: { method: 'biometry', can_change: true }, ask: true }; c.st = { method: 'password', can_change: true }; await F.omSet('password'); ok(c.store['aib.om.pick'] === '1' && F.omCard() === '', 'reason: om_card_marks_picked_on_success');
+  c.store = {}; c.S.omPicked = false; c.st = { method: 'biometry', can_change: true }; c.S.om = { d: c.st, ask: true }; c.fail = { reason: 'user_cancel' }; await F.omSet('password'); c.fail = null; ok(!c.store['aib.om.pick'] && F.omCard().includes('你按了取消,沒有改。'), 'reason: om_card_stays_after_cancel');
+  ok(ws.includes("if (x.closest('[data-ompick]')) { omMark(); render(); return; }") && ws.includes("return `<div class=\"gbox\">${typeof omCard === 'function' ? omCard() : ''}${out.join('')}</div>`;"), 'reason: om_card_wired');
+  // 遮罩看到 alertdialog 就拆層(卡不會被蓋住)
+  ok(ws.includes("if (doc.querySelector('.pgbg,.anndlg,[role=\"alertdialog\"],[role=\"alert\"]')) return true;"), 'reason: om_card_unblocks_guide_overlay');
+  c.S = {};
+  c.acts = []; c.S.om = { d: c.st }; await F.omLoad(); ok(c.S.om === null && F.setBtn() === '' && F.setHtml() === '', 'reason: om_old_aibd_nothing'); c.acts = ['owner_method_status', 'owner_method_set'];
+  c.S.setOpen = false; ok(F.setBtn().includes('data-setopen="1"') && F.setHtml() === '', 'reason: om_settings_closed_by_default');
+  c.S.setOpen = true; c.S.om = { d: { method: 'biometry', can_change: true } }; ok(F.setHtml().includes('本人確認方式') && F.setHtml().includes('data-setopen="0"'), 'reason: om_settings_panel');
+  c.lang = 'en'; ok(F.setBtn().includes('⚙️ Settings') && F.setHtml().includes('>Close settings</button>') && !/設定/.test(F.setBtn() + F.setHtml()), 'reason: om_settings_words_follow_language'); c.lang = 'zh-TW';
+  ok(ws.includes("${typeof setBtn === 'function' ? setBtn() : ''}<a class=\"ib\" href=\"contacts.html\"") && ws.includes("${decideHtml()}${typeof setHtml === 'function' ? setHtml() : ''}<div class=\"upper\">") && ws.includes("if (S.setOpen) { S.om = null; omLoad(); }") && ws.includes("if (os && S.om) { omSet(os.dataset.omset); return; }") && ws.includes("if (x.closest('[data-omask]') && S.om) { S.om.ask = true;"), 'reason: om_wired');
+})());
 Promise.all([fpcChecks, ptChecks, rgChecks, hsChecks, ...lateChecks, relogChecks, lcChecks]).then(() => console.log('ws-static: ' + n + ' 項全部通過'), (e) => { console.error(e); process.exit(1); });
