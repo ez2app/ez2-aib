@@ -2731,7 +2731,7 @@
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${seatModeTag(s.mode)}${repoTag(s)}${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${ptSeatBtn(s)}${moveHtml(s)}${sendBackHtml(s)}${rcpBtn(s)}${running(s.seat_id) ? `<button type="button" class="k" data-handoff="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''} title="請這一席寫交接單;清空那一步要後端">交接並清空</button>` : ''}${stop}</div>${sendBackBox(s)}${rcpBox(s)}${hoBox(s)}${ptSeatBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}${S.moveMsg && S.moveMsg.seat === s.seat_id ? `<div class="trm${S.moveMsg.bad ? ' bad' : ''}" data-movemsg>${esc(S.moveMsg.text)}${moveMineHtml(S.moveMsg)}</div>` : ''}
       ${seatInbox(s)}${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
-      ${chatSavedHtml()}${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
+      ${chatSavedHtml()}${cinbStrip(s)}${cinbCtx(s)}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…${sendKey('送出')}">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 舊式席的信件串:7ebca 會加 GET threads?seat=<碼>;沒有就讀整份清單,挑標題含這個碼的匯入對話
@@ -2757,7 +2757,7 @@
     const rows = sharedTo(s.seat_id).concat((Array.isArray(s.mirror) ? s.mirror : []).map((m) => ({ t: m.created, h: `<div class="out"><div class="body">${esc(String(m.body || ''))}</div><div class="tm">${esc(hhmm(m.created))}${m.to ? ' · 寄給 @' + esc(String(m.to).replace(/^seat:/, '')) : ''}</div></div>` }))).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc(['舊式席', modelText(s), stTxt].filter(Boolean).join(' · '))}</small>${n && n.item ? `<span class="turn">${esc(String(n.item).slice(0, 40))}</span>` : ''}${steps}${s.mirror ? '' : '<span class="pvdemo" title="鏡像還沒接上:這一席的信與輸出還讀不到">示意</span>'}</div>
       ${judgeRowFor(s)}<div class="tl" id="tl">${thr}${rows.length ? rows.map((r) => r.h).join('') : thr ? '' : '<div class="empty">這是舊式席(不是網頁開的);它的信接上鏡像(7ebca N-web-dmbridge)後會出現在這裡</div>'}</div>
-      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳)">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫信給 @${esc(code)}(走舊信件帳)${sendKey('寄出')}">${esc(S.drafts[s.seat_id] || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="legacy" data-code="${esc(code)}" ${S.sending ? 'disabled' : ''}>寄信</button>${enter2Box()}</span></div>${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   // 五顆快捷鈕 = 送一句固定的話給這一席(舊版對話面板的五顆;今晚只送字,沒有另外的介面)
   const QUICK = [
@@ -2972,7 +2972,7 @@
     return `${headHtml()}
       <div class="tl" id="tl">${rows || `<div class="empty">${soleSeat() ? '還沒有對話。寫一句送出,就交給 @' + esc(seatName(soleSeat())) + ';有兩席以上再用 @ 選。' : '還沒有對話。打 @ 選一席,寫一句送出。'}</div>`}</div>
       ${atpop}${askBar()}
-      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
+      ${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰${sendKey('送出')}">${esc(S.drafts.shared || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
 
@@ -3123,6 +3123,8 @@
   const E2K = 'aib.ws.enter2';
   const enter2On = () => { try { return localStorage.getItem(E2K) === '1'; } catch (e) { return false; } };
   const enter2Box = () => `<label class="e2"><input type="checkbox" class="e2c" data-enter2="1"${enter2On() ? ' checked' : ''}>連按兩次 Enter 送出</label>`;
+  // 輸入框提示字:兩平台同句型,只差按鍵名(Windows 寫 Ctrl,Mac 寫 ⌘);單按 Enter 是換行,客戶才知道怎麼送
+  const sendKey = (w) => `(${typeof fpWin === 'function' && fpWin() ? 'Ctrl' : '⌘'}+Enter ${w})`;
   const E2 = { at: 0 };
   // IME-BEGIN 1a93b 11-22(Andy 第二次:「沒打完中文,就一直自動送出英文」;9918e 派工):
   // 組字狀態自己記,不只靠 isComposing / 229。① 組字中、與組字結束後 IME_GAP 毫秒內的 Enter 一律不算(瀏覽器會在選字後再補一個
@@ -3508,7 +3510,7 @@
       ${M ? `<div class="mem">${M}</div>` : ''}
       <div class="tl" id="tl">${postRows() || '<div class="empty">這一項還沒有對話。寫一句送出;要誰接手就 @ 誰。</div>'}</div>
       ${atpop}
-      ${askBar()}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
+      ${askBar()}${chatTools()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他${sendKey('送出')}">${esc(S.drafts.node || '')}</textarea><span class="gocol"><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button>${enter2Box()}</span></div>${toLine('node')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   async function sendNode(text) {

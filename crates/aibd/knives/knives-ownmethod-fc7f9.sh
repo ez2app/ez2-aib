@@ -59,3 +59,12 @@ k 'return `<div class="gbox">${typeof omCard ' 'return `<div class="gbox">${type
 k '${esc(W.nokey)}</div>' '${esc(W.reset)}</div>'
 # OM26 收起設定寫死中文(f163c N1)
 k '>${esc(omW().setClose)}</button>' '>收起設定</button>'
+
+# SK1 Windows 也寫 ⌘(ebab8 11-27 09:36 送出鍵提示)
+k "fpWin() ? 'Ctrl' : '⌘'}+Enter" "fpWin() ? '⌘' : '⌘'}+Enter"
+# SK2 Mac 寫成 Ctrl
+k "fpWin() ? 'Ctrl' : '⌘'}+Enter" "fpWin() ? 'Ctrl' : 'Ctrl'}+Enter"
+# SK3 單席輸入框沒提示
+k '說…${sendKey(' '說…${String(' 
+# SK4 舊席寄信寫成送出
+k '(走舊信件帳)${sendKey('"'"'寄出'"'"')}' '(走舊信件帳)${sendKey('"'"'送出'"'"')}'

@@ -582,6 +582,18 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
   ok(/e\.target\.id === 'inp' && e\.key === 'Enter' && !imeBusy\(e\)\)/.test(ws), 'reason: ime_enter_counts');
   // 0.5 秒內第二下送出、去掉換行;Shift 永遠換行;Cmd / Ctrl 永遠送出;空白不送
   ok(/now - E2\.at <= 500/.test(ws) && /t\.value\.slice\(0, i - 1\) \+ t\.value\.slice\(i\)/.test(ws) && /!e\.shiftKey && enter2On\(\)/.test(ws) && /if \(e\.metaKey \|\| e\.ctrlKey\) \{ e\.preventDefault\(\); E2\.at = 0; go\(\); \}/.test(ws) && /if \(t\.value\.trim\(\)\) go\(\)/.test(ws), 'reason: double_enter_rules');
+  // 輸入框提示字(ebab8 11-27 09:36):四個輸入框都寫按哪個鍵送;兩平台同句型,Windows 寫 Ctrl、Mac 寫 ⌘
+  {
+    const a = ws.indexOf('  const sendKey = '), b = ws.indexOf('\n', a);
+    ok(a > 0, 'reason: send_key_hint_missing');
+    const box = { win: false }; vm.createContext(box);
+    vm.runInContext('const fpWin = () => this.win;\n' + ws.slice(a, b) + '\nthis.sendKey = sendKey;', box);
+    ok(box.sendKey('送出') === '(⌘+Enter 送出)', 'reason: send_key_hint_mac');
+    box.win = true;
+    ok(box.sendKey('送出') === '(Ctrl+Enter 送出)' && box.sendKey('寄出') === '(Ctrl+Enter 寄出)', 'reason: send_key_hint_win');
+    const ph = ws.match(/<textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="[^"]*"/g) || [];
+    ok(ph.length === 4 && ph.filter((x) => /\$\{sendKey\('送出'\)\}"$/.test(x)).length === 3 && ph.filter((x) => /\$\{sendKey\('寄出'\)\}"$/.test(x)).length === 1, 'reason: send_key_hint_not_on_every_composer');
+  }
   // 複製鈕:三種完成的訊息都有;等候列(產生中)沒有
   ok((ws.match(/\$\{copyBtn\(/g) || []).length === 3, 'reason: copy_button_not_on_replies');
   const run = ws.slice(ws.indexOf('function waitRow('), ws.indexOf('function saidRows('));
