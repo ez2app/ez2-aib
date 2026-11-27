@@ -7106,14 +7106,21 @@
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
     ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
     ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單或桌面點「AIB」</li>']];
-  const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
+  // c2f0b 11-27 10:17(後端 d7171a356f):Mac 安裝後應用程式資料夾有 AIB,點它就開頁 + 帶碼(同 Windows 開始選單)⇒ Mac 拿碼的字也改「在應用程式資料夾點 AIB」,
+  // 兩平台同句型、只差去哪裡點(Andy 22:0x);終端機確認通道(按 y)是真的在終端機,不換;沒碼步驟留 aib web 當第二條路(Andy 10:1x)
+  const PAIR_MAC_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '在應用程式資料夾點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
+    ['請在終端機再打一次 aibd ctl web', '請在應用程式資料夾再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'], ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], // aibd ctl web
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>在應用程式資料夾點「AIB」(或在終端機打 <code>aib web</code>)</li>']];
+  const pairSay = (t) => { if (typeof t !== 'string') return t; let o = t; for (const [a, b] of (typeof fpWin === 'function' && fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)) o = o.split(a).join(b); return o; };
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
   const PAIR_WAIT_TERM = '<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>';
   const PAIR_WAIT_MAC = '<h2>在本人確認視窗確認</h2><p>本人確認視窗會寫同一組碼,一樣才確認;不一樣按取消。</p>'; // 3e53b 203a4beb32 L1:有 Touch ID 的 Mac 只收指紋、沒有的才收登入密碼 ⇒ 中性字,不並列;Andy 22:0x 句型同 Windows(Windows Hello ↔ 本人確認視窗);跟 Windows 差在「輸入 PIN」⇒「確認」:Mac 判不出這台是指紋還是密碼
-  const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
+  // c2f0b 11-27 10:17:aibd 帶 key_kind('touch_id' / 'login_password')就照實只寫一種(3e53b REVIEW-guide L1 b:不並列);沒有這欄照中性字
+  const PAIR_WAIT_KK = { touch_id: '<h2>用 Touch ID 確認</h2><p>Touch ID 視窗會寫同一組碼,一樣才按指紋;不一樣按取消。</p>', login_password: '<h2>輸入登入密碼確認</h2><p>確認視窗會寫同一組碼,一樣才輸入這台電腦的登入密碼;不一樣按取消。</p>' };
+  const pairWaitSay = (chan, kk) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(Object.prototype.hasOwnProperty.call(PAIR_WAIT_KK, kk) ? PAIR_WAIT_KK[kk] : PAIR_WAIT_MAC) : (t) => t);
   // ebab8 10:08 第 3 點(Andy 要「優化更多」):直接開網址、手上沒碼 ⇒ 一句白話 + 「怎麼拿配對碼」鈕,不是一上來就丟指令;
-  // 步驟兩平台同句型,只差第 1 步去哪裡點(Mac 還沒有應用程式入口,先寫終端機;有了換這一步,Windows 照 PAIR_WIN_SAY)
+  // 步驟兩平台同句型,只差第 1 步去哪裡點(Mac 照 PAIR_MAC_SAY 換成應用程式資料夾、Windows 照 PAIR_WIN_SAY)
   // f163c 45d289a4 L1 + Andy 10:1x 親打「新安裝的 aib 也應該要能用 aib web 一鍵啟用」(ebab8 轉):主寫 aib web(c2f0b 讓乾淨安裝也有 aib);交件前括號留完整路徑備援(不靠 PATH);N1:配對後還要確認本人(指紋 / Windows Hello / 終端機 y),寫中性「照畫面確認」
   const PAIR_NOCODE = '<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。</p>';
   const pairHowHtml = (open) => (open ? pairSay('<ol class="phow"><li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li><li>AIB 會在瀏覽器打開配對頁、帶好配對碼;按「配對」,再照畫面確認是你本人</li></ol>') : '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>');
@@ -7165,7 +7172,7 @@
     if (P.view === 'busy' || (P.view === 'wait' && P.opening)) return `<div class="pairbox">${bootBar() || `<div class="boot"><div class="bt"><i data-sty="width:40%"></i></div><span>配對好了,正在打開工作台…</span></div>`}</div>`;
     if (P.view === 'wait') {
       // f163c 1a7f49de N1:AIB 設成終端機確認(channel terminal-unverified)時確認真的在終端機按 y ⇒ 等確認框照原字,不換成 Windows Hello
-      return pairWaitSay(P.chan)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
+      return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
     return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>' : PAIR_NOCODE + pairHowHtml(P.how)}${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
@@ -7418,7 +7425,7 @@
     let msg = '';
     try {
       const cb = document.getElementById('pcip'), cip = cb ? cb.checked : true;
-      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, until: 0 }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
+      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, kk: '', until: 0 }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
       // 0eed7 VERIFY-pkg-ec695674 H1:舊 aibd 不認 n / confirm_in_page,多帶就 401「碼打錯了」。
       // 只有 GET pair/prefs 答得出 confirm_in_page(7b81e 845ef9128 起)才帶這兩欄;舊的只送碼
       const f = { code }; if (S.pairNew && cip) f.confirm_in_page = '1';
@@ -8043,13 +8050,13 @@
   // 兩平台同句型,只差視窗名(Windows Hello ↔ 本人確認視窗;Mac 判不出這台是指紋還是密碼,寫中性);終端機確認通道照實寫終端機
   const pairHeld = () => !!(PAIR_HOLD.on && (PAIRING.on || (S.pair && S.pair.view === 'wait')));
   const pairHoldLeft = () => (PAIR_HOLD.until ? Math.ceil((PAIR_HOLD.until - Date.now()) / 1000) : null);
-  const pairHoldSay = (chan, left) => (chan === 'terminal-unverified' ? '等你在終端機按 y' : typeof fpWin === 'function' && fpWin() ? '等你在 Windows Hello 視窗確認' : '等你在本人確認視窗確認') + (left > 0 ? '(還有 ' + left + ' 秒)' : '');
+  const pairHoldSay = (chan, left, kk) => (chan === 'terminal-unverified' ? '等你在終端機按 y' : typeof fpWin === 'function' && fpWin() ? '等你在 Windows Hello 視窗確認' : kk === 'touch_id' ? '等你用 Touch ID 確認' : kk === 'login_password' ? '等你輸入登入密碼確認' : '等你在本人確認視窗確認') + (left > 0 ? '(還有 ' + left + ' 秒)' : '');
   function pairHoldPaint() {
     if (!PROG.el || PROG.done || !PROG.st.pair || (PROG.st.pair.s !== 'hold' && PROG.st.pair.s !== 'cur')) return;
     if (!pairHeld()) return;
     const n = pairHoldLeft();
     if (n != null && n <= 0) return progSet('pair', 'slow', '時間到了還沒確認;要重來按再試一次');
-    const w = pairHoldSay(PAIR_HOLD.chan, n); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w);
+    const w = pairHoldSay(PAIR_HOLD.chan, n, PAIR_HOLD.kk); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w);
   }
   setInterval(pairHoldPaint, 1000);
   function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') { if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); } }, 5000); render(); }
@@ -8087,7 +8094,7 @@
       if (!S.paired) {
         let st = null;
         try { st = await get('/api/v1/pair/status'); } catch (e) { if (e && (e.status === 401 || e.status === 403)) { dropToken(); S.pair = { view: 'code', msg: '這個配對已失效,請重新輸入配對碼' }; return; } throw e; }
-        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '' }; Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }
+        if (st.state === 'awaiting_confirmation') { S.pair = { view: 'wait', short: st.short_code || '', left: st.expires_in, chan: typeof st.channel === 'string' ? st.channel : '', kk: typeof st.key_kind === 'string' ? st.key_kind : '' }; Object.assign(PAIR_HOLD, { on: true, chan: S.pair.chan, kk: S.pair.kk, until: Number(st.expires_in) > 0 ? Date.now() + Number(st.expires_in) * 1000 : 0 }); pairHoldPaint(); return; }
         if (st.state !== 'confirmed') { dropToken(); S.pair = { view: 'code', msg: '配對' + (st.state === 'expired' ? '已過期' : '已取消') + ',請重新輸入配對碼' }; return; }
         if (st.user_page) { S.banner = '這是用戶資料夾頁的配對:只能叫安全模式的席,讀不到本文'; S.bannerKind = 'err'; }
         S.paired = true; S.pair = null; PAIR_HOLD.on = false;

@@ -113,3 +113,18 @@ k "fpWin() ? '等你在 Windows Hello 視窗確認'" "fpWin() ? '等你在本人
 k "Object.assign(PAIR_HOLD, { on: cip, chan" "Object.assign(PAIR_HOLD, { on: false, chan"
 # PW7 配對好了沒關掉
 k "S.paired = true; S.pair = null; PAIR_HOLD.on = false;" "S.paired = true; S.pair = null;"
+
+# KK1 Mac 照舊只套 Windows 字(c2f0b 11-27 10:17 應用程式入口)
+k "fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)" "fpWin() ? PAIR_WIN_SAY : [])"
+# KK2 Mac 拿碼句寫回終端機
+k "'在應用程式資料夾點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'" "'在終端機跑 <code>aib web</code>,把它給的配對碼打在這裡。'"
+# KK3 沒碼步驟拿掉 aib web 第二條路(Andy 10:1x)
+k "'<li>在應用程式資料夾點「AIB」(或在終端機打 <code>aib web</code>)</li>'" "'<li>在應用程式資料夾點「AIB」</li>'"
+# KK4 不看 key_kind
+k "Object.prototype.hasOwnProperty.call(PAIR_WAIT_KK, kk) ? PAIR_WAIT_KK[kk] : PAIR_WAIT_MAC" "PAIR_WAIT_MAC"
+# KK5 Touch ID 與密碼並列
+k "login_password: '<h2>輸入登入密碼確認</h2>" "login_password: '<h2>用 Touch ID 或登入密碼確認</h2>"
+# KK6 進度那步不看 key_kind
+k "kk === 'touch_id' ? '等你用 Touch ID 確認' : " ""
+# KK7 status 的 key_kind 沒帶進來
+k "kk: typeof st.key_kind === 'string' ? st.key_kind : '' }" "kk: '' }"
