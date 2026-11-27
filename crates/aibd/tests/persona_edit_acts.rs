@@ -94,6 +94,16 @@ async fn archived_ones_leave_the_picker_and_open_nothing_until_restored() {
     assert_eq!(uids(&get("/api/v1/personas").await, "personas"), ["un0eba"]);
     let r = post(json!({"type": "persona_restore", "uid": "un0eba", "idem_key": "a1-a4"})).await;
     assert_eq!(r.code, 404, "reason: restored_twice {}", r.body);
+    // an archived role opens nothing either. The persona above is also refused later on the
+    // open path (seat_next_apply::open_uid, §8 8b-2), so only a role reaches this refusal
+    // alone (#898 crate knives Linux 4/4: knife a1-open missed)
+    let r = post(
+        json!({"type": "seat_open", "provider": "claude", "mode": "safe",
+                        "persona_uid": "un0eba", "role": a, "idem_key": "a1-o2"}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "reason: archived_role_opened {}", r.body);
+    assert_eq!(r.json["reason"], "role_archived", "{}", r.body);
 
     // a seat token cannot do any of this (built-in page only): no cred is refused
     let r = d

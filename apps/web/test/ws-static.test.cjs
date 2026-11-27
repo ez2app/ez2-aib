@@ -964,7 +964,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         act: async (t, f) => { c.sent.push([t, f]); if (c.fail) throw c.fail; return { ok: true, at: '2026-11-26T05:00:00Z', source: 'opened' }; },
         get: async () => { c.loads++; return c.next || null; }, soft: (p) => p, render: () => { c.renders++; }, localStorage: { m: {}, getItem(k) { return this.m[k] || null; }, setItem(k, v) { this.m[k] = v; }, removeItem(k) { delete this.m[k]; } } };
       vm.createContext(c);
-      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown, guideLoad };', c);
+      vm.runInContext(ws.slice(g0, g1) + '\nthis.X = { GUIDE_W, GUIDE_GO, GUIDE_LIT, GUIDE_STEPS, gState, guideCur, guideNew, guideHtml, guidePreHtml, guideDim, guideOnPanel, guidePick, guideBlocked, guidePathD, gSkipped, guideSkip, gDown, guideLoad, guideRouteOn };', c);
       return c;
     };
     const st = (id, done, why, na) => Object.assign({ id, why }, done === undefined ? {} : { done }, na ? { next_act: na } : {});
@@ -1072,6 +1072,19 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     X.guideSkip(true);
     ok(X.gSkipped() && c.localStorage.m['aib.guide.skip'] === '1' && /data-gagain="1">再看一次</.test(X.guideHtml()), 'reason: guide_skip_local_again');
     X.guideSkip(false); ok(!X.gSkipped() && !/data-gagain/.test(X.guideHtml()), 'reason: guide_unskip');
+    // 客戶 11-26 18:5x(ebab8 急件):第 5 步「去說一句」蓋層只挖 #inp,送出鈕被吞 ⇒ 洞(ring)是整個輸入列 .send;關指引時把輸入框的字存回草稿
+    { const r5 = mk(), rect = (x, y, w, h) => ({ left: x, top: y, width: w, height: h, right: x + w, bottom: y + h });
+      const row = { r: rect(500, 700, 700, 90) }, inp = { r: rect(510, 710, 560, 70), closest: (q) => (q === '.send' ? row : null), disabled: false, getAttribute: () => null };
+      r5.document = { querySelector: (q) => (q === '#inp' ? Object.assign(inp, { getBoundingClientRect: () => inp.r }) : q === '[data-ggo]' ? { getBoundingClientRect: () => rect(20, 400, 120, 30) } : null), querySelectorAll: () => [] };
+      row.getBoundingClientRect = () => row.r; r5.S.guide = G(cOk, aOk, st('first', false, 'seat_open', 'focus_chat'), st('tour', false, 'after_first', 'open_partner_panel'));
+      const R = r5.X.guideRouteOn();
+      ok(R && R.sel === '#inp' && R.to === inp && R.ring === row && r5.X.GUIDE_GO.focus_chat.hole === '.send', 'reason: guide_step5_hole_is_whole_send_row ' + JSON.stringify(R && { sel: R.sel, ring: R.ring === row }));
+      ok(ws.includes('const tr = (R.ring || R.to).getBoundingClientRect()'), 'reason: guide_paint_uses_ring');
+      const k = mk(); k.S.mode = 'shared'; k.S.drafts = { shared: '' }; k.document = { getElementById: (id) => (id === 'inp' ? { value: '你好,我是第一次用', disabled: false } : null) };
+      k.X.guideSkip(true); ok(k.S.drafts.shared === '你好,我是第一次用' && k.X.gSkipped(), 'reason: guide_skip_keeps_typed_text');
+      const k2 = mk(); k2.S.mode = 'a1b2c'; k2.S.drafts = { a1b2c: '舊' }; k2.document = { getElementById: () => ({ value: '新的字', disabled: true }) }; k2.X.guideSkip(true);
+      const k3 = mk(); k3.S.mode = 'shared'; k3.S.drafts = { shared: '留著' }; k3.document = { getElementById: () => null }; k3.X.guideSkip(true);
+      ok(k2.S.drafts.a1b2c === '舊' && k3.S.drafts.shared === '留著', 'reason: guide_skip_disabled_or_no_box_keeps_draft'); }
     // 接線(靜態):暗格點了不動作、指引鈕走原本那顆、打開面板記第 6 步、畫完重算路線、讀 guide、面板套暗格、配對頁加清單
     ok(/async function onMainClick\(e\) \{\n    const x = e\.target;\n    if \(x\.closest\('\.gdim'\)\) return;/.test(ws), 'reason: guide_dim_click_does_nothing');
     ok(/S\.rg = null; S\.rgMsg = null;\n      guideOnPanel\(\);\n      render\(\);/.test(ws) && /function render\(\) \{\n    guidePaintSoon\(\);/.test(ws) && /if \(!S\.gAt \|\| Date\.now\(\) - S\.gAt > 8000\) await guideLoad\(\);/.test(ws), 'reason: guide_wired');
@@ -1082,7 +1095,7 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
     ok(/@media \(prefers-reduced-motion:reduce\)\{\.gtour \.gline,\.gtour \.gring\{animation:none\}\}/.test(css), 'reason: guide_reduced_motion_static');
     ok(/for \(const x of guideExits\(document\)\) \{ const r = x\.getBoundingClientRect\(\); if \(r\.width\) holes\.push\(gRect\(r, 3\)\); \}/.test(ws) && /const guideExits = \(doc\) => Array\.from\(doc\.querySelectorAll\('\.adlg\.ap \[data-addx\]'\)\);/.test(ws), 'reason: guide_panel_close_stays_clickable');
     ok(/if \(e\.target\.closest\('\[data-gskip\]'\)\) return guideSkip\(true\); if \(guideBlocked\(document\)\) d\.remove\(\); \}\);/.test(ws) && /new MutationObserver\(\(ms\) => \{ if \(document\.getElementById\('gtour'\) && ms\.some\(\(m\) => !\(m\.target\.closest && m\.target\.closest\('#gtour'\)\)\)\) guidePaintSoon\(\); \}\)\.observe\(document\.body \|\| document\.documentElement, \{ childList: true, subtree: true \}\);/.test(ws) && !/dispatchEvent|\.click\(\)/.test(ws.slice(ws.indexOf('  function guidePaint() {'), ws.indexOf('  // ---------- 新用戶指引 end'))), 'reason: guide_layer_rechecks_without_render');
-    ok(/document\.addEventListener\('keydown', \(e\) => \{ if \(e\.key === 'Escape' && document\.getElementById\('gtour'\)\) guideSkip\(true\); \}\);/.test(ws) && /class="k gskip" data-gskip="1"/.test(ws), 'reason: guide_skip_esc_visible');
+    ok(ws.includes(`document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('gtour') && !(typeof imeBusy === 'function' && imeBusy(e))) guideSkip(true); });`) && /class="k gskip" data-gskip="1"/.test(ws), 'reason: guide_skip_esc_visible');
   }
   ok(/const soleSeat = \(\) => \{ const L = present\(\)\.filter\(\(s\) => !isArch\(s\)\); return L\.length === 1 && !isLegacy\(L\[0\]\) \? L\[0\] : null; \};/.test(ws) && /寫一句送出,就交給 @' \+ esc\(seatName\(soleSeat\(\)\)\)/.test(ws), 'reason: sole_seat_words');
   ctx.apPick(A, 'design:0');

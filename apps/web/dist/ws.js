@@ -349,7 +349,7 @@
     provider_relogin: { hello: true, to: ['[data-add="1"]'] },
     session_policy_init: { hello: true, to: ['[data-add="1"]'] },
     start_claude: { hello: true, to: ['[data-add="1"]', '[data-startclaude="1"]', '.adlg.ap [data-apcat="life"]', '.adlg.ap [data-apsub="life:0"]', '.adlg.ap .afoot .go'] },
-    focus_chat: { to: ['#inp'] },
+    focus_chat: { to: ['#inp'], hole: '.send' }, // 客戶 11-26 18:5x:只挖 #inp 時送出鈕在洞外被蓋層吞 ⇒ 洞是整個輸入列(含送出鈕)
     open_partner_panel: { to: ['[data-add="1"]'] },
     add_host: { to: ['[data-thopen="1"]'] },
   };
@@ -377,7 +377,8 @@
     return null;
   }
   const gSkipped = () => { try { if (localStorage.getItem(GUIDE_SKIP) === '1') return true; } catch (e) { /* 本機偏好讀不到 ⇒ 看這一頁的 */ } return !!S.gSkip; };
-  function guideSkip(on) { S.gSkip = on !== false; try { if (S.gSkip) localStorage.setItem(GUIDE_SKIP, '1'); else localStorage.removeItem(GUIDE_SKIP); } catch (e) { /* 只存本機偏好,存不了就只記這一頁 */ } render(); }
+  function guideSkip(on) { try { const i = document.getElementById('inp'); if (i && !i.disabled && S.drafts) S.drafts[S.mode] = i.value; } catch (e) { /* 沒有輸入框就不存 */ } // 客戶 11-26:關指引後字不見
+    S.gSkip = on !== false; try { if (S.gSkip) localStorage.setItem(GUIDE_SKIP, '1'); else localStorage.removeItem(GUIDE_SKIP); } catch (e) { /* 只存本機偏好,存不了就只記這一頁 */ } render(); }
   async function guideLoad() {
     S.gAt = Date.now();
     // f163c b0abe2097a N1:配對前沒有權杖 ⇒ aibd 回 401;回得了 401 就是 AIB 在跑 ⇒ 配對頁照實畫 1 打勾、2 配對、其他鎖著(不推其他步)
@@ -482,14 +483,15 @@
     if (!gOwn(GUIDE_GO, na) || guideBlocked(document)) return null;
     const dlg = !!document.querySelector('.dlgbg');
     const sel = guidePick(GUIDE_GO[na].to, gHas, dlg); if (!sel) return null;
-    return { sel, to: document.querySelector(sel), from: dlg ? null : document.querySelector('[data-ggo]') };
+    const to = document.querySelector(sel), hz = GUIDE_GO[na].hole && to && to.closest(GUIDE_GO[na].hole);
+    return { sel, to, ring: hz || to, from: dlg ? null : document.querySelector('[data-ggo]') };
   }
   let gRaf = 0;
   function guidePaintSoon() { if (gRaf || typeof requestAnimationFrame !== 'function') return; gRaf = requestAnimationFrame(() => { gRaf = 0; guidePaint(); }); }
   function guidePaint() {
     const old = document.getElementById('gtour'), R = guideRouteOn();
     if (!R || !R.to) { if (old) old.remove(); return; }
-    const tr = R.to.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    const tr = (R.ring || R.to).getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
     if ((tr.bottom < 0 || tr.top > vh || tr.right < 0 || tr.left > vw) && S.gScr !== R.sel) { S.gScr = R.sel; R.to.scrollIntoView({ block: 'center', inline: 'nearest' }); return guidePaintSoon(); }
     const b = gRect(tr, 6), holes = [b];
     const fr = R.from && R.from.getBoundingClientRect(), a = fr && fr.width ? gRect(fr, 4) : null;
@@ -506,7 +508,7 @@
   if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.addEventListener) {
     window.addEventListener('resize', guidePaintSoon, { passive: true });
     document.addEventListener('scroll', guidePaintSoon, { passive: true, capture: true });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('gtour')) guideSkip(true); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.getElementById('gtour') && !(typeof imeBusy === 'function' && imeBusy(e))) guideSkip(true); }); // 客戶 11-26:組字中 Esc 是取消組字,不關指引
     // f163c / 3e53b N2:本人確認卡等不經 render 冒出來也要重判;路線層自己的變動不算
     if (typeof MutationObserver === 'function') new MutationObserver((ms) => { if (document.getElementById('gtour') && ms.some((m) => !(m.target.closest && m.target.closest('#gtour')))) guidePaintSoon(); }).observe(document.body || document.documentElement, { childList: true, subtree: true });
   }
