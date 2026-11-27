@@ -7102,7 +7102,7 @@
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
     ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
-    ['<li>打開「終端機」,貼上 <code>~/.local/bin/aibd ctl web</code> 按 Enter</li>', '<li>從開始選單或桌面點「AIB」</li>']];
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單或桌面點「AIB」</li>']];
   const pairSay = (t) => { if (typeof t !== 'string' || !(typeof fpWin === 'function' && fpWin())) return t; let o = t; for (const [a, b] of PAIR_WIN_SAY) o = o.split(a).join(b); return o; };
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
@@ -7111,9 +7111,9 @@
   const pairWaitSay = (chan) => (chan === 'terminal-unverified' ? (t) => t : typeof fpWin === 'function' && fpWin() ? pairSay : chan === '' ? (t) => t.split(PAIR_WAIT_TERM).join(PAIR_WAIT_MAC) : (t) => t);
   // ebab8 10:08 第 3 點(Andy 要「優化更多」):直接開網址、手上沒碼 ⇒ 一句白話 + 「怎麼拿配對碼」鈕,不是一上來就丟指令;
   // 步驟兩平台同句型,只差第 1 步去哪裡點(Mac 還沒有應用程式入口,先寫終端機;有了換這一步,Windows 照 PAIR_WIN_SAY)
-  // f163c 45d289a4 L1:2.0 乾淨安裝只有 ~/.local/bin/aibd、沒有 aib,也不一定在 PATH ⇒ 寫貼上就能跑的完整路徑;N1:配對後還要確認本人(指紋 / Windows Hello / 終端機 y),寫中性「照畫面確認」
+  // f163c 45d289a4 L1 + Andy 10:1x 親打「新安裝的 aib 也應該要能用 aib web 一鍵啟用」(ebab8 轉):主寫 aib web(c2f0b 讓乾淨安裝也有 aib);交件前括號留完整路徑備援(不靠 PATH);N1:配對後還要確認本人(指紋 / Windows Hello / 終端機 y),寫中性「照畫面確認」
   const PAIR_NOCODE = '<p>這一頁還沒配對:要一組配對碼,才能用這台電腦的 AIB。</p>';
-  const pairHowHtml = (open) => (open ? pairSay('<ol class="phow"><li>打開「終端機」,貼上 <code>~/.local/bin/aibd ctl web</code> 按 Enter</li><li>AIB 會在瀏覽器打開配對頁、帶好配對碼;按「配對」,再照畫面確認是你本人</li></ol>') : '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>');
+  const pairHowHtml = (open) => (open ? pairSay('<ol class="phow"><li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li><li>AIB 會在瀏覽器打開配對頁、帶好配對碼;按「配對」,再照畫面確認是你本人</li></ol>') : '<button type="button" class="ib" data-pairhow="1">怎麼拿配對碼</button>');
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
