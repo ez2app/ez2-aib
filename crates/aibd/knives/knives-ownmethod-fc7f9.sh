@@ -74,7 +74,7 @@ k ' : PAIR_NOCODE + pairHowHtml(P.how)}' ' : pairHowHtml(true)}'
 # PH2 步驟一開就攤開、沒有「怎麼拿配對碼」鈕
 k 'const pairHowHtml = (open) => (open ?' 'const pairHowHtml = (open) => (true ?'
 # PH3 Windows 步驟照 Mac 寫終端機
-k '<li>從開始選單或桌面點「AIB」</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>'
+k '<li>從開始選單點「AIB」(或打 <code>aib web</code>)</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>'
 # PH4 按了鈕沒反應
 k 'S.pair = Object.assign({}, S.pair, { how: true })' 'S.pair = Object.assign({}, S.pair, { how: false })'
 # PH5 白話句改成指令
@@ -117,9 +117,9 @@ k "S.paired = true; S.pair = null; PAIR_HOLD.on = false;" "S.paired = true; S.pa
 # KK1 Mac 照舊只套 Windows 字(c2f0b 11-27 10:17 應用程式入口)
 k "fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)" "fpWin() ? PAIR_WIN_SAY : [])"
 # KK2 Mac 拿碼句寫回終端機
-k "'在應用程式資料夾點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'" "'在終端機跑 <code>aib web</code>,把它給的配對碼打在這裡。'"
+k "'點應用程式裡的「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'" "'在終端機跑 <code>aib web</code>,把它給的配對碼打在這裡。'"
 # KK3 沒碼步驟拿掉 aib web 第二條路(Andy 10:1x)
-k "'<li>在應用程式資料夾點「AIB」(或在終端機打 <code>aib web</code>)</li>'" "'<li>在應用程式資料夾點「AIB」</li>'"
+k "'<li>點應用程式裡的「AIB」(或在終端機打 <code>aib web</code>)</li>'" "'<li>點應用程式裡的「AIB」</li>'"
 # KK4 不看 key_kind
 k "Object.prototype.hasOwnProperty.call(PAIR_WAIT_KK, kk) ? PAIR_WAIT_KK[kk] : PAIR_WAIT_MAC" "PAIR_WAIT_MAC"
 # KK5 Touch ID 與密碼並列
@@ -128,3 +128,8 @@ k "login_password: '<h2>輸入登入密碼確認</h2>" "login_password: '<h2>用
 k "kk === 'touch_id' ? '等你用 Touch ID 確認' : " ""
 # KK7 status 的 key_kind 沒帶進來
 k "kk: typeof st.key_kind === 'string' ? st.key_kind : '' }" "kk: '' }"
+
+# HC1 兌換卡住永遠寫在等你(f163c e7e78fe4 N1)
+k ": PAIR_HOLD.at ? Math.ceil((PAIR_HOLD.at + PAIR_HOLD_MAX - Date.now()) / 1000) : null);" ": null);"
+# HC2 兌換還沒回也寫假秒數
+k "pairHoldSay(PAIR_HOLD.chan, PAIR_HOLD.until ? n : null, PAIR_HOLD.kk)" "pairHoldSay(PAIR_HOLD.chan, n, PAIR_HOLD.kk)"

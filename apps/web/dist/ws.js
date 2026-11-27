@@ -14,7 +14,7 @@
   }
   new MutationObserver((ms) => { for (const m of ms) for (const nd of m.addedNodes) applySty(nd); }).observe(document.documentElement, { childList: true, subtree: true });
   const PAIRING = { on: false };
-  const PAIR_HOLD = { on: false, chan: undefined, until: 0 }; // 配對在等本人確認(指紋 / 密碼 / Windows Hello / 終端機 y):進度那步寫等你按,不算慢
+  const PAIR_HOLD = { on: false, chan: undefined, until: 0, at: 0 }; // 配對在等本人確認(指紋 / 密碼 / Windows Hello / 終端機 y):進度那步寫等你按,不算慢
   const PAGE_N = (() => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return [...a].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return String(Date.now()) + Math.random().toString(16).slice(2); } })(); // 配對碼送出中(一次只送一個)
   const token = () => { try { return sessionStorage.getItem(KEY) || ''; } catch (e) { return ''; } };
   class ApiError extends Error {
@@ -7105,12 +7105,12 @@
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
     ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
-    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單或桌面點「AIB」</li>']];
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單點「AIB」(或打 <code>aib web</code>)</li>']];
   // c2f0b 11-27 10:17(後端 d7171a356f):Mac 安裝後應用程式資料夾有 AIB,點它就開頁 + 帶碼(同 Windows 開始選單)⇒ Mac 拿碼的字也改「在應用程式資料夾點 AIB」,
-  // 兩平台同句型、只差去哪裡點(Andy 22:0x);終端機確認通道(按 y)是真的在終端機,不換;沒碼步驟留 aib web 當第二條路(Andy 10:1x)
-  const PAIR_MAC_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '在應用程式資料夾點「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
-    ['請在終端機再打一次 aibd ctl web', '請在應用程式資料夾再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'], ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], // aibd ctl web
-    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>在應用程式資料夾點「AIB」(或在終端機打 <code>aib web</code>)</li>']];
+  // 兩平台同句型、只差去哪裡點(Andy 22:0x;ebab8 10:22 定:Mac「點應用程式裡的 AIB(或在終端機打 aib web)」、Windows「從開始選單點 AIB(或打 aib web)」);終端機確認通道(按 y)是真的在終端機,不換;沒碼步驟留 aib web 當第二條路(Andy 10:1x)
+  const PAIR_MAC_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '點應用程式裡的「AIB」,它會打開這一頁並給你配對碼,把碼打在這裡。'],
+    ['請在終端機再打一次 aibd ctl web', '請再點一次應用程式裡的「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'], ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], // aibd ctl web
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>點應用程式裡的「AIB」(或在終端機打 <code>aib web</code>)</li>']];
   const pairSay = (t) => { if (typeof t !== 'string') return t; let o = t; for (const [a, b] of (typeof fpWin === 'function' && fpWin() ? PAIR_WIN_SAY : PAIR_MAC_SAY)) o = o.split(a).join(b); return o; };
   // 3e53b ea75d93f24 N1(ebab8 15:32 同包補):Mac 的 Touch ID 通道(/pair/status 不帶 channel)等確認框不是「到終端機按 y」,是 Touch ID 視窗寫同一組碼(c11e3d607c 第 2 行)
   // channel 還沒讀到(undefined)照原字;terminal-unverified 照原字;Windows 照 pairSay(Windows Hello)
@@ -7425,7 +7425,7 @@
     let msg = '';
     try {
       const cb = document.getElementById('pcip'), cip = cb ? cb.checked : true;
-      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, kk: '', until: 0 }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
+      S.cip = cip; Object.assign(PAIR_HOLD, { on: cip, chan: undefined, kk: '', until: 0, at: Date.now() }); // 在這頁確認 ⇒ 兌換送出後 aibd 會跳本人確認
       // 0eed7 VERIFY-pkg-ec695674 H1:舊 aibd 不認 n / confirm_in_page,多帶就 401「碼打錯了」。
       // 只有 GET pair/prefs 答得出 confirm_in_page(7b81e 845ef9128 起)才帶這兩欄;舊的只送碼
       const f = { code }; if (S.pairNew && cip) f.confirm_in_page = '1';
@@ -8049,14 +8049,16 @@
   // 在等本人確認(這頁確認的兌換還在等 / pair/status 回 awaiting_confirmation)那步寫「等你在…確認(還有 N 秒)」,不算慢、不出再試一次;真的過了時間才寫原因。
   // 兩平台同句型,只差視窗名(Windows Hello ↔ 本人確認視窗;Mac 判不出這台是指紋還是密碼,寫中性);終端機確認通道照實寫終端機
   const pairHeld = () => !!(PAIR_HOLD.on && (PAIRING.on || (S.pair && S.pair.view === 'wait')));
-  const pairHoldLeft = () => (PAIR_HOLD.until ? Math.ceil((PAIR_HOLD.until - Date.now()) / 1000) : null);
+  // f163c e7e78fe4 N1:「在這頁確認」的兌換還沒回(還不知道到期)時不能永遠寫在等你 ⇒ 從送出起最多 150 秒(配對確認窗約 2 分 + 餘裕),過了轉 slow 寫原因
+  const PAIR_HOLD_MAX = 150000;
+  const pairHoldLeft = () => (PAIR_HOLD.until ? Math.ceil((PAIR_HOLD.until - Date.now()) / 1000) : PAIR_HOLD.at ? Math.ceil((PAIR_HOLD.at + PAIR_HOLD_MAX - Date.now()) / 1000) : null);
   const pairHoldSay = (chan, left, kk) => (chan === 'terminal-unverified' ? '等你在終端機按 y' : typeof fpWin === 'function' && fpWin() ? '等你在 Windows Hello 視窗確認' : kk === 'touch_id' ? '等你用 Touch ID 確認' : kk === 'login_password' ? '等你輸入登入密碼確認' : '等你在本人確認視窗確認') + (left > 0 ? '(還有 ' + left + ' 秒)' : '');
   function pairHoldPaint() {
     if (!PROG.el || PROG.done || !PROG.st.pair || (PROG.st.pair.s !== 'hold' && PROG.st.pair.s !== 'cur')) return;
     if (!pairHeld()) return;
     const n = pairHoldLeft();
     if (n != null && n <= 0) return progSet('pair', 'slow', '時間到了還沒確認;要重來按再試一次');
-    const w = pairHoldSay(PAIR_HOLD.chan, n, PAIR_HOLD.kk); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w);
+    const w = pairHoldSay(PAIR_HOLD.chan, PAIR_HOLD.until ? n : null, PAIR_HOLD.kk); if (PROG.st.pair.s !== 'hold' || PROG.st.pair.why !== w) progSet('pair', 'hold', w); // 只有 aibd 給了到期才寫秒數;兌換還沒回時只寫在等你
   }
   setInterval(pairHoldPaint, 1000);
   function boot() { S.boot = { at: Date.now() }; bootOpen(); progSet('pair', 'cur'); setTimeout(() => { if (S.boot && PROG.st.pair && PROG.st.pair.s === 'cur') { if (pairHeld()) pairHoldPaint(); else progSet('pair', 'slow', '超過 5 秒:aibd 還沒回配對結果'); } }, 5000); render(); }
