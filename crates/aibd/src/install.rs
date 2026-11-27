@@ -1674,7 +1674,7 @@ fn install_steps(
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
     // Andy 11-27 10:1x: `aib web` on a new install (the default aibd only, as the app below)
-    if pl.label.as_str() == DEFAULT_LABEL {
+    if DEFAULT_LABEL == pl.label.as_str() {
         for l in crate::aib_cmd::place_lines(&dir, &target, h.path_env.as_ref()) {
             out.say(l);
         }
