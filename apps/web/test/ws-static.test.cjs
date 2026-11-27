@@ -1101,6 +1101,24 @@ for (const r of ['handoff', 'mempack', 'carry']) ok(ws.includes("c === 'invalid_
         const tail = (h) => h.replace(/<li>[^<]*(<code>[^<]*<\/code>[^<]*)*<\/li>/, '');
         ok(tail(mac) === tail(win) && (mac.match(/<li>/g) || []).length === 2 && (win.match(/<li>/g) || []).length === 2, 'reason: pair_nocode_how_same_shape_both');
         ok(ws.includes("<h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>") && ws.includes(" : PAIR_NOCODE + pairHowHtml(P.how)}") && ws.includes("if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }"), 'reason: pair_nocode_wired');
+      // Andy 10:18(ebab8 轉)+ 3e53b PRE-READ-pair-reissue + c2f0b 15:02:「重新取得配對碼」鈕 ⇒ POST /api/v1/pair/reissue,新碼填進欄、焦點到配對、不自動送
+      { const r0 = ws.indexOf('  const PAIR_RE = '), r1 = ws.indexOf('  async function loadPairPrefs() {'); ok(r0 > 0 && r1 > r0, 'reason: pair_reissue_block_found');
+        const rb = { calls: [], resp: null, focused: 0 }; vm.createContext(rb);
+        vm.runInContext('let pairShown = "x"; const PAIRING = { on: false }; const CODE = { exp: 0, gone: true, off: true, tries: 3 }; const S = { pair: { view: "code", msg: "配對已失效,請重新輸入配對碼" } };\nconst render = () => {}; const document = { querySelector: () => ({ focus: () => { this.focused++; } }) };\nconst fetch = async (u, o) => { this.calls.push([u, o]); const r = this.resp; return { ok: r.status === 200, status: r.status, json: async () => r.body }; };\nDate.now = () => 1000;\n' + ws.slice(r0, r1) + '\nthis.X = { PAIR_RE, PAIRING, CODE, S, pairReissue };', rb);
+        const X = rb.X; (async () => {
+          rb.resp = { status: 200, body: { code: 'abcde-fghjk', expires_in: 300, expires_at_ms: 999000 } }; await X.pairReissue();
+          ok(rb.calls.length === 1 && rb.calls[0][0] === '/api/v1/pair/reissue' && rb.calls[0][1].method === 'POST' && !rb.calls[0][1].body && rb.calls[0][1].credentials === 'omit', 'reason: pair_reissue_posts_empty_same_origin');
+          ok(X.S.pair.code === 'ABCDE-FGHJK' && X.CODE.cur === 'ABCDE-FGHJK' && X.CODE.exp === 999000 && !X.CODE.gone && !X.CODE.off && X.S.pair.msg === '' && X.S.pair.ok === '拿到新的配對碼了,按「配對」' && rb.focused === 1 && X.S.pair.view === 'code', 'reason: pair_reissue_fills_box_focuses_pair ' + JSON.stringify(X.S.pair));
+          rb.resp = { status: 429, body: { reason: 'pair_reissue_too_often' } }; await X.pairReissue(); ok(X.S.pair.msg === '按太多次了,等幾分鐘再按' && !X.PAIR_RE.no && rb.focused === 1 && X.S.pair.code === 'ABCDE-FGHJK', 'reason: pair_reissue_429_plain');
+          rb.resp = { status: 500, body: { reason: 'secret words' } }; await X.pairReissue(); ok(X.S.pair.msg === '沒拿到新的配對碼,照上面的方法拿' && !/secret/.test(JSON.stringify(X.S.pair)), 'reason: pair_reissue_other_error_no_aibd_words');
+          rb.resp = { status: 200, body: { code: 'x"><b>' } }; await X.pairReissue(); ok(X.S.pair.code === 'ABCDE-FGHJK' && X.S.pair.msg === '沒拿到新的配對碼,照上面的方法拿', 'reason: pair_reissue_bad_code_ignored');
+          rb.resp = { status: 409, body: { reason: 'pair_reissue_not_here' } }; await X.pairReissue(); ok(X.PAIR_RE.no === true, 'reason: pair_reissue_409_hides_button');
+          const n = rb.calls.length; await X.pairReissue(); ok(rb.calls.length === n, 'reason: pair_reissue_not_after_409');
+          X.PAIR_RE.no = false; rb.resp = { status: 404, body: null }; await X.pairReissue(); ok(X.PAIR_RE.no === true, 'reason: pair_reissue_old_aibd_hides_button');
+          X.PAIR_RE.no = false; X.PAIR_RE.busy = true; const m = rb.calls.length; await X.pairReissue(); ok(rb.calls.length === m, 'reason: pair_reissue_one_at_a_time'); X.PAIR_RE.busy = false;
+          X.PAIRING.on = true; await X.pairReissue(); ok(rb.calls.length === m, 'reason: pair_reissue_not_while_pairing'); X.PAIRING.on = false;
+        })().catch((e) => { console.error(e); process.exitCode = 1; });
+        ok(ws.includes("${PAIR_RE.no ? '' : `<button type=\"button\" class=\"ib\" data-pairre=\"1\" ${PAIR_RE.busy || PAIRING.on ? 'disabled' : ''}>${PAIR_RE.busy ? '取得中…' : '重新取得配對碼'}</button>`}") && ws.includes("if (x.closest('[data-pairre]')) { pairReissue(); return; }") && !/pair\/reissue[^\n]*\.submit\(|requestSubmit/.test(ws.slice(r0, r1)), 'reason: pair_reissue_wired_no_auto_send'); }
         box.win = true; }
       // c2f0b 11-27 10:17:Mac 也有應用程式入口 ⇒ 拿碼的字換成「在應用程式資料夾點 AIB」(同 Windows 句型);終端機確認通道(按 y)兩句不換
       box.win = false; vm.runInContext('this.PAIR_MAC_SAY = PAIR_MAC_SAY;', box);

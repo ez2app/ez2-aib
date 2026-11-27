@@ -7162,6 +7162,29 @@
       }
     } catch (e) { /* 下一輪再試 */ } finally { setTimeout(() => { CODE.polling = false; }, 2000); }
   }
+  // Andy 10:18 親打(ebab8 轉):配對頁要一顆鈕「重取配對金鑰,把新碼輸入回驗證欄」。3e53b PRE-READ-pair-reissue r1 + c2f0b 15:02:
+  // POST /api/v1/pair/reissue(空 body、同源 fetch 帶 Origin)200 {code, expires_in, expires_at_ms} ⇒ 填進欄、焦點到「配對」,不自動送(按配對 → 本人確認窗是客戶自己做的,窗第 1 行才有意義);
+  // 409 pair_reissue_not_here(不是本人確認窗管道)/ 舊 aibd 沒這支 ⇒ 不出鈕,照上面的說明拿碼;429 ⇒ 白話;碼以外的回傳字不顯示。兩平台同一顆、同一句
+  const PAIR_RE = { no: false, busy: false };
+  async function pairReissue() {
+    if (PAIR_RE.no || PAIR_RE.busy || PAIRING.on) return;
+    PAIR_RE.busy = true; pairShown = ''; render();
+    let msg = '', nc = '';
+    try {
+      const r = await fetch('/api/v1/pair/reissue', { method: 'POST', cache: 'no-store', credentials: 'omit' });
+      let j = null; try { j = await r.json(); } catch (e) { /* 不是 JSON */ }
+      if (r.ok && j && typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}$/.test(j.code)) {
+        nc = j.code.toUpperCase(); CODE.cur = nc; CODE.gone = false; CODE.off = false; CODE.tries = 0;
+        CODE.exp = Number(j.expires_at_ms) > 0 ? Number(j.expires_at_ms) : Number(j.expires_in) > 0 ? Date.now() + Number(j.expires_in) * 1000 : 0;
+        msg = '拿到新的配對碼了,按「配對」';
+      } else if (r.status === 409 || r.status === 404 || r.status === 405) PAIR_RE.no = true;
+      else msg = r.status === 429 ? '按太多次了,等幾分鐘再按' : '沒拿到新的配對碼,照上面的方法拿';
+    } catch (e) { msg = '連不上 AIB'; }
+    PAIR_RE.busy = false;
+    if (S.pair) S.pair = Object.assign({}, S.pair, { view: 'code', msg: nc ? '' : msg, ok: nc ? msg : '', code: nc || S.pair.code || '' });
+    pairShown = ''; render();
+    if (nc) { const b = document.querySelector('#pairf button[type="submit"]'); if (b) b.focus(); }
+  }
   async function loadPairPrefs() {
     if (S.cipAsked) return; S.cipAsked = true;
     if (PREFILL && !CODE.off) codePoll(true);
@@ -7175,7 +7198,7 @@
       // f163c 1a7f49de N1:AIB 設成終端機確認(channel terminal-unverified)時確認真的在終端機按 y ⇒ 等確認框照原字,不換成 Windows Hello
       return pairWaitSay(P.chan, P.kk)(`<div class="pairbox"><h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>${P.short ? `<div class="short">${esc(P.short)}</div>` : ''}<p class="st">確認後這一頁自己會打開(${esc(P.left != null ? P.left + ' 秒內' : '')})。</p><button type="button" class="ib" data-repair="1">重新輸入配對碼</button></div>`);
     }
-    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>' : PAIR_NOCODE + pairHowHtml(P.how)}${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
+    return pairSay(`<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2>${P.code || CODE.cur || PREFILL ? '<p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>' : PAIR_NOCODE + pairHowHtml(P.how)}${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}${P.ok ? `<p class="aok" role="status">${esc(P.ok)}</p>` : ''}${PAIR_RE.no ? '' : `<button type="button" class="ib" data-pairre="1" ${PAIR_RE.busy || PAIRING.on ? 'disabled' : ''}>${PAIR_RE.busy ? '取得中…' : '重新取得配對碼'}</button>`}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`);
   }
   function render() {
     guidePaintSoon(); // 新用戶指引路線層:畫完下一格重算(不產生就拆掉)
@@ -7794,6 +7817,7 @@
     const pkp = x.closest('[data-pkput]'); if (pkp) { ctInsert(pkp.dataset.pkput); return; }
     if (x.closest('[data-pkx]')) { CT.pick = null; return render(); }
     const e2 = x.closest('[data-enter2]'); if (e2) { try { localStorage.setItem(E2K, e2.checked ? '1' : '0'); } catch (err) { /* 存不了:這次有效 */ } E2.at = 0; return; }
+    if (x.closest('[data-pairre]')) { pairReissue(); return; }
     if (x.closest('[data-pairhow]')) { S.pair = Object.assign({}, S.pair, { how: true }); return render(); }
     if (x.closest('[data-repair]')) { dropToken(); S.paired = false; S.pair = { view: 'code' }; return render(); }
   }

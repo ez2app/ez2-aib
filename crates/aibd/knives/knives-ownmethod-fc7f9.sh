@@ -133,3 +133,18 @@ k "kk: typeof st.key_kind === 'string' ? st.key_kind : '' }" "kk: '' }"
 k ": PAIR_HOLD.at ? Math.ceil((PAIR_HOLD.at + PAIR_HOLD_MAX - Date.now()) / 1000) : null);" ": null);"
 # HC2 兌換還沒回也寫假秒數
 k "pairHoldSay(PAIR_HOLD.chan, PAIR_HOLD.until ? n : null, PAIR_HOLD.kk)" "pairHoldSay(PAIR_HOLD.chan, n, PAIR_HOLD.kk)"
+
+# RE1 拿到新碼沒填進欄(Andy 10:18 重取配對碼)
+k "code: nc || S.pair.code || '' });" "code: S.pair.code || '' });"
+# RE2 409 照樣出鈕
+k "else if (r.status === 409 || r.status === 404 || r.status === 405) PAIR_RE.no = true;" "else if (r.status === 404 || r.status === 405) PAIR_RE.no = true;"
+# RE3 429 沒白話
+k "r.status === 429 ? '按太多次了,等幾分鐘再按' : " ""
+# RE4 焦點沒到配對鈕
+k "if (b) b.focus(); }" "}"
+# RE5 碼沒驗形狀
+k "typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}$/.test(j.code)" "typeof j.code === 'string'"
+# RE6 配對中也能按
+k "if (PAIR_RE.no || PAIR_RE.busy || PAIRING.on) return;" "if (PAIR_RE.no || PAIR_RE.busy) return;"
+# RE7 鈕沒接上點擊
+k 'class="ib" data-pairre="1"' 'class="ib" data-pairrx="1"'
