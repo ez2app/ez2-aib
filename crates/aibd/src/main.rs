@@ -25,6 +25,21 @@ fn main() -> ExitCode {
             Err(_) => ExitCode::from(1),
         };
     }
+    // macOS (ebab8 11-27): AIB in Applications is `aibd ctl web`; the click has no window, so a
+    // failure goes to the app's log next to aibd's
+    if cfg!(target_os = "macos")
+        && std::env::args_os()
+            .next()
+            .is_some_and(|a0| aibd::macapp::is_app_launch(&a0, &args))
+    {
+        return match ctl::run(&["web"]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                aibd::macapp::log_failure(&e);
+                ExitCode::from(1)
+            }
+        };
+    }
     match args.as_slice() {
         ["setup"] | ["setup", "--uninstall" | "--rollback"] => {
             let mode = match args.get(1).copied() {

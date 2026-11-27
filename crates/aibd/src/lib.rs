@@ -57,6 +57,7 @@ pub mod install;
 pub mod ledger_cards;
 pub mod legacy_send;
 pub mod lineage;
+pub mod macapp;
 pub mod mail_nudge;
 pub mod merge_acts;
 pub mod merge_find;

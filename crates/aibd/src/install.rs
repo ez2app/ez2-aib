@@ -1632,6 +1632,17 @@ fn install_steps(
     let data = data_dir_for(h, &rec.env)?;
     write_record(&data, &rec)?;
     out.say(format!("RECORD {}", record_path(&data).display()));
+    // ebab8 11-27: AIB in Applications opens the workbench with a code (the default aibd only:
+    // the app runs `ctl web`, which talks to the default one); never fails the install
+    if pl.label.as_str() == DEFAULT_LABEL {
+        if let Some(home) = &h.home {
+            out.say(crate::macapp::place_line(
+                &home.join("Applications"),
+                &target,
+                &h.version,
+            ));
+        }
+    }
 
     // moved with --dir: take away the old copy when it is still the recorded build
     if let Some(r) = &old_rec {
@@ -1726,6 +1737,13 @@ fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     }
     std::fs::remove_file(record_path(&data)).map_err(|e| format!("remove record: {e}"))?;
     let _ = std::fs::remove_dir(data.join(RECORD_DIR));
+    // ebab8 11-27: the AIB app goes with the default aibd (only ours: macapp::remove)
+    if pl.label == DEFAULT_LABEL {
+        let apps = h.home.as_ref().map(|home| home.join("Applications"));
+        if let Some(line) = apps.as_deref().and_then(crate::macapp::remove) {
+            out.say(line);
+        }
+    }
     out.say(format!("DATA-KEPT {} {files}", data.display()));
     Ok(out)
 }
@@ -2484,6 +2502,38 @@ mod tests {
             "reason: launchd_touched {:?}",
             f.calls()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_aibd_gets_the_aib_app_and_a_test_label_does_not() {
+        // ebab8 11-27: clicking AIB opens the workbench with a code (macapp)
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[]);
+        let svc = f.svc(&hl);
+        let o = m.run("install", &["--no-start"], &svc);
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            !m.p("Applications").exists(),
+            "reason: test_label_took_the_app"
+        );
+        let (la, bin) = (
+            m.p("la0").display().to_string(),
+            m.p("bin0").display().to_string(),
+        );
+        let mut h = m.h.clone();
+        h.data_dir_env = Some(m.p("data0"));
+        let o = run(
+            "install",
+            &["--no-start", "--plist-dir", &la, "--dir", &bin],
+            &h,
+            &svc,
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(o.stdout.contains("APP "), "{o:?}");
+        let exec = m.p("Applications/AIB.app/Contents/MacOS/AIB");
+        assert_eq!(std::fs::read_link(&exec).unwrap(), m.p("bin0/aibd"));
     }
 
     #[test]
