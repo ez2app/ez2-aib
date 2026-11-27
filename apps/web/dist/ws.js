@@ -7105,9 +7105,10 @@
     ['請在終端機再打一次 aibd ctl web', '請從開始選單或桌面再點一次「AIB」'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'],
     ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], ['在這一頁確認,終端機不用按 y', '在這一頁確認就好'],
     ['<h2>到終端機確認</h2><p>終端機會顯示同一組短碼,一樣就在終端機按 <b>y</b>。</p>', '<h2>在 Windows Hello 視窗確認</h2><p>Windows Hello 視窗會寫同一組碼,一樣才輸入 PIN;不一樣按取消。</p>'],
-    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單點「AIB」(或打 <code>aib web</code>)</li>']];
+    ['<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>', '<li>從開始選單點「AIB」(或開一個新的命令提示字元,打 <code>aib web</code>)</li>']];
   // c2f0b 11-27 10:17(後端 d7171a356f):Mac 安裝後應用程式資料夾有 AIB,點它就開頁 + 帶碼(同 Windows 開始選單)⇒ Mac 拿碼的字也改「在應用程式資料夾點 AIB」,
   // 兩平台同句型、只差去哪裡點(Andy 22:0x;ebab8 10:22 定:Mac「點應用程式裡的 AIB(或在終端機打 aib web)」、Windows「從開始選單點 AIB(或打 aib web)」);
+  // c2f0b 15:15(op8 3036c0d801):Windows 的 aib 裝好後要「新開」命令提示字元才讀得到 PATH ⇒ 括號寫明開一個新的
   // f163c 1379264d N1:AIB.app 在 ~/Applications(家目錄的應用程式),不是 Finder 側欄那個 /Applications ⇒ Mac 寫「用 Spotlight 搜 AIB」(找得到兩處),同「從開始選單點」句型終端機確認通道(按 y)是真的在終端機,不換;沒碼步驟留 aib web 當第二條路(Andy 10:1x)
   const PAIR_MAC_SAY = [['在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。', '用 Spotlight(⌘ 空白鍵)搜「AIB」打開,它會打開這一頁並給你配對碼,把碼打在這裡。'],
     ['請在終端機再打一次 aibd ctl web', '請再用 Spotlight 搜「AIB」打開一次'], ['等終端機換一組新的', '等 AIB 換一組新的'], ['終端機會換一組新的', 'AIB 會換一組新的'], ['對一下終端機上的碼再送', '對一下 AIB 給的碼再送'], // aibd ctl web

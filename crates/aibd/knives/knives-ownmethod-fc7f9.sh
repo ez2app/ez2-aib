@@ -74,7 +74,7 @@ k ' : PAIR_NOCODE + pairHowHtml(P.how)}' ' : pairHowHtml(true)}'
 # PH2 步驟一開就攤開、沒有「怎麼拿配對碼」鈕
 k 'const pairHowHtml = (open) => (open ?' 'const pairHowHtml = (open) => (true ?'
 # PH3 Windows 步驟照 Mac 寫終端機
-k '<li>從開始選單點「AIB」(或打 <code>aib web</code>)</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>'
+k '<li>從開始選單點「AIB」(或開一個新的命令提示字元,打 <code>aib web</code>)</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter(打了說找不到,改貼 <code>~/.local/bin/aibd ctl web</code>)</li>'
 # PH4 按了鈕沒反應
 k 'S.pair = Object.assign({}, S.pair, { how: true })' 'S.pair = Object.assign({}, S.pair, { how: false })'
 # PH5 白話句改成指令
@@ -148,3 +148,6 @@ k "typeof j.code === 'string' && /^[A-Za-z0-9-]{4,40}$/.test(j.code)" "typeof j.
 k "if (PAIR_RE.no || PAIR_RE.busy || PAIRING.on) return;" "if (PAIR_RE.no || PAIR_RE.busy) return;"
 # RE7 鈕沒接上點擊
 k 'class="ib" data-pairre="1"' 'class="ib" data-pairrx="1"'
+
+# NW1 Windows 沒寫要新開視窗(c2f0b 15:15 op8)
+k '(或開一個新的命令提示字元,打 <code>aib web</code>)' '(或打 <code>aib web</code>)'
