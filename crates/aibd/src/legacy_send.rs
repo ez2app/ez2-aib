@@ -505,7 +505,11 @@ pub async fn act(
         .person_name
         .clone()
         .unwrap_or_else(|| aib_dmq::header::HUMAN_NAME.to_owned());
-    let channel = channel_label(std::env::var("AIBD_PAIRING").ok().as_deref());
+    let here = crate::pairing::ConfirmChannel::from_env_here(
+        std::env::var("AIBD_PAIRING").ok().as_deref(),
+        cfg!(windows),
+    );
+    let channel = channel_label(Some(here.as_str()));
     let who = label(&crate::dm_import::clean(&name), channel, &pair8);
     let human_id = format!("page:{pair8}");
     let Some(state_root) = crate::bridge_cfg::queue_root(&cfg, |k| std::env::var(k).ok())

@@ -658,11 +658,29 @@ static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
 /// The event log, kept at the first start so aibd's own shutdown can write `preview.stopped`.
 static STORE: OnceLock<Arc<aib_store::Store>> = OnceLock::new();
 
-/// The session policy this aibd runs under, set once at start (server.rs).
-static PARENT_POLICY: OnceLock<Arc<crate::config::SessionPolicy>> = OnceLock::new();
+/// The session policy this aibd runs under: set at start (server.rs), replaced when the page
+/// writes one while aibd runs (W-10 [`replace_parent_policy`]); a preview started after that
+/// is handed the new one.
+static PARENT_POLICY: Mutex<Option<Arc<crate::config::SessionPolicy>>> = Mutex::new(None);
 
 pub fn set_parent_policy(p: Arc<crate::config::SessionPolicy>) {
-    let _ = PARENT_POLICY.set(p);
+    let mut g = PARENT_POLICY.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = Some(p);
+    }
+}
+
+/// W-10: the policy the page just wrote and aibd read back (the only caller is
+/// [`crate::session_policy_setup`]).
+pub fn replace_parent_policy(p: Arc<crate::config::SessionPolicy>) {
+    *PARENT_POLICY.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+}
+
+fn parent_policy() -> Option<Arc<crate::config::SessionPolicy>> {
+    PARENT_POLICY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The persona cards file this aibd reads, set once at start (server.rs).
@@ -1140,7 +1158,7 @@ fn spawn(
     // an old port must not be read as this start's
     let _ = std::fs::remove_file(data.join("run").join("aibd.json"));
     // the seats it opens follow the same policy (a copy: it cannot change this one)
-    hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;
+    hand_policy(&data, parent_policy().as_deref())?;
     hand_candidates(
         &data,
         crate::workspace::data_file("brain-candidates.json").as_deref(),

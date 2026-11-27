@@ -8,8 +8,11 @@
 //! `labels.json` (the 11-14 renames changed only labels and re-scanned), so the
 //! labels-first rule lives in the registry and nothing here reads labels.json.
 //!
-//! A file that is missing, does not parse, or is not `aib-cards/v2` is "the cards cannot
-//! be read" ([`PersonaSourceError`], answered 503), never "no such persona".
+//! A file that does not parse, cannot be opened, or is not `aib-cards/v2` is "the cards
+//! cannot be read" ([`PersonaSourceError`], answered 503), never "no such persona". A file
+//! that is not there at all is a machine with no 1.x card registry (a new Windows install):
+//! it has the one built-in persona ([`builtin_card`]) so a seat can be opened (ebab8 11-26
+//! 12:12, FINDING-win-seatopen-owner-gates: every open was 503 on the customer's laptop).
 //! A seat stores only the persona's uid; its name is looked up here when shown, so a
 //! rename never leaves a stale name behind (7b81e §2-1).
 
@@ -125,6 +128,42 @@ pub fn parse_cards(text: &str) -> Result<Vec<PersonaCard>, PersonaSourceError> {
     Ok(out)
 }
 
+/// The built-in persona's uid: in the uid shape, and only ever listed when there is no cards
+/// file, so it never stands beside (or for) a registry card.
+pub const BUILTIN_UID: &str = "aib000";
+/// Its name, fixed here: no page or API writes it.
+/// fc7f9 / ebab8 12:1x: not 助手 (the page has an 助理 line); the page shows it in its own
+/// language from `builtin: true`.
+pub const BUILTIN_NAME: &str = "AIB 夥伴";
+/// What its sha is taken over. It has no card text: a seat opened with it runs as the provider
+/// itself (a card with no text path opens without text, S89-live-persona), and as there is no
+/// text file, `persona_edit` / `persona_write` find nothing to change.
+const BUILTIN_SHA_OF: &str = "aibd built-in persona aib000: no card text";
+
+/// The refusal reason for any change to the built-in persona (3e53b DECISION-builtin-persona
+/// -bounds 1-4): it is answered before any owner window.
+pub const BUILTIN_READ_ONLY: &str = "builtin_persona_read_only";
+
+/// Is this card the built-in one (its uid and its sha, so a 1.x card that one day has the
+/// same uid is not taken for it)?
+pub fn is_builtin(c: &PersonaCard) -> bool {
+    c == &builtin_card()
+}
+
+/// The one persona of a machine with no cards file.
+pub fn builtin_card() -> PersonaCard {
+    use sha2::Digest;
+    PersonaCard {
+        uid: BUILTIN_UID.to_owned(),
+        name: BUILTIN_NAME.to_owned(),
+        persona_sha: sha2::Sha256::digest(BUILTIN_SHA_OF.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+        text_path: None,
+    }
+}
+
 /// The registry's `cards.json`, read on every ask (82 cards today; a rename shows at
 /// once, nothing is cached).
 #[derive(Debug, Clone)]
@@ -142,8 +181,11 @@ impl PersonaSource for CardsFile {
             .path
             .as_ref()
             .ok_or(PersonaSourceError::NotConfigured)?;
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| PersonaSourceError::Unreadable(e.kind().to_string()))?;
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![builtin_card()]),
+            Err(e) => return Err(PersonaSourceError::Unreadable(e.kind().to_string())),
+        };
         parse_cards(&text)
     }
 }
@@ -314,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_or_no_home_is_unavailable() {
+    fn a_missing_file_is_the_built_in_persona_and_no_home_is_unavailable() {
         let none = CardsFile { path: None };
         assert_eq!(none.cards(), Err(PersonaSourceError::NotConfigured));
         let dir =
@@ -322,10 +364,34 @@ mod tests {
         let missing = CardsFile {
             path: Some(dir.join("cards.json")),
         };
-        assert!(matches!(
-            missing.cards(),
-            Err(PersonaSourceError::Unreadable(_))
-        ));
+        // no cards file at all: the built-in persona only, with no text
+        let got = missing.cards().unwrap();
+        assert_eq!(got, vec![builtin_card()], "reason: no_file_not_builtin");
+        assert_eq!(got[0].uid, BUILTIN_UID);
+        assert!(uid_shape(BUILTIN_UID) && got[0].text_path.is_none());
+        // the sha is pinned: the built-in card's content changes only with a reviewed edit here
+        assert_eq!(
+            got[0].persona_sha, "f63539efbf94ab4e4f706a80c034bd4f4654b96301f5b4eb8601938da52e7cee",
+            "reason: builtin_sha_changed"
+        );
+        // a file that is there but cannot be opened is still unreadable, never the built-in
+        std::fs::create_dir_all(dir.join("cards.json")).unwrap();
+        assert!(
+            matches!(missing.cards(), Err(PersonaSourceError::Unreadable(_))),
+            "reason: unreadable_read_as_builtin"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A machine that has a cards file never lists the built-in persona.
+    #[test]
+    fn a_cards_file_never_lists_the_built_in_persona() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("cards.json");
+        std::fs::write(&f, doc(&card("un0eba", "a"))).unwrap();
+        let got = CardsFile { path: Some(f) }.cards().unwrap();
+        assert!(got.iter().all(|c| c.uid != BUILTIN_UID));
+        assert_eq!(got.len(), 1);
     }
 
     /// S89-live-persona: the text path is the registry's vault root + the card's path,

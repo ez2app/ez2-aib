@@ -14,7 +14,7 @@ python3 -I scripts/knife.py crates/aibd/src/install.rs 'other if pairing_named =
   --expect-fail install::tests::owner_touch_needs_the_touchid_pairing_or_is_refused \
   -- cargo test -p aibd --locked --lib install::tests::owner_touch_needs_the_touchid_pairing_or_is_refused
 # OTE3 a platform without fingerprint pairing gets the switch anyway
-python3 -I scripts/knife.py crates/aibd/src/install.rs '    if os != "macos" {' '    if false { // knife' \
+python3 -I scripts/knife.py crates/aibd/src/install.rs '    if os != "macos" {' '    if false && os != "macos" { // knife (os stays used: -D warnings, 90856 TRIAGE-890 #2)' \
   --expect-fail install::tests::owner_touch_needs_the_touchid_pairing_or_is_refused \
   -- cargo test -p aibd --locked --lib install::tests::owner_touch_needs_the_touchid_pairing_or_is_refused
 # OTE4 a reinstall drops the old plist's keys (AIBD_MAX_SESSIONS, the switch, the pairing)

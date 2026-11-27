@@ -126,7 +126,7 @@ k '${esc(pn.get(pu) || pu)}' '${esc(pu)}'
 # PGPW1 (c2f0b IFACE-passphrase r2 密語備援狀態一行)
 k 'if (p.swapped === true) return { bad: true, text: '\''密語紀錄被換過' 'if (p.swapped === 1) return { bad: true, text: '\''密語紀錄被換過'
 # PGPW2 (c2f0b IFACE-passphrase r2 密語備援狀態一行)
-k 'if (p.available !== true) return { text: '\''這台用系統本人驗證' 'if (false) return { text: '\''這台用系統本人驗證'
+k 'if (p.available !== true) return { text: (typeof fpWin' 'if (false) return { text: (typeof fpWin'
 # PGPW3 (c2f0b IFACE-passphrase r2 密語備援狀態一行)
 k 'if (p.set !== true) return { text: '\''密語備援還沒設定' 'if (p.set === false && p.set_at) return { text: '\''密語備援還沒設定'
 # PGPW4 (c2f0b IFACE-passphrase r2 密語備援狀態一行)

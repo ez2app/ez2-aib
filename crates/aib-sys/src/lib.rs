@@ -15,6 +15,10 @@
 //! | P1–P5 | Secure Enclave owner keys (`presence_macos`, macOS only): `SecKeyCreateRandomKey`, `SecKeyCreateWithData`, `SecKeyCreateSignature`, `LAContext` | public, except P2 restores a key by its token object id (`"toid"`), a **private attribute** — callers verify every signature under the registered public key (a matching reported key alone proves nothing) |
 //! | H1 | `ProcessIdToSessionId`, `WTSGetActiveConsoleSessionId` ([`hello`], Windows only): is this process in the active console session; the rest of `hello` (code mapping, DER / ECCPUBLICBLOB, prompt text) is plain Rust on every platform. The NCrypt Passport key calls come in W1b (S102, DESIGN-S102-windows-hello-56cda-1115 r1) | **public** (`processthreadsapi.h`, `winbase.h`) |
 //! | H2 | `NCryptOpenStorageProvider(MS_NGC_KEY_STORAGE_PROVIDER)`, `NCryptCreatePersistedKey(ECDSA_P256)`, `NCryptFinalizeKey`, `NCryptOpenKey`, `NCryptExportKey(ECCPUBLICBLOB)`, `NCryptSetProperty(Use Context)`, `NCryptSignHash`, `NCryptDeleteKey`, `NCryptFreeObject`, `BCryptHash(SHA256)` ([`hello_ncrypt`], Windows only, W1b): the Windows Hello owner key; **unverified until W0** on a Hello laptop. `BCryptImportKeyPair(ECCPUBLICBLOB)`, `BCryptVerifySignature`, `BCryptDestroyKey` ([`hello_ncrypt::verify`], S10-3b-1): checks a signature with the stored public key, no Hello, runs in CI | **public** (`ncrypt.h`, `bcrypt.h`) |
+//! | R1 | `RegSetKeyValueW`, `RegGetValueW`, `RegDeleteKeyValueW` on the current user's `Software\Microsoft\Windows\CurrentVersion\Run` only, plus `OpenProcessToken` / `GetTokenInformation(TokenElevation)` ([`winrun`], Windows only): `aibd setup` (COND-win-installer-3e53b r1) | **public** (`winreg.h`, `securitybaseapi.h`) |
+//! | S2 | `GetConsoleProcessList`, `GetUserDefaultUILanguage` ([`winrun::own_console`], [`winrun::ui_lang`], Windows only): is the console window ours (opened by the AIB shortcut) and which of the four languages to say its two lines in (ebab8 11-26 12:39) | public (`consoleapi3.h`, `winnls.h`) |
+//! | S1 | `SHGetKnownFolderPath(Desktop, Programs)`, `CoCreateInstance(ShellLink)` → `IShellLinkW` (`SetPath` / `SetArguments` / `SetWorkingDirectory` / `SetIconLocation` / `SetDescription`, `GetPath(SLGP_RAWPATH)` / `GetArguments`) + `IPersistFile` `Save` / `Load` ([`winshortcut`], Windows only): the setup's "AIB" shortcut on this user's desktop and Start menu, pointing at the installed `aibd.exe ctl web` (ebab8 11-26 12:20) | public (`shlobj_core.h`, `shobjidl_core.h`, `objidl.h`) |
+//! | U2 | `CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)`, `OpenProcess(PROCESS_TERMINATE \| PROCESS_QUERY_LIMITED_INFORMATION \| SYNCHRONIZE)`, `QueryFullProcessImageNameW`, `OpenProcessToken` / `GetTokenInformation(TokenUser, TokenSessionId)` on that handle, `TerminateProcess` on the same handle ([`winstop`], Windows only): the setup ends the one running copy of the installed `aibd.exe` of this user and session (PLAN-win-upgrade-path-90856-1126, 3e53b 11-26) | public (`tlhelp32.h`, `processthreadsapi.h`, `securitybaseapi.h`) |
 //! | B1 | `setpriority(PRIO_DARWIN_PROCESS, 0, 0)` in a child before `exec` (`background`, macOS only): the child leaves the background tier aibd's launchd job puts it in | **public** (`sys/resource.h`) |
 //!
 //! T1 / T2 feed thermal protection (R1); their rules are in [`thermal`]. Unlike M1, a wrong
@@ -64,6 +68,8 @@ pub mod fake;
 pub mod held;
 pub mod hello;
 #[cfg(windows)]
+pub mod hello_consent;
+#[cfg(windows)]
 pub mod hello_ncrypt;
 // AP26 W-4: owner-present measurements, compiled for tests only (the source guard in
 // test_only_calls checks this line)
@@ -90,6 +96,11 @@ mod test_only_calls;
 pub mod thermal;
 #[cfg(target_os = "macos")]
 mod thermal_macos;
+pub mod winrun;
+pub mod winshortcut;
+pub mod winstop;
+#[cfg(windows)]
+pub mod wintrust;
 
 #[cfg(target_os = "macos")]
 pub use macos::{sigchld, sigchld_keep_zombies, Macos, Sigchld};

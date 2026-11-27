@@ -48,6 +48,9 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         "=0.61.2",
         &[
             "Win32_Foundation",
+            // winrun::ui_lang: GetUserDefaultUILanguage, the language of the AIB shortcut's
+            // console lines (ebab8 11-26 12:39)
+            "Win32_Globalization",
             // AP26 W-5: windows-sys gates CreateDesktopW (DEVMODEW) and RegisterClassW
             // (HBRUSH) behind Gdi, so it is a normal feature; BitBlt / GetDIBits /
             // PrintWindow stay out of non-test code by aib-sys `test_only_os_calls`
@@ -55,6 +58,12 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_Security",
             // S10-3 / W1b hello_ncrypt (DESIGN-persona-propose-osverify-c2f0b-1123 §3)
             "Win32_Security_Cryptography",
+            // L1b wintrust.rs (08de5 b741ec8c8e, 3e53b REVIEW-l1b-wintrust 0/0/0/3): WinVerifyTrust
+            // and its WTHelper signer reads (WinTrust); windows-sys gates the WinTrust provider
+            // structs behind Catalog and Sip, nothing of either is called on its own
+            "Win32_Security_Cryptography_Catalog",
+            "Win32_Security_Cryptography_Sip",
+            "Win32_Security_WinTrust",
             // PREREAD-shared-folder-noindex-a9136-1121 (5d33a 0/0/2/2): Get/SetFileAttributesW
             "Win32_Storage_FileSystem",
             "Win32_System_Console",
@@ -64,6 +73,9 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             // AP26 W-4 / W-5 (PRE-READ-w4-winsys-features-c2f0b-1125, 3e53b 0/0/2/2):
             // GetModuleHandleW for the passphrase window's class
             "Win32_System_LibraryLoader",
+            // winrun: RegSetKeyValueW / RegGetValueW / RegDeleteKeyValueW on the HKCU Run
+            // key only (Windows setup, PLAN-win-customer-today-c2f0b-1126 rows 2 / 4)
+            "Win32_System_Registry",
             "Win32_System_RemoteDesktop",
             // W-5: aibd's own desktop (CreateDesktopW / SwitchDesktop / SetThreadDesktop)
             "Win32_System_StationsAndDesktops",
@@ -105,6 +117,25 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
         Some("cfg(target_os = \"macos\")"),
         "=0.6.2",
         &["alloc"],
+    ),
+    // B2 (Andy 11-26 10:1x; DECISION-win-hello-fallback-3e53b-1126): hello_consent, the Windows
+    // Hello gesture (UserConsentVerifier and IUserConsentVerifierInterop), no key
+    (
+        "windows",
+        Some("cfg(windows)"),
+        "=0.62.2",
+        &[
+            "Security_Credentials_UI",
+            "Win32_Foundation",
+            // winshortcut (ebab8 11-26 12:20, PREREAD-win-shortcut-wake-3e53b-1126): the
+            // AIB.lnk on the desktop and in the Start menu, IShellLinkW + IPersistFile (Com),
+            // SHGetKnownFolderPath (Shell); FileSystem because IShellLinkW::GetPath names
+            // WIN32_FIND_DATAW
+            "Win32_Storage_FileSystem",
+            "Win32_System_Com",
+            "Win32_System_WinRT",
+            "Win32_UI_Shell",
+        ],
     ),
 ];
 

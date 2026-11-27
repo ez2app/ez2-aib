@@ -26,6 +26,10 @@ pub const RESOURCE_MAX: usize = 80;
 /// The refusal code for a caller when no fingerprint can be asked.
 pub const UNAVAILABLE: &str = "owner_check_unavailable";
 
+/// A batch refused because this owner check has no key (the Windows Hello gesture, B2): one
+/// window answers one thing, so the page asks for each item on its own.
+pub const BATCH_ONE_AT_A_TIME: &str = "owner_batch_one_at_a_time";
+
 /// What the page wants done and the owner approves.
 #[derive(Debug, Clone)]
 pub struct Ask {
@@ -111,7 +115,7 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 26] = [
+pub const ACTIONS: [(&str, &str); 27] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
@@ -125,6 +129,7 @@ pub const ACTIONS: [(&str, &str); 26] = [
     (crate::test_host_add::OP_REMOVE, "收回一台測試機"),
     (crate::gh_token::OP, "存 GitHub 權杖"),
     (crate::provider_login::OP, "重新登入 AI"),
+    (crate::session_policy_setup::OP, "允許 AIB 在這台開 AI 程式"),
     (crate::drive_switch::OP, "打開自動推進派工"),
     (crate::persona_propose::OP_WRITE_BACK, "改寫人格卡"),
     (crate::net_card::OP_PRIVATE, "讓 AI 夥伴連內網的一個位址"),
@@ -355,6 +360,11 @@ pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
             "把 GitHub 權杖存進這台,給 {} 推分支與開 PR 用",
             piece(&v, "slug")?
         ),
+        // W-10: only the fixed names of the programs written; their paths are the object line
+        crate::session_policy_setup::OP => format!(
+            "允許 AIB 在這台開:{}",
+            crate::session_policy_setup::brands_of(&v)?
+        ),
         crate::provider_login::OP => {
             format!("重新登入 {}(接著在瀏覽器授權)", piece(&v, "provider")?)
         }
@@ -482,6 +492,8 @@ pub const WIRED: &[&str] = &[
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
     crate::provider_login::OP, // provider.login (重新登入)
+    // session_policy.init (W-10: no hold, a fresh check each time)
+    crate::session_policy_setup::OP,
     crate::merge_acts::OP_PERSONA,
     crate::merge_acts::OP_BRAIN,
     crate::drive_switch::OP,
@@ -517,6 +529,16 @@ pub const SWITCH: &str = "AIBD_OWNER_TOUCH";
 /// [`SWITCH`] is on only when it is exactly `1`.
 pub fn switch_on(v: Option<String>) -> bool {
     v.as_deref() == Some("1")
+}
+
+/// [`SWITCH`] as this aibd reads it (Andy 11-26 03:1x): unset on Windows is on, so the page
+/// can ask Windows Hello with no `set`; a value given still decides (only `1` is on). Elsewhere
+/// unset stays off. The key check at start still has to pass either way.
+pub fn switch_on_here(v: Option<String>, windows: bool) -> bool {
+    match v {
+        None => windows,
+        v => switch_on(v),
+    }
 }
 
 /// What a preview's window starts with (5d33a PREREAD-pvtouch-rrmerge L1): with the switch
@@ -762,6 +784,30 @@ pub struct Owner {
     slots: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
     gate: std::sync::Arc<dyn WindowGate>,
     clock: fn() -> u64,
+    /// aibd's event journal (3e53b READ-spinit-owner-audit-3e53b-1126): each answer
+    /// ([`OWNER_ANSWER`]) and each approved ticket used up by the act it was for ([`OWNER_USED`]).
+    journal: std::sync::OnceLock<crate::pairing::Journal>,
+}
+
+/// Event kind: the owner answered a ticket's window (approved / refused:<code> / expired).
+pub const OWNER_ANSWER: &str = "owner.answer";
+/// Event kind: an approved ticket was used up by the very act it was approved for (operation,
+/// resource and params matched, same page), once per ticket, right before that act runs
+/// (3e53b REVIEW-pack2 L1: a page cannot pair a used ticket with another act to write one).
+pub const OWNER_USED: &str = "owner.used";
+/// How much of a ticket's resource words go in the journal (shown on the window anyway; the
+/// params, such as a file's text, never do).
+pub const RESOURCE_CHARS: usize = 80;
+
+/// An answer's outcome word for the journal.
+fn outcome_word(state: &State) -> String {
+    match state {
+        State::Approved { .. } => "approved".to_owned(),
+        State::Refused(e) => format!("refused:{e}"),
+        State::Expired => "expired".to_owned(),
+        State::Pending => "pending".to_owned(),
+        State::Unavailable(w) => format!("unavailable:{w}"),
+    }
 }
 
 impl Owner {
@@ -776,6 +822,18 @@ impl Owner {
             slots: std::sync::Mutex::default(),
             gate,
             clock,
+            journal: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Where answers and done acts are written (the first call wins).
+    pub fn set_journal(&self, j: crate::pairing::Journal) {
+        let _ = self.journal.set(j);
+    }
+
+    fn journal(&self, kind: &'static str, payload: serde_json::Value) {
+        if let Some(j) = self.journal.get() {
+            j(kind, payload);
         }
     }
 
@@ -892,8 +950,18 @@ impl Owner {
             Err(crate::touch::TIMEOUT) => State::Expired,
             Err(e) => State::Refused(e.to_owned()),
         };
+        let asked_at = slot.rec.expires_at.saturating_sub(TICKET_SECS);
+        let said = serde_json::json!({
+            "ticket": ticket,
+            "operation": slot.rec.operation,
+            "resource": slot.rec.resource.chars().take(RESOURCE_CHARS).collect::<String>(),
+            "outcome": outcome_word(&slot.state),
+            "secs": now.saturating_sub(asked_at),
+            "by": slot.by,
+        });
         let (told, yes) = (slot.on_answer.take(), slot.rec.approved);
         drop(s);
+        self.journal(OWNER_ANSWER, said);
         if let Some(f) = told {
             f(ticket.to_owned(), yes);
         }
@@ -909,6 +977,11 @@ impl Owner {
         let now = (self.clock)();
         if !ticket_ok(&b.ticket) {
             return Asked::Unavailable(UNAVAILABLE);
+        }
+        // B2 (3e53b REVIEW-b2consent L3; Andy 11-26 10:1x 「每做一件高風險的事當下跳一次」): an
+        // owner check with no key (the Windows Hello gesture) answers one thing per window
+        if !self.presence.signs() {
+            return Asked::Unavailable(BATCH_ONE_AT_A_TIME);
         }
         // the same gate as one ask: the whole list counts as one window
         if let Err(w) = self.gate.open() {
@@ -981,6 +1054,11 @@ impl Owner {
             return Err("batch_used");
         }
         v.rec.used = true;
+        // the batch ticket itself, as one ask's (3e53b REVIEW-pack2 r1 N1); each item's child
+        // ticket is journaled again where its own act uses it up
+        let list_used = serde_json::json!({"ticket": batch, "operation": OP_BATCH, "by": by});
+        drop(s);
+        self.journal(OWNER_USED, list_used);
         Ok(())
     }
 
@@ -1044,13 +1122,22 @@ impl Owner {
     fn take(&self, ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
         let now = (self.clock)();
         let mut s = self.slots();
-        match s.get_mut(ticket) {
+        let (sig, used) = match s.get_mut(ticket) {
             Some(v) if v.by == ask.by && record_matches(&v.rec, ticket, ask, now) => {
                 v.rec.used = true;
-                Some(v.sig.clone())
+                let used = serde_json::json!({
+                    "ticket": ticket,
+                    "operation": v.rec.operation,
+                    "by": v.by,
+                });
+                (v.sig.clone(), used)
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        drop(s);
+        // record_matches refuses a used ticket, so this runs once per ticket
+        self.journal(OWNER_USED, used);
+        Some(sig)
     }
 
     /// Whether `sig` is the owner's key's signature of `msg` (a stored approval checked again).
@@ -1131,6 +1218,13 @@ pub async fn ticket_state(
 /// for this very act; a yes is used up. Without the switch nothing is approved.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
     OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
+}
+
+/// The owner check's answers and done acts go to aibd's event journal (server start).
+pub fn set_journal(j: crate::pairing::Journal) {
+    if let Some(o) = OWNER.get() {
+        o.set_journal(j);
+    }
 }
 
 #[doc(hidden)]
@@ -1820,6 +1914,90 @@ mod tests {
         }
     }
 
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, serde_json::Value)>>>;
+    fn journaled(o: &Owner) -> Seen {
+        let seen: Seen = std::sync::Arc::default();
+        let s2 = seen.clone();
+        o.set_journal(std::sync::Arc::new(move |k, v| {
+            s2.lock().unwrap().push((k, v))
+        }));
+        seen
+    }
+
+    /// 3e53b READ-spinit-owner-audit-3e53b-1126 / REVIEW-pack2 L1: each answer goes to the
+    /// journal (what, who, how it ended, how long it took, never the params), and an approved
+    /// ticket used up by its own act once (owner.used); a ticket not approved, used again or
+    /// offered for another act writes nothing; the journal is wired at start.
+    #[test]
+    fn every_answer_and_every_used_ticket_is_journaled_once() {
+        let _clock = clock();
+        let o = owner(Ok(()));
+        let seen = journaled(&o);
+        let x = reg();
+        let t = ticket(o.ask(&x, |f| {
+            at(1007);
+            inline(f)
+        }));
+        assert_eq!(seen.lock().unwrap().len(), 1, "reason: used_before_use");
+        // another act offering this ticket: not used, nothing written
+        let mut other = x.clone();
+        other.operation = "worktree.open";
+        assert!(!o.approved_for(&t, &other));
+        assert_eq!(seen.lock().unwrap().len(), 1, "reason: used_by_another_act");
+        assert!(o.approved_for(&t, &x));
+        assert!(!o.approved_for(&t, &x), "reason: used_twice");
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "reason: answer_and_one_use {got:?}");
+        assert_eq!(got[0].0, OWNER_ANSWER);
+        let a = &got[0].1;
+        assert_eq!(a["ticket"], t.as_str());
+        assert_eq!(a["operation"], x.operation);
+        assert_eq!(a["resource"], x.resource.as_str());
+        assert_eq!(a["outcome"], "approved", "reason: outcome");
+        assert_eq!(a["secs"], 7, "reason: secs");
+        assert_eq!(a["by"], x.by.as_str());
+        let keys: Vec<&str> = a.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["by", "operation", "outcome", "resource", "secs", "ticket"],
+            "reason: params_in_journal {a}"
+        );
+        assert_eq!(got[1].0, OWNER_USED);
+        assert_eq!(
+            got[1].1,
+            serde_json::json!({"ticket": t, "operation": x.operation, "by": x.by})
+        );
+        // a no: the window's word, and no use of it
+        at(1000);
+        let o = owner(Err("user_cancel"));
+        let seen = journaled(&o);
+        let t = ticket(o.ask(&x, inline));
+        assert!(!o.approved_for(&t, &x));
+        assert!(!o.approved_for("ot_not_mine", &x));
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "reason: no_use_for_a_no {got:?}");
+        assert_eq!(got[0].1["outcome"], "refused:user_cancel");
+        // the resource words are cut, the params never written
+        let mut long = reg();
+        long.resource = "字".repeat(RESOURCE_CHARS + 5);
+        at(1000);
+        let o = owner(Err(crate::touch::TIMEOUT));
+        let seen = journaled(&o);
+        ticket(o.ask(&long, inline));
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got[0].1["outcome"], "expired");
+        assert_eq!(
+            got[0].1["resource"].as_str().unwrap().chars().count(),
+            RESOURCE_CHARS,
+            "reason: resource_cut"
+        );
+        let server = include_str!("server.rs");
+        assert!(
+            server.contains("crate::owner_ok::set_journal(journal_to(store.clone(), \"owner\"));"),
+            "reason: owner_journal_not_wired"
+        );
+    }
+
     #[test]
     fn the_owners_yes_approves_one_act_for_one_page_once() {
         let _clock = clock();
@@ -1832,6 +2010,21 @@ mod tests {
             Some(" 1".into()),
         ] {
             assert!(!switch_on(off.clone()), "reason: switch_on {off:?}");
+        }
+        // Andy 11-26 03:1x: unset is on only on Windows; a value given still decides
+        assert!(switch_on_here(None, true), "reason: windows_unset_off");
+        assert!(
+            !switch_on_here(None, false),
+            "reason: other_platform_unset_on"
+        );
+        for windows in [true, false] {
+            assert!(switch_on_here(Some("1".into()), windows));
+            for off in ["0", "", "true", " 1"] {
+                assert!(
+                    !switch_on_here(Some(off.into()), windows),
+                    "reason: given_off_not_decisive {off:?} {windows}"
+                );
+            }
         }
         assert!(
             WIRED.contains(&crate::repos::OP_REGISTER) && WIRED.contains(&crate::repos::OP_OPEN)
@@ -2306,6 +2499,10 @@ mod tests {
                 .push((reason.to_owned(), msg.to_vec()));
             Ok(())
         }
+        // a stand-in for a key-backed check (batches need one: B2 L3)
+        fn signs(&self) -> bool {
+            true
+        }
     }
 
     fn push_ask(branch: &str) -> Ask {
@@ -2317,6 +2514,35 @@ mod tests {
                 .unwrap(),
             by: "page:0123abcd".into(),
         }
+    }
+
+    /// B2 L3 (3e53b REVIEW-b2consent; Andy 「每做一件高風險的事當下跳一次」): an owner check
+    /// with no key never answers a list in one window; nothing is shown, nothing is kept.
+    #[test]
+    fn a_keyless_owner_check_does_not_take_a_batch() {
+        let o = owner(Ok(()));
+        let items = [push_ask("web/a"), push_ask("web/b")];
+        let told = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let t2 = told.clone();
+        let got = o.ask_batch(
+            BatchAsk {
+                ticket: "ot_batch_keyless".into(),
+                batch_sha: crate::owner_batch::batch_sha(&items),
+                lines: crate::owner_batch::window_lines(&items),
+                by: "page:0123abcd".into(),
+                answered: Box::new(move |t, yes| *t2.lock().unwrap() = Some((t, yes))),
+            },
+            inline,
+        );
+        assert!(
+            matches!(got, Asked::Unavailable(w) if w == BATCH_ONE_AT_A_TIME),
+            "reason: keyless_batch_taken"
+        );
+        assert!(told.lock().unwrap().is_none(), "reason: keyless_batch_told");
+        assert!(
+            o.state("ot_batch_keyless", "page:0123abcd") == State::Expired,
+            "reason: keyless_batch_kept"
+        );
     }
 
     /// r4 §2c §2d: one window lists every line and the key signs the list's hash; the list is
@@ -2332,6 +2558,7 @@ mod tests {
             shown: std::sync::Mutex::default(),
         });
         let o = std::sync::Arc::new(Owner::new(w.clone(), gate(), bnow));
+        let seen = journaled(&o);
         let items = [push_ask("web/a"), push_ask("web/b")];
         let lines = crate::owner_batch::window_lines(&items);
         let sha = crate::owner_batch::batch_sha(&items);
@@ -2372,6 +2599,19 @@ mod tests {
             o.take_batch(&t, "page:0123abcd"),
             Err("batch_used"),
             "reason: taken_twice"
+        );
+        // 3e53b REVIEW-pack2 r1 N1: the list's own use is journaled, once
+        let used: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k == OWNER_USED)
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(
+            used,
+            [serde_json::json!({"ticket": t, "operation": OP_BATCH, "by": "page:0123abcd"})],
+            "reason: batch_use_not_journaled"
         );
         let c = o.child(&t, &items[0]).unwrap();
         // bound to that very ask: other params are not approved (params_changed), and once only

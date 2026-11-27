@@ -350,3 +350,78 @@ fn a_store_another_aibd_owns_is_counted_read_only() {
     .unwrap();
     assert_eq!(aib_store::seat_sessions_running_at(&db).unwrap(), 2);
 }
+
+fn out(session: &str, seq: i64, kind: &str) -> NewEvent {
+    NewEvent {
+        event_id: format!("ev_{session}_out_{seq}"),
+        aggregate_type: "session_output".into(),
+        aggregate_id: format!("{session}/output"),
+        sequence: seq,
+        event_type: kind.into(),
+        correlation_id: None,
+        occurred_at: "2026-11-26T05:00:00.000Z".into(),
+        payload: json!({"stream": "stdout", "line": "hi", "cut": false}),
+    }
+}
+
+/// 6770f IFACE-guide r3 `first`: a seat's session that wrote a line counts; a session the
+/// preview.2 route started (no seat), a seat's session that only closed its streams, or a line
+/// under another session's name do not.
+#[test]
+fn a_seat_has_spoken_only_once_a_seats_session_wrote_a_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let spoken = |s: &Store| s.a_seat_has_spoken("/output", "session.output").unwrap();
+    assert!(!spoken(&s), "reason: empty_store_spoke");
+    seat(&s, "seat_a");
+    let at = "2026-11-26T05:00:00.000Z";
+    s.session_event(
+        row("s_route", None, "running", false, at),
+        ev("s_route", 1, "session.started"),
+    )
+    .unwrap();
+    s.append(vec![out("s_route", 1, "session.output")]).unwrap();
+    assert!(!spoken(&s), "reason: route_session_counted");
+    s.session_event(
+        row("s_a", Some("seat_a"), "running", true, at),
+        ev("s_a", 1, "session.started"),
+    )
+    .unwrap();
+    s.append(vec![out("s_a", 1, "session.output_closed")])
+        .unwrap();
+    assert!(!spoken(&s), "reason: closed_counted_as_a_line");
+    s.append(vec![out("s_other", 1, "session.output")]).unwrap();
+    assert!(!spoken(&s), "reason: sessionless_line_counted");
+    s.append(vec![out("s_a", 2, "session.output")]).unwrap();
+    assert!(spoken(&s), "reason: seat_line_not_seen");
+}
+
+#[test]
+fn a_seat_is_open_only_while_a_seats_session_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    assert!(!s.a_seat_is_open().unwrap(), "reason: empty_store_open");
+    seat(&s, "seat_a");
+    let at = "2026-11-26T05:00:00.000Z";
+    s.session_event(
+        row("s_route", None, "running", false, at),
+        ev("s_route", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(
+        !s.a_seat_is_open().unwrap(),
+        "reason: route_session_counted"
+    );
+    s.session_event(
+        row("s_a", Some("seat_a"), "exited", false, at),
+        ev("s_a", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(!s.a_seat_is_open().unwrap(), "reason: ended_counted");
+    s.session_event(
+        row("s_b", Some("seat_a"), "running", true, at),
+        ev("s_b", 1, "session.started"),
+    )
+    .unwrap();
+    assert!(s.a_seat_is_open().unwrap(), "reason: running_not_seen");
+}
