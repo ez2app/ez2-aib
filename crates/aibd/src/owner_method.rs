@@ -368,6 +368,15 @@ pub fn password_window_for(public: &[u8]) -> bool {
         .is_some_and(|m| allows(&m.reading, m.pin_sha.as_deref(), public))
 }
 
+/// [`password_window_for`] the key in use now; `false` without an owner check.
+pub fn password_window_now() -> bool {
+    use crate::touch::Presence as _;
+    OWNER
+        .get()
+        .and_then(|(p, _)| p.public())
+        .is_some_and(|k| password_window_for(&k))
+}
+
 /// [`password_window_for`] of what was read: the password chosen, and the key about to sign
 /// is the pinned one (3e53b r3 must-add: a key not the pin signs with the fingerprint only).
 pub fn allows(reading: &Reading, pin_sha: Option<&str>, public: &[u8]) -> bool {
@@ -688,6 +697,8 @@ pub async fn status() -> Response {
         "can_change": cfg!(target_os = "macos") && OWNER.get().is_some() && why.is_null() && r.is_some(),
         "why": why,
         "words": words,
+        // which window a yes opens now (ebab8 11-27): touch_id / login_password / null
+        "key_kind": crate::touch::key_kind_now(),
     }))
     .into_response()
 }

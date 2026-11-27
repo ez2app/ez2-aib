@@ -307,6 +307,10 @@ pub async fn get_code(Extension(p): Extension<Arc<Pairing>>, Path(id): Path<Stri
             // TouchId: the terminal waits for the fingerprint instead of asking y
             if p.channel() == crate::pairing::ConfirmChannel::TouchId {
                 j["touch"] = serde_json::Value::Bool(true);
+                // which window to wait for: one of the two words, or none (ebab8 11-27)
+                if let Some(k) = crate::touch::key_kind_now() {
+                    j["key_kind"] = serde_json::Value::String(k.into());
+                }
             }
             // the terminal's own credential, once, when the code was made for it (§19b-3)
             if let Ok(Some(c)) = p.take_terminal(&id) {

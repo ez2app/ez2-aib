@@ -558,6 +558,36 @@ fn class_now() -> crate::owner_probe::Class {
     )
 }
 
+/// What the next owner window asks for, for the page's waiting box (ebab8 11-27; 3e53b
+/// REVIEW-guide L1 b): `touch_id` or `login_password`, one and never both. The choice
+/// [`routed_chosen`] makes for a signature: the password where the owner chose it or the Mac
+/// has no Touch ID, the finger where Touch ID works. `None` when no window would open now
+/// (Touch ID there but not usable, no owner check): the page keeps its neutral words.
+pub fn key_kind_word(
+    now: crate::owner_probe::Class,
+    password_chosen: bool,
+) -> Option<&'static str> {
+    use crate::owner_probe::Class;
+    match (now, password_chosen) {
+        (Class::Fingerprint, false) => Some("touch_id"),
+        (Class::Fingerprint, true) | (Class::PasswordOnly, _) => Some("login_password"),
+        _ => None,
+    }
+}
+
+/// [`key_kind_word`] of this Mac now: the owner check as read now and whether the key in use
+/// opens the chosen password window. Asks nobody (no window).
+#[cfg(target_os = "macos")]
+pub fn key_kind_now() -> Option<&'static str> {
+    key_kind_word(class_now(), crate::owner_method::password_window_now())
+}
+
+/// Windows says Windows Hello on its own; elsewhere there is no owner window.
+#[cfg(not(target_os = "macos"))]
+pub fn key_kind_now() -> Option<&'static str> {
+    key_kind_word(crate::owner_probe::Class::None, false)
+}
+
 /// A window with no limit of its own ([`KeyDevice::sign`]) still closes after this on the
 /// finger-only path, which only has the limited call.
 #[cfg(target_os = "macos")]
@@ -1554,6 +1584,36 @@ pub mod tests {
             routed_chosen(Class::PasswordOnly, false, || Ok(1), || Ok(2)),
             Ok(2)
         );
+    }
+
+    /// ebab8 11-27: the page's waiting box says the window that will open, one word, the same
+    /// choice a signature makes; nothing where no window opens.
+    #[test]
+    fn the_key_kind_is_the_window_a_signature_opens_and_one_word() {
+        use crate::owner_probe::Class;
+        let cases = [
+            (Class::Fingerprint, false, Some("touch_id")),
+            (Class::Fingerprint, true, Some("login_password")),
+            (Class::PasswordOnly, false, Some("login_password")),
+            (Class::PasswordOnly, true, Some("login_password")),
+            (Class::NotNow, false, None),
+            (Class::NotNow, true, None),
+            (Class::NotEnrolled, true, None),
+            (Class::None, true, None),
+        ];
+        for (now, chosen, want) in cases {
+            assert_eq!(key_kind_word(now, chosen), want, "{now:?} chosen={chosen}");
+            // the same route a signature takes: the password word only where it is the key's
+            // own window, the finger word only where it is the finger-only one
+            let r = routed_chosen(now, chosen, || Ok("touch_id"), || Ok("login_password"));
+            assert_eq!(
+                r.ok(),
+                want,
+                "reason: page_and_signature_differ {now:?} {chosen}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(key_kind_now(), None);
     }
 
     /// r2b: a swap waits for a signature under way; the next one signs with the new key.
