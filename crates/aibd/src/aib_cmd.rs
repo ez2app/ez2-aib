@@ -135,6 +135,116 @@ pub fn remove(dir: &Path, exe: &Path) -> Option<String> {
     })
 }
 
+// ---------------------------------------------------------------- Windows: the user's PATH
+// PRE-READ-aib-cmd-windows-3e53b-1127 §2-§3: what goes into / out of the user's PATH, worked out
+// here so both platforms test it; the registry read / write is aib_sys::winrun's.
+
+/// One PATH entry as compared: blanks and quotes off, trailing `\` / `/` off, case folded
+/// (Windows folders are not case sensitive).
+pub fn seg_key(s: &str) -> String {
+    s.trim()
+        .trim_matches('"')
+        .trim()
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase()
+}
+
+/// `%NAME%` replaced by `var(NAME)`; an unset one (or a lone `%`) stays as written.
+pub fn expand_vars(s: &str, var: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(rest.get(..i).unwrap_or_default());
+        let after = rest.get(i + 1..).unwrap_or_default();
+        match after.find('%') {
+            Some(j) if j > 0 => {
+                let name = after.get(..j).unwrap_or_default();
+                match var(name) {
+                    Some(v) => out.push_str(&v),
+                    None => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = after.get(j + 1..).unwrap_or_default();
+            }
+            _ => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The user PATH `old` with `dir` added at the end; `Ok(None)` when an entry is `dir` already
+/// (as written or expanded, either side). Every other entry stays exactly as it was; too long
+/// for Windows is an error, nothing written.
+pub fn path_with(
+    dir: &str,
+    old: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<String>, String> {
+    let want = [seg_key(dir), seg_key(&expand_vars(dir, var))];
+    let has = old.split(';').any(|e| {
+        let k = seg_key(e);
+        let kx = seg_key(&expand_vars(e, var));
+        !k.is_empty() && (want.contains(&k) || want.contains(&kx))
+    });
+    if has {
+        return Ok(None);
+    }
+    let new = if old.is_empty() || old.ends_with(';') {
+        format!("{old}{dir}")
+    } else {
+        format!("{old};{dir}")
+    };
+    if new.encode_utf16().count() > aib_sys::winrun::PATH_MAX_UNITS {
+        return Err("the user PATH would be longer than Windows allows".into());
+    }
+    Ok(Some(new))
+}
+
+/// What [`path_without`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Without {
+    /// the PATH with that one entry taken out
+    Removed(String),
+    NotThere,
+    /// there more than once: changed since AIB added it, so left
+    Many(usize),
+}
+
+/// The user PATH `old` without the entry that is exactly `seg` (what AIB added, as recorded),
+/// only when it is there once; every other entry stays exactly as it was.
+pub fn path_without(seg: &str, old: &str) -> Without {
+    if seg.is_empty() {
+        return Without::NotThere;
+    }
+    let parts: Vec<&str> = old.split(';').collect();
+    let at: Vec<usize> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| **e == seg)
+        .map(|(i, _)| i)
+        .collect();
+    match at.as_slice() {
+        [] => Without::NotThere,
+        [one] => Without::Removed(
+            parts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i != one)
+                .map(|(_, e)| *e)
+                .collect::<Vec<_>>()
+                .join(";"),
+        ),
+        many => Without::Many(many.len()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +330,94 @@ mod tests {
         assert!(remove(&bin, &exe).unwrap().starts_with("REMOVED"));
         assert!(std::fs::symlink_metadata(bin.join("aib")).is_err());
         assert!(exe.exists());
+    }
+
+    fn env(n: &str) -> Option<String> {
+        match n {
+            "LOCALAPPDATA" => Some(r"C:\Users\a\AppData\Local".into()),
+            "USERPROFILE" => Some(r"C:\Users\a".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn our_folder_goes_at_the_end_once_and_nothing_else_changes() {
+        let dir = r"C:\Users\a\AppData\Local\AIB";
+        // at the end, after a separator; the rest byte for byte (empty / repeated / odd entries)
+        let old = r"%USERPROFILE%\bin;;C:\x;C:\x;C:\ü & (y)";
+        assert_eq!(
+            path_with(dir, old, &env).unwrap().as_deref(),
+            Some(r"%USERPROFILE%\bin;;C:\x;C:\x;C:\ü & (y);C:\Users\a\AppData\Local\AIB"),
+            "reason: not_at_the_end"
+        );
+        assert_eq!(
+            path_with(dir, r"C:\x;", &env).unwrap().as_deref(),
+            Some(r"C:\x;C:\Users\a\AppData\Local\AIB"),
+            "reason: double_separator"
+        );
+        assert_eq!(path_with(dir, "", &env).unwrap().as_deref(), Some(dir));
+        // there already: quotes, a trailing \, other case, or written with %LOCALAPPDATA%
+        for there in [
+            r"C:\y;c:\users\A\appdata\local\aib",
+            r#"C:\y;"C:\Users\a\AppData\Local\AIB\""#,
+            r"%LOCALAPPDATA%\AIB;C:\y",
+            r"%localappdata%\aib\",
+        ] {
+            assert_eq!(
+                path_with(dir, there, &env),
+                Ok(None),
+                "reason: added_twice {there}"
+            );
+        }
+        // an unset %VAR% stays as written and is not taken for ours
+        assert!(path_with(dir, r"%NOPE%\AIB", &env).unwrap().is_some());
+        // too long for Windows: not written
+        let long = "C:\\x;".repeat(7000);
+        assert!(path_with(dir, &long, &env).is_err(), "reason: too_long");
+    }
+
+    #[test]
+    fn uninstall_takes_out_only_what_aib_added_and_only_once() {
+        let seg = r"C:\Users\a\AppData\Local\AIB";
+        assert_eq!(
+            path_without(seg, r"%USERPROFILE%\bin;;C:\x;C:\Users\a\AppData\Local\AIB"),
+            Without::Removed(r"%USERPROFILE%\bin;;C:\x".into()),
+            "reason: others_changed"
+        );
+        assert_eq!(path_without(seg, seg), Without::Removed(String::new()));
+        assert_eq!(
+            path_without(seg, r"C:\Users\a\AppData\Local\AIB;C:\x"),
+            Without::Removed(r"C:\x".into())
+        );
+        // not exactly what was added (case, trailing \): left
+        assert_eq!(
+            path_without(seg, r"c:\users\a\appdata\local\aib"),
+            Without::NotThere
+        );
+        assert_eq!(
+            path_without(seg, r"C:\Users\a\AppData\Local\AIB\"),
+            Without::NotThere
+        );
+        // twice: the customer changed it; left
+        assert_eq!(
+            path_without(
+                seg,
+                r"C:\Users\a\AppData\Local\AIB;C:\x;C:\Users\a\AppData\Local\AIB"
+            ),
+            Without::Many(2),
+            "reason: removed_one_of_two"
+        );
+        assert_eq!(path_without("", "a;;b"), Without::NotThere);
+    }
+
+    #[test]
+    fn a_percent_name_is_expanded_only_when_set() {
+        assert_eq!(
+            expand_vars(r"%LOCALAPPDATA%\AIB", &env),
+            r"C:\Users\a\AppData\Local\AIB"
+        );
+        assert_eq!(expand_vars(r"%NOPE%\x", &env), r"%NOPE%\x");
+        assert_eq!(expand_vars("100% %", &env), "100% %");
+        assert_eq!(expand_vars("%%x", &env), "%%x");
     }
 }

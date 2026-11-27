@@ -27,7 +27,8 @@
 //! `ctl.rs` (the binary) and `aib_sys::winrun`. The Run value and the folder are the user's own
 //! (same-account threat model): convenience, not a defence; pairing / Hello is the defence.
 
-use std::ffi::OsStr;
+use aib_sys::winrun::PathKind;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,6 +38,13 @@ pub const RUN_NAME: &str = "AIB";
 pub const DIR_NAME: &str = "AIB";
 /// The installed program's file name.
 pub const EXE_NAME: &str = "aibd.exe";
+/// `aib` (Andy 11-27 10:1x): a copy of aibd.exe beside it; called `aib` it takes `aib web` only.
+pub const AIB_EXE: &str = "aib.exe";
+/// In the AIB folder: the PATH entry the setup added, exactly as written (uninstall takes out
+/// that entry only).
+pub const PATH_NOTE: &str = "aib-path.txt";
+/// What Windows runs for a typed `aib`: another of these anywhere on PATH ⇒ ours is not placed.
+pub const AIB_NAMES: [&str; 4] = ["aib.exe", "aib.cmd", "aib.bat", "aib.com"];
 /// A program whose file name starts with this (any case) runs the setup when started with no
 /// arguments: `AIB-Setup.exe`, and what a browser makes of a second download, `AIB-Setup (1).exe`.
 pub const SETUP_STEM: &str = "aib-setup";
@@ -110,6 +118,9 @@ pub struct Places {
     pub exe: PathBuf,
     pub new: PathBuf,
     pub prev: PathBuf,
+    pub aib: PathBuf,
+    pub aib_new: PathBuf,
+    pub path_note: PathBuf,
 }
 
 /// `<local app data>\AIB\aibd.exe` (+ `.new` / `.prev` beside it); the folder must be given and
@@ -131,6 +142,9 @@ pub fn places(local_app_data: Option<&OsStr>) -> Result<Places, String> {
     let new = dir.join(format!("{EXE_NAME}.new"));
     let prev = dir.join(format!("{EXE_NAME}.prev"));
     Ok(Places {
+        aib: dir.join(AIB_EXE),
+        aib_new: dir.join(format!("{AIB_EXE}.new")),
+        path_note: dir.join(PATH_NOTE),
         base,
         dir,
         exe,
@@ -196,6 +210,25 @@ pub trait Ops {
     fn shortcut_read(&self, link: &Path) -> Result<(PathBuf, String), String>;
     /// Write the shortcut `link` to `exe` with `args`.
     fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String>;
+    /// This process's PATH (where a typed `aib` is looked up).
+    fn path_env(&self) -> Option<OsString>;
+    /// One environment variable, to compare a `%NAME%` PATH entry.
+    fn env_var(&self, name: &str) -> Option<String>;
+    /// The user's PATH as stored, and its type.
+    fn user_path_read(&self) -> Result<Option<(String, PathKind)>, String>;
+    /// Write the user's PATH when it still reads `before`; read back after.
+    fn user_path_write(
+        &self,
+        new: &str,
+        kind: PathKind,
+        before: Option<(&str, PathKind)>,
+    ) -> Result<(), String>;
+    /// Tell open programs the environment changed.
+    fn env_changed(&self);
+    /// A small text file of ours ([`PATH_NOTE`]); `None` when there is none.
+    fn note_read(&self, p: &Path) -> Option<String>;
+    /// Write that file.
+    fn note_write(&self, p: &Path, text: &str) -> Result<(), String>;
 }
 
 /// The shortcut's file name, on the desktop and in the Start menu.
@@ -259,6 +292,177 @@ fn shortcuts(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
             Err(why) => say(&format!("3/5 no AIB shortcut in {}: {why}", d.display())),
         }
     }
+}
+
+// ---------------------------------------------------------------- aib (Andy 11-27 10:1x)
+// PRE-READ-aib-cmd-windows-3e53b-1127: aib.exe beside aibd.exe the same way aibd.exe is placed
+// (.new, hashes compared), the AIB folder at the END of the user's PATH (not before: ours would
+// hide the customer's other commands of that name), never setx / PowerShell. Another `aib`
+// anywhere on PATH (AIB 1.x) ⇒ none placed (f163c / 3e53b r1). The same account can change its
+// own PATH and put another aib first: `aib` is a convenience, not a defence.
+
+/// Another `aib` on this process's PATH (any of [`AIB_NAMES`]; our own aib.exe does not count).
+fn another_aib(p: &Places, ops: &dyn Ops) -> Option<PathBuf> {
+    let path = ops.path_env()?;
+    let ours = crate::aib_cmd::seg_key(&p.dir.to_string_lossy());
+    std::env::split_paths(&path)
+        .flat_map(|d| {
+            let mine = crate::aib_cmd::seg_key(&d.to_string_lossy()) == ours;
+            AIB_NAMES
+                .iter()
+                .filter(move |n| !(mine && **n == AIB_EXE))
+                .map(move |n| d.join(n))
+        })
+        .find(|f| ops.exists(f))
+}
+
+/// aib.exe = this aibd.exe: written when none is there or it is ours (this aibd.exe's or the
+/// kept older one's hash), never through a link; the copy's hash compared before it is moved in.
+fn place_aib(p: &Places, ops: &dyn Ops) -> Result<(), String> {
+    if ops.is_link(&p.aib) || ops.is_link(&p.exe) {
+        return Err(format!(
+            "{} is a link; not written through",
+            p.aib.display()
+        ));
+    }
+    let sha = ops.hash(&p.exe)?;
+    if ops.exists(&p.aib) {
+        let have = ops.hash(&p.aib)?;
+        if have == sha {
+            return Ok(());
+        }
+        if ops.hash(&p.prev).ok().as_deref() != Some(have.as_str()) {
+            return Err(format!(
+                "{} is another program by that name; left as it is",
+                p.aib.display()
+            ));
+        }
+    }
+    ops.remove(&p.aib_new);
+    let want = ops.copy_new(&p.exe, &p.aib_new)?;
+    let got = ops.hash(&p.aib_new)?;
+    if want != sha || got != sha {
+        ops.remove(&p.aib_new);
+        return Err(format!(
+            "the copy in {} does not match aibd.exe; not placed",
+            p.aib_new.display()
+        ));
+    }
+    ops.rename(&p.aib_new, &p.aib)
+        .map_err(|e| format!("moving aib.exe in place: {e}"))
+}
+
+/// The AIB folder at the end of the user's PATH. `Ok(false)` = there already (nothing written,
+/// and it is not ours to take out later). The entry is noted first, so a PATH written is
+/// always one uninstall knows; a read that changed meanwhile is tried once more.
+fn user_path_add(p: &Places, ops: &dyn Ops) -> Result<bool, String> {
+    let seg = p.dir.to_string_lossy().into_owned();
+    for _ in 0..2 {
+        let before = ops.user_path_read()?;
+        let (old, kind) = before
+            .as_ref()
+            .map_or(("", PathKind::ExpandSz), |(v, k)| (v.as_str(), *k));
+        let Some(new) = crate::aib_cmd::path_with(&seg, old, &|n| ops.env_var(n))? else {
+            return Ok(false);
+        };
+        ops.note_write(&p.path_note, &seg)
+            .map_err(|e| format!("could not note what is added ({e}); PATH not changed"))?;
+        let before = before.as_ref().map(|(v, k)| (v.as_str(), *k));
+        match ops.user_path_write(&new, kind, before) {
+            Ok(()) => {
+                ops.env_changed();
+                return Ok(true);
+            }
+            Err(e) if e == aib_sys::winrun::PATH_CHANGED => {}
+            Err(e) => {
+                ops.remove(&p.path_note);
+                return Err(e);
+            }
+        }
+    }
+    ops.remove(&p.path_note);
+    Err("the user PATH kept changing while AIB wrote it; not changed".into())
+}
+
+/// Step 3: `aib` (aib.exe + the user's PATH). Never stops the setup: a line says what happened.
+fn aib_command(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
+    if let Some(other) = another_aib(p, ops) {
+        say(&format!(
+            "AIB-CMD-LEFT {} is another aib (AIB 1.x?), so none was placed; open the workbench with the AIB shortcut",
+            other.display()
+        ));
+        return;
+    }
+    if let Err(e) = place_aib(p, ops) {
+        say(&format!("AIB-CMD-NOT-WRITTEN {e}"));
+        return;
+    }
+    say(&format!(
+        "AIB-CMD {} (aib web opens the workbench)",
+        p.aib.display()
+    ));
+    match user_path_add(p, ops) {
+        Ok(true) => say(&format!(
+            "AIB-CMD-PATH {} added to the end of your PATH: a new terminal window takes aib web",
+            p.dir.display()
+        )),
+        Ok(false) => {}
+        Err(e) => say(&format!(
+            "AIB-CMD-PATH {} is not on your PATH ({e}): until it is, type \"{}\" web",
+            p.dir.display(),
+            p.aib.display()
+        )),
+    }
+}
+
+/// Uninstall: take out of the user's PATH the entry the setup noted, only when it is there
+/// exactly once; changed since (gone, or more than once) ⇒ left, and said.
+fn user_path_remove(p: &Places, ops: &dyn Ops, say: &mut dyn FnMut(&str)) {
+    let Some(seg) = ops.note_read(&p.path_note) else {
+        return;
+    };
+    for _ in 0..2 {
+        let before = match ops.user_path_read() {
+            Ok(Some(b)) => b,
+            Ok(None) => break,
+            Err(e) => {
+                say(&format!(
+                    "your PATH was not read ({e}); remove {seg} from it yourself"
+                ));
+                return;
+            }
+        };
+        let new = match crate::aib_cmd::path_without(&seg, &before.0) {
+            crate::aib_cmd::Without::Removed(n) => n,
+            crate::aib_cmd::Without::NotThere => break,
+            crate::aib_cmd::Without::Many(n) => {
+                say(&format!(
+                    "{seg} is on your PATH {n} times (changed since AIB added it); left as it is, remove it yourself"
+                ));
+                ops.remove(&p.path_note);
+                return;
+            }
+        };
+        match ops.user_path_write(&new, before.1, Some((before.0.as_str(), before.1))) {
+            Ok(()) => {
+                ops.env_changed();
+                ops.remove(&p.path_note);
+                say(&format!("removed {seg} from your PATH"));
+                return;
+            }
+            Err(e) if e == aib_sys::winrun::PATH_CHANGED => {}
+            Err(e) => {
+                say(&format!(
+                    "{seg} stays on your PATH ({e}); remove it yourself"
+                ));
+                return;
+            }
+        }
+    }
+    ops.remove(&p.path_note);
+    say(&format!(
+        "{seg} is not on your PATH as AIB added it; nothing taken out"
+    ));
 }
 
 /// This aibd's version, shown in Settings > Apps.
@@ -456,6 +660,7 @@ fn run_with(
         say(&format!("3/5 not listed in Settings > Apps: {e}"));
     }
     shortcuts(p, ops, say);
+    aib_command(p, ops, say);
     // 4. running now
     if ops.healthy() {
         done.already_running = true;
@@ -535,7 +740,16 @@ pub fn wake(p: &Places, current: &Path, resident: bool, ops: &dyn Ops) -> Result
     if ops.healthy() {
         return Ok(false);
     }
-    if !resident || !ops.same_file(current, &p.exe) {
+    // from aib.exe (`aib web`): ours only (a plain file, this aibd.exe's hash); what is started
+    // is still p.exe
+    let from_aib = || {
+        ops.same_file(current, &p.aib)
+            && !ops.is_link(&p.aib)
+            && ops
+                .hash(&p.aib)
+                .is_ok_and(|h| ops.hash(&p.exe).is_ok_and(|e| e == h))
+    };
+    if !resident || !(ops.same_file(current, &p.exe) || from_aib()) {
         return Err(format!(
             "aibd is not running. Double-click AIB on the desktop (or run {} ctl web)",
             p.exe.display()
@@ -602,6 +816,7 @@ fn uninstall_with(
             }
         }
     }
+    user_path_remove(p, ops, say);
     let running = ops.healthy();
     if running {
         say(&format!(
@@ -609,6 +824,21 @@ fn uninstall_with(
             p.dir.display()
         ));
     } else {
+        // aib.exe: ours only (this aibd.exe's or the older one's hash), looked at before they go
+        if ops.exists(&p.aib) {
+            let have = ops.hash(&p.aib).ok();
+            let ours = have.is_some()
+                && !ops.is_link(&p.aib)
+                && [&p.exe, &p.prev]
+                    .into_iter()
+                    .any(|f| ops.hash(f).ok() == have);
+            if ours {
+                ops.remove(&p.aib);
+            } else {
+                say(&format!("{} is not AIB's; left as it is", p.aib.display()));
+            }
+        }
+        ops.remove(&p.aib_new);
         for f in [&p.exe, &p.prev, &p.new] {
             ops.remove(f);
         }
@@ -724,6 +954,12 @@ mod tests {
         end_keeps_running: bool,
         ended: RefCell<bool>,
         started: RefCell<bool>,
+        hashes: BTreeMap<PathBuf, String>,
+        same_as: Option<PathBuf>,
+        path_env: Option<OsString>,
+        user_path: RefCell<Option<(String, PathKind)>>,
+        path_changes: RefCell<usize>,
+        notes: RefCell<BTreeMap<PathBuf, String>>,
     }
 
     impl Fake {
@@ -745,8 +981,8 @@ mod tests {
         fn is_link(&self, p: &Path) -> bool {
             self.links.iter().any(|l| l == p)
         }
-        fn same_file(&self, _: &Path, _: &Path) -> bool {
-            self.same
+        fn same_file(&self, _: &Path, b: &Path) -> bool {
+            self.same || self.same_as.as_deref() == Some(b)
         }
         fn make_dir(&self, _: &Path) -> Result<(), String> {
             Ok(())
@@ -756,7 +992,10 @@ mod tests {
             self.files.borrow_mut().push(to.to_path_buf());
             Ok(self.copy_sha.clone().unwrap_or_else(|| "aa".into()))
         }
-        fn hash(&self, _: &Path) -> Result<String, String> {
+        fn hash(&self, p: &Path) -> Result<String, String> {
+            if let Some(h) = self.hashes.get(p) {
+                return Ok(h.clone());
+            }
             Ok(self
                 .disk_sha
                 .clone()
@@ -766,6 +1005,7 @@ mod tests {
         fn remove(&self, p: &Path) {
             if !self.stuck.iter().any(|s| s == p) {
                 self.files.borrow_mut().retain(|f| f != p);
+                self.notes.borrow_mut().remove(p);
             }
         }
         fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
@@ -876,6 +1116,44 @@ mod tests {
         fn remove_dir_if_empty(&self, dir: &Path) {
             self.log(format!("rmdir {}", dir.display()));
         }
+        fn path_env(&self) -> Option<OsString> {
+            self.path_env.clone()
+        }
+        fn env_var(&self, n: &str) -> Option<String> {
+            (n == "LOCALAPPDATA").then(|| here().base.to_string_lossy().into_owned())
+        }
+        fn user_path_read(&self) -> Result<Option<(String, PathKind)>, String> {
+            Ok(self.user_path.borrow().clone())
+        }
+        fn user_path_write(
+            &self,
+            new: &str,
+            kind: PathKind,
+            before: Option<(&str, PathKind)>,
+        ) -> Result<(), String> {
+            let mut n = self.path_changes.borrow_mut();
+            if *n > 0 {
+                *n -= 1;
+                return Err(aib_sys::winrun::PATH_CHANGED.into());
+            }
+            let mut u = self.user_path.borrow_mut();
+            if u.as_ref().map(|(v, k)| (v.as_str(), *k)) != before {
+                return Err(aib_sys::winrun::PATH_CHANGED.into());
+            }
+            self.log(format!("path {new}"));
+            *u = Some((new.to_string(), kind));
+            Ok(())
+        }
+        fn env_changed(&self) {
+            self.log("env".into());
+        }
+        fn note_read(&self, p: &Path) -> Option<String> {
+            self.notes.borrow().get(p).cloned()
+        }
+        fn note_write(&self, p: &Path, t: &str) -> Result<(), String> {
+            self.notes.borrow_mut().insert(p.to_path_buf(), t.into());
+            Ok(())
+        }
     }
 
     fn here() -> Places {
@@ -920,13 +1198,17 @@ mod tests {
                 format!("run AIB={CMD}"),
                 format!("lnk {}", Path::new("desk").join(SHORTCUT).display()),
                 format!("lnk {}", Path::new("menu").join(SHORTCUT).display()),
+                format!("copy {} {}", p.exe.display(), p.aib_new.display()),
+                format!("rename {} {}", p.aib_new.display(), p.aib.display()),
+                format!("path {}", p.dir.display()),
+                "env".to_string(),
                 format!("start {}", p.exe.display()),
                 "open".to_string(),
             ],
             "reason: order"
         );
-        // one line per step, plus one per shortcut
-        assert_eq!(lines.len(), 7, "reason: one line per step {lines:?}");
+        // one line per step, plus one per shortcut and two for aib
+        assert_eq!(lines.len(), 9, "reason: one line per step {lines:?}");
     }
 
     #[cfg(windows)]
@@ -1094,7 +1376,7 @@ mod tests {
             "reason: result"
         );
         assert!(
-            !f.has("copy") && !f.has("start"),
+            !f.has("copy dl/") && !f.has("start"),
             "reason: redid {:?}",
             f.calls.borrow()
         );
@@ -1576,6 +1858,32 @@ mod tests {
         fn shortcut_make(&self, l: &Path, e: &Path, a: &str) -> Result<(), String> {
             self.0.shortcut_make(l, e, a)
         }
+        fn path_env(&self) -> Option<OsString> {
+            self.0.path_env()
+        }
+        fn env_var(&self, n: &str) -> Option<String> {
+            self.0.env_var(n)
+        }
+        fn user_path_read(&self) -> Result<Option<(String, PathKind)>, String> {
+            self.0.user_path_read()
+        }
+        fn user_path_write(
+            &self,
+            n: &str,
+            k: PathKind,
+            b: Option<(&str, PathKind)>,
+        ) -> Result<(), String> {
+            self.0.user_path_write(n, k, b)
+        }
+        fn env_changed(&self) {
+            self.0.env_changed()
+        }
+        fn note_read(&self, p: &Path) -> Option<String> {
+            self.0.note_read(p)
+        }
+        fn note_write(&self, p: &Path, t: &str) -> Result<(), String> {
+            self.0.note_write(p, t)
+        }
     }
 
     /// 3e53b r1 wake #2 (static): the real start runs the given program directly, no shell.
@@ -1854,5 +2162,237 @@ mod tests {
         );
         assert_eq!(p.exe.parent(), Some(p.dir.as_path()), "reason: dir");
         assert_eq!(p.new.parent(), Some(p.dir.as_path()), "reason: new_beside");
+    }
+
+    fn path_of(dirs: &[&str]) -> Option<OsString> {
+        Some(std::env::join_paths(dirs).unwrap())
+    }
+
+    /// PRE-READ-aib-cmd-windows §2: our folder at the END of the user's PATH, the type kept,
+    /// noted for uninstall, open programs told; there already (any case) ⇒ nothing written.
+    #[test]
+    fn the_setup_puts_aib_beside_aibd_and_its_folder_at_the_end_of_the_path() {
+        let p = here();
+        let dir = p.dir.to_string_lossy().into_owned();
+        let f = Fake {
+            healthy_after: Some(1),
+            user_path: RefCell::new(Some((r"%USERPROFILE%\bin;;C:\x".into(), PathKind::Sz))),
+            ..Fake::default()
+        };
+        let (r, lines) = go(&f);
+        assert!(r.is_ok(), "reason: {r:?}");
+        assert!(f.exists(&p.aib), "reason: no_aib {:?}", f.calls.borrow());
+        assert_eq!(
+            *f.user_path.borrow(),
+            Some((format!(r"%USERPROFILE%\bin;;C:\x;{dir}"), PathKind::Sz)),
+            "reason: path_written {lines:?}"
+        );
+        assert_eq!(
+            f.notes.borrow().get(&p.path_note),
+            Some(&dir),
+            "reason: not_noted"
+        );
+        assert!(f.has("env"), "reason: not_told");
+        assert!(lines.iter().any(|l| l.starts_with("AIB-CMD ")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("AIB-CMD-PATH")),
+            "{lines:?}"
+        );
+        // no PATH value at all: made, as REG_EXPAND_SZ
+        let none = Fake {
+            healthy_after: Some(1),
+            ..Fake::default()
+        };
+        assert!(go(&none).0.is_ok());
+        assert_eq!(
+            *none.user_path.borrow(),
+            Some((dir.clone(), PathKind::ExpandSz)),
+            "reason: made_as_sz"
+        );
+        // there already, other case / written with %LOCALAPPDATA%: not written, not noted
+        for there in [
+            dir.to_uppercase(),
+            format!("%LOCALAPPDATA%{}{DIR_NAME}", std::path::MAIN_SEPARATOR),
+        ] {
+            let f = Fake {
+                healthy_after: Some(1),
+                user_path: RefCell::new(Some((format!("C:\\y;{there}"), PathKind::ExpandSz))),
+                ..Fake::default()
+            };
+            assert!(go(&f).0.is_ok());
+            assert!(
+                !f.has("path "),
+                "reason: added_twice {there} {:?}",
+                f.calls.borrow()
+            );
+            assert!(
+                f.notes.borrow().is_empty(),
+                "reason: noted_not_ours {there}"
+            );
+        }
+        // changed between our read and our write: read again, then written once
+        let raced = Fake {
+            healthy_after: Some(1),
+            path_changes: RefCell::new(1),
+            ..Fake::default()
+        };
+        assert!(go(&raced).0.is_ok());
+        assert!(raced.has("path "), "reason: gave_up_after_one");
+        let always = Fake {
+            healthy_after: Some(1),
+            path_changes: RefCell::new(5),
+            ..Fake::default()
+        };
+        let (r, lines) = go(&always);
+        assert!(r.is_ok(), "reason: path_stopped_the_setup");
+        assert!(always.notes.borrow().is_empty(), "reason: note_left");
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("AIB-CMD-PATH") && l.contains("not on your PATH")));
+    }
+
+    /// f163c / 3e53b r1: another aib anywhere on PATH (AIB 1.x) ⇒ no aib.exe, PATH untouched;
+    /// an aib.exe in our folder that is not ours ⇒ left.
+    #[test]
+    fn another_aib_on_the_path_or_in_our_folder_is_left_and_none_placed() {
+        let p = here();
+        for (before, after) in [("/one", "/two"), ("/two", "/one")] {
+            let one = Path::new("/one").join("aib.cmd");
+            let f = Fake {
+                healthy_after: Some(1),
+                path_env: path_of(&[before, after]),
+                files: RefCell::new(vec![one.clone()]),
+                ..Fake::default()
+            };
+            let (r, lines) = go(&f);
+            assert!(r.is_ok(), "reason: {r:?}");
+            assert!(!f.exists(&p.aib), "reason: placed_beside_1x");
+            assert!(!f.has("path "), "reason: path_written_beside_1x");
+            assert!(
+                lines.iter().any(
+                    |l| l.starts_with("AIB-CMD-LEFT") && l.contains(&one.display().to_string())
+                ),
+                "{lines:?}"
+            );
+        }
+        let theirs = Fake {
+            healthy_after: Some(1),
+            files: RefCell::new(vec![p.aib.clone()]),
+            hashes: BTreeMap::from([(p.aib.clone(), "zz".to_string())]),
+            ..Fake::default()
+        };
+        let (r, lines) = go(&theirs);
+        assert!(r.is_ok());
+        assert!(
+            !theirs.has(&format!("rename {}", p.aib_new.display())),
+            "reason: theirs_replaced"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("AIB-CMD-NOT-WRITTEN")),
+            "{lines:?}"
+        );
+        // the older aibd.exe's copy (kept as .prev) is ours: replaced
+        let older = Fake {
+            healthy_after: Some(1),
+            files: RefCell::new(vec![p.aib.clone(), p.exe.clone()]),
+            hashes: BTreeMap::from([
+                (p.aib.clone(), "old".to_string()),
+                (p.prev.clone(), "old".to_string()),
+            ]),
+            ..Fake::default()
+        };
+        assert!(go(&older).0.is_ok());
+        assert!(
+            older.has(&format!(
+                "rename {} {}",
+                p.aib_new.display(),
+                p.aib.display()
+            )),
+            "reason: older_left {:?}",
+            older.calls.borrow()
+        );
+    }
+
+    /// Uninstall takes out only the entry the setup noted, only when it is there once; aib.exe
+    /// only when it is ours.
+    #[test]
+    fn uninstall_takes_out_only_our_path_entry_and_our_aib() {
+        let p = here();
+        let dir = p.dir.to_string_lossy().into_owned();
+        let f = Fake {
+            files: RefCell::new(vec![p.exe.clone(), p.aib.clone(), p.path_note.clone()]),
+            user_path: RefCell::new(Some((format!(r"C:\x;;{dir}"), PathKind::ExpandSz))),
+            notes: RefCell::new(BTreeMap::from([(p.path_note.clone(), dir.clone())])),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &f, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert_eq!(
+            *f.user_path.borrow(),
+            Some((r"C:\x;".to_string(), PathKind::ExpandSz)),
+            "reason: others_changed {lines:?}"
+        );
+        assert!(!f.exists(&p.aib), "reason: aib_left");
+        assert!(f.notes.borrow().is_empty(), "reason: note_left");
+        // twice on PATH (changed since): left, said
+        let twice = Fake {
+            user_path: RefCell::new(Some((format!("{dir};C:\\x;{dir}"), PathKind::Sz))),
+            notes: RefCell::new(BTreeMap::from([(p.path_note.clone(), dir.clone())])),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &twice, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(!twice.has("path "), "reason: removed_one_of_two");
+        assert!(lines.iter().any(|l| l.contains("2 times")), "{lines:?}");
+        // not noted (the customer had it before AIB): left
+        let theirs = Fake {
+            user_path: RefCell::new(Some((dir.clone(), PathKind::Sz))),
+            files: RefCell::new(vec![p.aib.clone()]),
+            hashes: BTreeMap::from([(p.aib.clone(), "zz".to_string())]),
+            ..Fake::default()
+        };
+        let mut lines = Vec::new();
+        assert!(uninstall_with(&p, &theirs, CMD, &mut |l| lines.push(l.to_string())).is_ok());
+        assert!(!theirs.has("path "), "reason: took_theirs");
+        assert!(theirs.exists(&p.aib), "reason: removed_their_aib");
+    }
+
+    /// `aib web` from our aib.exe starts the installed aibd.exe (never aib.exe); an aib.exe
+    /// that is not this aibd.exe's copy starts nothing.
+    #[test]
+    fn web_from_our_aib_starts_the_installed_aibd() {
+        let p = here();
+        let ours = Fake {
+            same_as: Some(p.aib.clone()),
+            healthy_after: Some(1),
+            files: RefCell::new(vec![p.exe.clone(), p.aib.clone()]),
+            ..Fake::default()
+        };
+        assert_eq!(
+            wake(&p, &p.aib, true, &ours),
+            Ok(true),
+            "reason: not_started"
+        );
+        assert!(
+            ours.has(&format!("start {}", p.exe.display())),
+            "{:?}",
+            ours.calls.borrow()
+        );
+        assert!(
+            !ours.has(&format!("start {}", p.aib.display())),
+            "reason: started_aib"
+        );
+        let other = Fake {
+            same_as: Some(p.aib.clone()),
+            healthy_after: Some(1),
+            files: RefCell::new(vec![p.exe.clone(), p.aib.clone()]),
+            hashes: BTreeMap::from([(p.aib.clone(), "zz".to_string())]),
+            ..Fake::default()
+        };
+        assert!(
+            wake(&p, &p.aib, true, &other).is_err(),
+            "reason: started_from_another"
+        );
+        assert!(!other.has("start"), "reason: started_from_another");
     }
 }

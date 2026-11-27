@@ -2596,6 +2596,37 @@ impl aibd::winsetup::Ops for SetupOps {
     fn shortcut_make(&self, link: &Path, exe: &Path, args: &str) -> Result<(), String> {
         aib_sys::winshortcut::make(link, exe, args)
     }
+    fn path_env(&self) -> Option<std::ffi::OsString> {
+        std::env::var_os("PATH")
+    }
+    fn env_var(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+    fn user_path_read(&self) -> Result<Option<(String, aib_sys::winrun::PathKind)>, String> {
+        aib_sys::winrun::user_path_read()
+    }
+    fn user_path_write(
+        &self,
+        new: &str,
+        kind: aib_sys::winrun::PathKind,
+        before: Option<(&str, aib_sys::winrun::PathKind)>,
+    ) -> Result<(), String> {
+        aib_sys::winrun::user_path_write(new, kind, before)
+    }
+    fn env_changed(&self) {
+        aib_sys::winrun::env_changed();
+    }
+    fn note_read(&self, p: &Path) -> Option<String> {
+        // a plain file only (a link's target is not ours to read as our note)
+        let plain = std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file());
+        plain.then(|| std::fs::read_to_string(p).ok()).flatten()
+    }
+    fn note_write(&self, p: &Path, text: &str) -> Result<(), String> {
+        if std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_file()) {
+            return Err(format!("{} is not a plain file", p.display()));
+        }
+        std::fs::write(p, text).map_err(|e| format!("{}: {e}", p.display()))
+    }
 }
 
 /// What `aibd setup` was asked to do.
