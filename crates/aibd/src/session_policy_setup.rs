@@ -344,6 +344,7 @@ pub fn placed_verified(
                     name: l.name,
                     kind: LookKind::NotFound,
                     path: None,
+                    signer: None,
                     why: format!(
                         "{}: not the measured {} {}",
                         path.display(),
