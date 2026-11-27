@@ -74,7 +74,7 @@ k ' : PAIR_NOCODE + pairHowHtml(P.how)}' ' : pairHowHtml(true)}'
 # PH2 步驟一開就攤開、沒有「怎麼拿配對碼」鈕
 k 'const pairHowHtml = (open) => (open ?' 'const pairHowHtml = (open) => (true ?'
 # PH3 Windows 步驟照 Mac 寫終端機
-k '<li>從開始選單或桌面點「AIB」</li>' '<li>打開「終端機」,打 <code>aib web</code> 按 Enter</li>'
+k '<li>從開始選單或桌面點「AIB」</li>' '<li>打開「終端機」,貼上 <code>~/.local/bin/aibd ctl web</code> 按 Enter</li>'
 # PH4 按了鈕沒反應
 k 'S.pair = Object.assign({}, S.pair, { how: true })' 'S.pair = Object.assign({}, S.pair, { how: false })'
 # PH5 白話句改成指令
@@ -84,3 +84,8 @@ k 'PAIR_NOCODE = '"'"'<p>這一頁還沒配對' 'PAIR_NOCODE = '"'"'<p>在終端
 k 'pair-key-pin.json と pair-key-method.json を削除' 'pair-key-pin.json を削除'
 # RS2 OM_WHY 對回舊鍵名 reset(用量表那個)
 k "owner_key_not_as_paired: 'omReset'" "owner_key_not_as_paired: 'reset'"
+
+# PH6 Mac 第 1 步寫回 aib web(2.0 乾淨安裝沒有;f163c 45d289a4 L1)
+k '貼上 <code>~/.local/bin/aibd ctl web</code> 按 Enter</li><li>AIB' '打 <code>aib web</code> 按 Enter</li><li>AIB'
+# PH7 第 2 步沒說還要確認本人(f163c 45d289a4 N1)
+k ';按「配對」,再照畫面確認是你本人</li>' ',按「配對」就好</li>'
